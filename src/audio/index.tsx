@@ -1,5 +1,120 @@
-// Audio worker: <AudioSystem /> - engine, effects, procedural synthwave music, mixer.
-// Mounted inside the Canvas (it reads telemetry each frame in useFrame).
+// ============================================================
+//  <AudioSystem /> - everything the player hears
+// ------------------------------------------------------------
+//  Mounted once inside the Canvas (App.tsx). It creates the
+//  AudioRig (system.ts), plugs it into the shared audio API so
+//  menus and the input system can call audio.ui() / audio.unlock(),
+//  and ticks it once per rendered frame.
+//
+//  Every sound is synthesised in code: no audio files at all.
+//
+//  Dev handles (for checkers and the probe script):
+//    window.__game.get('audio')        live state: context, faders,
+//                                      engine readout, sounds played
+//    window.__dev.audio('help')        list the test commands
+//    ?nomusic=1                        mute the music
+// ============================================================
+
+import { useEffect, useRef } from 'react'
+import { useFrame } from '@react-three/fiber'
+import { installAudio } from '../core/api'
+import type { UiSound } from '../core/api'
+import { registerDev, registerInspector } from '../core/devHandles'
+import type { AnyGameEvent, GameEventType } from '../core/events'
+import { createRig, destroyRig } from './system'
+import type { AudioRig } from './system'
+import type { EngineInput } from './engine'
+import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMusic, toBase64 } from './render'
+import type { MoodId } from './music/score'
+
+const DEV_HELP = [
+  "audio('start')                      start sound (the probe has no real gesture)",
+  "audio('state')                      same as __game.get('audio')",
+  "audio('ui', kind)                   play a menu sound: move select back toggle slide start error countdown go",
+  "audio('play', type, payload)        play the sound for a game event without emitting it, e.g. audio('play','crash',{what:'wall',intensity:0.8,speedKmh:120})",
+  "audio('engine', {rpm, throttle, speedKmh, gear, slip, airborne, offRoad, magStrength, boost})   drive the engine from values",
+  "audio('engine', 'live')             back to live telemetry",
+  "audio('mood', m)                   switch the music mood (fresh seed) from the next bar: cruise drive race hyper",
+  "audio('section', s)                hold a music section: title intro groove build drop breakdown, or 'auto'",
+  "audio('sweep')                      13 s scripted test drive: idle, gears, jump (free-rev), landing, drift, boost, off-road, mag grip",
+  "audio('render', what, night?)      record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | effects | title | cruise | drive | race | hyper (night 0..1)",
+].join('\n')
+
 export function AudioSystem() {
+  const rigRef = useRef<AudioRig | null>(null)
+
+  useEffect(() => {
+    const rig = createRig()
+    rigRef.current = rig
+    installAudio({
+      ui: (kind: UiSound) => rig.ui(kind),
+      unlock: () => rig.unlock(),
+      isRunning: () => rig.isRunning(),
+    })
+    const offInspector = registerInspector('audio', () => rig.inspect())
+    const offDev = registerDev(
+      'audio',
+      ((cmd?: string, a?: unknown, b?: unknown) => devCommand(rig, cmd, a, b)) as (...args: never[]) => unknown,
+      'audio(cmd, ...) - sound tests; audio("help") lists them',
+    )
+    return () => {
+      offInspector()
+      offDev()
+      rigRef.current = null
+      destroyRig(rig)
+    }
+  }, [])
+
+  useFrame(() => {
+    rigRef.current?.frame()
+  })
+
   return null
+}
+
+function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unknown {
+  switch (cmd) {
+    case undefined:
+    case 'help':
+      return DEV_HELP
+    case 'start':
+      rig.unlock()
+      return rig.inspect().state
+    case 'state':
+      return rig.inspect()
+    case 'ui':
+      rig.ui(a as UiSound)
+      return true
+    case 'play': {
+      const payload = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>
+      return rig.testEvent({ type: a as GameEventType, t: performance.now(), ...payload } as unknown as AnyGameEvent)
+    }
+    case 'engine':
+      rig.setOverride(a === 'live' ? null : (a as Partial<EngineInput>))
+      return true
+    case 'sweep':
+      return rig.startSweep()
+    case 'mood':
+      return rig.setMood(String(a))
+    case 'section':
+      return rig.setSection(String(a))
+    case 'render':
+      return renderToWav(a as string, Number(b ?? 0))
+    default:
+      return `unknown audio command "${cmd}". ${DEV_HELP}`
+  }
+}
+
+const MUSIC_RENDERS = ['title', 'cruise', 'drive', 'race', 'hyper']
+
+async function renderToWav(what: string, night: number): Promise<unknown> {
+  if (what === 'engine' || what === 'effects') {
+    const buf = what === 'engine' ? await renderEngineSweep() : await renderEffectsReel()
+    return { ...measure(buf), wav: toBase64(encodeWav(buf)) }
+  }
+  if (MUSIC_RENDERS.includes(what)) {
+    const { buf, log } = await renderMusic(what as MoodId | 'title', Number.isFinite(night) ? night : 0)
+    return { ...measure(buf), log, wav: toBase64(encodeWav(buf)) }
+  }
+  return `unknown render "${what}" (engine | effects | ${MUSIC_RENDERS.join(' | ')})`
 }
