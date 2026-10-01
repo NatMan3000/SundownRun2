@@ -17,7 +17,7 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ✅ App mount points + stub modules, boot, probe script (headless GPU Chrome verified: ANGLE Metal, M5 Max, GPU timer supported)
 - ✅ Ports 5201 / 5202 added to ~/Dev/.claude/rules/reserved-ports.md
 - ✅ Dev server running on 5201 (`vite --host`, LAN-reachable) for Nathan and Josh
-- ✅ Nine workers spawned 2026-10-01 ~17:30 AEST: track, vehicle, world, look, audio, ui, play, editor, net
+- ✅ Nine workers spawned 2026-10-01 ~18:10 AEST: track, vehicle, world, look, audio, ui, play, editor, net
 
 ## Phase 1 - systems (workers)
 
