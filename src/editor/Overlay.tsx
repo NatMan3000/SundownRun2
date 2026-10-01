@@ -241,23 +241,41 @@ export function Overlay() {
 
 // ---------------------------------------------------------------- drawing
 
-/** The smooth road curve through the draft's points, cached until the points change. */
-let curveCache: { points: RoadPoint[] | null; curve: P[] } = { points: null, curve: [] }
-function roadCurve(points: RoadPoint[]): P[] {
-  if (curveCache.points !== points) curveCache = { points, curve: points.length >= 3 ? catmullRomClosed(points, 6) : [] }
-  return curveCache.curve
+/** The smooth road curve through the draft's points and its two edges, cached until the road changes. */
+let curveCache: { points: RoadPoint[] | null; width: number; curve: P[]; left: P[]; right: P[] } = { points: null, width: 0, curve: [], left: [], right: [] }
+function roadShape(points: RoadPoint[], width: number) {
+  if (curveCache.points === points && curveCache.width === width) return curveCache
+  const curve = points.length >= 3 ? catmullRomClosed(points, 6) : []
+  const left: P[] = []
+  const right: P[] = []
+  const n = curve.length
+  for (let i = 0; i < n; i++) {
+    const a = curve[(i - 1 + n) % n]
+    const b = curve[(i + 1) % n]
+    const len = Math.hypot(b.x - a.x, b.z - a.z) || 1
+    // A sideways direction across the road (90 degrees to the way it runs).
+    const nx = -(b.z - a.z) / len
+    const nz = (b.x - a.x) / len
+    const half = width / 2
+    left.push({ x: curve[i].x + nx * half, z: curve[i].z + nz * half })
+    right.push({ x: curve[i].x - nx * half, z: curve[i].z - nz * half })
+  }
+  curveCache = { points, width, curve, left, right }
+  return curveCache
 }
 
 function draw(ctx: CanvasRenderingContext2D, stroke: readonly P[], hover: P | null): void {
   const s = useEditor.getState()
   const d = s.draft
   ctx.clearRect(0, 0, view.width, view.height)
-  const curve = roadCurve(d.points)
+  const shape = roadShape(d.points, d.width)
 
-  if (curve.length) {
-    drawDirectionArrows(ctx, curve)
+  if (shape.curve.length) {
+    // Zoomed out, the 3D road's light strips get thinner than a pixel, so the map draws its outline.
+    if (view.mpp > 0.55) drawRoadOutline(ctx, shape.left, shape.right, d.environment.palette?.edge ?? PALETTE.roadEdge)
+    drawDirectionArrows(ctx, shape.curve)
+    if (s.mode === 'edit' && view.mpp < 0.7) drawControlPoints(ctx, d.points)
     drawBridges(ctx, d.points)
-    if (s.mode === 'edit' && view.mpp < 2.6) drawControlPoints(ctx, d.points)
     drawStartLine(ctx, d.points, d.startAt, d.width)
   }
   drawPins(ctx)
@@ -294,14 +312,41 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: readonly P[]): void {
   ctx.restore()
 }
 
-/** Small chevrons along the road every ~140 m, pointing the way you drive. */
-function drawDirectionArrows(ctx: CanvasRenderingContext2D, curve: readonly P[]): void {
-  const spacingPx = 160
+/** The road edges as two thin glowing lines, with the road between them darkened a little. */
+function drawRoadOutline(ctx: CanvasRenderingContext2D, left: readonly P[], right: readonly P[], edge: string): void {
   ctx.save()
-  ctx.strokeStyle = PALETTE.uiText
-  ctx.globalAlpha = 0.75
-  ctx.lineWidth = 2
-  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  // The band between the edges: two closed rings filled even-odd leaves just the road.
+  ctx.beginPath()
+  for (const ring of [left, right]) {
+    for (let i = 0; i < ring.length; i++) {
+      const { sx, sy } = worldToScreen(ring[i].x, ring[i].z)
+      if (i === 0) ctx.moveTo(sx, sy)
+      else ctx.lineTo(sx, sy)
+    }
+    ctx.closePath()
+  }
+  ctx.fillStyle = PALETTE.road
+  ctx.globalAlpha = 0.6
+  ctx.fill('evenodd')
+  ctx.globalAlpha = 1
+  ctx.strokeStyle = edge
+  ctx.shadowColor = edge
+  ctx.shadowBlur = 6
+  ctx.lineWidth = 1.5
+  line(ctx, left, true)
+  ctx.stroke()
+  line(ctx, right, true)
+  ctx.stroke()
+  ctx.restore()
+}
+
+/** Small arrowheads down the middle of the road every ~180 px, pointing the way you drive. */
+function drawDirectionArrows(ctx: CanvasRenderingContext2D, curve: readonly P[]): void {
+  const spacingPx = 180
+  ctx.save()
+  ctx.fillStyle = PALETTE.laneLine
+  ctx.globalAlpha = 0.85
   let travelled = spacingPx / 2
   for (let i = 0; i < curve.length; i++) {
     const a = worldToScreen(curve[i].x, curve[i].z)
@@ -310,20 +355,22 @@ function drawDirectionArrows(ctx: CanvasRenderingContext2D, curve: readonly P[])
     travelled += seg
     if (travelled < spacingPx || seg < 1e-3) continue
     travelled = 0
+    if (a.sx < -20 || a.sy < -20 || a.sx > view.width + 20 || a.sy > view.height + 20) continue
     const ux = (b.sx - a.sx) / seg
     const uy = (b.sy - a.sy) / seg
-    const size = 6
     ctx.beginPath()
-    ctx.moveTo(a.sx - ux * size - uy * size, a.sy - uy * size + ux * size)
-    ctx.lineTo(a.sx, a.sy)
-    ctx.lineTo(a.sx - ux * size + uy * size, a.sy - uy * size - ux * size)
-    ctx.stroke()
+    ctx.moveTo(a.sx + ux * 6, a.sy + uy * 6)
+    ctx.lineTo(a.sx - ux * 4 - uy * 4.5, a.sy - uy * 4 + ux * 4.5)
+    ctx.lineTo(a.sx - ux * 1.5, a.sy - uy * 1.5)
+    ctx.lineTo(a.sx - ux * 4 + uy * 4.5, a.sy - uy * 4 - ux * 4.5)
+    ctx.closePath()
+    ctx.fill()
   }
   ctx.restore()
 }
 
 function drawControlPoints(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[]): void {
-  const r = view.mpp < 0.8 ? 4 : 3
+  const r = view.mpp < 0.5 ? 3.5 : 2.5
   ctx.save()
   for (const p of points) {
     const { sx, sy } = worldToScreen(p.x, p.z)
@@ -417,23 +464,26 @@ function drawStartLine(ctx: CanvasRenderingContext2D, points: readonly RoadPoint
   pill(ctx, 'START', s.sx - ux * 30 - uy * 26, s.sy - uy * 30 + ux * 26, PALETTE.uiText)
 }
 
-/** Raised stretches (bridges) get a label at their highest point. */
+/** Each raised stretch (a bridge) gets one label beside its highest point. */
 function drawBridges(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[]): void {
   const n = points.length
+  const raised = (i: number) => (points[((i % n) + n) % n].lift ?? 0) >= 1
   for (let i = 0; i < n; i++) {
-    const lift = points[i].lift ?? 0
-    if (lift < 6) continue
-    const prev = points[(i - 1 + n) % n].lift ?? 0
-    if (prev >= 6) continue // label each raised stretch once, at its start
-    let j = i
+    if (!raised(i) || raised(i - 1)) continue // only at the start of a raised stretch
+    let top = i
     let count = 0
-    while ((points[j % n].lift ?? 0) >= 6 && count < n) {
-      j++
+    while (raised(i + count) && count < n) {
+      if ((points[(i + count) % n].lift ?? 0) > (points[top % n].lift ?? 0)) top = i + count
       count++
     }
-    const mid = points[(i + Math.floor(count / 2)) % n]
-    const { sx, sy } = worldToScreen(mid.x, mid.z)
-    pill(ctx, `BRIDGE ${Math.round(lift)} m`, sx, sy - 22, PALETTE.wallRide)
+    const p = points[top % n]
+    const q = points[(top + 1) % n]
+    const len = Math.hypot(q.x - p.x, q.z - p.z) || 1
+    const { sx, sy } = worldToScreen(p.x, p.z)
+    // Beside the road, not on it: 30 px off to one side.
+    const ox = (-(q.z - p.z) / len) * 30
+    const oy = ((q.x - p.x) / len) * 30
+    pill(ctx, `BRIDGE ${Math.round(p.lift ?? 0)} m`, sx + ox, sy + oy, PALETTE.wallRide)
   }
 }
 

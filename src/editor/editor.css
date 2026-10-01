@@ -1,0 +1,523 @@
+/* ============================================================
+   EDITOR STYLES - the road editor's toolbar, panel and library
+   ------------------------------------------------------------
+   Colours come ONLY from the CSS variables EditorUi.tsx sets from
+   src/core/palette.ts; lighter and see-through versions are mixed
+   with color-mix(). Dark glass panels, thin neon rules, system
+   fonts, tabular numbers: the same language as the game's menus.
+   ============================================================ */
+
+.sre {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  font-family: var(--font-body);
+  font-size: clamp(11px, calc(100vh / 72), 18px);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  --glass: color-mix(in srgb, var(--panel-solid) 82%, transparent);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  user-select: none;
+}
+
+.sre :where(button, input, select) {
+  font: inherit;
+  color: inherit;
+}
+
+.sre-overlay {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* ---------------------------------------------------------------- tools (left) */
+
+.sre-tools {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 40px color-mix(in srgb, var(--panel-solid) 70%, transparent);
+}
+
+.sre-tools-gap {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+
+.sre-tool {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  transition: background 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.sre-tool:hover:not(:disabled) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.sre-tool.is-active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.sre-tool:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+.sre-tool:focus-visible,
+.sre-btn:focus-visible,
+.sre-input:focus-visible,
+.sre-issue:focus-visible,
+.sre-swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sre-glyph {
+  font-size: 1.5em;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* ---------------------------------------------------------------- panel (right) */
+
+.sre-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  bottom: 16px;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 50px color-mix(in srgb, var(--panel-solid) 70%, transparent);
+  overflow: hidden;
+}
+
+.sre-head {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent2) 10%, transparent), transparent);
+}
+
+.sre-kicker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-display);
+  font-size: 0.78em;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent2);
+  margin-bottom: 10px;
+}
+
+.sre-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.7em;
+  font-weight: 600;
+}
+
+.sre-state {
+  font-family: var(--font-body);
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-size: 1.1em;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--dim);
+}
+.sre-state.is-failed {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 50%, transparent);
+}
+.sre-state.is-pending {
+  color: var(--accent);
+}
+
+.sre-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+.sre-stat {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.sre-stat-value {
+  font-size: 1.15em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sre-stat-label {
+  font-size: 0.8em;
+  color: var(--dim);
+}
+
+.sre-section {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sre-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sre-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.82em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.sre-value {
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.sre-help {
+  font-size: 0.82em;
+  color: var(--dim);
+  line-height: 1.35;
+}
+
+.sre-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-solid) 70%, transparent);
+  outline: none;
+  user-select: text;
+}
+.sre-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.sre-field.is-big .sre-input {
+  font-family: var(--font-display);
+  font-size: 1.45em;
+  font-weight: 600;
+  padding: 6px 10px;
+}
+.sre-input option {
+  background: var(--panel-solid);
+}
+
+.sre-range {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.sre-swatches {
+  display: flex;
+  gap: 8px;
+}
+.sre-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--swatch);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--swatch) 45%, transparent);
+  cursor: pointer;
+}
+.sre-swatch.is-on {
+  border-color: var(--text);
+}
+
+/* problems */
+.sre-problems ul,
+.sre-legend ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sre-issue {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  align-items: baseline;
+  gap: 9px;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  line-height: 1.35;
+  cursor: pointer;
+}
+/* A coloured dot says how serious it is; the words say what it is. */
+.sre-issue::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+  transform: translateY(-1px);
+}
+.sre-issue:disabled {
+  cursor: default;
+}
+.sre-issue.is-warn::before {
+  background: var(--warn);
+}
+.sre-issue.is-bad::before {
+  background: var(--bad);
+}
+.sre-issue.is-note {
+  color: var(--dim);
+}
+.sre-ok {
+  margin: 0;
+  color: var(--good);
+}
+
+/* legend */
+.sre-legend li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.9em;
+  color: var(--dim);
+}
+.sre-legend i {
+  width: 18px;
+  height: 10px;
+  display: inline-block;
+  flex: none;
+}
+.k-start {
+  background: repeating-linear-gradient(90deg, var(--text) 0 4.5px, var(--panel-solid) 4.5px 9px);
+  height: 6px !important;
+}
+.k-arrow {
+  border-top: 2px solid var(--text);
+  border-right: 2px solid var(--text);
+  width: 7px !important;
+  height: 7px !important;
+  transform: rotate(45deg);
+  margin: 0 5px;
+}
+.k-point {
+  width: 9px !important;
+  height: 9px !important;
+  border-radius: 50%;
+  background: var(--text);
+  margin: 0 4px;
+}
+.k-bridge {
+  height: 6px !important;
+  border-radius: 3px;
+  background: var(--bridge);
+  box-shadow: 0 0 8px var(--bridge);
+}
+.k-warn {
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50%;
+  border: 2px solid var(--warn);
+  margin: 0 2px;
+}
+
+/* actions */
+.sre-actions {
+  margin-top: auto;
+  padding: 14px 20px 18px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.sre-btn {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease), box-shadow 140ms var(--ease);
+}
+.sre-btn:hover {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.sre-btn.is-primary {
+  grid-column: 1 / -1;
+  color: var(--panel-solid);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-size: 1.1em;
+  box-shadow: 0 0 20px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.sre-btn.is-primary:hover {
+  box-shadow: 0 0 28px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.sre-btn.is-quiet {
+  background: none;
+  color: var(--dim);
+}
+.sre-btn.is-danger {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+  background: none;
+}
+.sre-actions .sre-btn.is-quiet {
+  grid-column: 1 / -1;
+}
+
+/* ---------------------------------------------------------------- status line */
+
+.sre-status {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translate(-50%, 12px);
+  max-width: calc(100vw - 560px);
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease), transform 200ms var(--ease);
+}
+.sre-status.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.sre-status.is-good {
+  border-color: color-mix(in srgb, var(--good) 55%, transparent);
+}
+.sre-status.is-warn {
+  border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+}
+.sre-status.is-bad {
+  border-color: color-mix(in srgb, var(--bad) 60%, transparent);
+}
+
+/* ---------------------------------------------------------------- library dialog */
+
+.sre-modal {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  backdrop-filter: blur(4px);
+}
+.sre-library {
+  width: min(640px, calc(100vw - 80px));
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.sre-lib-head,
+.sre-lib-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 20px;
+}
+.sre-lib-head {
+  border-bottom: 1px solid var(--line);
+}
+.sre-lib-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.4em;
+}
+.sre-lib-foot {
+  border-top: 1px solid var(--line);
+  justify-content: flex-start;
+}
+.sre-lib-new {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 14px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.sre-lib-new > div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sre-lib-new .sre-btn.is-primary {
+  grid-column: auto;
+}
+.sre-lib-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px;
+  overflow: auto;
+}
+.sre-lib-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+.sre-lib-name {
+  display: flex;
+  flex-direction: column;
+}
+.sre-lib-name span {
+  font-size: 0.85em;
+  color: var(--dim);
+}
+.sre-lib-acts {
+  display: flex;
+  gap: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sre-status {
+    transition: none;
+  }
+}

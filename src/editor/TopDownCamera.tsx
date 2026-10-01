@@ -12,11 +12,12 @@
 //  the overlay's pan and zoom controls change.
 // ============================================================
 
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import { useFrame } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import { OrthographicCamera } from '@react-three/drei'
 import { getTrack } from '../track/current'
+import { registerInspector } from '../core/devHandles'
 import { view } from './view'
 
 /** How high above the tallest hill the camera hangs. Low enough that the world's haze stays thin. */
@@ -24,6 +25,9 @@ const HEIGHT_ABOVE_TERRAIN = 350
 
 export function TopDownCamera() {
   const cam = useRef<THREE.OrthographicCamera>(null)
+  const scene = useThree((s) => s.scene)
+  // Checkers can look at what is under the map: __game.get('editorScene').
+  useEffect(() => registerInspector('editorScene', () => scene), [scene])
 
   useFrame(() => {
     const c = cam.current

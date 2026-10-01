@@ -67,6 +67,12 @@ export const CLEANUP = {
    * zoom (a wobble of a few pixels is more metres when zoomed out).
    */
   smoothing: 12,
+  /**
+   * A last, gentle smoothing after the corners are opened, metres. It evens
+   * out how sharply the road bends from one metre to the next, so banking
+   * and Ai speeds flow instead of twitching.
+   */
+  fairing: 12,
   /** Bridges: how high the upper road goes, and how long each ramp up to it is, metres. */
   bridgeLift: 8,
   bridgeRamp: 80,
@@ -212,8 +218,9 @@ export function cleanStroke(raw: readonly P[], options: Partial<CleanupOptions> 
 function shapeRoad(smoothed: P[], drawnStart: P, o: CleanupOptions, limit: WorldLimit, margin: number) {
   const issues: StrokeIssue[] = []
 
-  // 4. relax corners, spacing and the world edge
+  // 4. relax corners, spacing and the world edge, then even out the bends
   let loop = relax(smoothed, o, limit, margin)
+  if (o.fairing > 0) loop = resample(gaussianSmoothClosed(loop, o.fairing), o.fine, true)
 
   // 5. crossings and bridges
   const crossings = findCrossings(loop)

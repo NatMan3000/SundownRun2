@@ -273,7 +273,9 @@ export function strokeOptions(d: Draft, metresPerPixel: number) {
     bound: roadBound(d.environment),
     playRadius: sameWorld ? t.world.playRadius : Infinity,
     // A shaky hand wobbles a few pixels; that is more metres when zoomed out.
-    smoothing: Math.min(15, Math.max(5, 7 * metresPerPixel)),
+    // Zoomed in close, small wiggles are deliberate, so both passes smooth less.
+    smoothing: Math.min(18, Math.max(5, 10 * metresPerPixel)),
+    fairing: Math.min(18, Math.max(5, 10 * metresPerPixel)),
   }
 }
 

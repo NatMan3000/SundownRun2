@@ -15,6 +15,7 @@
 import { CLEANUP, cleanStroke, type CleanResult, type CleanupOptions } from './cleanup'
 import { type P, catmullRomClosed, dist, minRadius } from './geom'
 import { validateTrack } from '../track/validate'
+import { buildTrack } from '../track/build'
 import { DEFAULT_BASE_WORLD, draftFile, roadBound } from './draftFile'
 
 export interface CheckResult {
@@ -224,6 +225,26 @@ export function runEditorSelfTest(): CheckResult[] {
     const res = cleanStroke(stroke, opts)
     describe(res)
     return roadInvariants(res)
+  })
+
+  check('a shaky drawing builds into smooth, flowing bends', () => {
+    // Roughness = how much the built road's bend changes per metre, averaged over the lap.
+    // A perfect (wobble-free) drawing of this shape scores about 75; raw hand wobble about 250.
+    const stroke = shaky((t) => {
+      const a = t * TAU
+      const r = 240 + 70 * Math.sin(2 * a) + 40 * Math.cos(3 * a)
+      return { x: r * Math.cos(a), z: r * Math.sin(a) * 0.85 }
+    }, 500, 4, 7, 0, 1.02)
+    const res = cleanStroke(stroke, opts)
+    describe(res)
+    const v = validateTrack(draftFile({ id: 'selftest-kidney', name: 'Self-test kidney', points: res.points }))
+    if (!v.ok || !v.track) return ['validator refused it']
+    const S = buildTrack(v.track, {}).samples
+    let rough = 0
+    for (let i = 0; i < S.count; i++) rough += Math.abs(S.curvature[(i + 1) % S.count] - S.curvature[i])
+    const score = (rough / (S.count * S.ds)) * 1e6
+    info += `, roughness ${score.toFixed(0)}`
+    return score > 180 ? [`roughness ${score.toFixed(0)} (want under 180)`] : []
   })
 
   check('drawn tracks pass the real track validator', () => {
