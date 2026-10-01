@@ -31,7 +31,7 @@ import { getTrack } from '../../track/current'
 import { formatClock, formatLap, formatScore } from '../format'
 import { installFeed } from './feed'
 import { gpuInfo } from '../gpu'
-import * as netModule from '../../net'
+import { getRaceOrder } from '../../net'
 import { SoundHint } from '../SoundHint'
 import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
@@ -344,16 +344,6 @@ function raceLapText(laps: number, state: string): string {
   return `Lap ${lap} of ${laps}`
 }
 
-/**
- * Net's finishing order for a multiplayer race: car ids, 1st first ('player' =
- * you), [] when there's no multiplayer race. Read through the module namespace
- * so the HUD keeps working on a build where net doesn't export it yet.
- */
-function raceOrder(): readonly string[] {
-  const fn = (netModule as unknown as { getRaceOrder?: () => readonly string[] }).getRaceOrder
-  return fn ? fn() : []
-}
-
 /** Seconds between two cars at the player's speed (never negative). */
 function gapSeconds(front: CarState, back: CarState, length: number, speed: number): string {
   return (Math.max(0, (front.progress - back.progress) * length) / speed).toFixed(1)
@@ -372,7 +362,8 @@ function raceGapText(state: string): string {
   const speed = Math.max(8, me.speedKmh / 3.6)
   let ahead: CarState | null = null
   let behind: CarState | null = null
-  const order = raceOrder()
+  // Net's order for a multiplayer race: car ids 1st first ('player' = you), [] otherwise.
+  const order = getRaceOrder()
   const i = order.length ? order.indexOf('player') : -1
   if (i >= 0) {
     ahead = i > 0 ? getCar(order[i - 1]) ?? null : null
