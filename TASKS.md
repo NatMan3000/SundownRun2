@@ -134,3 +134,8 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ⬜ [look] Live switch to Neutral tone mapping renders black (world).
 - ⬜ [vehicle] Car art: faceted low-poly look and dull red-magenta paint; wants smooth normals + clearcoat. Showroom camera must frame the car in the right half (menus cover the left).
 - ✅ [contract] Planet default elevation 16 deg (was 28: off-frame at night). TrackParamInfo.default added. ResolvedTrackFile.laps typed number | null. Skirt uv semantics. Physics updatePriority -50.
+- ⬜ [audio] Checker audio-1 (11/13): race countdown beeps stack (GO booked 3x, one a semitone off) because a booking happens per race.countdown event. Contract now: emitted once per countdown.
+- ⬜ [ui] Checker audio-1 D1: pad-only player never gets sound (Chrome: pad press isn't user activation). Add a "press any key or click for sound" hint while audio isn't running.
+- ⬜ [play] race.countdown emitted every second (should be once); goAt includes settle time so the HUD shows a "4".
+- ⬜ [vehicle] Clean landings classified as intensity-1 crashes (8 per 45 s demo).
+- ⬜ [harness, outside repo] Kai's tabguard hook denies MCP press_key/click/emulate when Canary has a new-tab-page tab (CDP /json/list says chrome://newtab/, MCP lists chrome://new-tab-page/). Not edited (outside the build's scope); checkers work around it.
