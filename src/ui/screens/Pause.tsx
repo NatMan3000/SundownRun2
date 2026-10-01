@@ -59,8 +59,8 @@ export function PauseScreen() {
             <MenuButton id="quit" label="Quit to title" help="Leave this run and go back to the title screen." onAccept={quitToTitle} acceptSound="back" />
           </nav>
           <HelpLine />
-          <SoundHint variant="menu" />
         </section>
+        <SoundHint variant="menu" />
         <HintBar
           items={[
             { action: 'move', label: 'Move' },

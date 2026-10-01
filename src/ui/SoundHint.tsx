@@ -42,14 +42,31 @@ function MutedSpeaker() {
   )
 }
 
+/** How long the hint takes to fade once sound starts. */
+const FADE_MS = 220
+
+/**
+ * The hint itself. It sits outside the menu's layout (positioned by its
+ * screen), so when it goes nothing else moves; it fades out rather than
+ * vanishing.
+ */
 export function SoundHint(props: { variant: 'menu' | 'chip' }) {
   const locked = useSoundLocked()
-  if (!locked) return null
+  const [mounted, setMounted] = useState(locked)
+  useEffect(() => {
+    if (locked) {
+      setMounted(true)
+      return
+    }
+    const t = setTimeout(() => setMounted(false), FADE_MS)
+    return () => clearTimeout(t)
+  }, [locked])
+  if (!mounted) return null
   return (
     <button
       type="button"
       tabIndex={-1}
-      className={`sound-hint sound-hint--${props.variant}`}
+      className={`sound-hint sound-hint--${props.variant}${locked ? '' : ' is-leaving'}`}
       onClick={() => audio.unlock()}
       role="status"
     >

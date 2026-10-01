@@ -125,8 +125,8 @@ export function TitleScreen() {
           {import.meta.env.DEV && <LearnLink />}
           <HelpLine />
           {mp && <MpStatus />}
-          <SoundHint variant="menu" />
         </div>
+        <SoundHint variant="menu" />
         <HintBar
           items={[
             { action: 'move', label: 'Move' },

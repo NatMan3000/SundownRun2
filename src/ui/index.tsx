@@ -127,6 +127,13 @@ function usePauseWatcher(): void {
   useEffect(() => {
     let last = controlSignals.pause
     let raf = 0
+    // One press, one consumer. The world map handles its own Back / Menu, and
+    // the editor may read that same press before this loop does; when the map
+    // opens or closes, swallow whatever press is pending so it can't also
+    // resume the game.
+    const offMap = useGame.subscribe((s, prev) => {
+      if (s.mapOpen !== prev.mapOpen) last = controlSignals.pause
+    })
     const tick = () => {
       raf = requestAnimationFrame(tick)
       if (controlSignals.pause !== last) {
@@ -135,7 +142,10 @@ function usePauseWatcher(): void {
       }
     }
     raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      offMap()
+    }
   }, [])
 }
 

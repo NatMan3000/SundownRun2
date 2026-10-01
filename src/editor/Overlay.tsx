@@ -25,6 +25,7 @@
 
 import { useEffect, useRef } from 'react'
 import { inputState } from '../core/controls'
+import { closeMap } from '../core/session'
 import { PLACE_TOOLS, toolFor } from './pieces'
 import {
   type EditorTool,
@@ -473,8 +474,15 @@ export function Overlay() {
       const any = lx || ly || lt > 0.1 || rt > 0.1 || pad.buttons.some((b) => b.pressed)
       if (any && !padHinted) {
         padHinted = true
-        say('Controller: left stick moves the map, triggers zoom, X undo, Y redo, hold View to test drive. Menu leaves.', 'info')
+        say(
+          useEditor.getState().mode === 'map'
+            ? 'Controller: left stick moves the map, triggers zoom. B or Menu: back to the pause menu.'
+            : 'Controller: left stick moves the map, triggers zoom, X undo, Y redo, hold View to test drive. Menu leaves.',
+          'info',
+        )
       }
+      // The world map: B goes back to the pause menu, the same as Menu or Esc.
+      if (useEditor.getState().mode === 'map' && edge(1)) closeMap()
       if (lx || ly) panBy(-lx * 900 * dt, -ly * 900 * dt)
       if (lt > 0.05 || rt > 0.05) zoomAt(view.width / 2, view.height / 2, Math.exp((lt - rt) * 1.6 * dt))
       if (useEditor.getState().mode === 'edit') {
