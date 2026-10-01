@@ -124,6 +124,10 @@ export interface GameState {
   tagSeconds: Record<string, number>
   tagEndsAt: number
 
+  // ---- world map (writer: core/session openMap/closeMap) ----
+  /** The editor's top-down world map is open over the PAUSED game (Physics and the car stay mounted). */
+  mapOpen: boolean
+
   // ---- graphics (writer: look quality manager) ----
   /** The preset actually in use (auto resolves to one of these). */
   qualityLevel: 'low' | 'medium' | 'high'
@@ -183,6 +187,8 @@ const initial: GameState = {
   tagItId: null,
   tagSeconds: {},
   tagEndsAt: 0,
+
+  mapOpen: false,
 
   qualityLevel: 'high',
 }

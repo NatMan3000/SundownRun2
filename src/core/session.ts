@@ -62,7 +62,7 @@ export function pauseGame(): void {
 export function resumeGame(): void {
   const g = useGame.getState()
   if (g.phase !== 'paused' && g.phase !== 'results') return
-  useGame.setState({ phase: 'playing' })
+  useGame.setState({ phase: 'playing', mapOpen: false })
   setInputContext('drive')
 }
 
@@ -78,7 +78,7 @@ export function endSession(): void {
   if (g.phase === 'playing' || g.phase === 'paused' || g.phase === 'results') {
     emit('session.end', { trackId: g.trackId, mode: g.mode })
   }
-  useGame.setState({ ...sessionResetFields(), phase: 'title' })
+  useGame.setState({ ...sessionResetFields(), phase: 'title', mapOpen: false })
   setInputContext('menu')
 }
 
@@ -88,6 +88,21 @@ export function openEditor(): void {
   if (g.phase === 'playing' || g.phase === 'paused') emit('session.end', { trackId: g.trackId, mode: g.mode })
   useGame.setState({ phase: 'editor' })
   setInputContext('editor')
+}
+
+/** Open the top-down world map over the paused game (from the pause menu). */
+export function openMap(): void {
+  const g = useGame.getState()
+  if (g.phase !== 'paused') return
+  useGame.setState({ mapOpen: true })
+  setInputContext('editor')
+}
+
+/** Close the world map and return to the pause menu. */
+export function closeMap(): void {
+  if (!useGame.getState().mapOpen) return
+  useGame.setState({ mapOpen: false })
+  setInputContext('menu')
 }
 
 /** True while the world should simulate (physics running). */
