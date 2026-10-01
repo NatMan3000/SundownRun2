@@ -156,3 +156,5 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ⬜ [vehicle] NaN torque at spawn caught by the firewall on Afterglow (orchestrator probe 19:52).
 - ⬜ [track, next worker] Racing-line speed through wall rides assumes ~1.9 g while its offset keeps cars on the flat; either assume flat grip there or run the offset up the wall (play).
 - ⬜ [designer] Afterglow boost pads 110-165 m before the loop with a corner in between: everyone arrives 40-90 km/h too fast and misses the loop mouth (play).
+- ✅ [designer] Afterglow final layout committed (648dfa8): 4.27 km figure-eight, 45 m relief, 13.4 m bridge clearance, boost straight into the loop toward the sun, 100 m wall-ride arc, big-air hill by the road; tracks:check clean, no warnings. 4 of 5 Ai finished lap 1 in the designer's race.
+- ⬜ [track, next worker] Loop exit: a car going straight after the loop hits the loop's own entry leg (the corkscrew's ~7.5 m lateral shift); Ai VECTOR jammed 20 m past the loop centre. Make the exit shift longer/gentler and give the loop legs a deflecting, not blunt, face.
