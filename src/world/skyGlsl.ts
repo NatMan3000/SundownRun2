@@ -49,18 +49,23 @@ vec3 skyColor( vec3 d ) {
   // Warm only toward the sun: the far side of the sky keeps its violet.
   vec3 horizon = mix( uSkyHorizonAnti, uSkyHorizon, sunward * sunward );
 
-  // Horizon -> mid -> zenith. The horizon colour climbs higher on the sun side.
+  // Horizon -> mid -> zenith. The horizon colour climbs higher on the sun side;
+  // away from the sun the middle of the sky is darker and cooler (part way to
+  // the zenith), so that side reads as a deep violet over a lighter band,
+  // never one flat purple wash.
   float lift = mix( 0.16, 0.3, sunward );
-  vec3 col = mix( horizon, uSkyMid, smoothstep( 0.0, lift, pow( up, 0.85 ) ) );
+  vec3 mid = mix( mix( uSkyMid, uSkyZenith, 0.4 ), uSkyMid, sunward );
+  vec3 col = mix( horizon, mid, smoothstep( 0.0, lift, pow( up, 0.85 ) ) );
   col = mix( col, uSkyZenith, smoothstep( lift * 0.55, 0.92, up ) );
 
-  // Opposite the sunset: the "Belt of Venus", a pink band lying above the
-  // dusky blue-violet shadow of the world itself. Fades with the afterglow.
+  // Opposite the sunset: a soft lavender band (the real sky's "Belt of
+  // Venus", kept violet here: the pink belongs to the sun's side) lying above
+  // the dusky shadow of the world itself. Fades with the afterglow.
   float anti = ( 1.0 - sunward ) * ( 1.0 - sunward ) * uSkyBeltAmt;
-  float belt = smoothstep( 0.035, 0.1, y ) * ( 1.0 - smoothstep( 0.13, 0.3, y ) );
-  col = mix( col, uSkyBelt, belt * anti * 0.75 );
-  float earthShadow = ( 1.0 - smoothstep( 0.015, 0.075, y ) ) * step( 0.0, y );
-  col = mix( col, uSkyEarthShadow, earthShadow * anti * 0.7 );
+  float belt = smoothstep( 0.03, 0.09, y ) * ( 1.0 - smoothstep( 0.12, 0.28, y ) );
+  col = mix( col, uSkyBelt, belt * anti * 0.8 );
+  float earthShadow = ( 1.0 - smoothstep( 0.012, 0.06, y ) ) * step( 0.0, y );
+  col = mix( col, uSkyEarthShadow, earthShadow * anti * 0.45 );
 
   // The sun's warm glow: a wide wash hugging the horizon, and a tighter core.
   float cosA = max( dot( d, uSunDir ), 0.0 );
@@ -74,12 +79,14 @@ vec3 skyColor( vec3 d ) {
   float cityArc = smoothstep( uCityCos - 0.12, uCityCos + 0.25, cityFacing );
   col += uCityGlow * cityArc * exp( -abs( y ) * 9.0 );
 
-  // A soft luminous haze band lying along the horizon.
+  // A soft luminous haze band lying along the horizon: violet haze away from
+  // the sun, taking on the horizon's pink only as it turns toward the sun.
+  vec3 haze = mix( uSkyHaze, horizon, sunward * sunward * 0.7 );
   float band = exp( -abs( y ) * 26.0 );
-  col = mix( col, uSkyHaze, band * 0.42 );
+  col = mix( col, haze, band * 0.42 );
 
   // Below the horizon the sky turns to the haze faraway ground melts into.
-  col = mix( col, mix( horizon, uSkyHaze, 0.6 ) * 0.8, smoothstep( -0.01, -0.22, y ) );
+  col = mix( col, mix( horizon, haze, 0.6 ) * 0.8, smoothstep( -0.01, -0.22, y ) );
   return col;
 }
 

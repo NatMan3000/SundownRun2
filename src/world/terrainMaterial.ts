@@ -1,30 +1,64 @@
 // ============================================================
 //  TERRAIN MATERIAL - dark glass with a glowing grid
 // ------------------------------------------------------------
-//  A normal three.js MeshPhysicalMaterial (so it gets the real
-//  lights, the shadow, and reflections of the sky from
-//  scene.environment), with a few extra lines of shader code
-//  stitched in through onBeforeCompile:
+//  A normal three.js MeshPhysicalMaterial (so it takes the real
+//  lights and the shadow), with extra shader code stitched in
+//  through onBeforeCompile. Dark glass barely scatters light, so
+//  almost everything you see on it is light the glass reflects or
+//  catches, and we paint that ourselves, where we can control it:
 //
-//   1. VARIATION. Four noise patterns (textures.ts) nudge the
-//      colour and the glossiness, and cut the glass into faint
-//      plates, so the ground is never one flat tone.
-//   2. THE GRID. Neon lines every 10 m with brighter lines every
+//   1. THE GRID. Neon lines every 10 m with brighter lines every
 //      50 m, drawn with the "pristine grid" trick (Ben Golus):
 //      lines keep a real width up close and fade to their average
 //      brightness far away instead of shimmering. Glow tier T1 near
 //      the car, T0 by 60 m, gone in the distance.
-//   3. SHEEN. A violet rim at glancing angles, so hills still show
-//      their shape at night when there is little light.
-//   4. HAZE. Instead of three's flat fog colour, far ground melts
-//      into the exact colour of the sky behind it (skyGlsl.ts),
-//      plus a low haze that settles in the valleys.
+//   2. SKY FILL. Each slope picks up a little of the glowing sky
+//      low over the horizon it faces: violet on the side away from
+//      the sun, pink on the sun's side. Flat glass catches little,
+//      slopes more. This is what gives hills their shape, so no
+//      slope is ever a black hole with lines on it.
+//   3. REFLECTION. The sky mirrored in the glass, strongest at
+//      glancing angles (Fresnel), like a real window seen side-on.
+//   4. THE SUN STREAK. The low sun stretched into one soft band
+//      across the glass, pointing straight at you.
+//   5. KEY RIM. Faces leaning toward the sun (the planet at night)
+//      catch a warm (cool) edge when seen side-on, so you can tell
+//      where the sun is even with your back to it. At night the
+//      planet's light also lies on the glass as one soft glint.
+//   6. SHEEN + VARIATION. A violet sheen at glancing angles, and
+//      noise patterns (textures.ts) that vary how much the glass
+//      catches and cut it into faint plates, so it is never one flat
+//      tone. The noise only ever nudges (a tenth on the sky fill,
+//      more on the violet sheen) and never touches the sun streak or
+//      the warm rim: big swings of warm light read as orange mud.
+//   7. HAZE. Instead of three's flat fog colour, far ground melts
+//      into the exact colour of the sky behind it, plus a low haze
+//      that settles in the valleys.
+//
+//  The physical material's own reflections are switched off
+//  (specularIntensity 0): a broad sun highlight through the noise is
+//  what painted the old orange blotches, and the painted terms above
+//  are the same sky, minus the mud.
 // ============================================================
 
 import * as THREE from 'three'
 import { GLOW, PALETTE } from '../core/palette'
 import { SKY_GLSL } from './skyGlsl'
 import { skyUniforms } from './sky'
+
+/** How much of the sky each slope catches (sky fill). */
+const FILL = 0.36
+/** How strongly the glass mirrors the sky (times the Fresnel term). */
+const REFLECT = 0.3
+/** The sun streak's strength: well under the road's edge strips, which stay the brightest lines. */
+const STREAK = 1.2
+/** Key-light rim on side-on faces leaning toward the light, and the soft wash on faces turned toward it. */
+const RIM = 0.4
+const WASH = 0.022
+/** The violet sheen at glancing angles (the palette's sheen colour is very dark, so it is boosted). */
+const SHEEN = 2.2
+/** The planet-light glint on the glass at night. */
+const GLINT = 1.3
 
 export interface TerrainUniforms {
   uCarPos: { value: THREE.Vector3 }
@@ -57,6 +91,11 @@ uniform vec3 uSheen;
 uniform float uHazeBase;
 uniform float uHazeTop;
 uniform float uFogDensity;
+uniform vec3 uKeyDir;
+uniform vec3 uKeyColor;
+uniform vec3 uSunStreak;
+uniform vec3 uSkyFill;
+uniform vec3 uRimColor;
 
 // Pristine grid (Ben Golus): uv in cells, lineWidth as a fraction of a cell.
 float pristineGrid( vec2 uv, float lineWidth ) {
@@ -73,27 +112,24 @@ float pristineGrid( vec2 uv, float lineWidth ) {
 }
 `
 
-// After color_fragment: tint the glass with the slow noise.
+// After color_fragment: read the noise once (the glass colour itself stays the palette's).
 const COLOR_MOD = /* glsl */ `
 vec4 tNoiseBig = texture2D( uNoise, vTerrainWorld.xz / 520.0 );
 vec4 tNoiseMid = texture2D( uNoise, vTerrainWorld.xz / 96.0 + 0.37 );
-vec4 tNoiseFine = texture2D( uNoise, vTerrainWorld.xz / 11.0 );
 float tPlate = texture2D( uNoise, vTerrainWorld.xz / 64.0 ).a;
 float tVar = tNoiseBig.r * 0.6 + tNoiseMid.g * 0.4;
-diffuseColor.rgb = mix( diffuseColor.rgb, uSheen, smoothstep( 0.35, 0.85, tVar ) * 0.55 + tPlate * 0.18 );
 `
 
-// After roughnessmap_fragment: glossy, but not one mirror.
-const ROUGHNESS_MOD = /* glsl */ `
-roughnessFactor = clamp( roughnessFactor * mix( 0.93, 1.1, tNoiseMid.g ), 0.1, 0.9 );
-`
-
-// After emissivemap_fragment (the view-space normal exists now): grid + sheen.
+// After emissivemap_fragment: everything the glass shows, painted as light.
 const EMISSIVE_MOD = /* glsl */ `
 {
   float camDist = distance( vTerrainWorld, cameraPosition );
   float carDist = distance( vTerrainWorld.xz, uCarPos.xz );
+  vec3 tN = normalize( vTerrainNormal );
+  vec3 tV = normalize( cameraPosition - vTerrainWorld );
+  float nv = clamp( dot( tN, tV ), 0.0, 1.0 );
 
+  // ---- 1. the grid ----
   // Lines 14 cm (minor) and 20 cm (major) wide: fine neon threads, not bands.
   float minor = pristineGrid( vTerrainWorld.xz / 10.0, 0.014 );
   float major = pristineGrid( vTerrainWorld.xz / 50.0, 0.004 );
@@ -102,28 +138,85 @@ const EMISSIVE_MOD = /* glsl */ `
   minor *= 1.0 - smoothstep( 160.0, 420.0, camDist );
   major *= 1.0 - smoothstep( 1200.0, 2600.0, camDist );
   // On steep far faces (the edge ridge) the grid goes early: mountains, not a wire curtain.
-  float steepFar = ( 1.0 - smoothstep( 0.55, 0.85, normalize( vTerrainNormal ).y ) ) * smoothstep( 300.0, 650.0, camDist );
+  float flatness = smoothstep( 0.55, 0.85, tN.y );
+  float steepFar = ( 1.0 - flatness ) * smoothstep( 300.0, 650.0, camDist );
   minor *= 1.0 - steepFar;
   major *= 1.0 - steepFar * 0.9;
   float lines = max( minor * 0.7, major );
-
   // T1 close to the car, T0 by 60 m (constitution: the grid is dim).
   float tier = mix( ${GLOW.T1.toFixed(3)}, ${GLOW.T0.toFixed(3)}, smoothstep( 12.0, 60.0, carDist ) );
   // Faint shimmer travelling through the grid, slow enough to read as life, not flicker.
   float pulse = 0.88 + 0.12 * sin( uTime * 0.6 - carDist * 0.035 );
   // A little less grid on steep faces, where xz lines would stretch.
-  float flatness = smoothstep( 0.55, 0.85, normalize( vTerrainNormal ).y );
   totalEmissiveRadiance += uGridColor * lines * tier * pulse * mix( 0.3, 1.0, flatness );
-  // Warm rim light on far slopes that face the sun, only while the sun is up or glowing.
-  vec2 tSunH = normalize( uSunDir.xz + vec2( 1e-5 ) );
-  vec3 tN = normalize( vTerrainNormal );
-  float sunFacing = max( dot( normalize( tN.xz + vec2( 1e-5 ) ), tSunH ), 0.0 ) * ( 1.0 - tN.y );
-  totalEmissiveRadiance += uSkySunGlow * pow( sunFacing, 1.5 ) * smoothstep( 200.0, 700.0, camDist ) * 0.35;
 
-  // Sheen: a violet rim at glancing angles. Stronger at night, when it carries the form.
-  vec3 tViewDir = normalize( vViewPosition );
-  float fres = pow( 1.0 - clamp( dot( normal, tViewDir ), 0.0, 1.0 ), 4.0 );
-  totalEmissiveRadiance += uSheen * fres * mix( 0.35, 0.9, uNight ) * ( 0.75 + 0.5 * tVar );
+  // ---- 2. sky fill: each slope catches the sky low over the horizon it faces ----
+  // The zenith is nearly black at sundown; the light that shapes a hill is the
+  // glowing band low down. Its colour here is a cheap two-colour stand-in for
+  // the full sky (skyColor() is the dearest thing in this shader): the violet
+  // horizon away from the sun, pink-and-glow toward it, mostly mixed with the
+  // sky's average so the warm side never turns hot.
+  float steep = length( tN.xz );
+  vec3 faceDir = vec3( tN.x, 0.0, tN.z ) / max( steep, 1e-4 );
+  float faceSun = skySunward( faceDir );
+  vec3 coolSide = uSkyHorizonAnti;
+  vec3 warmSide = mix( uSkyHorizon, uSkyMid, 0.5 ) + uSkySunGlow * 0.12;
+  vec3 faceSky = mix( mix( coolSide, warmSide, faceSun * faceSun ), uSkyFill, 0.6 );
+  vec3 fillCol = mix( uSkyFill, faceSky, smoothstep( 0.03, 0.3, steep ) );
+  // How much it catches: little on flat glass, more the steeper the slope;
+  // and less when looked straight down on (an aerial view stays dark glass,
+  // not lifted, muddy ground), full strength from moderate angles on, which is
+  // where hillsides are seen. At grazing angles the reflection takes over.
+  float viewCatch = 0.4 + 0.6 * smoothstep( 0.0, 0.65, 1.0 - nv );
+  float catchAmt = ( 0.12 + 0.88 * smoothstep( 0.04, 0.32, steep ) ) * viewCatch;
+  // A faint drift of tone through the glass, a tenth either way: too gentle to
+  // read as blotches (the old mud was a swing of over half, on warm light).
+  totalEmissiveRadiance += fillCol * catchAmt * ${FILL.toFixed(3)} * ( 0.9 + 0.2 * tVar );
+
+  // ---- 3. the sky mirrored in the glass, strongest seen side-on ----
+  vec3 tR = reflect( -tV, tN );
+  float fres = 0.04 + 0.96 * pow( 1.0 - nv, 5.0 );
+  // The glass is not a perfect mirror: a rough reflection averages a wide patch
+  // of sky, mostly the darker sky above the glowing horizon band. Looking a
+  // little above the mirror direction stands in for that blur (and rays
+  // reflected below the horizon would only see far ground anyway).
+  vec3 reflDir = normalize( vec3( tR.x, max( tR.y, 0.0 ) + 0.14, tR.z ) );
+  totalEmissiveRadiance += skyColor( reflDir ) * fres * ${REFLECT.toFixed(3)};
+
+  // ---- 4. the sun's one soft streak ----
+  // Narrow across (the reflected ray must point at the sun's compass
+  // direction), long along (it may pass well below or above the sun), so it
+  // stretches over the glass straight toward the eye. No noise in it.
+  vec2 rH = tR.xz / max( length( tR.xz ), 1e-4 );
+  vec2 sH = uSunDir.xz / max( length( uSunDir.xz ), 1e-4 );
+  float across = 1.0 - dot( rH, sH );
+  float along = tR.y - max( uSunDir.y, 0.0 );
+  float streak = exp( -across * 600.0 ) * exp( -along * along * 14.0 ) * step( 0.0, tR.y + 0.02 );
+  // Only seen side-on (Fresnel): from above, mounds facing the sun stay dark glass.
+  totalEmissiveRadiance += uSunStreak * streak * fres * ${STREAK.toFixed(3)};
+
+  // ---- 5. key rim: faces leaning toward the sun (planet at night) light up side-on ----
+  // Only real slopes (not every little ripple) and only well side-on, so it
+  // reads as a lit edge, not a smear.
+  vec2 kH = uKeyDir.xz / max( length( uKeyDir.xz ), 1e-4 );
+  float lean = smoothstep( 0.12, 0.5, dot( tN.xz, kH ) );
+  float sideOn = pow( 1.0 - nv, 4.0 );
+  totalEmissiveRadiance += uRimColor * lean * sideOn * ${RIM.toFixed(3)};
+  // At night, the planet's light lies on the glass as one broad soft glint
+  // (moonlight on still water). No noise in it. At sundown the sun streak
+  // above does this job, so the glint fades in with the night.
+  float glint = pow( max( dot( tR, uKeyDir ), 0.0 ), 10.0 ) * ( 0.3 + 0.7 * fres );
+  totalEmissiveRadiance += uKeyColor * glint * uNight * ${GLINT.toFixed(3)};
+  // Plus a faint wash on faces turned toward it, so the sun's side of every hill reads warmer.
+  float wash = smoothstep( -0.1, 0.9, dot( tN, uKeyDir ) );
+  totalEmissiveRadiance += uKeyColor * wash * viewCatch * ${WASH.toFixed(3)};
+
+  // ---- 6. violet sheen at glancing angles, stronger at night when it carries the form ----
+  // (plus a faint floor of it everywhere: the glass's own violet, even looked straight down on)
+  float sheen = 0.06 + pow( 1.0 - nv, 4.0 );
+  // Boosted at sundown (the sky is bright, the palette sheen is dark); back to
+  // the plain sheen at night, so the night ground stays dark glass.
+  totalEmissiveRadiance += uSheen * sheen * mix( ${SHEEN.toFixed(3)}, 1.0, uNight ) * ( 0.7 + 0.5 * tVar + 0.25 * tPlate );
 }
 `
 
@@ -168,16 +261,15 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
     uHazeTop: { value: Math.max(hazeTop, hazeBase + 1) },
   }
 
-  // Physical (not Standard) only for specularIntensity: dark glass reflects,
-  // but at half the strength of clear glass, so the warm sky does not turn the
-  // whole ground to bronze. No clearcoat or transmission: they cost too much.
+  // Physical (not Standard) only for specularIntensity: at 0 the material's
+  // own highlight and environment reflection are off (the shader paints the
+  // glass's reflections itself, see the header). No clearcoat or transmission.
   const material = new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(PALETTE.ground),
-    // Broad enough that the low sun paints one soft streak across the glass, not foil.
-    roughness: 0.55,
+    roughness: 0.6,
     metalness: 0.0,
-    specularIntensity: 0.3,
-    envMapIntensity: 0.8,
+    specularIntensity: 0,
+    envMapIntensity: 0,
     // Our own haze replaces three's fog (it melts into the sky instead of a flat colour).
     fog: false,
   })
@@ -190,12 +282,11 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${FRAGMENT_PARS}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\n${COLOR_MOD}`)
-      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${ROUGHNESS_MOD}`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${EMISSIVE_MOD}`)
       .replace('#include <opaque_fragment>', `${HAZE_MOD}\n#include <opaque_fragment>`)
   }
   // One program for every terrain chunk, and a stable cache key.
-  material.customProgramCacheKey = () => 'sr2-terrain-v4'
+  material.customProgramCacheKey = () => 'sr2-terrain-v5'
 
   return { material, uniforms }
 }

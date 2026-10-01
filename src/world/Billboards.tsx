@@ -10,7 +10,9 @@
 //      into any of them - the constitution's consistency rule);
 //    - a floating hologram panel above it showing one of the ads
 //      from billboardArt.ts, with moving scanlines, a slow bright
-//      sweep, a gentle flicker, and a fade when seen edge-on.
+//      sweep, a gentle flicker, and a fade when seen edge-on. It is
+//      light, so it shows from both sides, and from behind the art
+//      is flipped so the words never read backwards.
 //
 //  All the poles are ONE instanced draw; all the panels are another.
 //  <BillboardColliders /> (mounted by <WorldPhysics /> inside the
@@ -74,13 +76,20 @@ varying float vSeed;
 varying float vFacing;
 void main() {
   vUv = uv;
+  mat4 toWorld = modelMatrix * instanceMatrix;
+  vec4 w = toWorld * vec4( position, 1.0 );
+  vec3 n = normalize( mat3( toWorld ) * vec3( 0.0, 0.0, 1.0 ) );
+  // A hologram is light, so it is seen from both sides. From behind, flip the
+  // art left-to-right so the words still read the right way round. Decided
+  // once per panel (from its centre), so a panel never shows half of each.
+  vec3 centre = ( toWorld * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+  float behind = step( dot( n, cameraPosition - centre ), 0.0 );
+  float u = mix( uv.x, 1.0 - uv.x, behind );
   float col = mod( aCell, ${ATLAS_COLS.toFixed(1)} );
   float row = floor( aCell / ${ATLAS_COLS.toFixed(1)} );
   // Canvas row 0 is at the top of the texture (flipY): count rows down from v = 1.
-  vAtlasUv = vec2( ( col + uv.x ) / ${ATLAS_COLS.toFixed(1)}, 1.0 - ( row + 1.0 - uv.y ) / ${ATLAS_ROWS.toFixed(1)} );
+  vAtlasUv = vec2( ( col + u ) / ${ATLAS_COLS.toFixed(1)}, 1.0 - ( row + 1.0 - uv.y ) / ${ATLAS_ROWS.toFixed(1)} );
   vSeed = aSeed;
-  vec4 w = modelMatrix * instanceMatrix * vec4( position, 1.0 );
-  vec3 n = normalize( mat3( modelMatrix * instanceMatrix ) * vec3( 0.0, 0.0, 1.0 ) );
   vFacing = abs( dot( n, normalize( cameraPosition - w.xyz ) ) );
   gl_Position = projectionMatrix * viewMatrix * w;
 }

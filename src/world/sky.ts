@@ -58,6 +58,7 @@ const C = {
   sunTop: new THREE.Color(PALETTE.sunTop),
   sunMid: new THREE.Color(PALETTE.sunMid),
   sunBottom: new THREE.Color(PALETTE.sunBottom),
+  planet: new THREE.Color(PALETTE.planet),
   planetRing: new THREE.Color(PALETTE.planetRing),
   ground: new THREE.Color(PALETTE.ground),
   groundSheen: new THREE.Color(PALETTE.groundSheen),
@@ -67,10 +68,21 @@ const C = {
 
 /**
  * The side of the sky facing away from the sun stays violet (constitution:
- * warm only near the sun). At sundown it is the mid-sky violet lifted a
- * little toward the horizon pink; at night it is the night horizon.
+ * warm only near the sun). At sundown it is the mid-sky purple cooled toward
+ * the planet's blue-violet and lifted a touch toward the ring's lavender, so
+ * the horizon there is lighter than the sky above it (a gradient with life in
+ * it) but clearly cooler than the pink on the sun side. At night it is the
+ * night horizon.
  */
-const ANTI_DUSK = C.midDusk.clone().lerp(C.horizonDusk, 0.22)
+const ANTI_DUSK = C.midDusk.clone().lerp(C.planet, 0.45).lerp(C.planetRing, 0.08)
+/**
+ * The soft band lying above the horizon opposite the sun (the real sky's
+ * "Belt of Venus"). Real ones are pink; ours is lavender, because the
+ * constitution keeps the anti-sun side violet and the pink for the sun.
+ */
+const ANTI_BELT = ANTI_DUSK.clone().lerp(C.planetRing, 0.3)
+/** The dusky band right on the horizon opposite the sun: the shadow of the world itself. */
+const EARTH_SHADOW = C.midDusk.clone().lerp(C.zenithDusk, 0.6).lerp(C.planet, 0.25)
 
 // ---------------------------------------------------------------- shared shader uniforms
 
@@ -100,6 +112,19 @@ export const skyUniforms = {
   uCloudDark: { value: new THREE.Color() },
   /** 1 while the sun disc is above the horizon, fading as the last of it sinks. */
   uSunVisible: { value: 1 },
+  /**
+   * The key light (warm sun at sundown, cool planet-light at night) for shaders
+   * that paint their own light: direction toward it, and its colour scaled so
+   * the low sun at sundown is 1 (night planet-light is much weaker).
+   */
+  uKeyDir: { value: new THREE.Vector3(0, 0.3, -1) },
+  uKeyColor: { value: new THREE.Color() },
+  /** The sun's warm streak colour on wet or glassy ground (0 once the disc has gone). */
+  uSunStreak: { value: new THREE.Color() },
+  /** The sky's average glow low over the horizon (mostly the violet side): what flat glass catches. */
+  uSkyFill: { value: new THREE.Color() },
+  /** Rim light on terrain from the key light's side: sunset pink-orange, then cool planet-light. */
+  uRimColor: { value: new THREE.Color() },
   /** Haze density per metre for the world's own shaders (Lighting sets it from the camera height). */
   uFogDensity: { value: 0.00044 },
   /** Seconds since the world mounted (animation). */
@@ -211,7 +236,6 @@ function skylineElevationDeg(track: TrackRuntime, azimuth: number): number {
 const _a = new THREE.Vector3()
 const _b = new THREE.Vector3()
 const _up = new THREE.Vector3(0, 1, 0)
-const _col = new THREE.Color()
 const _warmKey = new THREE.Color()
 
 /** Work out this frame's sky from the clock and publish it. Call once per frame, first. */
@@ -246,16 +270,17 @@ export function updateSky(elapsed: number): void {
   u.uSkyHorizon.value.copy(C.horizonDusk).lerp(C.horizonNight, smoothstep(0.1, 0.78, t))
   u.uSkyHorizonAnti.value.copy(ANTI_DUSK).lerp(C.horizonNight, b)
   u.uSkySunGlow.value.copy(C.sunGlow).multiplyScalar(sky.afterglow)
-  // The haze band: the track's haze accent, lifted toward the horizon colour at sundown.
-  _col.copy(u.uSkyHorizon.value).lerp(u.uSkyHorizonAnti.value, 0.5)
-  u.uSkyHaze.value.copy(sky.haze).lerp(_col, 0.55 * (1 - b) + 0.25)
+  // The haze band: the track's haze accent, lifted toward the anti-sun horizon.
+  // skyColor() warms it toward the sun itself, so the band is violet away from
+  // the sun and only turns pink near it.
+  u.uSkyHaze.value.copy(sky.haze).lerp(u.uSkyHorizonAnti.value, 0.45 * (1 - b) + 0.25)
   u.uSunDir.value.copy(sky.sunDir)
   u.uTime.value = elapsed
   u.uSunVisible.value = sky.sunVisible
 
-  // ---- the Belt of Venus (opposite the sun), fading with the afterglow ----
-  u.uSkyBelt.value.copy(C.horizonDusk).lerp(C.midDusk, 0.42)
-  u.uSkyEarthShadow.value.copy(C.midDusk).lerp(C.zenithDusk, 0.65)
+  // ---- the lavender belt and the world's shadow (opposite the sun), fading with the afterglow ----
+  u.uSkyBelt.value.copy(ANTI_BELT)
+  u.uSkyEarthShadow.value.copy(EARTH_SHADOW)
   u.uSkyBeltAmt.value = sky.afterglow
 
   // ---- the city's glow lifting the night horizon ----
@@ -283,6 +308,16 @@ export function updateSky(elapsed: number): void {
   const sunPart = 3.4 * (1 - smoothstep(0.22, 0.5, t))
   const planetPart = 0.46 * smoothstep(0.35, 0.75, t)
   sky.keyIntensity = Math.max(0.4, sunPart + planetPart)
+
+  // Shared with shaders that paint their own light (the terrain glass).
+  u.uKeyDir.value.copy(sky.keyDir)
+  u.uKeyColor.value.copy(sky.keyColor).multiplyScalar(sky.keyIntensity / 3.4)
+  // The rim leans to the sun's pink while the sun is up (synthwave warmth, not desert orange).
+  u.uRimColor.value.copy(sky.keyColor).lerp(C.sunBottom, 0.45 * (1 - toPlanet)).multiplyScalar(sky.keyIntensity / 3.4)
+  // Violet, not pink: the anti-sun horizon and the mid sky.
+  u.uSkyFill.value.copy(u.uSkyHorizonAnti.value).lerp(u.uSkyMid.value, 0.25)
+  // The sun's streak on the glass: pink-orange, gone with the disc.
+  u.uSunStreak.value.copy(C.sunBottom).lerp(C.sunGlow, 0.55).multiplyScalar(sky.sunVisible * (0.35 + 0.65 * sky.afterglow))
 
   // ---- hemisphere fill: sky above, dark glass below ----
   sky.hemiSky.copy(u.uSkyMid.value).lerp(u.uSkyHorizonAnti.value, 0.35)
