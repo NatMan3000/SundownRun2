@@ -518,7 +518,36 @@ export interface RoadsideInput {
   insideWorld: (x: number, z: number, margin: number) => boolean
   /** s ranges where posts must not go (ramps, a margin round loops and wall rides). */
   noPosts: { s0: number; s1: number }[]
+  /**
+   * s ranges where cars fly or crowd (round loops and wall rides, ramps and their
+   * landings, crests that throw you): no billboard beside any road in them.
+   */
+  noBillboards: { s0: number; s1: number }[]
+  /** True where a billboard must not stand off the road (a big-air run's flight path). */
+  keepOut: (x: number, z: number) => boolean
   seed: number
+}
+
+/** Is any road sample within `r` metres of (x, z) in one of the s ranges? */
+function nearRanges(S: TrackSamples, hash: SampleHash, x: number, z: number, r: number, ranges: { s0: number; s1: number }[], L: number): boolean {
+  if (!ranges.length) return false
+  const c0x = Math.floor((x - r - hash.minX) / hash.cell)
+  const c1x = Math.floor((x + r - hash.minX) / hash.cell)
+  const c0z = Math.floor((z - r - hash.minZ) / hash.cell)
+  const c1z = Math.floor((z + r - hash.minZ) / hash.cell)
+  const r2 = r * r
+  for (let gz = Math.max(0, c0z); gz <= Math.min(hash.nz - 1, c1z); gz++) {
+    for (let gx = Math.max(0, c0x); gx <= Math.min(hash.nx - 1, c1x); gx++) {
+      const c = gz * hash.nx + gx
+      for (let k = hash.start[c], e = hash.start[c + 1]; k < e; k++) {
+        const i = hash.items[k]
+        const dx = S.px[i] - x
+        const dz = S.pz[i] - z
+        if (dx * dx + dz * dz < r2 && inRanges(i * S.ds, ranges, L)) return true
+      }
+    }
+  }
+  return false
 }
 
 /** Smashable posts along both edges, every `spacing` metres, ~3.5 m outside the edge. */
@@ -560,7 +589,11 @@ export function makePosts(inp: RoadsideInput): GroundPose[] {
   return out
 }
 
-/** Billboard spots: set back 25-45 m on the outside of bends, facing the road. */
+/**
+ * Billboard spots: set back 14-30 m from the edge on the outside of bends, facing the
+ * road, close enough to line the run. They're solid poles, so never where cars fly or
+ * crowd (see RoadsideInput.noBillboards and keepOut).
+ */
 export function makeBillboards(inp: RoadsideInput): GroundPose[] {
   const want = inp.file.environment.roadside.billboards
   const out: GroundPose[] = []
@@ -587,12 +620,13 @@ export function makeBillboards(inp: RoadsideInput): GroundPose[] {
     const rl = Math.hypot(S.rx[i], S.rz[i]) || 1
     const rxh = S.rx[i] / rl
     const rzh = S.rz[i] / rl
-    const back = S.halfWidth[i] + 25 + rand() * 20
+    const back = S.halfWidth[i] + 14 + rand() * 16
     const x = S.px[i] + rxh * back * side
     const z = S.pz[i] + rzh * back * side
     if (!inp.insideWorld(x, z, 30)) return false
-    if (edgeClearance(S, inp.hash, x, z, 40) < 22) return false
-    for (const b of out) if (Math.hypot(b.x - x, b.z - z) < 60) return false
+    if (edgeClearance(S, inp.hash, x, z, 40) < 12) return false
+    for (const b of out) if (Math.hypot(b.x - x, b.z - z) < 45) return false
+    if (inp.keepOut(x, z) || nearRanges(S, inp.hash, x, z, 40, inp.noBillboards, L)) return false
     const y = inp.terrainHeight(x, z)
     const gx = inp.terrainHeight(x + 2, z) - inp.terrainHeight(x - 2, z)
     const gz = inp.terrainHeight(x, z + 2) - inp.terrainHeight(x, z - 2)
@@ -607,12 +641,13 @@ export function makeBillboards(inp: RoadsideInput): GroundPose[] {
     if (Math.abs(kWide[i]) < 1 / 600) break
     tryAt(i, kWide[i] > 0 ? -1 : 1)
   }
-  // Then straights, alternating sides, until we have enough.
+  // Then anywhere left (straights, and the inside of bends whose outside is blocked by
+  // the edge mountains on a small world), alternating sides, until we have enough.
   let side = 1
   for (let pass = 0; pass < 3 && out.length < want; pass++) {
     for (let k = 0; k < cand.length && out.length < want; k += 1) {
       const i = cand[(k * 7 + pass * 3) % cand.length]
-      if (tryAt(i, side)) side = -side
+      if (tryAt(i, side) || tryAt(i, -side)) side = -side
     }
   }
   return out

@@ -219,7 +219,7 @@ Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corn
 
 **city**: `azimuthDeg` (default: the sun's), `arcDeg` (120), `distance` (2.2 x size), `density` 0-1 (0.7). `false` means no city.
 
-**roadside**: `posts` is `{ spacing }` (default 45 m: smashable neon posts along both edges) or `false`. `billboards` is the most holographic billboards to place (default 10). The game picks the spots itself, 25-45 m out on the outside of bends, facing the road and clear of other road. A small or tightly packed track may have room for fewer, and the checker then prints a warning with the number placed.
+**roadside**: `posts` is `{ spacing }` (default 45 m: smashable neon posts along both edges) or `false`. `billboards` is the most holographic billboards to place (default 10). The game picks the spots itself, 14-30 m out from the edge, on the outside of bends first, facing the road and clear of other road. They are solid, so none go where cars fly or bunch up: round loops and wall rides, ramps and the 150 m they throw you over, crests that go light and the 150 m after them, and along a big-air run. A small or tightly packed track may have room for fewer, and the checker then prints a warning with the number placed.
 
 **music**: `mood` is `"cruise"`, `"drive"` (default), `"race"` or `"hyper"`. `bpm` defaults from the mood (92 / 108 / 122 / 132).
 

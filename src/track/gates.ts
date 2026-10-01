@@ -648,7 +648,7 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
     }
     const wantBb = file.environment.roadside.billboards
     if (t.roadside.billboards.length < wantBb) {
-      warn('environment.roadside.billboards', `asked for ${wantBb}, placed ${t.roadside.billboards.length}: there are only that many clear spots 25-45 m outside the bends (fewer is fine; widen the world or the bends for more)`)
+      warn('environment.roadside.billboards', `asked for ${wantBb}, placed ${t.roadside.billboards.length}: there are only that many clear spots 14-30 m from the road, away from loops, wall rides, ramp and crest landings and big-air runs (fewer is fine; a bigger world or longer road has room for more)`)
     }
   }
   return gates

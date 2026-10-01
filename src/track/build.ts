@@ -23,6 +23,7 @@ import * as THREE from 'three'
 import type { ResolvedTrackFile, BoostPiece, RampPiece, WallRidePiece } from './schema'
 import type { BoostZone, GroundPose, PropAnchor, ResolvedPiece, TrackFrame, TrackRuntime, TrackWorldInfo } from './types'
 import {
+  BIGAIR_LAYOUT,
   flattenToRoad,
   gridHeight,
   makeNaturalTerrain,
@@ -34,6 +35,7 @@ import {
   type NaturalTerrain,
 } from './terrain'
 import { buildCenterline, WALL_RAMP, type LoopInfo } from './road'
+import { SURFACE_CODE } from './types'
 import { buildRibbonMeshes } from './ribbon'
 import { buildRampMeshes, type RampSolid } from './ramps'
 import { buildSampleHash, makeRoadQueries } from './query'
@@ -48,8 +50,9 @@ import { hashString } from './noise'
  *   1: the first builder.
  *   2: loops run straight into the mouth and ease back over 180 m after (track2, round 1).
  *   3: the bank flattens over a loop's run-in and landing; a loop on a curve drifts to its inside.
+ *   4: billboards closer to the road (14-30 m) and kept out of every place cars fly or crowd.
  */
-export const BUILDER_VERSION = 3
+export const BUILDER_VERSION = 4
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
@@ -277,7 +280,45 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   for (const r of rampSpots) noPosts.push({ s0: q.wrapS(r.s - 25), s1: q.wrapS(r.s + 25) })
   // Keep the start grid clear too.
   noPosts.push({ s0: q.wrapS(-GRID_FIRST - GRID_ROW * 7), s1: 12 })
-  const roadsideIn = { file, c, hash, terrainHeight, insideWorld, noPosts, seed: env.seed }
+  // Billboards: never where cars fly or crowd. Round loops and wall rides, ramps and the
+  // 150 m they throw you over, crests that go light under ~220 km/h (vertical radius
+  // under 380 m) and the 150 m after them, and every big-air run's flight path.
+  const noBillboards: { s0: number; s1: number }[] = []
+  for (const l of c.loops) noBillboards.push({ s0: q.wrapS(l.s0 - 60), s1: q.wrapS(l.s1 + 60) })
+  for (const w of c.walls) noBillboards.push({ s0: q.wrapS(w.s0 - 30), s1: q.wrapS(w.s1 + 30) })
+  for (const r of rampSpots) noBillboards.push({ s0: q.wrapS(r.s - 20), s1: q.wrapS(r.s + 150) })
+  {
+    const W = Math.max(1, Math.round(6 / S.ds))
+    let lastS = -Infinity
+    for (let i = 0; i < S.count; i++) {
+      if (S.surface[i] !== SURFACE_CODE.road) continue
+      const a = (i - W + S.count) % S.count
+      const b = (i + W) % S.count
+      const ga = S.ty[a] / (Math.hypot(S.tx[a], S.tz[a]) || 1)
+      const gb = S.ty[b] / (Math.hypot(S.tx[b], S.tz[b]) || 1)
+      const kv = (gb - ga) / (2 * W * S.ds)
+      if (kv < -1 / 380 && i * S.ds > lastS + 20) {
+        noBillboards.push({ s0: q.wrapS(i * S.ds - 10), s1: q.wrapS(i * S.ds + 150) })
+        lastS = i * S.ds
+      }
+    }
+  }
+  const bigAirRuns = env.terrain.features.filter((f) => f.type === 'bigAir')
+  const keepOut = (x: number, z: number): boolean => {
+    for (const f of bigAirRuns) {
+      if (f.type !== 'bigAir') continue
+      const k = f.scale ?? 1
+      const hd = (f.headingDeg * Math.PI) / 180
+      const ax = Math.sin(hd)
+      const az = -Math.cos(hd)
+      const u = (x - f.x) * ax + (z - f.z) * az
+      const v = -(x - f.x) * az + (z - f.z) * ax
+      // From the kicker's foot to well past the furthest landing seen (u ~410 at 200 km/h).
+      if (u > BIGAIR_LAYOUT.kickerFootU * k - 20 && u < (BIGAIR_LAYOUT.kickerCrestU + 300) * k && Math.abs(v) < 60 * k) return true
+    }
+    return false
+  }
+  const roadsideIn = { file, c, hash, terrainHeight, insideWorld, noPosts, noBillboards, keepOut, seed: env.seed }
   const posts = makePosts(roadsideIn)
   const billboards = makeBillboards(roadsideIn)
 
