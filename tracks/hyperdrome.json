@@ -262,8 +262,8 @@
       "sunAzimuthDeg": 90
     },
     "palette": {
-      "edge": "#19e3ff",
-      "edgeAlt": "#ff2bd6"
+      "edge": "#ff2bd6",
+      "edgeAlt": "#19e3ff"
     },
     "city": {
       "density": 0.85
