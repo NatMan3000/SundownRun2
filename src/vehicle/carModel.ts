@@ -268,17 +268,15 @@ if (uSunWarm.r + uSunWarm.g + uSunWarm.b > 0.001) {
   float ndv = clamp(dot(normal, eyeV), 0.0, 1.0);
   float paintLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
   float dark = 1.0 - smoothstep(0.04, 0.45, paintLuma);
-  float wash = wrap * wrap * (0.015 + 0.07 * dark);
-  // the wash takes on most of the paint's own hue (navy warms to violet, plum to
-  // magenta, never all to maroon), so every garage paint still reads as itself;
-  // sheen and rim are the light's colour
+  float wash = wrap * wrap * (0.015 + 0.09 * dark);
+  // the wash takes on three quarters of the paint's own hue: a navy car warms on
+  // its sun side without turning maroon, a plum car stays plum, so every garage
+  // paint still reads as itself; sheen and rim are the light's colour
   vec3 hue = diffuseColor.rgb / max(max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b)), 1e-4);
-  vec3 washTint = hue;
+  vec3 washTint = mix(vec3(1.0), hue, 0.75);
   float sheen = pow(clamp(dot(reflect(-eyeV, normal), sunV), 0.0, 1.0), 6.0) * (0.06 + 0.3 * pow(1.0 - ndv, 3.0));
   float rim = pow(1.0 - ndv, 3.0) * smoothstep(0.0, 0.6, ndl) * 0.28;
-  // the wash is the paint's own hue in half-warm light; sheen and rim are the light itself
-  vec3 washLight = mix(uSunWarm, vec3(dot(uSunWarm, vec3(0.2126, 0.7152, 0.0722)) * 2.2), 0.5);
-  totalEmissiveRadiance += washLight * washTint * wash + uSunWarm * (sheen + rim);
+  totalEmissiveRadiance += uSunWarm * (washTint * wash + sheen + rim);
 }
 `
 
@@ -309,7 +307,7 @@ function makePaintMaterial(paint: string): { mat: THREE.MeshPhysicalMaterial; ac
       .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( mix( diffuse, uAccent, vAccent ), opacity );')
       .replace('#include <emissivemap_fragment>', paintSunFragment)
   }
-  mat.customProgramCacheKey = () => 'sr2-car-paint-sun-v5'
+  mat.customProgramCacheKey = () => 'sr2-car-paint-sun-v6'
   return { mat: keepPatchOnClone(mat), accent }
 }
 
