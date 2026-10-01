@@ -146,3 +146,4 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 - 2026-10-01: contract table gains gripTable.ts. Tone mapping is Khronos Neutral (picked by A/B against ACES: Neutral keeps the sun gradient). One driving brain: the demo autopilot uses the Ai Driver.
 - 2026-10-01: CarState gains `lastLapDirty` and `lastLapMs`, written by each car's lap tracker in the same step as `lap++`: the one source for lap validity (race results never count a dirty lap as a best). Store gains `playerGridSlot` and `mapOpen`.
 - 2026-10-02: `setTrackParam` (store and `track/current.ts`) takes `null`: back to the track file's default and the saved value is forgotten, so a later change to the file's default still wins. The `track.param` event carries the value actually built.
+- 2026-10-02: `CarAnchors` gains an optional `bonnet` point (each body's bonnet camera mount), so a body can cover the physics box without swallowing the camera.

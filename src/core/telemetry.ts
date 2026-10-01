@@ -88,6 +88,8 @@ export interface CarAnchors {
   underglow: { halfWidth: number; halfLength: number; y: number }
   /** Wheel contact points (for sparks / skid fx), local space at rest. */
   wheels: THREE.Vector3[]
+  /** Bonnet camera mount, car space: on top of this body's bonnet, just behind the windscreen base. Absent = the camera rig's default mount. */
+  bonnet?: THREE.Vector3
 }
 
 export type CarKind = 'player' | 'ai' | 'remote' | 'ghost'
