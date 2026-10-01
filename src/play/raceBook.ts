@@ -179,11 +179,18 @@ export function updateRaceBook(track: TrackRuntime, now: number, goAt: number, d
 
     if (car.lap > r.lapsDone) {
       r.lapsDone = car.lap
-      const lapMs = r.isPlayer && r.pendingMs !== null ? r.pendingMs : now - r.lapStartAt
+      // Only a clean lap can be a best lap (same rule as records). The car's own
+      // lap tracker writes the verdict and the exact time onto its CarState
+      // (lastLapDirty / lastLapMs): one source of truth for every car. Until a
+      // tracker writes them (lastLapMs still null), fall back to the event / rule.
+      const fromCar = car.lastLapMs !== null
+      const lapMs = fromCar ? car.lastLapMs! : r.isPlayer && r.pendingMs !== null ? r.pendingMs : now - r.lapStartAt
       r.lapStartAt = now
-      // Only a clean lap can be a best lap (same rule as records). The player's
-      // flag is the vehicle's own verdict; an Ai's is play's copy of the rule.
-      const dirty = r.isPlayer ? (r.pendingDirty ?? r.offRoadMs > DIRTY_GRACE_MS) : r.offRoadMs > DIRTY_GRACE_MS
+      const dirty = fromCar
+        ? car.lastLapDirty
+        : r.isPlayer
+          ? (r.pendingDirty ?? r.offRoadMs > DIRTY_GRACE_MS)
+          : r.offRoadMs > DIRTY_GRACE_MS
       r.offRoadMs = 0
       r.pendingDirty = null
       r.pendingMs = null
