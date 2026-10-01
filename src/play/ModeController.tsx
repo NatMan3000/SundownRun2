@@ -28,7 +28,7 @@ import { useGame, getGame } from '../core/store'
 import type { GameState } from '../core/store'
 import { getSettings, getDefaults } from '../core/settings'
 import { getCar } from '../core/telemetry'
-import { emit, on } from '../core/events'
+import { emit } from '../core/events'
 import { getRecord, offerRecord } from '../core/records'
 import { showResults, startSession } from '../core/session'
 import { propsSignal } from '../core/propsSignal'
@@ -366,17 +366,7 @@ export function ModeController() {
     }
     check(getGame())
     const unsub = useGame.subscribe(check)
-    // The vehicle's lap tracker says whether the player's lap was clean; hold it
-    // for the race book, which sees the lap land a frame later.
-    const offLap = on('lap.complete', (e) => {
-      const me = racerById('player')
-      if (me) {
-        me.pendingDirty = e.dirty
-        me.pendingMs = e.ms
-      }
-    })
     return () => {
-      offLap()
       unsub()
       teardownFlow(true)
     }
