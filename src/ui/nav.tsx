@@ -278,14 +278,17 @@ function pickInDirection(r: ScreenReg, fromId: string, dir: Dir): Item | null {
     if (dir === 'down' || dir === 'up') {
       primary = dir === 'down' ? bcy - acy : acy - bcy
       if (primary <= 2) continue
-      // must actually be below / above, not just a taller neighbour
-      if (dir === 'down' ? b.top < a.top + 2 : b.bottom > a.bottom - 2) continue
+      // Must really be below / above: a same-row neighbour that only looks a
+      // few px lower (the focused card lifts itself) doesn't count.
+      const minSep = Math.min(a.height, b.height) * 0.5
+      if (dir === 'down' ? b.top < a.top + minSep : b.bottom > a.bottom - minSep) continue
       gap = Math.max(0, b.left - a.right, a.left - b.right)
       off = Math.abs(bcx - acx)
     } else {
       primary = dir === 'right' ? bcx - acx : acx - bcx
       if (primary <= 2) continue
-      if (dir === 'right' ? b.left < a.left + 2 : b.right > a.right - 2) continue
+      const minSep = Math.min(a.width, b.width) * 0.5
+      if (dir === 'right' ? b.left < a.left + minSep : b.right > a.right - minSep) continue
       gap = Math.max(0, b.top - a.bottom, a.top - b.bottom)
       off = Math.abs(bcy - acy)
     }

@@ -209,18 +209,20 @@ export function SettingsScreen() {
   const fromPause = useUi((s) => s.stack[0] === 'pause')
   const mp = useGame((s) => s.multiplayer)
 
-  const switchTab = (next: SettingsTab) => {
+  /**
+   * LB / RB land on the new tab's first row (or the tab itself when the tab
+   * has no rows to pick). Picking a tab directly keeps focus on the tab row.
+   */
+  const switchTab = (next: SettingsTab, focusOn: 'rows' | 'tab') => {
     if (next === useUi.getState().settingsTab) return
     useUi.setState({ settingsTab: next })
-    // Keep focus on the tab row if that's where it was; otherwise go to the new tab's first row.
-    const f = useUi.getState().focus.settings ?? ''
-    requestAnimationFrame(() => focusItem('settings', f.startsWith('tab:') ? `tab:${next}` : firstRowId(next)))
+    requestAnimationFrame(() => focusItem('settings', focusOn === 'tab' ? `tab:${next}` : firstRowId(next)))
   }
 
   const onTab = (dir: -1 | 1) => {
     const i = SETTINGS_TABS.indexOf(useUi.getState().settingsTab)
     const n = SETTINGS_TABS.length
-    switchTab(SETTINGS_TABS[(i + dir + n) % n])
+    switchTab(SETTINGS_TABS[(i + dir + n) % n], 'rows')
   }
 
   const rows = SETTINGS_ROWS[tab]
@@ -239,7 +241,7 @@ export function SettingsScreen() {
                 <ActionGlyphsSingle side="prev" />
               </span>
               {SETTINGS_TABS.map((t) => (
-                <Tab key={t} tab={t} active={t === tab} onPick={() => switchTab(t)} />
+                <Tab key={t} tab={t} active={t === tab} onPick={() => switchTab(t, 'tab')} />
               ))}
               <span className="tabs__glyph">
                 <ActionGlyphsSingle side="next" />
