@@ -38,7 +38,16 @@ function Scene() {
       {track && <World />}
       {track && <RoadView />}
       {track && !editing && (
-        <Physics key={`${track.id}:${trackVersion}`} timeStep={1 / 60} interpolate paused={paused} colliders={false}>
+        <Physics
+          key={`${track.id}:${trackVersion}`}
+          timeStep={1 / 60}
+          interpolate
+          paused={paused}
+          colliders={false}
+          // Step physics before every priority-0 useFrame (camera, fx, HUD) even after a remount,
+          // so they all read THIS frame's car pose. Negative keeps r3f's auto-render on.
+          updatePriority={-50}
+        >
           <TrackPhysics />
           <WorldPhysics />
           <VehicleLayer />
