@@ -19,6 +19,7 @@ import { createRequire } from 'node:module'
 import { validateTrack } from '../src/track/validate'
 import { buildTrack, trackInternals } from '../src/track/build'
 import { SURFACE_CODE } from '../src/track/types'
+import { LINE_MAX_LAT_G } from '../src/track/derived'
 
 const args = process.argv.slice(2)
 const physics = args.includes('--physics')
@@ -175,19 +176,21 @@ for (const path of targets) {
   }
   {
     // The racing line must be a real line: not glued to one edge, never closer to an edge
-    // than the margin, and never planning more sideways grip than the car has.
+    // than the margin, never planning more sideways grip than the car has, and never
+    // braking harder than the brakes can on that bit of hill.
     const margin = v.track.road.barriers === 'walls' ? 3 : 2.5
     const r = sel.racingLineStats(t)
-    const LIM = { clamp: 0.35, run: 150, grip: 1.45 }
+    const LIM = { clamp: 0.35, run: 150, grip: +(LINE_MAX_LAT_G + 0.05).toFixed(2) }
     const bad: string[] = []
     if (r.clampFrac > LIM.clamp) bad.push(`${(r.clampFrac * 100).toFixed(0)}% at a limit > ${LIM.clamp * 100}%`)
     if (r.longestClampM > LIM.run) bad.push(`longest stretch at a limit ${r.longestClampM.toFixed(0)} m > ${LIM.run} m`)
     if (r.minEdgeGap < margin - 0.05) bad.push(`closest to an edge ${r.minEdgeGap.toFixed(2)} m < ${margin} m`)
     if (r.maxLatG > LIM.grip) bad.push(`planned grip ${r.maxLatG.toFixed(2)} g > limit ${LIM.grip} g`)
+    if (r.brakeOverM > 0) bad.push(`${r.brakeOverM.toFixed(0)} m of braking asks ${r.brakeOverBy.toFixed(2)} m/s^2 more than the brakes have on that slope (a builder bug, not your file)`)
     row(
       'line',
       bad.length === 0,
-      bad.length ? bad.join('; ') : `${(r.clampFrac * 100).toFixed(0)}% of the lap at a limit (longest ${r.longestClampM.toFixed(0)} m), closest ${r.minEdgeGap.toFixed(2)} m to an edge (needs ${margin}), planned grip up to ${r.maxLatG.toFixed(2)} g (limit ${LIM.grip})`,
+      bad.length ? bad.join('; ') : `${(r.clampFrac * 100).toFixed(0)}% of the lap at a limit (longest ${r.longestClampM.toFixed(0)} m), closest ${r.minEdgeGap.toFixed(2)} m to an edge (needs ${margin}), planned grip up to ${r.maxLatG.toFixed(2)} g (limit ${LIM.grip}), braking fits every slope`,
       'the builder plans these itself; a failure means a corner is too tight or too abrupt for it. Ease the corner: spread its points out or add a point so the curve tightens gradually.',
     )
   }

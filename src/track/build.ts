@@ -33,12 +33,22 @@ import {
   type NaturalGrid,
   type NaturalTerrain,
 } from './terrain'
-import { buildCenterline, LOOP_SHIFT, WALL_RAMP } from './road'
+import { buildCenterline, WALL_RAMP } from './road'
 import { buildRibbonMeshes } from './ribbon'
 import { buildRampMeshes, type RampSolid } from './ramps'
 import { buildSampleHash, makeRoadQueries } from './query'
 import { makeBillboards, makeCheckpoints, makeMinimap, makePosts, makeRacingLine } from './derived'
 import { hashString } from './noise'
+
+/**
+ * Version of the road builder itself. Bump it whenever the way geometry is generated
+ * changes (where loops sit, how banking or easing works, ...), so old ghosts and records
+ * don't replay through moved geometry: it goes into every track's hash and key, so a
+ * bump gives every track a new key once and old local records stop matching.
+ *   1: the first builder.
+ *   2: loops run straight into the mouth and ease back over 180 m after (track2, round 1).
+ */
+export const BUILDER_VERSION = 2
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
@@ -235,10 +245,15 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const pinned: { s0: number; s1: number; value?: number }[] = []
   const fast: { s0: number; s1: number }[] = []
   for (const l of c.loops) {
-    pinned.push({ s0: q.wrapS(l.s0 - LOOP_SHIFT - 10), s1: q.wrapS(l.s1 + LOOP_SHIFT + 10) })
+    // Centred into the mouth and out of the landing; the pin's ease (makeRacingLine)
+    // brings the line in gently, square to the mouth, over the 60 m before it.
+    pinned.push({ s0: q.wrapS(l.s0 - 15), s1: q.wrapS(l.s1 + 10) })
     fast.push({ s0: q.wrapS(l.s0 - 30), s1: q.wrapS(l.s1 + 5) })
   }
-  for (const w of c.walls) fast.push({ s0: q.wrapS(w.s0 - 10), s1: q.wrapS(w.s1) })
+  // Wall rides are NOT in `fast`: the line runs on the flat floor beside the wall (no
+  // magnetic grip there), so a wall-ride bend is planned on tyre grip like any other
+  // corner. Forcing magnetic-grip speed onto the floor asked for ~1.6-1.9 g on a tight
+  // wall-ride bend. Riding up the wall is the player's choice.
   for (const r of rampSpots) {
     const len = r.piece.length ?? 12
     pinned.push({ s0: q.wrapS(r.s - len / 2 - 25), s1: q.wrapS(r.s + len / 2 + 5), value: r.piece.offset ?? 0 })
@@ -253,7 +268,8 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const racingLine = makeRacingLine({ samples: S, length: L, pinned, fast, ramps: rampSpots.map((r) => r.s), edgeMargin: file.road.barriers === 'walls' ? 3 : 2.5, reuseOffset })
 
   const noPosts: { s0: number; s1: number }[] = []
-  for (const l of c.loops) noPosts.push({ s0: q.wrapS(l.s0 - LOOP_SHIFT - 15), s1: q.wrapS(l.s1 + LOOP_SHIFT + 15) })
+  // Round a loop: nothing beside the mouth or under the way out (the loop's legs stand there).
+  for (const l of c.loops) noPosts.push({ s0: q.wrapS(l.s0 - 40), s1: q.wrapS(l.s1 + 40) })
   for (const w of c.walls) noPosts.push({ s0: q.wrapS(w.s0 - WALL_RAMP), s1: q.wrapS(w.s1 + WALL_RAMP) })
   for (const r of rampSpots) noPosts.push({ s0: q.wrapS(r.s - 25), s1: q.wrapS(r.s + 25) })
   // Keep the start grid clear too.
@@ -282,7 +298,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const minimap = makeMinimap(S)
 
   // ---- identity ----
-  const hashText = JSON.stringify({ road: file.road, pieces: file.pieces, start: file.start, params, env: [env.seed, env.size, env.terrain] })
+  const hashText = JSON.stringify({ builder: BUILDER_VERSION, road: file.road, pieces: file.pieces, start: file.start, params, env: [env.seed, env.size, env.terrain] })
   const geomHash = hashString(hashText).toString(16).padStart(8, '0')
 
   const basis = new THREE.Matrix4()

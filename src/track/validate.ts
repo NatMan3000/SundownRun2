@@ -28,6 +28,7 @@ import {
 import { PALETTE } from '../core/palette'
 import { hashString } from './noise'
 import { sampleClosedSpline, arcLengthAtParam } from './spline'
+import { LOOP_RUN_IN, loopShape } from './road'
 
 type Obj = Record<string, unknown>
 
@@ -562,6 +563,15 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
     if (d < -Math.PI) d += Math.PI * 2
     return Math.abs(d) / 40
   }
+  /** Sideways distance from the point at s1 to a dead-straight line leaving the road at s0 along its heading. */
+  const straightLineMiss = (s0: number, s1: number): number => {
+    const i0 = Math.round((((s0 % L) + L) % L) / (L / n)) % n
+    const i1 = Math.round((((s1 % L) + L) % L) / (L / n)) % n
+    const hx = dense.x[(i0 + 1) % n] - dense.x[i0]
+    const hz = dense.z[(i0 + 1) % n] - dense.z[i0]
+    const hl = Math.hypot(hx, hz) || 1
+    return Math.abs((hx * (dense.z[i1] - dense.z[i0]) - hz * (dense.x[i1] - dense.x[i0])) / hl)
+  }
   t.pieces.forEach((p, i) => {
     const s = sOfAt(p.at)
     const fromStart = wrap(s - sStart)
@@ -569,9 +579,21 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
       I.warn(`pieces[${i}]`, `this ${p.type} is on or next to the start grid; move it at least 70 m before or 25 m after the line`)
     }
     if (p.type === 'loop') {
+      // The run-in: a car aiming straight down the LOOP_RUN_IN metres before the mouth
+      // must arrive in it (tracks:check --physics drives exactly this, from 2 m either
+      // side of the middle). How far off the middle does a dead-straight line land?
+      const miss = straightLineMiss(s - LOOP_RUN_IN, s)
+      const a0 = Math.floor(p.at) % pts.length
+      const a1 = (a0 + 1) % pts.length
+      const halfW = Math.min(pts[a0].width ?? t.road.width, pts[a1].width ?? t.road.width) / 2
+      if (miss > halfW - 3) {
+        I.warn(`pieces[${i}]`, `a car aiming straight down the ${LOOP_RUN_IN} m before this loop arrives ${miss.toFixed(1)} m off the middle of its mouth; loops need a straight run-in (put the points before it in a line)`)
+      }
+      // The loop itself and where it comes down must be straight too.
+      const land = loopShape(p.radius ?? TRACK_DEFAULTS.loopRadius).advance + 20
       let maxK = 0
-      for (let d = -100; d <= 100; d += 10) maxK = Math.max(maxK, curvAt(s + d))
-      if (maxK > 1 / 400) I.warn(`pieces[${i}]`, `this loop sits on a bend (radius ~${(1 / maxK).toFixed(0)} m); loops need a straight about 200 m long`)
+      for (let d = 0; d <= land; d += 5) maxK = Math.max(maxK, curvAt(s + d))
+      if (maxK > 1 / 400) I.warn(`pieces[${i}]`, `this loop sits on a bend (radius ~${(1 / maxK).toFixed(0)} m); the loop and the ${land.toFixed(0)} m after its at need a straight`)
       const a = Math.floor(p.at)
       const b = (a + 1) % pts.length
       const ya = pts[a].y ?? pts[a].lift ?? 0
@@ -590,7 +612,7 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
   const spans: { i: number; type: string; s0: number; s1: number }[] = []
   t.pieces.forEach((p, i) => {
     const s = sOfAt(p.at)
-    if (p.type === 'loop') spans.push({ i, type: p.type, s0: s - 90, s1: s + 90 })
+    if (p.type === 'loop') spans.push({ i, type: p.type, s0: s - LOOP_RUN_IN, s1: s + loopShape(p.radius ?? TRACK_DEFAULTS.loopRadius).advance + 20 })
     else if (p.type === 'wallride') spans.push({ i, type: p.type, s0: s, s1: s + (p.length ?? 120) })
     else if (p.type === 'ramp') spans.push({ i, type: p.type, s0: s - (p.length ?? 12) / 2 - 5, s1: s + (p.length ?? 12) / 2 + 5 })
   })

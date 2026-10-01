@@ -11,10 +11,11 @@
 //   4. Corners get banked from their curvature (the faster the design
 //      speed and the tighter the corner, the steeper, up to a cap),
 //      with per-point overrides, smoothed so corners roll in and out.
-//   5. Loops are spliced in: the road shifts sideways before the loop,
-//      goes up and over a teardrop-shaped loop while drifting across (a
-//      corkscrew, so the way in and the way out run side by side), then
-//      shifts back.
+//   5. Loops are spliced in: the road runs dead straight into the loop's
+//      mouth, goes up and over a teardrop-shaped loop while drifting
+//      across (a corkscrew, so the way in and the way out run side by
+//      side), then eases back onto the original line over a long, gentle
+//      S (LOOP_EXIT_EASE metres).
 //   6. The result is re-sampled once more at an exact spacing, and each
 //      sample gets its frame: tangent, up (the surface normal) and right.
 //
@@ -34,8 +35,21 @@ const G = 9.81
 export const SAMPLE_SPACING = 1
 /** A road this far (or less) above the natural ground is "grounded": the ground is filled up to it. */
 export const FILL_MAX = 6
-/** Metres over which the road shifts sideways before and after a loop. */
-export const LOOP_SHIFT = 80
+/**
+ * Metres over which the road eases back onto its original line after a loop.
+ * The loop comes down (width + 1) metres to one side of where it went up; the
+ * exit then slides back across on a curve whose bend starts and ends at zero
+ * (no sudden steering), peaking at about a 340 m radius for a 14 m road.
+ * There is no slide BEFORE the loop: the road runs dead straight into the
+ * mouth, so a car that simply aims down the straight goes in (a slide before
+ * the mouth used to send straight-line cars into the underside of the loop's
+ * way-out leg).
+ */
+export const LOOP_EXIT_EASE = 180
+/** Straight road a loop needs before its mouth so cars arrive lined up (pins and checks use it). */
+export const LOOP_RUN_IN = 80
+/** Metres of clear air between a loop's way in and its way out, beside each other. */
+const LOOP_LANE_GAP = 1
 /** A wall ride ramps its wall in and out over this many metres at each end. */
 export const WALL_RAMP = 15
 /** How far round a wall ride's wall curls at full height (degrees past flat). */
@@ -57,6 +71,8 @@ export interface LoopInfo {
   radius: number
   /** Loop centre at its mid point (for visuals). */
   center: { x: number; y: number; z: number }
+  /** Which way the corkscrew drifts: +1 = it comes down to the right of the way in, -1 = left. */
+  side: 1 | -1
 }
 
 export interface WallInfo {
@@ -256,29 +272,39 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     btz[k] = tz / l
   }
 
-  // ---- 5. loops: sideways shift either side, then splice the loop in ----
+  // ---- 5. loops: splice each loop in, then ease the road back after it ----
   const pieces = file.pieces
-  const loopSpecs: { pieceIndex: number; sb: number; radius: number; shape: LoopShape }[] = []
+  const loopSpecs: { pieceIndex: number; sb: number; radius: number; shape: LoopShape; side: 1 | -1 }[] = []
   pieces.forEach((p, idx) => {
     if (p.type !== 'loop') return
     const radius = (p as LoopPiece).radius ?? 12
-    loopSpecs.push({ pieceIndex: idx, sb: baseSOfAt(p.at), radius, shape: loopShape(radius) })
+    const sb = baseSOfAt(p.at)
+    const shape = loopShape(radius)
+    // Drift toward the side the road bends to next. The ease back then finishes by
+    // turning the same way as that bend, so it flows into it instead of flicking
+    // the other way first. A road that carries on straight drifts right.
+    let turn = 0
+    const k0 = Math.round((sb + shape.advance) / dsb)
+    const kn = Math.round((LOOP_EXIT_EASE + 150) / dsb)
+    for (let k = 0; k < kn; k++) turn += bCurv[(k0 + k) % nb] * dsb
+    const side: 1 | -1 = turn < -(3 * Math.PI) / 180 ? -1 : 1
+    loopSpecs.push({ pieceIndex: idx, sb, radius, shape, side })
   })
   loopSpecs.sort((a, b) => a.sb - b.sb)
 
   // The loop comes down `advance` metres further along than it went up, so the
   // base road it lands on starts there; the base samples in between are skipped.
+  // From there the road eases from `side * d` back to 0 over LOOP_EXIT_EASE metres.
   const shift = new Float64Array(nb)
   const skip = new Uint8Array(nb)
   for (const L of loopSpecs) {
     const k0 = Math.floor(L.sb / dsb) % nb
-    const d = bHalf[k0] * 2 + 1
+    const d = bHalf[k0] * 2 + LOOP_LANE_GAP
     const adv = L.shape.advance
     for (let k = 0; k < nb; k++) {
       const delta = wrapDelta(L.sb, k * dsb, Lb)
-      if (delta >= -LOOP_SHIFT && delta < 0) shift[k] += (-d / 2) * ((1 - Math.cos((Math.PI * (delta + LOOP_SHIFT)) / LOOP_SHIFT)) / 2)
-      else if (delta >= 0 && delta < adv) skip[k] = 1
-      else if (delta >= adv && delta <= adv + LOOP_SHIFT) shift[k] += (d / 2) * (1 - (1 - Math.cos((Math.PI * (delta - adv)) / LOOP_SHIFT)) / 2)
+      if (delta >= 0 && delta < adv) skip[k] = 1
+      else if (delta >= adv && delta <= adv + LOOP_EXIT_EASE) shift[k] += L.side * d * (1 - easeCycloid((delta - adv) / LOOP_EXIT_EASE))
     }
   }
 
@@ -347,7 +373,8 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
       const Rx = -Tz
       const Rz = Tx
       const hw = bHalf[k]
-      const d = hw * 2 + 1
+      // The way out lands this far to the side of the way in (a full road width plus a gap).
+      const d = (hw * 2 + LOOP_LANE_GAP) * L.side
       const sh = L.shape
       // Where the base road really is when the loop comes down (it may have climbed or
       // curved a little since the entry): bend the loop gently so it lands exactly there.
@@ -357,16 +384,17 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
       const e1 = (e0 + 1) % nb
       const ef = se - Math.floor(se)
       const ehl = Math.hypot(btx[e0], btz[e0]) || 1
-      const Ex = bx[e0] + (bx[e1] - bx[e0]) * ef + (-btz[e0] / ehl) * (d / 2)
+      const Ex = bx[e0] + (bx[e1] - bx[e0]) * ef + (-btz[e0] / ehl) * d
       const Ey = by[e0] + (by[e1] - by[e0]) * ef
-      const Ez = bz[e0] + (bz[e1] - bz[e0]) * ef + (btx[e0] / ehl) * (d / 2)
-      const Mx = Ex - (Px + Rx * (d / 2) + Tx * sh.advance)
+      const Ez = bz[e0] + (bz[e1] - bz[e0]) * ef + (btx[e0] / ehl) * d
+      const Mx = Ex - (Px + Rx * d + Tx * sh.advance)
       const My = Ey - Py
-      const Mz = Ez - (Pz + Rz * (d / 2) + Tz * sh.advance)
+      const Mz = Ez - (Pz + Rz * d + Tz * sh.advance)
       for (let q = 0; q <= m; q++) {
         const ph = sh.phi[q]
-        // Corkscrew drift across by d, with zero drift rate at the bottom (in and out).
-        const lat = -d / 2 + (d * (ph - Math.sin(ph))) / (Math.PI * 2)
+        // Corkscrew drift across by d, with zero drift rate at the bottom (in and out),
+        // starting from the line of the straight it came down.
+        const lat = (d * (ph - Math.sin(ph))) / (Math.PI * 2)
         const w = (1 - Math.cos((Math.PI * q) / m)) / 2
         nx.push(Px + Rx * lat + Tx * sh.fwd[q] + Mx * w)
         ny.push(Py + sh.up[q] + My * w)
@@ -556,6 +584,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
         y: S.py[mid] + S.uy[mid] * L.radius,
         z: S.pz[mid] + S.uz[mid] * L.radius,
       },
+      side: L.side,
     })
   }
 
@@ -614,6 +643,17 @@ export interface LoopShape {
 }
 
 const LOOP_BASE = 0.15
+
+/**
+ * 0 -> 1 as t goes 0 -> 1, with zero slope AND zero bend at both ends (the same
+ * cycloid curve the corkscrew drifts on). Used as a sideways offset, the road's
+ * curvature grows from nothing, peaks at a quarter and three quarters of the way,
+ * and fades to nothing again, so a car is never asked to snap its steering.
+ */
+export function easeCycloid(t: number): number {
+  const u = clamp(t, 0, 1)
+  return u - Math.sin(Math.PI * 2 * u) / (Math.PI * 2)
+}
 
 export function loopShape(radius: number): LoopShape {
   // Integrate a unit-length loop finely, then scale it to the requested height.

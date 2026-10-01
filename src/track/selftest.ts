@@ -14,6 +14,10 @@
 //   3. Containment. Car-sized boxes fired down at 60 m/s onto every
 //      kind of surface (road, terrain, loop, wall ride, ramp, barrier)
 //      end up on top of it, never through it.
+//   3b. Drive-through. Frictionless boxes slid along the road into every
+//      piece and checkpoint never hit a face; at every loop, boxes driven
+//      hands-off down the run-in go into the mouth, and boxes leaving it a
+//      little off-line run clear of its legs.
 //   4. A drop grid across the whole playable world (12 x 12 points).
 //   5. The world edge: boxes fired outward at 90 m/s from 24 bearings
 //      stay inside world.playRadius.
@@ -30,6 +34,8 @@ import { trackInternals } from './build'
 import { createRoadColliders, createWorldColliders } from './colliders'
 import { createTerrainTiles } from './terrainTiles'
 import { SIDE_RUN } from './ramps'
+import { LOOP_RUN_IN, loopShape } from './road'
+import { brakeOnSlope } from './derived'
 import { surfaceOf } from '../core/physics'
 import * as THREE from 'three'
 
@@ -242,10 +248,11 @@ export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; w
 
 /**
  * Racing line health: how much of the lap sits at the edge limit (and the longest
- * such stretch), the closest it comes to a road edge, and the most sideways grip
- * its target speeds ask for (v^2 x curvature / g, ignoring banking).
+ * such stretch), the closest it comes to a road edge, the most sideways grip its
+ * target speeds ask for (v^2 x curvature / g, less what banking carries), and how
+ * many metres of braking ask for more than the brakes have on that slope.
  */
-export function racingLineStats(t: TrackRuntime): { clampFrac: number; longestClampM: number; minEdgeGap: number; maxLatG: number } {
+export function racingLineStats(t: TrackRuntime): { clampFrac: number; longestClampM: number; minEdgeGap: number; maxLatG: number; brakeOverM: number; brakeOverBy: number } {
   const S = t.samples
   const n = S.count
   const off = t.racingLine.offset
@@ -292,7 +299,19 @@ export function racingLineStats(t: TrackRuntime): { clampFrac: number; longestCl
     const lat = (spd[i] * spd[i] * k * Math.cos(into) - 9.81 * Math.sin(into)) / 9.81
     maxLat = Math.max(maxLat, lat)
   }
-  return { clampFrac: atLimit / n, longestClampM: Math.min(longest, n) * S.ds, minEdgeGap: minGap, maxLatG: maxLat }
+  // Braking that fits the hill: slowing from speed[i] to speed[i+1] over one sample must
+  // need no more than the brakes have there (less downhill, more uphill).
+  let brakeOver = 0
+  let brakeOverBy = 0
+  for (let i = 0; i < n; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    const j = (i + 1) % n
+    const need = (spd[i] * spd[i] - spd[j] * spd[j]) / (2 * S.ds)
+    const over = need - brakeOnSlope(S.ty[i])
+    if (over > 0.05) brakeOver++
+    brakeOverBy = Math.max(brakeOverBy, over)
+  }
+  return { clampFrac: atLimit / n, longestClampM: Math.min(longest, n) * S.ds, minEdgeGap: minGap, maxLatG: maxLat, brakeOverM: brakeOver * S.ds, brakeOverBy }
 }
 
 /** Timings for the README and the checker: query costs in microseconds. */
@@ -397,10 +416,18 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
   const quat = new THREE.Quaternion()
   const negRight = new THREE.Vector3()
 
-  const spawnBox = (x: number, y: number, z: number, q: THREE.Quaternion, vx: number, vy: number, vz: number) => {
-    const body = world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }).setLinvel(vx, vy, vz).setCcdEnabled(true),
-    )
+  // Two kinds of anti-tunnelling. Boxes fired AT a surface use rapier's hard CCD (the
+  // strictest "never passes through" guarantee). Boxes that SLIDE along a surface use
+  // soft CCD instead: rapier 0.19's hard CCD drags a box that slides while touching a
+  // triangle mesh to about half its speed (measured: 20 m in 1 s at a reported 40 m/s),
+  // which would make sliding tests cover half the ground they claim. Soft CCD slides
+  // at full speed and still stops a 150 m/s drop onto the road.
+  const SOFT_CCD = 2
+  const spawnBox = (x: number, y: number, z: number, q: THREE.Quaternion, vx: number, vy: number, vz: number, sliding = false) => {
+    const bodyDesc = RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }).setLinvel(vx, vy, vz)
+    if (sliding) bodyDesc.setSoftCcdPrediction(SOFT_CCD)
+    else bodyDesc.setCcdEnabled(true)
+    const body = world.createRigidBody(bodyDesc)
     // A car: dense enough for ~1200 kg; member of the CAR group so it collides with the world.
     const desc = RAPIER.ColliderDesc.cuboid(CAR.hx, CAR.hy, CAR.hz).setDensity(1200 / (8 * CAR.hx * CAR.hy * CAR.hz)).setFriction(0.8)
     desc.setCollisionGroups(((1 << 1) << 16) | (1 << 0))
@@ -586,23 +613,67 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
   }
 
   // ---- 3b. drive-through: slide a car box along the road into every piece ----
-  // A frictionless box launched along the centreline must never hit a face: no step,
+  // A frictionless box launched along the road must never hit a face: no step,
   // no end cap, no slab edge across the lane. A hit shows up as a sudden stop
   // (deceleration far beyond what gravity on a slope can do).
+  // Most runs steer like a driver. The loop's "hands off" runs don't: a car that
+  // aims straight down the run-in, or leaves the loop a little off-line, must go
+  // into the mouth or away from the loop, never into its legs.
   {
-    const runs: { what: string; s: number; until: number; v: number; lat?: number }[] = []
+    // A steered run ends when it reaches `until`. A hands-off run ends after `metres` of
+    // travel, or (when `mouthS` is set) as soon as it is riding up the loop past mouthS.
+    type HandsOff = { metres: number; mouthS?: number }
+    type Run = { what: string; s: number; until: number; v: number; lat?: number; headDeg?: number; handsOff?: HandsOff; why?: string }
+    const runs: Run[] = []
+    const rampZones: { s0: number; s1: number; off: number; reach: number }[] = []
+    const HANDS_OFF = [
+      [-2, -3],
+      [-2, 3],
+      [2, -3],
+      [2, 3],
+    ] as const
     for (const pc of t.pieces) {
       const span = t.deltaS(pc.s0, pc.s1)
-      if (pc.type === 'loop') runs.push({ what: 'loop', s: pc.s0 - 12, until: pc.s0 + 25, v: 30 })
-      else if (pc.type === 'ramp') {
+      if (pc.type === 'loop') {
+        runs.push({ what: 'loop', s: pc.s0 - 12, until: pc.s0 + 25, v: 30 })
+        // Aimed straight down the run-in from its start: it must go up into the mouth, or
+        // (if it misses) carry on past where the loop comes down without touching it.
+        const landing = loopShape(pc.radius ?? 12).advance
+        for (const lat of [-2, 0, 2]) {
+          runs.push({
+            what: `hands off into a loop (lateral ${lat} m)`,
+            s: pc.s0 - LOOP_RUN_IN,
+            until: pc.s0,
+            v: 40,
+            lat,
+            handsOff: { metres: LOOP_RUN_IN + landing + 15, mouthS: pc.s0 + 8 },
+            why: `a car aiming straight down the run-in must go into the mouth: give the loop a straight ${LOOP_RUN_IN} m run-in before its at`,
+          })
+        }
+        // Leaving it a little off-line: it must run clear of the loop's legs.
+        for (const [lat, hd] of HANDS_OFF) {
+          runs.push({
+            what: `hands off out of a loop (lateral ${lat} m, heading ${hd} deg)`,
+            s: pc.s1 - 6,
+            until: pc.s1,
+            v: 30,
+            lat,
+            headDeg: hd,
+            handsOff: { metres: 66 },
+            why: 'a car leaving the loop a little off-line hits something solid: if the loop sits on a bend, give it a straight; on a straight this is a builder bug, not your file',
+          })
+        }
+      } else if (pc.type === 'ramp') {
         // Straight up the ramp, and (for an offset ramp) past it on the centreline, clipping its side slope.
-        const off = (pc.source as { offset?: number }).offset ?? 0
+        const src = pc.source as { offset?: number; width?: number; height?: number }
+        const off = src.offset ?? 0
         runs.push({ what: 'ramp', s: pc.s0 - 25, until: pc.s1 + 5, v: 30, lat: off })
+        // Everything a car box could touch: the ramp, its sloped sides, plus the box's own half width.
+        const reach = (src.width ?? 8) / 2 + SIDE_RUN * (src.height ?? 2.4) + CAR.hx + 0.3
+        rampZones.push({ s0: pc.s0, s1: pc.s1, off, reach })
         // And past an offset ramp in the clear lane beside it (just outside its sloped side).
         if (Math.abs(off) > 0.5) {
-          const src = pc.source as { width?: number; height?: number }
-          const clear = (src.width ?? 8) / 2 + SIDE_RUN * (src.height ?? 2.4) + CAR.hx + 0.3
-          const lat = off - Math.sign(off) * clear
+          const lat = off - Math.sign(off) * reach
           t.frameAt(pc.s0, frame)
           if (Math.abs(lat) + CAR.hx < frame.halfWidth) runs.push({ what: 'beside an offset ramp', s: pc.s0 - 25, until: pc.s1 + 5, v: 30, lat })
         }
@@ -610,22 +681,44 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       else if (pc.type === 'wallride') runs.push({ what: 'wall ride', s: pc.s0 - 20, until: pc.s0 + Math.min(span, 60), v: 30 })
     }
     // Plus a plain run at every checkpoint (straight road joints, bridges, the seam).
-    for (let k = 0; k < t.checkpoints.length; k++) runs.push({ what: `road at checkpoint ${k}`, s: t.checkpoints[k] - 10, until: t.checkpoints[k] + 20, v: 45 })
+    // One that would cross a ramp's footprint runs in the clear lane beside the ramp
+    // instead (the ramp's own runs cover the ramp), or is left to them if there is none.
+    for (let k = 0; k < t.checkpoints.length; k++) {
+      const s0 = t.checkpoints[k] - 10
+      const s1 = t.checkpoints[k] + 20
+      let lat = 0
+      let what = `road at checkpoint ${k}`
+      let skip = false
+      for (const z of rampZones) {
+        const overlaps = t.deltaS(s0, z.s1 + 2) >= 0 && t.deltaS(z.s0 - 2, s1) >= 0
+        if (!overlaps || Math.abs(lat - z.off) >= z.reach) continue
+        const beside = Math.abs(z.off) > 0.5 ? z.off - Math.sign(z.off) * z.reach : NaN
+        t.frameAt(z.s0, frame)
+        if (Number.isFinite(beside) && Math.abs(beside) + CAR.hx < frame.halfWidth) {
+          lat = beside
+          what += ' (beside a ramp)'
+        } else skip = true
+      }
+      if (!skip) runs.push({ what, s: s0, until: s1, v: 45, lat })
+    }
     let fails = 0
     const failed: string[] = []
     const hit2: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+    const aim = new THREE.Vector3()
     for (const r of runs) {
       t.frameAt(r.s, frame)
-      negRight.copy(frame.right).negate()
-      basis.makeBasis(negRight, frame.up, frame.tangent)
+      // Heading: along the road, turned headDeg to the right (about the road's up).
+      aim.copy(frame.tangent).applyAxisAngle(frame.up, (-(r.headDeg ?? 0) * Math.PI) / 180)
+      negRight.crossVectors(frame.up, aim).normalize() // the box's left
+      basis.makeBasis(negRight, frame.up, aim)
       quat.setFromRotationMatrix(basis)
       const p0 = frame.position.clone().addScaledVector(frame.right, r.lat ?? 0).addScaledVector(frame.up, CAR.hy + 0.05)
       const body = world.createRigidBody(
         RAPIER.RigidBodyDesc.dynamic()
           .setTranslation(p0.x, p0.y, p0.z)
           .setRotation({ x: quat.x, y: quat.y, z: quat.z, w: quat.w })
-          .setLinvel(frame.tangent.x * r.v, frame.tangent.y * r.v, frame.tangent.z * r.v)
-          .setCcdEnabled(true),
+          .setLinvel(aim.x * r.v, aim.y * r.v, aim.z * r.v)
+          .setSoftCcdPrediction(SOFT_CCD),
       )
       const desc = RAPIER.ColliderDesc.cuboid(CAR.hx, CAR.hy, CAR.hz).setDensity(1200 / (8 * CAR.hx * CAR.hy * CAR.hz)).setFriction(0).setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
       desc.setCollisionGroups(((1 << 1) << 16) | (1 << 0))
@@ -633,7 +726,9 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       let prevV = r.v
       let worstDecel = 0
       let sNow = r.s
-      const steps = Math.ceil(((t.deltaS(r.s, r.until) + 5) / r.v) * 60 * 1.6)
+      let travelled = 0
+      const ho = r.handsOff
+      const steps = Math.ceil(((ho ? ho.metres : t.deltaS(r.s, r.until) + 5) / r.v) * 60 * 1.6)
       for (let i = 0; i < steps; i++) {
         world.step()
         const lv = body.linvel()
@@ -641,8 +736,17 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         worstDecel = Math.max(worstDecel, (prevV - v) * 60)
         prevV = v
         const p = body.translation()
+        travelled = Math.hypot(p.x - p0.x, p.y - p0.y, p.z - p0.z)
         t.nearest(p.x, p.y, p.z, hit2, sNow)
         sNow = hit2.s
+        if (ho) {
+          if (travelled >= ho.metres) break
+          // Riding up the loop: the whole box on its surface, not just clipping the edge of the mouth.
+          const riding =
+            t.samples.surface[hit2.index] === SURFACE_CODE.loop && Math.abs(hit2.height) < 1.5 && Math.abs(hit2.lateral) <= t.samples.halfWidth[hit2.index] - CAR.hx
+          if (ho.mouthS !== undefined && riding && t.deltaS(ho.mouthS, sNow) >= 0) break
+          continue
+        }
         if (t.deltaS(r.until, sNow) >= 0) break
         // Steer like a driver: keep the box heading along the road (drop any sideways
         // drift), so it follows bends instead of sliding off the outside of them.
@@ -653,16 +757,14 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
           { x: frame.tangent.x * vt + frame.up.x * vu, y: frame.tangent.y * vt + frame.up.y * vu, z: frame.tangent.z * vt + frame.up.z * vu },
           true,
         )
-        negRight.copy(frame.right).negate()
-        basis.makeBasis(negRight, frame.up, frame.tangent)
-        quat.setFromRotationMatrix(basis)
         const ang = body.angvel()
         if (Math.abs(ang.y) > 0) body.setAngvel({ x: ang.x, y: 0, z: ang.z }, true)
       }
       // Gravity alone on a vertical loop face is ~10 m/s^2; a face across the lane is hundreds.
       if (worstDecel > 40) {
         fails++
-        if (failed.length < 6) failed.push(`${r.what} (from ${where(t, r.s)} at ${r.v} m/s): ${worstDecel.toFixed(0)} m/s^2 jolt, stopped near ${where(t, sNow)}. Something solid crosses the road there: check for a piece overlapping another, or a loop on a bend or slope`)
+        const why = r.why ?? 'Something solid crosses the road there: check for a piece overlapping another, or a loop on a bend or slope'
+        if (failed.length < 6) failed.push(`${r.what} (from ${where(t, r.s)} at ${r.v} m/s): ${worstDecel.toFixed(0)} m/s^2 jolt, stopped near ${where(t, sNow)}. ${why}`)
       }
       world.removeRigidBody(body)
     }
@@ -782,7 +884,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       const x0 = f.x + ax * u0
       const z0 = f.z + az * u0
       quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(ax, az))
-      const body = spawnBox(x0, t.terrainHeight(x0, z0) + CAR.hy + 0.05, z0, quat, ax * v0, 0, az * v0)
+      const body = spawnBox(x0, t.terrainHeight(x0, z0) + CAR.hy + 0.05, z0, quat, ax * v0, 0, az * v0, true)
       const col = body.collider(0)
       // Low friction so the box keeps its speed like a car under power would.
       col.setFriction(0.02)

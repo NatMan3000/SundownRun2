@@ -258,7 +258,7 @@
       "edge": "wall"
     },
     "sky": {
-      "timeOfDay": 0.35,
+      "timeOfDay": 0.12,
       "sunAzimuthDeg": 90
     },
     "palette": {

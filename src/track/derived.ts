@@ -51,7 +51,7 @@ export interface RacingLineInput {
   /** [s0, s1] ranges where the line must hold the centre (loops, ramps). */
   /** [s0, s1] ranges where the line must hold an offset (loops at 0, a ramp at its own offset). */
   pinned: { s0: number; s1: number; value?: number }[]
-  /** [s0, s1] ranges that need speed for magnetic grip (loops, wall rides). */
+  /** [s0, s1] ranges that need speed for magnetic grip (loops; wall rides are driven on their flat floor). */
   fast: { s0: number; s1: number }[]
   /** Ramp positions: slow a little before one that launches into a corner. */
   ramps: number[]
@@ -257,6 +257,37 @@ function solveOffsets(S: TrackSamples, loB: Float64Array, hiB: Float64Array, off
   circularSmooth(offset, Math.round(3 / ds), 2)
 }
 
+/**
+ * THE racing line's cornering grip, in g. Every corner speed on every track comes
+ * from these two numbers, so this is the one place to change how hard the Ai is
+ * asked to corner. LINE_GRIP_G is what the tyres give on flat road (kept under the
+ * car's real grip so the Ai has margin: vehicle measured a 1.48 g skidpad);
+ * a bank into the corner adds to it, but never past LINE_MAX_LAT_G. The line gate
+ * in tracks:check allows LINE_MAX_LAT_G + 0.05.
+ */
+export const LINE_GRIP_G = 1.25
+export const LINE_MAX_LAT_G = 1.4
+
+/** Braking and acceleration the line plans on flat road, m/s^2 (with margin under the car's real figures). */
+const BRAKE = 7
+const ACCEL = 5
+/** However steep the hill, the line plans at least this much braking and acceleration (m/s^2)... */
+const BRAKE_MIN = 2
+const ACCEL_MIN = 1
+/** ...and never more than this (a steep climb doesn't give the brakes superpowers). */
+const BRAKE_MAX = 10
+const ACCEL_MAX = 8
+
+/**
+ * Braking the line can count on where the road's slope is `ty` (tangent.y, which is
+ * sin(slope): + climbing, - descending). Downhill, gravity pulls the car along the
+ * road and eats into the brakes; uphill it helps. The line gate checks every braking
+ * zone against this same figure.
+ */
+export function brakeOnSlope(ty: number): number {
+  return clamp(BRAKE + G * ty, BRAKE_MIN, BRAKE_MAX)
+}
+
 /** Target speed per sample for a given line. */
 function makeSpeeds(inp: RacingLineInput, offset: Float32Array): Float32Array {
   const S = inp.samples
@@ -291,10 +322,6 @@ function makeSpeeds(inp: RacingLineInput, offset: Float32Array): Float32Array {
     k[i] = best
   }
 
-  // Grip we plan for: below the car's real grip so the Ai has margin (vehicle measures the real figure).
-  const MU = 1.25
-  // However much a bank helps, never plan a corner above this sideways acceleration.
-  const MAX_LAT_G = 1.4
   const VMAX = 75
   const MAG_MIN = 27
   const LOOP_SPEED = 34
@@ -314,10 +341,10 @@ function makeSpeeds(inp: RacingLineInput, offset: Float32Array): Float32Array {
     const into = S.bank[i] * Math.sign(k[i])
     const c = Math.cos(into)
     const sn = Math.sin(into)
-    const den = c - MU * sn
-    const num = sn + MU * c
+    const den = c - LINE_GRIP_G * sn
+    const num = sn + LINE_GRIP_G * c
     const v2 = den <= 0.05 ? VMAX * VMAX : (G / kk) * (num / den)
-    speed[i] = Math.min(VMAX, Math.sqrt(Math.max(0, Math.min(v2, (MAX_LAT_G * G) / kk))))
+    speed[i] = Math.min(VMAX, Math.sqrt(Math.max(0, Math.min(v2, (LINE_MAX_LAT_G * G) / kk))))
   }
 
   // Crests: above sqrt(g R) the car goes light and leaves the road. Let the Ai float
@@ -354,20 +381,25 @@ function makeSpeeds(inp: RacingLineInput, offset: Float32Array): Float32Array {
     }
   }
   floorFast()
-  // Backward: brake in time (~7 m/s^2, with margin). Forward: accelerate realistically (~5 m/s^2). Two laps each so the wrap settles.
-  const BRAKE = 7
-  const ACCEL = 5
+  // Backward: brake in time (~7 m/s^2 on the flat, with margin). Forward: accelerate
+  // realistically (~5 m/s^2 on the flat). Two laps each so the wrap settles.
+  // Both feel the hill: going downhill, gravity pulls the car along the road with
+  // g x sin(slope), which eats into the brakes (and adds to the engine); uphill it's
+  // the other way round. tangent.y IS sin(slope) (+ climbing, - descending), so the
+  // brakes have BRAKE + g x ty to work with. Loops keep their own fixed speed.
+  const slopeOf = (i: number) => (S.surface[i] === SURFACE_CODE.road ? S.ty[i] : 0)
   for (let pass = 0; pass < 2; pass++) {
     for (let n = count * 2 - 1; n >= 0; n--) {
       const i = n % count
       const j = (i + 1) % count
-      const lim = Math.sqrt(speed[j] * speed[j] + 2 * BRAKE * ds)
+      const lim = Math.sqrt(speed[j] * speed[j] + 2 * brakeOnSlope(slopeOf(i)) * ds)
       if (speed[i] > lim) speed[i] = lim
     }
     for (let n = 0; n < count * 2; n++) {
       const i = n % count
       const j = (i + 1) % count
-      const lim = Math.sqrt(speed[i] * speed[i] + 2 * ACCEL * ds)
+      const accel = clamp(ACCEL - G * slopeOf(i), ACCEL_MIN, ACCEL_MAX)
+      const lim = Math.sqrt(speed[i] * speed[i] + 2 * accel * ds)
       if (speed[j] > lim) speed[j] = lim
     }
   }
