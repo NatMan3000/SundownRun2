@@ -319,6 +319,13 @@ export const MAG = {
   loopSupport: 1,
   /** Metres either side of the car used to measure the loop's curvature. */
   loopCurveStep: 1.5,
+  /**
+   * The grip never steps: its strength moves at most this much per second, up (gripRise) and
+   * down (gripFall). A car sliding down a wall right at the hold test's edge flickered it on and
+   * off, chirping mag.on / mag.off five times in a second. Full grip in 0.12 s, gone in 0.25 s.
+   */
+  gripRise: 8,
+  gripFall: 4,
   /** Wheels that must be on a magnetic surface. */
   minWheels: 2,
   /**
@@ -351,18 +358,65 @@ export const MAG = {
   loopSteerDamp: 0.12, //    steer per m/s of sideways speed (stops it swinging across)
   loopSteerBlend: 0.85, //   how much of the steering the loop takes over
   /**
-   *  WALL LIP GUARD. Steering hard up a wall ride at speed carried the car
-   *  straight over the 9 m lip and 18 m into the sky, like a skate ramp. High on
-   *  the wall, speed that is carrying the car UP the face is bent back along the
-   *  wall, so you ride the wall instead of launching off its top.
+   *  WALL RIDES carry their own turn too (carSim stepWallSupport, 1 = all of it): driving up
+   *  the curved wall asks the springs for up to 8 g, which bottomed them and scrubbed half the
+   *  car's speed away. The magnet judges a wall by how hard its curve presses the car in, the
+   *  same test as a loop (loopHoldG); below that and below magGripKmh the stick fades and the
+   *  car slides down the wall (the pull cancelling gravity's pull off an overhang stays on).
    */
-  wallGuardFrom: 0.3, //   fraction of the wall height where the guard starts
-  wallGuardFull: 0.8, //   ...and is fully on
-  wallGuardK: 8, //        1/s: how hard upward speed is removed
-  wallGuardMax: 55, //     m/s^2 cap
-  /** ...and the nose is steered back along the wall (the tyres would otherwise keep climbing). */
+  wallSupport: 1,
+  /**
+   * Below the minimum on a wall the magnet keeps this light pull in (m/s^2, faded in as the
+   * stick fades out) so a stalled car can't tip off: nose-up on a steep wall a car flips over
+   * backwards past ~69 deg, side-on past ~58. The tyres don't grip with it, so the car still
+   * slides or rolls down the wall instead of parking on it.
+   */
+  wallSlideStick: 8,
+  /**
+   *  WALL LIP GUARD. Steering hard up a wall ride at speed carried the car
+   *  straight over the lip and 18 m into the sky, like a skate ramp. The guard
+   *  watches how fast the car closes on a line wallLipMargin (m, round the
+   *  curve) below the lip, and pushes back down the wall with just enough to
+   *  stop it there (beyond what gravity does), up to wallGuardMax (m/s^2).
+   *  It turns the car back along the wall first (the speed is kept); only
+   *  what a turn can't do - a car pointing straight up the wall - brakes the
+   *  climb. Past the line a spring (wallGuardSpring, m/s^2 per metre) pushes
+   *  it back under.
+   */
+  wallLipMargin: 1.0,
+  wallGuardMinDist: 0.3, // m: the stopping distance never counts as less than this
+  wallGuardMax: 60,
+  wallGuardSpring: 40,
+  /**
+   * The lip comes down to the road over the wall's last metres: the guard looks this many
+   * seconds of travel ahead (at most wallGuardLookMax m, every wallGuardLookStep m) so a car
+   * riding high is eased down before the wall ends instead of launched off its end.
+   */
+  wallGuardLook: 1.2,
+  wallGuardLookMax: 45,
+  wallGuardLookStep: 1.5,
+  /** ...and the nose is steered back along the wall (the tyres would otherwise keep climbing), */
   wallSteerHeading: 3,
   wallSteerBlend: 0.8,
+  /** ...fully once the guard pushes this hard (m/s^2). */
+  wallGuardSteerAt: 10,
+  /**
+   * ...and while it bends the path, the nose turns with it: the turn's own rate fed forward
+   * plus a spring (wallYawK, 1/s^2) and damper (wallYawD, 1/s) on the nose-to-path angle, times
+   * the car's yaw inertia. Left to the tyres, the car crabbed 30 deg down the wall's ramp-out.
+   */
+  wallYawK: 40,
+  wallYawD: 10,
+  /**
+   * LEVELLING OUT at a wall's end. The guard reads the lip wallLevelTime seconds of travel
+   * early, so a car riding high is down before the wall ends; then, for wallLevelHold s after
+   * the guard last pushed, a descent that would reach the bottom still heading down the wall
+   * is bent back along the road (up to wallLevelMax m/s^2, as a turn). Without it the car left
+   * the wall's end 30 deg across the road and ran off the far edge.
+   */
+  wallLevelTime: 0.4,
+  wallLevelHold: 1.0,
+  wallLevelMax: 25,
 }
 
 export const BOOST = {

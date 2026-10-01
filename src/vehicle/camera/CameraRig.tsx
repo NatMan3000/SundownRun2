@@ -30,7 +30,7 @@ import { environment, getCar, telemetry } from '../../core/telemetry'
 import { getSettings, useSettings } from '../../core/settings'
 import type { CameraMode } from '../../core/settings'
 import { getGame } from '../../core/store'
-import { GROUPS } from '../../core/physics'
+import { GROUPS, surfaceOf } from '../../core/physics'
 import { getTrack } from '../../track/current'
 import { links } from '../links'
 import { computeShot } from './bookmarks'
@@ -59,6 +59,11 @@ const _airFwd = new THREE.Vector3(0, 0, 1)
 const WORLD_UP = new THREE.Vector3(0, 1, 0)
 const _shot: Shot = { position: new THREE.Vector3(), look: new THREE.Vector3() }
 const _rendered = new THREE.Vector3()
+const _sight = new THREE.Vector3()
+const _leadAxis = new THREE.Vector3()
+const _leadQ = new THREE.Quaternion()
+/** Fractions of its height above the pivot tried, highest first, when ducking the target under a slab. */
+const DUCK_STEPS = [0.6, 0.3, 0] as const
 
 /** tan(21.5 deg): how far left of the car the showroom camera aims, per metre of distance. */
 const SHOWROOM_OFFSET = 0.39
@@ -114,6 +119,8 @@ export const cameraState = {
   shot: 'drive' as 'drive' | 'showroom' | 'results' | 'bookmark',
   bookmark: '' as string,
   clipped: false,
+  /** Metres from the car's pivot up to a slab overhead (Infinity = none within reach): see CAMERA.ceilingPad. */
+  ceiling: Infinity,
   /** The sprung camera position, before the wall clip and the impact kick. */
   position: _camPos,
   /** Where the camera really is this frame (after the clip and the kick). */
@@ -202,6 +209,50 @@ export function CameraRig() {
   const camera = useThree((st) => st.camera) as THREE.PerspectiveCamera
   const ray = useRef<InstanceType<NonNullable<typeof links.rapier>['Ray']> | null>(null)
   const rayRapier = useRef<typeof links.rapier>(null)
+  /** The shared ray, (re)made for the live rapier instance; null before physics is up. */
+  const getRay = () => {
+    if (!links.rapier) return null
+    if (!ray.current || rayRapier.current !== links.rapier) {
+      ray.current = new links.rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 })
+      rayRapier.current = links.rapier
+    }
+    return ray.current
+  }
+  /**
+   * Metres straight up (along the camera's up) from `from` to the underside of a road, loop,
+   * wall or ramp slab overhead, within `reach`; Infinity if none. Terrain never counts: a hill
+   * is not a ceiling.
+   */
+  const ceilingAbove = (from: THREE.Vector3, reach: number): number => slabHit(from, _up, reach, 2)
+  /**
+   * Distance along `dir` (unit) from `from` to a road, loop, wall or ramp slab within `reach`
+   * whose face turns toward the camera's down by more than `downDot` (2 = any face), else
+   * Infinity. Terrain, the floor and barriers never count.
+   */
+  const slabHit = (from: THREE.Vector3, dir: THREE.Vector3, reach: number, downDot: number): number => {
+    const r = getRay()
+    if (!r || !links.world) return Infinity
+    r.origin.x = from.x
+    r.origin.y = from.y
+    r.origin.z = from.z
+    r.dir.x = dir.x
+    r.dir.y = dir.y
+    r.dir.z = dir.z
+    const hit = links.world.castRayAndGetNormal(r, reach, true, undefined, GROUPS.wheelRay, undefined, links.playerBody ?? undefined)
+    if (!hit) return Infinity
+    const kind = surfaceOf(hit.collider.handle)
+    if (kind === 'terrain' || kind === 'floor' || kind === 'barrier') return Infinity
+    if (downDot < 1 && -(hit.normal.x * _up.x + hit.normal.y * _up.y + hit.normal.z * _up.z) < downDot) return Infinity
+    return hit.timeOfImpact
+  }
+  /** True if the straight line from `a` to `b` is blocked by a slab overhead (a face turned down). */
+  const blockedFromAbove = (a: THREE.Vector3, b: THREE.Vector3): boolean => {
+    _sight.subVectors(b, a)
+    const len = _sight.length()
+    if (len < 0.3) return false
+    _sight.divideScalar(len)
+    return slabHit(a, _sight, len + CAMERA.wallPad, 0.3) < Infinity
+  }
 
   // Bookmarks: ?cam= at load, __dev.cam(name) live.
   useEffect(() => {
@@ -330,6 +381,18 @@ export function CameraRig() {
       // Up vector: the car's own up on loops, wall rides and steep banks; world up otherwise.
       followUp = telemetry.magGrip || (!telemetry.airborne && telemetry.carUp.dot(WORLD_UP) < CAMERA.steepCos)
       _targetUp.copy(followUp ? telemetry.carUp : WORLD_UP)
+      // A spring trails a steady turn by about its own smooth time: round a 13 m loop at
+      // 200 km/h the car's up turns 4.6 rad/s and the camera's up hung 63-77 deg behind it
+      // (feel-2 O7). So the target is the car's up a little ahead, turned on by the car's own
+      // spin x CAMERA.upLead: the spring still smooths every change, it just stops trailing.
+      if (followUp) {
+        _leadAxis.copy(telemetry.carAngularVelocity).addScaledVector(telemetry.carUp, -telemetry.carAngularVelocity.dot(telemetry.carUp))
+        const rate = _leadAxis.length() // the part of the spin that tips the up
+        if (rate > 0.05 && Number.isFinite(rate)) {
+          _leadQ.setFromAxisAngle(_leadAxis.divideScalar(rate), Math.min(rate * CAMERA.upLead, CAMERA.upLeadMax))
+          _targetUp.applyQuaternion(_leadQ)
+        }
+      }
 
       // Forward flattened into the camera's up plane.
       _fwd.addScaledVector(_up, -_fwd.dot(_up))
@@ -364,6 +427,40 @@ export function CameraRig() {
       if (lead > 0.001) {
         _targetPos.addScaledVector(telemetry.carVelocity, lead * posSmooth)
         _targetLook.addScaledVector(telemetry.carVelocity, lead * lookSmooth)
+      }
+
+      // Under a low ceiling - an overpass, or a loop's way-out leg over the ground beside its
+      // mouth - the rig's spot above and behind the car is inside or above the slab, and the
+      // clip below cut the arm 3.6-4.6 m in one frame to get under it, then left the camera
+      // hugging the slab's underside (feel-2 L5). So the target is lowered under the slab here,
+      // before the springs, and the camera glides down as the car goes under. Measured from the
+      // car itself only: a probe further ahead read a loop's own climb as a ceiling.
+      cameraState.ceiling = Infinity
+      const clipW = cameraState.mode === 'bonnet' ? 1 - ease : cameraState.from === 'bonnet' ? ease : 1
+      if (clipW > 0.001) {
+        _pivot.copy(telemetry.carPosition).addScaledVector(_up, CAMERA.pivotHeight)
+        const hT = _tmp.subVectors(_targetPos, _pivot).dot(_up)
+        if (hT > 0.05) {
+          const cap = ceilingAbove(_pivot, hT + CAMERA.ceilingPad)
+          cameraState.ceiling = cap
+          const allowed = Math.max(cap - CAMERA.ceilingPad, 0)
+          if (hT > allowed) _targetPos.addScaledVector(_up, -(hT - allowed) * clipW)
+          // A slab overhead between the car and that spot (a ramp of road coming down beside
+          // the car): duck the target under it - the highest of a few lower heights the car can
+          // be seen from - so the camera settles below the slab, not pinned against it by the
+          // clip. If none clears (it is not a slab overhead), the target stays and the clip copes.
+          if (blockedFromAbove(_pivot, _targetPos)) {
+            const h0 = _tmp.subVectors(_targetPos, _pivot).dot(_up)
+            for (let k = 0; k < DUCK_STEPS.length; k++) {
+              const f = DUCK_STEPS[k]
+              _dir.copy(_targetPos).addScaledVector(_up, -h0 * (1 - f))
+              if (!blockedFromAbove(_pivot, _dir)) {
+                _targetPos.addScaledVector(_up, -h0 * (1 - f) * clipW)
+                break
+              }
+            }
+          }
+        }
       }
     }
 
@@ -404,16 +501,12 @@ export function CameraRig() {
     cameraState.clipped = false
     const clipWeight = cameraState.mode === 'bonnet' ? 1 - ease : cameraState.from === 'bonnet' ? ease : 1
     if (clipWeight > 0.001) {
-      _pivot.copy(telemetry.carPosition).addScaledVector(_up, 1.1)
+      _pivot.copy(telemetry.carPosition).addScaledVector(_up, CAMERA.pivotHeight)
       _tmp.subVectors(outPos, _pivot)
       const want = _tmp.length()
       let free = want
-      if (links.world && links.rapier && want > 0.3) {
-        if (!ray.current || rayRapier.current !== links.rapier) {
-          ray.current = new links.rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 })
-          rayRapier.current = links.rapier
-        }
-        const r = ray.current
+      const r = want > 0.3 ? getRay() : null
+      if (links.world && r) {
         _tmp.divideScalar(want)
         r.origin.x = _pivot.x
         r.origin.y = _pivot.y
@@ -442,6 +535,9 @@ export function CameraRig() {
         outPos.copy(_pivot).addScaledVector(_tmp.normalize(), want - pull)
         cameraState.clipped = true
       }
+      // Never pressed against a slab's underside: keep CAMERA.ceilingPad below it.
+      const over = ceilingAbove(outPos, CAMERA.ceilingPad)
+      if (over < CAMERA.ceilingPad) outPos.addScaledVector(_up, -(CAMERA.ceilingPad - over) * clipWeight)
       // And stay above the ground.
       if (track) {
         const gy = track.terrainHeight(outPos.x, outPos.z)

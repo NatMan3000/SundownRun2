@@ -35,6 +35,7 @@ import { GROUPS, isMagnetic, isOnRoad, ownerOf, surfaceOf } from '../core/physic
 import type { SurfaceKind } from '../core/physics'
 import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
 import type { BodyTuning } from './bodies/catalog'
+import { WALL_RAMP, WALL_SWEEP_DEG } from '../track/road'
 import { roadResetPose, startPose } from './trackNav'
 import {
   AERO,
@@ -74,6 +75,12 @@ const _magN = new THREE.Vector3()
 const _w = new THREE.Vector3()
 const _e = new THREE.Vector3()
 const _d = new THREE.Vector3()
+const _turnV = new THREE.Vector3()
+/** Wall ride (wallAt): the surface normal (toward the curve's centre), up-the-wall, outward. */
+const _wN = new THREE.Vector3()
+const _wArc = new THREE.Vector3()
+const _wO = new THREE.Vector3()
+const _wT = new THREE.Vector3()
 const _resetPos = new THREE.Vector3()
 const _resetQuat = new THREE.Quaternion()
 const _rv = { x: 0, y: 0, z: 0 }
@@ -119,6 +126,10 @@ function clamp(v: number, lo: number, hi: number): number {
 function smoothstep(e0: number, e1: number, x: number): number {
   const t = clamp((x - e0) / (e1 - e0), 0, 1)
   return t * t * (3 - 2 * t)
+}
+/** A wall ride's sweep (rad) this far into it: up to WALL_SWEEP_DEG, ramped over WALL_RAMP at each end. */
+function wallSweep(into: number, len: number): number {
+  return ((WALL_SWEEP_DEG * Math.PI) / 180) * smoothstep(0, WALL_RAMP, Math.min(into, len - into))
 }
 function approach(cur: number, target: number, rate: number, dt: number): number {
   return cur + (target - cur) * (1 - Math.exp(-rate * dt))
@@ -350,6 +361,25 @@ export class CarSim {
   holding = false
   /** On a loop: the turn it is asking for this step, v^2 / R toward its centre (m/s^2). 0 off a loop. */
   loopAccel = 0
+  /** On a wall ride: how hard the wall's curve presses the car into it this step (m/s^2, < 0 = away). */
+  wallAccel = 0
+  /** Seconds left in which a wall descent the lip guard forced is levelled out (MAG.wallLevelHold). */
+  private wallLevelTimer = 0
+  /** The magnet's strength after its rate limit (MAG.gripRise / gripFall), 0..1. */
+  private magLevel = 0
+  /** The wall magnet's no-tip pull last step (MAG.wallSlideStick x (1 - strength)), m/s^2: not grip. */
+  private wallSlideAccel = 0
+  /** Where the car is on the wall ride it touches (wallAt): set each step, valid while wallOn. */
+  private wallOn = false
+  private wallR = 9
+  /** Angle round the wall's curve, rad (0 = the road's edge, PI/2 = vertical, the lip at wallPhiMax). */
+  private wallPhi = 0
+  private wallPhiMax = 0
+  /** The wall ride under the car: how far into it, and its length (m), for the lip ahead. */
+  private wallInto = 0
+  private wallLen = 0
+  /** Dev: the wall ride this step as [angle deg, lip deg, press m/s^2, guard m/s^2, clear m, up-wall m/s]. */
+  readonly debugWall = new Float32Array(6)
   private nanReported = false
   private pendingReset: ResetKind | null = null
   private pendingReason = ''
@@ -543,12 +573,12 @@ export class CarSim {
       steer = steer + (auto - steer) * b
     }
 
-    // ---- wall lip guard, steering half: high on a wall and climbing, turn back along the wall ----
-    if (this.magGrip && this.magSurface === 'wall' && this.wallGuard > 0 && track && this.hasTrackS) {
-      const wf = track.frameAt(this.trackS, this.frame)
-      _tmp.crossVectors(fwd, wf.tangent)
-      const headingErr = Math.asin(clamp(_tmp.dot(up), -1, 1))
-      const auto = clamp(-MAG.wallSteerHeading * headingErr, -1, 1)
+    // ---- wall lip guard, steering half: while the guard bends the car's path, steer the nose
+    // after it (beta > 0 = travelling to the car's right, so steer right), magnet or not. Aimed
+    // at the road's direction instead, it held the nose along the road while the guard turned
+    // the path down the wall's ramp-out: a 30 deg crab that scrubbed 35 km/h (feel-2 O3).
+    if (this.magSurface === 'wall' && this.wallGuard > 0) {
+      const auto = clamp(MAG.wallSteerHeading * beta, -1, 1)
       steer = steer + (auto - steer) * MAG.wallSteerBlend * this.wallGuard
     }
 
@@ -757,9 +787,13 @@ export class CarSim {
       const alpha = Math.atan2(Math.abs(vLat), Math.max(Math.abs(vLong), TYRE.slipSpeedFloor))
       let mu = (isFront ? TYRE.muFront : TYRE.muRear) * grip
       if (!isFront && handbrake) mu *= TYRE.handbrakeGrip
-      const maxF = mu * load
+      // On a wall ride below the minimum the magnet keeps a light pull on so the car can't tip
+      // off (MAG.wallSlideStick); that pull is not weight the tyres grip with, or the car would
+      // park on the wall instead of sliding down it.
+      const gripLoad = this.wallSlideAccel > 0 && this.wheelSurface[i] === 'wall' ? Math.max(0, load - this.wallSlideAccel * quarterMass) : load
+      const maxF = mu * gripLoad
       let fLat = -Math.sign(vLat) * maxF * tyreCurve(alpha, isFront ? TYRE.slideFrontFrac : TYRE.slideRearFrac, peakSlip)
-      if (speed < 2) fLat -= vLat * load * ASSIST.lowSpeedLateral
+      if (speed < 2) fLat -= vLat * gripLoad * ASSIST.lowSpeedLateral
       this.wheelSlip[i] = clamp((alpha - peakSlip) / (TYRE.tailSlip - peakSlip), 0, 1)
 
       // ---- longitudinal: drive + brakes + rolling resistance ----
@@ -841,9 +875,11 @@ export class CarSim {
     // Like a real car's hill-hold: below HOLD.engageSpeed with no throttle and no brake/reverse
     // the tyres cancel gravity's pull along the ground and soak up what drift is left, up to
     // HOLD.mu of grip (a shove from another car still moves it). Any pedal lets go at once.
-    // Off while frozen (the countdown has its own hold), on magnetic surfaces and in the air.
+    // Off while frozen (the countdown has its own hold), in the air, and with any wheel on a loop
+    // or wall ride, magnet or not: a car that stalls on a loop's climb rolls back down it
+    // (holding there, it parked at 42 deg with the magnet off).
     const pedal = throttle > 0.02 || brake > 0.02
-    if (this.frozen || pedal || grounded < 3 || this.magGrip) this.holding = false
+    if (this.frozen || pedal || grounded < 3 || this.magGrip || magWheels > 0) this.holding = false
     else if (speed < HOLD.engageSpeed) this.holding = true
     else if (speed > HOLD.releaseSpeed) this.holding = false
     if (this.holding) {
@@ -872,10 +908,14 @@ export class CarSim {
     // ---- magnetic grip on loops and wall rides ----
     if (track) this.stepLoopSupport(body, track, mass, magWheels)
     else this.loopAccel = 0
+    if (track) this.stepWallSupport(body, track, mass, magWheels)
+    else this.wallOn = false
     this.stepMagnet(body, mass, magWheels, airborne)
     if (track && this.magGrip && this.magSurface === 'loop') this.stepLoopGuide(body, track, mass)
     else this.debugGuide.fill(0)
-    if (track && this.magGrip && this.magSurface === 'wall') this.stepWallGuard(body, track, mass)
+    // The lip guard works whenever the car is on a wall ride, magnet or not: it keeps a car that
+    // is too slow to hold off the overhang as well as one fast enough to fly over the lip.
+    if (this.wallOn) this.stepWallGuard(body, mass)
     else this.wallGuard = 0
 
     // ---- boost pads ----
@@ -1072,6 +1112,29 @@ export class CarSim {
   }
 
   /**
+   * Bend the car's path without changing its speed: `a` (m/s^2, modified) is a sideways
+   * acceleration, and the car's velocity is TURNED through the angle it asks for this step.
+   * Why not just add m x a: a step adds a x DT to the velocity, and even square to it that
+   * makes the velocity longer by (a DT)^2 each step. At the top of a loop at 200 km/h (25 g)
+   * that is 17 m^2/s^2 a step - the loop handed back 30 km/h it never took (2026-10-02).
+   */
+  private addTurn(body: RapierRigidBody, a: THREE.Vector3, mass: number): void {
+    const sp = this.linvel.length()
+    if (sp > 0.5) {
+      _turnV.copy(this.linvel).divideScalar(sp)
+      a.addScaledVector(_turnV, -a.dot(_turnV)) // only the sideways part may act
+      const aLen = a.length()
+      if (aLen > 1e-6) {
+        const ang = Math.min((aLen * DT) / sp, 0.5)
+        // v_new = v cos(ang) + (a / |a|) |v| sin(ang): same length, turned by ang.
+        a.multiplyScalar((sp * Math.sin(ang)) / (aLen * DT))
+        a.addScaledVector(_turnV, (sp * (Math.cos(ang) - 1)) / DT)
+      }
+    }
+    this.addForce(body, a.x * mass, a.y * mass, a.z * mass)
+  }
+
+  /**
    * Mass, centre of mass and inertia come from here, not from the collider (it
    * has density 0), so they are explicit and tunable per body. Re-applied when
    * the garage swaps the body.
@@ -1127,6 +1190,11 @@ export class CarSim {
     this.magGrip = false
     this.magStrength = 0
     this.magGrace = 0
+    this.magLevel = 0
+    this.wallSlideAccel = 0
+    this.wallOn = false
+    this.wallGuard = 0
+    this.wallLevelTimer = 0
     this.uprightTimer = 0
     this.buriedTimer = 0
     this.settleSteps = 6
@@ -1149,16 +1217,18 @@ export class CarSim {
    * Magnetic grip. With at least two wheels on a loop or wall-ride surface and
    * enough speed, cancel the part of gravity pulling the car OFF the surface and
    * add a firm pull INTO it. Below the speed it fades out over MAG.fadeKmh and
-   * gravity wins, so the car drops off cleanly. A short grace bridges seams.
+   * gravity wins, so the car comes off cleanly: off a loop it falls; off a wall
+   * ride it slides down the wall to the floor. A short grace bridges seams.
    */
   private stepMagnet(body: RapierRigidBody, mass: number, magWheels: number, airborne: boolean): void {
     const thr = this.handling.magGripKmh
     let strength = smoothstep(thr - MAG.fadeKmh, thr, this.speedKmh)
-    // On a loop, speed is judged against the loop's own size: a car going fast enough to be
-    // pressed into THIS curve (v^2/R past MAG.loopHoldG) keeps its grip, whatever the flat
-    // magGripKmh says. A car that is genuinely too slow for the loop still fades and falls.
-    if (this.magSurface === 'loop' && this.loopAccel > 0) {
-      const g = this.loopAccel / GRAVITY
+    // On a loop or a wall ride, speed is judged against the curve the car is on: a car going
+    // fast enough to be pressed into THIS curve (v^2 x its curvature past MAG.loopHoldG) keeps
+    // its grip, whatever the flat magGripKmh says. A car that is too slow still fades.
+    const press = this.magSurface === 'loop' ? this.loopAccel : this.magSurface === 'wall' ? this.wallAccel : 0
+    if (press > 0) {
+      const g = press / GRAVITY
       strength = Math.max(strength, smoothstep(MAG.loopHoldG - MAG.loopHoldFadeG, MAG.loopHoldG, g))
     }
     const touching = magWheels >= MAG.minWheels
@@ -1168,20 +1238,35 @@ export class CarSim {
     } else if (this.magGrace > 0) {
       this.magGrace -= DT
     }
-    const active = (touching || this.magGrace > 0) && strength > 0 && finiteV(this.magNormal)
+    const onSurface = (touching || this.magGrace > 0) && finiteV(this.magNormal)
+    // The grip fades in and out at a rate (MAG.gripRise / gripFall per second), never in a
+    // step: a car sliding down a wall right at the hold test's edge flickered 0 <-> 0.95 and
+    // chirped mag.on / mag.off five times in a second. Off the surface it is gone at once.
+    const ds = (onSurface ? strength : 0) - this.magLevel
+    this.magLevel = onSurface ? clamp(this.magLevel + clamp(ds, -MAG.gripFall * DT, MAG.gripRise * DT), 0, 1) : 0
+    strength = this.magLevel
+    const active = onSurface && strength > 0
     const wasGrip = this.magGrip
     this.magStrength = active ? strength : 0
     this.magGrip = active
-    if (active) {
+    // On a wall ride the magnet never lets go outright: below the minimum the stick (the part
+    // the tyres grip with) fades, the tyres lose their hold and the car slides or rolls down
+    // the wall to the floor. What stays on is the pull cancelling gravity's pull off an
+    // overhang, plus a light no-tip pull (MAG.wallSlideStick) the tyres don't grip with: let
+    // go, a car past vertical dropped 9-11 m onto its roof, and one stalled nose-up on a steep
+    // wall flipped over backwards (feel-2 W1). A loop keeps the clean fall a crawl needs.
+    const wallHold = onSurface && this.magSurface === 'wall'
+    this.wallSlideAccel = wallHold ? MAG.wallSlideStick * (1 - (active ? strength : 0)) : 0
+    if (active || wallHold) {
       const n = this.magNormal
       // Gravity is (0, -g, 0); its component along n is -g * n.y. Positive = pulling away.
       const away = -GRAVITY * n.y
-      const cancel = away > 0 ? away * strength : 0
+      const cancel = away > 0 ? away * (wallHold ? 1 : strength) : 0
       // On a loop the loop support carries the turn, so the extra pull only has to keep the
       // wheels in touch: a full-strength pull there squashed the springs onto their bump stops
       // and let the chassis box's ends scrape the tight curve.
-      const stick = this.magSurface === 'loop' ? MAG.loopStickAccel : MAG.stickAccel
-      const pull = (cancel + stick * strength) * mass
+      const stick = active ? (this.magSurface === 'loop' ? MAG.loopStickAccel : MAG.stickAccel) * strength : 0
+      const pull = (cancel + stick + this.wallSlideAccel) * mass
       this.debugLoop[2] = -pull / mass
       this.addForce(body, -n.x * pull, -n.y * pull, -n.z * pull)
     }
@@ -1225,14 +1310,10 @@ export class CarSim {
     this.loopAccel = kIn > 0 && Number.isFinite(kIn) ? v2 * kIn : 0
     if (MAG.loopSupport <= 0 || !(kappa > 1e-5) || !Number.isFinite(kappa)) return
     _tmp.multiplyScalar(v2 * MAG.loopSupport)
-    // Square to the car's own motion, so it can bend the path but never speed the car up or
-    // slow it down (pushed along the road's up at a slightly wrong s, it pumped 45 km/h IN).
-    const sp = this.linvel.length()
-    if (sp > 0.5) {
-      _force.copy(this.linvel).divideScalar(sp)
-      _tmp.addScaledVector(_force, -_tmp.dot(_force))
-    }
-    this.addForce(body, _tmp.x * mass, _tmp.y * mass, _tmp.z * mass)
+    // Square to the car's own motion and applied as a turn of its velocity (addTurn), so it
+    // bends the path but never speeds the car up or slows it down (pushed along the road's up
+    // at a slightly wrong s it pumped 45 km/h in; added as a plain force, 30 km/h at 200).
+    this.addTurn(body, _tmp, mass)
     this.debugLoop[0] = _tmp.dot(this.groundNormal)
     this.debugLoop[5] = kappa
   }
@@ -1299,37 +1380,184 @@ export class CarSim {
     )
   }
 
-  /** Wall lip guard (MAG.wallGuardFrom ...): high on a wall ride, upward speed is bent along the wall. */
-  private stepWallGuard(body: RapierRigidBody, track: TrackRuntime, mass: number): void {
-    if (!this.hasTrackS) return
-    // How tall is the wall we're on? (A few pieces per track: a plain loop is cheap.)
-    let height = 9
+  /**
+   * Which wall ride the car is on and where on its curve: fills _wN (the surface normal,
+   * pointing at the curve's centre), _wArc (straight up the wall, in its surface), _wT (along
+   * the road), wallR, wallPhi, wallPhiMax, wallInto and wallLen. False when not on a wall ride.
+   * The wall is a circle of radius wallR swept up from the road's edge to WALL_SWEEP_DEG
+   * (past vertical: the overhang), ramped in and out over WALL_RAMP metres at its ends - the
+   * same numbers the track builds it from (src/track/road.ts).
+   */
+  private wallAt(track: TrackRuntime): boolean {
+    const s = this.trackS
     const pieces = track.pieces
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i]
       if (p.type !== 'wallride') continue
-      const along = track.deltaS(p.s0, this.trackS)
-      if (along >= -2 && along <= track.deltaS(p.s0, p.s1) + 2) {
-        height = p.height ?? 9
-        break
+      const len = track.deltaS(p.s0, p.s1)
+      const into = track.deltaS(p.s0, s)
+      if (into < 0 || into > len) continue
+      const side = p.side === 'left' ? -1 : p.side === 'right' ? 1 : this.lateral >= 0 ? 1 : -1
+      const R = Math.max(p.height ?? 9, 1)
+      const f = track.frameAt(s, this.frame)
+      _wT.copy(f.tangent)
+      _wO.copy(f.right).multiplyScalar(side) // outward, toward the wall
+      // The curve's axis runs along the road, R above the road's edge on this side.
+      _tmp.copy(f.position).addScaledVector(_wO, f.halfWidth).addScaledVector(f.up, R)
+      _tmp.subVectors(this.pos, _tmp)
+      _tmp.addScaledVector(_wT, -_tmp.dot(_wT))
+      const rho = _tmp.length()
+      if (!(rho > 0.5) || !Number.isFinite(rho)) return false
+      _wN.copy(_tmp).divideScalar(-rho)
+      const phi = Math.atan2(-_wN.dot(_wO), _wN.dot(f.up))
+      _wArc.copy(_wO).multiplyScalar(Math.cos(phi)).addScaledVector(f.up, Math.sin(phi))
+      this.wallR = R
+      this.wallPhi = phi
+      this.wallPhiMax = wallSweep(into, len)
+      this.wallInto = into
+      this.wallLen = len
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Wall-ride support (MAG.wallSupport): the wall carries the turn its curve asks for, the way a
+   * loop does (stepLoopSupport). Steering up a 9 m wall at 110 km/h asks ~8 g of the springs:
+   * they bottomed on their 26 kN stops and the tyres, loaded that hard at full lock, scrubbed
+   * 107 -> 55 km/h in 0.7 s where gravity alone takes 10 (feel-2 W1). So the curve's own push,
+   * v^2 x its curvature in the direction the car is going (across the wall 1/R, along it the
+   * road's bend), is applied square to the car's motion as a turn: it bends the path, never
+   * the speed. The springs carry gravity and the magnet's stick, as on flat road.
+   */
+  private stepWallSupport(body: RapierRigidBody, track: TrackRuntime, mass: number, magWheels: number): void {
+    const touching = (magWheels >= MAG.minWheels || this.magGrace > 0) && this.magSurface === 'wall' && this.hasTrackS
+    this.wallOn = touching && this.wallAt(track)
+    if (!this.wallOn) {
+      this.wallAccel = 0
+      this.debugWall.fill(0)
+      return
+    }
+    const v = this.linvel
+    const vArc = v.dot(_wArc)
+    const vT = v.dot(_wT)
+    // The road's bend, per metre (its tangent's turn), toward or away from the wall's face.
+    const h = MAG.loopCurveStep
+    const a = track.frameAt(this.trackS - h, this.frameA)
+    const b = track.frameAt(this.trackS + h, this.frameB)
+    _d.subVectors(b.tangent, a.tangent).divideScalar(2 * h)
+    const press = (vArc * vArc) / this.wallR + vT * vT * _d.dot(_wN)
+    this.wallAccel = Number.isFinite(press) ? press : 0
+    const dw = this.debugWall
+    dw[0] = (this.wallPhi * 180) / Math.PI
+    dw[1] = (this.wallPhiMax * 180) / Math.PI
+    dw[2] = this.wallAccel
+    dw[3] = 0
+    dw[4] = this.wallR * (this.wallPhiMax - this.wallPhi)
+    dw[5] = vArc
+    // Only while the wheels touch it: a car that has come off is not held by it.
+    if (MAG.wallSupport <= 0 || magWheels < MAG.minWheels || !(this.wallAccel > 0)) return
+    _tmp.copy(_wN).multiplyScalar(this.wallAccel * MAG.wallSupport)
+    this.addTurn(body, _tmp, mass)
+  }
+
+  /**
+   * Wall lip guard: the car never leaves over the top of a wall ride. The line it must stay
+   * under is MAG.wallLipMargin (m, round the curve) below the lip, and the lip comes down to
+   * the road over the wall's last WALL_RAMP metres. The guard works out the push back down the
+   * wall it needs: to stop a climb at the line (v^2 / 2d), and to be under the line at each
+   * point along the road ahead (MAG.wallGuardLook seconds of travel) by the time it gets there
+   * - so a car riding high is brought down ahead of the wall's end, not launched off it. Less
+   * what gravity does on its own, up to MAG.wallGuardMax. It is applied as a turn of the car's
+   * path back along the wall (the speed is kept), and only what a turn can't do - a car pointing
+   * straight up the wall - brakes the climb. Past the line, a spring pushes it back under.
+   * Applied with or without the magnet: a slow car is kept off the overhang too.
+   */
+  private stepWallGuard(body: RapierRigidBody, mass: number): void {
+    this.wallGuard = 0
+    const R = this.wallR
+    const v = this.linvel
+    const y = R * this.wallPhi // how far up the wall's curve, m
+    const vArc = v.dot(_wArc)
+    const vT = v.dot(_wT)
+    const line = Math.max(R * this.wallPhiMax - MAG.wallLipMargin, 0)
+    const dist = line - y
+    let aReq = 0
+    if (vArc > 0) aReq = (vArc * vArc) / (2 * Math.max(dist, MAG.wallGuardMinDist))
+    if (dist < 0) aReq = Math.max(aReq, -dist * MAG.wallGuardSpring)
+    // The lip ahead: under it by the time the car gets there (y + vArc T - a T^2 / 2 <= line).
+    const speedAlong = Math.abs(vT)
+    if (speedAlong > 1) {
+      const dir = vT >= 0 ? 1 : -1
+      const reach = Math.min(speedAlong * MAG.wallGuardLook, MAG.wallGuardLookMax)
+      // The lip is read MAG.wallLevelTime of travel further on than each point, so a car riding
+      // high is down before the wall ends, with road left to level out on (below).
+      const early = speedAlong * MAG.wallLevelTime
+      for (let x = MAG.wallGuardLookStep; x <= reach; x += MAG.wallGuardLookStep) {
+        const lineAt = Math.max(R * wallSweep(this.wallInto + dir * (x + early), this.wallLen) - MAG.wallLipMargin, 0)
+        const T = x / speedAlong
+        const over = y + vArc * T - lineAt
+        if (over > 0) aReq = Math.max(aReq, (2 * over) / (T * T))
       }
     }
-    const f = track.frameAt(this.trackS, this.frame)
-    const h = _tmp.subVectors(this.pos, f.position).dot(f.up) // height above the road plane
-    const frac = h / Math.max(height, 1)
-    const g = smoothstep(MAG.wallGuardFrom, MAG.wallGuardFull, frac)
-    this.wallGuard = 0
-    if (g <= 0) return
-    // "Up the wall" inside the wall's surface: world up with the surface normal taken out.
-    const n = this.magNormal
-    _tmp.set(0, 1, 0).addScaledVector(n, -n.y)
-    if (_tmp.lengthSq() < 1e-4) return
-    _tmp.normalize()
-    const vUp = this.linvel.dot(_tmp)
-    if (vUp <= 0) return
-    this.wallGuard = g // next step's steering reads this
-    const a = -Math.min(vUp * MAG.wallGuardK, MAG.wallGuardMax) * g * this.magStrength
-    this.addForce(body, _tmp.x * a * mass, _tmp.y * a * mass, _tmp.z * a * mass)
+    // Gravity's own pull back down the wall does part of it.
+    const gDown = Math.max(0, GRAVITY * _wArc.y)
+    const aG = Math.min(aReq - gDown, MAG.wallGuardMax)
+    if (aG > 0) {
+      this.wallLevelTimer = MAG.wallLevelHold
+      this.wallGuard = clamp(aG / MAG.wallGuardSteerAt, 0, 1) // next step's steering reads this
+      this.debugWall[3] = aG
+      this.wallPush(body, mass, aG, -1)
+      return
+    }
+    // Level out: a descent the guard forced (within MAG.wallLevelHold s) that would reach the
+    // bottom of the wall still heading down it is bent back along the road, so the car leaves
+    // the wall's end running along the road. Left alone it came off 30 deg across the road at
+    // 150 km/h and ran off the far edge.
+    if (this.wallLevelTimer <= 0) return
+    this.wallLevelTimer -= DT
+    if (vArc >= 0) return
+    const aUp = Math.min((vArc * vArc) / (2 * Math.max(y, MAG.wallGuardMinDist)) + gDown, MAG.wallLevelMax)
+    const w = this.wallLevelTimer / MAG.wallLevelHold
+    if (!(aUp * w > 0.1)) return
+    this.wallGuard = clamp((aUp * w) / MAG.wallGuardSteerAt, 0, 1)
+    this.debugWall[3] = -aUp * w
+    this.wallPush(body, mass, aUp * w, 1)
+  }
+
+  /**
+   * Push a car on a wall ride round the wall's curve: `sign` -1 back down it (the lip guard),
+   * +1 back up toward running along the road (levelling out), `a` m/s^2. First as a turn of
+   * its path (addTurn: speed kept), with the nose turned along with it (the turn's own rate
+   * fed forward plus a spring and damper on the nose-to-path angle, MAG.wallYawK / wallYawD,
+   * times the car's yaw inertia): left to the tyres, the nose stayed behind and the car crabbed
+   * 30 deg, scrubbing 35 km/h (feel-2 O3). A turn of a only gets a x sin(angle to the push)
+   * of it, so a car moving nearly straight up the wall can't be turned enough: going down, the
+   * rest brakes the climb.
+   */
+  private wallPush(body: RapierRigidBody, mass: number, a: number, sign: number): void {
+    const v = this.linvel
+    const sp = v.length()
+    let left = a
+    if (sp > 0.5) {
+      _e.copy(v).divideScalar(sp)
+      _tmp.copy(_wArc).multiplyScalar(sign)
+      _tmp.addScaledVector(_e, -_tmp.dot(_e)) // the push's direction, square to the motion
+      const sin = _tmp.length()
+      if (sin > 0.05) {
+        const aTurn = Math.min(a / sin, MAG.wallGuardMax)
+        left = a - aTurn * sin
+        _tmp.multiplyScalar(aTurn / sin)
+        const up = this.up
+        const wantYaw = _w.crossVectors(_e, _tmp).dot(up) / sp
+        _w.crossVectors(this.fwd, _e)
+        const beta = Math.asin(clamp(_w.dot(up), -1, 1)) // nose -> path, about up
+        const yaw = CHASSIS.inertia.y * (MAG.wallYawK * beta + MAG.wallYawD * (wantYaw - this.angvel.dot(up))) * this.wallGuard * (mass / CHASSIS.mass)
+        if (Number.isFinite(yaw)) this.addTorque(body, up.x * yaw, up.y * yaw, up.z * yaw)
+        this.addTurn(body, _tmp, mass)
+      }
+    }
+    if (sign < 0 && left > 1e-3) this.addForce(body, -_wArc.x * left * mass, -_wArc.y * left * mass, -_wArc.z * left * mass)
   }
 
   /** Boost pads: a kick on entry, then the envelope pushes and lifts the top speed. */

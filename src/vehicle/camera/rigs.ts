@@ -117,6 +117,13 @@ export const CAMERA = {
   fovSmooth: 0.35,
   /** Up-vector spring time, seconds: loops roll the view smoothly, never snap it. */
   upSmooth: 0.22,
+  /**
+   * ...and while it follows the car's up, its target leads the car's up by the car's own spin
+   * x this many seconds (at most upLeadMax rad), so it doesn't trail a loop by ~60 deg.
+   * 0.7 x upSmooth: most of the lag goes, the spring's smoothing stays.
+   */
+  upLead: 0.15,
+  upLeadMax: 1.1,
   /** Car tilted more than this from world up (on the ground) = follow the car's up. ~25 deg. */
   steepCos: 0.9,
   /** Rotational speed shake - tiny. Nausea is a bug. */
@@ -126,6 +133,10 @@ export const CAMERA = {
   /** Never closer than this to the ground or a wall. */
   clearance: 0.5,
   wallPad: 0.35,
+  /** The clip test looks from this far above the car (m, along the camera's up). */
+  pivotHeight: 1.1,
+  /** Under a slab overhead (an overpass) the camera's target is kept this far below its underside, m. */
+  ceilingPad: 0.6,
   /** A wall that appears between car and camera pulls the arm in at this rate (1/s: ~95% in 3 frames at 60 fps)... */
   clipInRate: 60,
   /** ...and once clear it lets the arm back out at this speed, m/s. */
