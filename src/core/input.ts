@@ -52,6 +52,12 @@ const BRAKE_ATTACK = 11
 const BRAKE_RELEASE = 14
 /** Analog axes only need enough smoothing to kill stick noise. */
 const ANALOG_RATE = 26
+/**
+ * ...except steering at speed: a flick of the stick to full lock at 100 km/h
+ * hit harder than a key ever can (a handbrake tap peaked 29 deg on the pad vs
+ * 15 on the keyboard). The stick eases to 14/s by 120 km/h - still under 0.1 s.
+ */
+const STICK_STEER_RATE_FAST = 14
 
 const STICK_DEADZONE = 0.14
 const TRIGGER_DEADZONE = 0.05
@@ -461,7 +467,9 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
     const steer = padStickSuppressed ? 0 : stickCurve(deadzone(ax, STICK_DEADZONE))
     const throttle = padSuppressed[PAD.RT] ? 0 : deadzone(buttonValue(pad, PAD.RT), TRIGGER_DEADZONE)
     const brake = padSuppressed[PAD.LT] ? 0 : deadzone(buttonValue(pad, PAD.LT), TRIGGER_DEADZONE)
-    driveInput.steer = approach(driveInput.steer, steer, ANALOG_RATE, dt)
+    const kmh = Number.isFinite(telemetry.speedKmh) ? telemetry.speedKmh : 0
+    const steerRate = ANALOG_RATE + (STICK_STEER_RATE_FAST - ANALOG_RATE) * smoothstep(40, 120, kmh)
+    driveInput.steer = approach(driveInput.steer, steer, steerRate, dt)
     driveInput.throttle = approach(driveInput.throttle, throttle, ANALOG_RATE, dt)
     driveInput.brake = approach(driveInput.brake, brake, ANALOG_RATE, dt)
     driveInput.handbrake = padNow[PAD.A] === 1 && !padSuppressed[PAD.A]

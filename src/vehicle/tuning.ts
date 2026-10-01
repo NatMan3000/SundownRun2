@@ -225,10 +225,10 @@ export const ASSIST = {
    */
   ceilStart: 0.5, //     rad (29 deg): the spring starts here
   ceilSpring: 16000, //  Nm per rad past the start
-  ceilDampFrom: 0.2, //  rad (11 deg): the damper fades in from here to ceilStart
-  ceilDamp: 3000, //     Nm per rad/s of rotation deeper into the slide
+  ceilDampFrom: 0.12, // rad (7 deg): the damper fades in from here to ceilStart
+  ceilDamp: 4500, //     Nm per rad/s of rotation deeper into the slide
   /** Rotation deeper into a slide is capped near this rate (rad/s, ~92 deg/s): plenty for any drift entry. */
-  maxDriftYaw: 1.6,
+  maxDriftYaw: 1.1,
   yawCapK: 7000, //      Nm per rad/s over the cap
   ceilEnd: 1.9, //       rad (109 deg): beyond this the car has really spun (a crash) - let it go
   /**
