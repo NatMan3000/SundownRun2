@@ -226,7 +226,7 @@ export function PostStack() {
         }
         return { ...BEAM_TUNE, lampsDrawn: lookState.post.beamLamps }
       }) as (...args: never[]) => unknown,
-      'lookBeams({ length, spread, startRadius, intensity, maxBrightness, softContact, aimDrop, fadeNear, fadeFar }) - tune the headlight beams live; no argument returns the current values',
+      'lookBeams({ length, spread, startRadius, intensity, maxBrightness, nearFade, forwardScatter, softContact, aimDrop, fadeNear, fadeFar }) - tune the headlight beams live; no argument returns the current values',
     )
     return () => {
       offA()

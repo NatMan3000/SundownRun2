@@ -52,6 +52,25 @@ float sr2Noise(vec2 p) {
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+// The same kind of value noise, smoother (quintic fade, so its slope has no
+// creases at the lattice lines), returning (value, d/dp.x, d/dp.y). The slope
+// is exact maths, not a screen-space derivative: a normal built from dFdx of
+// noise is constant over each 2x2 pixel block and shows as a brick pattern
+// in a mirror-wet reflection.
+vec3 sr2NoiseD(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  float a = sr2Hash(i);
+  float b = sr2Hash(i + vec2(1.0, 0.0));
+  float c = sr2Hash(i + vec2(0.0, 1.0));
+  float d = sr2Hash(i + vec2(1.0, 1.0));
+  float k = a - b - c + d;
+  float v = a + (b - a) * u.x + (c - a) * u.y + k * u.x * u.y;
+  return vec3(v, du.x * (b - a + k * u.y), du.y * (c - a + k * u.x));
+}
+
 // Bump the normal by a height field's screen-space slope (dHdxy),
 // the same way three's bumpMap does, without needing a texture.
 vec3 sr2Perturb(vec3 surfPos, vec3 surfNorm, vec2 dHdxy, float faceDir) {

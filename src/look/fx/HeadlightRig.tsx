@@ -44,11 +44,15 @@ function playerCar(): CarState | null {
 export function HeadlightRig() {
   const rig = useMemo(() => {
     const make = () => {
-      const l = new THREE.SpotLight(PALETTE.laneLine, 0, 95, 0.46, 0.6, 1.25)
+      // full penumbra: the light fades all the way from the beam's centre to its
+      // edge, so the pool it casts has no hard sides (angle 0.5 rad keeps the middle as bright)
+      const l = new THREE.SpotLight(PALETTE.laneLine, 0, 95, 0.5, 1, 1.25)
       l.castShadow = false
       return l
     }
     const lights = [make(), make()]
+    lights[0].name = 'look-headlight-left'
+    lights[1].name = 'look-headlight-right'
     const targets = [new THREE.Object3D(), new THREE.Object3D()]
     lights[0].target = targets[0]
     lights[1].target = targets[1]

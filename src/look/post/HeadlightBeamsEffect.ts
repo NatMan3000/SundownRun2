@@ -42,6 +42,7 @@ uniform vec3 uBeamColor;
 uniform float uBeamIntensity;
 uniform float uBeamMax;             // the brightest a pixel of beam can get (below bloom)
 uniform float uPhaseG;              // 0 = haze glows the same from every side, toward 1 = mostly onward
+uniform float uBeamFade;            // metres over which the light near the lamp thins out
 
 // Interleaved gradient noise: a fixed per-pixel offset for the steps, so
 // a few steps look smooth instead of banded.
@@ -55,10 +56,16 @@ float beamDensity(vec3 p, vec3 o, vec3 d) {
   float z = dot(v, d);
   float r2 = max(dot(v, v) - z * z, 0.0);
   float w = uShape.x + max(z, 0.0) * uShape.y;
-  float across = exp(-2.2 * r2 / (w * w));
-  // fades in over the first metre and a half (no hot spot at the lamp), and
-  // out over the far 60% of its length
-  float along = smoothstep(0.0, 1.5, z) * (1.0 - smoothstep(uShape.z * 0.4, uShape.z, z));
+  float x = r2 / (w * w);
+  // a bright core whose light falls away gradually, with long faint tails
+  // (1 / (1 + kx)^2, not a Gaussian): seen from behind, a Gaussian cone
+  // shows its sides as two straight lines; this melts into the dark
+  float q = 1.0 + 3.0 * x;
+  float across = 1.0 / (q * q);
+  // fades in over the first metre and a half (no hot spot at the lamp), is
+  // strongest near the lamp (light thins out as it spreads), and fades out
+  // over the far 60% of its length
+  float along = smoothstep(0.0, 1.5, z) * (1.0 - smoothstep(uShape.z * 0.4, uShape.z, z)) * (0.3 + 0.7 * exp(-z / uBeamFade));
   // the same light spread over a wider beam is dimmer (0.5 keeps the lamp end from blazing)
   return across * along / (w * w + 0.5);
 }
@@ -79,8 +86,8 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, const in float depth,
   float startR = uShape.x;
   float spread = uShape.y;
   float len = uShape.z;
-  // the bounding cone is 1.6x the beam's own radius: past that the beam is under 1% bright
-  float T = spread * 1.6;
+  // the bounding cone is 2.6x the beam's own radius: past that the tails are under 0.2% bright
+  float T = spread * 2.6;
   float k = 1.0 + T * T;
   float apexBack = startR / spread; // the cone's tip sits this far behind the lamp
   float jitter = beamNoise(gl_FragCoord.xy);
@@ -181,6 +188,7 @@ export class HeadlightBeamsEffect extends Effect {
         ['uBeamIntensity', new THREE.Uniform(BEAM_TUNE.intensity)],
         ['uBeamMax', new THREE.Uniform(BEAM_TUNE.maxBrightness)],
         ['uPhaseG', new THREE.Uniform(BEAM_TUNE.forwardScatter)],
+        ['uBeamFade', new THREE.Uniform(BEAM_TUNE.nearFade)],
       ]),
     })
   }
@@ -225,6 +233,7 @@ export class HeadlightBeamsEffect extends Effect {
     u.get('uBeamIntensity')!.value = BEAM_TUNE.intensity
     u.get('uBeamMax')!.value = Math.max(0.01, BEAM_TUNE.maxBrightness)
     u.get('uPhaseG')!.value = THREE.MathUtils.clamp(BEAM_TUNE.forwardScatter, 0, 0.9)
+    u.get('uBeamFade')!.value = Math.max(1, BEAM_TUNE.nearFade)
     return n
   }
 }

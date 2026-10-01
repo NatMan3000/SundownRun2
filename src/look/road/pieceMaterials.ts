@@ -12,8 +12,9 @@
 //
 //  Barriers (meshes.barriers, the Hyperdrome walls): dark glass with
 //    a glowing top rail in the edge colour (T2), a thin base line,
-//    and bands of light racing along the inside face (T1, the
-//    alternate edge colour), so the stadium wall feels fast.
+//    and comets of light racing along the inside face (T1, the
+//    alternate edge colour: a soft head, a long tail, a glow that
+//    falls away above and below), so the stadium wall feels fast.
 //    The outer face (seen from the infield or from outside the
 //    stadium) is never a flat dark slab: a thin line on its top
 //    edge, the rail's light washing softly down it, a satin sheen
@@ -104,6 +105,7 @@ uniform float uGlowT0;
 uniform float uGlowT1;
 uniform float uGlowT2;
 uniform float uTime;
+uniform float uBandPeriod;
 uniform vec3 uHorizon;
 varying vec2 vWallUv;
 ${ROAD_GLSL}
@@ -120,13 +122,22 @@ const wallFragmentEmissive = /* glsl */ `
   float railEdge = sr2Line(u - uRailU - 0.06, 0.05, wU);
   // a thin line along the foot of the inner face
   float base = sr2Line(u - 0.18, 0.03, wU);
-  // light streaks racing along the inner face in the driving direction: a
-  // bright stripe at about car height with a faint wash above and below
-  float inner = step(0.3, u) * step(u, uRailU - 0.25);
-  float ph = fract((v - uTime * 48.0) / 64.0);
-  float run = smoothstep(0.0, 0.02, ph) * (1.0 - smoothstep(0.02, 0.2, ph));
-  float stripe = sr2Line(u - 0.95, 0.12, wU);
-  float band = run * inner * (stripe + 0.12);
+  // Light racing along the inner face in the driving direction, at about car
+  // height: a bright head that fades into a long tail (a comet, not a card),
+  // a thin antialiased core line, and a soft glow round it that falls off
+  // above and below. No hard edge anywhere: every boundary is a smooth curve.
+  // d: how far behind the comet's front this point is, as a fraction of the
+  // cycle (about 64 m, fitted to the lap so the comets don't jump at the
+  // start line; they move forward at 48 m/s, head first)
+  float d = fract((uTime * 48.0 - v) / uBandPeriod);
+  float nose = smoothstep(0.0, 0.09, d);                  // ~6 m soft nose
+  float tail = 1.0 - smoothstep(0.03, 0.34, d);           // ~20 m fading tail
+  float run = nose * tail * tail;
+  float onFace = smoothstep(0.15, 0.45, u) * (1.0 - smoothstep(uRailU - 0.6, uRailU - 0.2, u));
+  float wAA = max(wU, 0.02);                              // never thinner than a smooth pixel edge
+  float stripe = sr2Line(u - 0.95, 0.06, wAA * 1.5);
+  float glow = exp(-pow((u - 0.95) / 0.32, 2.0));
+  float band = run * onFace * (stripe + glow * 0.32);
   band *= 1.0 - smoothstep(0.5, 2.0, wV); // fades out where it would shimmer far away
   totalEmissiveRadiance += uRailColor * (rail * uGlowT1 * 0.7 + railEdge * uGlowT2 + base * uGlowT1)
     + uBandColor * band * uGlowT1;
@@ -149,7 +160,7 @@ const wallFragmentEmissive = /* glsl */ `
 export function makeBarrierMaterial(
   time: { value: number },
   horizon: { value: THREE.Color },
-  opts: { rail: string; band: string; height: number },
+  opts: { rail: string; band: string; height: number; bandPeriod: number },
 ): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({ color: PALETTE.groundSheen, roughness: 0.22, metalness: 0.35 })
   mat.onBeforeCompile = (shader) => {
@@ -159,6 +170,7 @@ export function makeBarrierMaterial(
       uBandColor: { value: new THREE.Color(opts.band) },
       uRailU: { value: opts.height },
       uRailW: { value: 0.7 },
+      uBandPeriod: { value: opts.bandPeriod },
       uGlowT0: { value: GLOW.T0 },
       uGlowT1: { value: GLOW.T1 },
       uGlowT2: { value: GLOW.T2 },
@@ -171,6 +183,6 @@ export function makeBarrierMaterial(
       .replace('#include <common>', `#include <common>\n${wallFragmentPars}`)
       .replace('#include <emissivemap_fragment>', wallFragmentEmissive)
   }
-  mat.customProgramCacheKey = () => 'sr2-barrier-v3'
+  mat.customProgramCacheKey = () => 'sr2-barrier-v5'
   return mat
 }

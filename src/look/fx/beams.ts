@@ -40,6 +40,8 @@ export const BEAM_TUNE = {
   startRadius: 0.1,
   /** Overall brightness. Kept low: beams are a haze, not a hero glow (they never reach bloom). */
   intensity: 0.15,
+  /** Metres over which the light near the lamp thins out along the beam (smaller = a shorter, brighter shaft). */
+  nearFade: 8,
   /** The brightest a pixel of beam can get, however much of it you look through (stays under bloom's 1.0). */
   maxBrightness: 0.24,
   /**

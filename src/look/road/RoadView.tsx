@@ -24,7 +24,8 @@ import { environment } from '../../core/telemetry'
 import { useTrack } from '../../track/current'
 import type { MeshBuffers, TrackRuntime } from '../../track/types'
 import { lookState } from '../lookState'
-import { dashPeriodFor, lanesFor, makeRoadMaterial, makeRoadUniforms } from './roadMaterial'
+import { registerDev } from '../../core/devHandles'
+import { ROAD_TUNE, dashPeriodFor, lapPeriodFor, lanesFor, makeRoadMaterial, makeRoadUniforms } from './roadMaterial'
 import type { RoadLook, RoadUniforms } from './roadMaterial'
 import { makeSkirtMaterial } from './skirtMaterial'
 import { makeBarrierMaterial, makeRampMaterial } from './pieceMaterials'
@@ -70,8 +71,10 @@ export function tickRoadUniforms(u: RoadUniforms, elapsed: number): void {
   // Wrapped so the shader's float time stays precise in long sessions (every animation cycle divides 600 s).
   u.uTime.value = elapsed % 600
   u.uNight.value = environment.night
-  u.uDirectSpec.value = 0.35 + 0.65 * environment.night
-  u.uHeadOn.value = headlightState.strength
+  u.uKeySpec.value = ROAD_TUNE.keySpec
+  u.uKeyCap.value = Math.max(0.05, ROAD_TUNE.nightKeyCap)
+  u.uKeyCapOn.value = environment.night
+  u.uHeadOn.value = headlightState.strength * ROAD_TUNE.headPool
   u.uHeadPos.value.copy(headlightState.position)
   u.uHeadDir.value.copy(headlightState.direction)
   // windows come on from timeOfDay 0.2 to 0.9 (constitution)
@@ -85,6 +88,24 @@ function triCount(g: THREE.BufferGeometry): number {
 
 export function RoadView() {
   const track = useTrack()
+
+  useEffect(
+    () =>
+      registerDev(
+        'lookRoad',
+        ((opts?: Partial<typeof ROAD_TUNE>) => {
+          if (opts && typeof opts === 'object') {
+            for (const key of Object.keys(opts) as (keyof typeof ROAD_TUNE)[]) {
+              const v = opts[key]
+              if (key in ROAD_TUNE && typeof v === 'number' && Number.isFinite(v)) ROAD_TUNE[key] = v
+            }
+          }
+          return { ...ROAD_TUNE }
+        }) as (...args: never[]) => unknown,
+        'lookRoad({ keySpec, nightKeyCap, headPool }) - the key light\'s mirror highlight on the wet road (share kept, night soft cap) and the headlight pool strength; no argument returns the values',
+      ),
+    [],
+  )
 
   const built = useMemo(() => {
     if (!track) return null
@@ -108,6 +129,7 @@ export function RoadView() {
           rail: pal?.edge ?? PALETTE.roadEdge,
           band: pal?.edgeAlt ?? PALETTE.roadEdgeAlt,
           height: track.file.road.barrierHeight,
+          bandPeriod: lapPeriodFor(track.length, 64),
         })
       : null
     lookState.road.triangles =

@@ -72,14 +72,18 @@ export function makeRoadUniforms(look: RoadLook) {
     uWallColor: { value: c(PALETTE.wallRide) },
     uLanes: { value: look.lanes },
     uDashPeriod: { value: look.dashPeriod },
+    // ~5 m, fitted so the lap holds a whole number of 6-chevron comet cycles
+    uChevPeriod: { value: lapPeriodFor(look.length, 30) / 6 },
     uGlowT0: { value: GLOW.T0 },
     uGlowT1: { value: GLOW.T1 },
     uGlowT2: { value: GLOW.T2 },
     uLength: { value: look.length },
     /** 0..1 night (environment.night), ticked per frame. */
     uNight: { value: 0 },
-    /** How much of the direct lights' mirror highlight the road keeps (see the shader). */
-    uDirectSpec: { value: 0.4 },
+    /** The key light's mirror highlight: share kept, night soft cap, and how much of the cap applies (see the shader). */
+    uKeySpec: { value: 0.35 },
+    uKeyCap: { value: 0.4 },
+    uKeyCapOn: { value: 0 },
     uBoostColor: { value: c(PALETTE.boost) },
     uTrapColor: { value: c(PALETTE.speedTrap) },
     uBoost: { value: boostVectors(look) },
@@ -184,12 +188,15 @@ uniform vec3 uLoopColor;
 uniform vec3 uWallColor;
 uniform float uLanes;
 uniform float uDashPeriod;
+uniform float uChevPeriod;
 uniform float uGlowT0;
 uniform float uGlowT1;
 uniform float uGlowT2;
 uniform float uLength;
 uniform float uNight;
-uniform float uDirectSpec;
+uniform float uKeySpec;
+uniform float uKeyCap;
+uniform float uKeyCapOn;
 uniform vec3 uBoostColor;
 uniform vec3 uTrapColor;
 uniform vec4 uBoost[${MAX_BOOSTS}];
@@ -271,7 +278,7 @@ if (bend > 0.001) {
   const float BAND_IN = 0.7;                 // band starts this far inside the edge
   const float BAND_W = 1.9;
   float y = (hw - xo) - BAND_IN;             // 0 at the band's outer side, BAND_W at its inner side
-  const float P = 5.0;                       // one chevron every 5 m
+  float P = uChevPeriod;                     // one chevron about every 5 m (fitted to the lap)
   float cellF = s / P;
   float cell = floor(cellF);
   float ts = (fract(cellF) - 0.5) * P;       // metres from this chevron's centre
@@ -347,11 +354,24 @@ diffuseColor.rgb *= 1.0 - paint * 0.6;
 
 const fragmentNormal = /* glsl */ `
 #include <normal_fragment_maps>
-// Gentle ripples, mostly in the puddles, gone with distance.
+// Gentle ripples, mostly in the puddles, gone with distance. The ripple's
+// slope across and along the road is worked out exactly (sr2NoiseD), then
+// turned into a screen slope with the road coordinates' own derivatives,
+// which are smooth: so the reflection smears into streaks, never 2x2 blocks.
+// The finer ripple is turned 35 degrees so its cells never line up in rows.
 {
-  float h = sr2Noise(rp * vec2(1.3, 0.45) + 9.0) + 0.35 * sr2Noise(rp * vec2(3.5, 1.4));
   float amp = detailFade * (0.12 + 0.18 * wet);
-  if (amp > 1e-4) normal = sr2Perturb(-vViewPosition, normal, vec2(dFdx(h), dFdy(h)) * amp, faceDirection);
+  if (amp > 1e-4) {
+    const vec2 SC1 = vec2(1.3, 0.45);
+    const vec2 SC2 = vec2(3.5, 1.4);
+    const mat2 TURN = mat2(0.8192, 0.5736, -0.5736, 0.8192);
+    vec3 r1 = sr2NoiseD(rp * SC1 + 9.0);
+    vec3 r2 = sr2NoiseD((TURN * rp) * SC2);
+    // slope of the height in metres: d/dlat, d/ds
+    vec2 g = r1.yz * SC1 + 0.35 * ((r2.yz * SC2) * TURN);
+    vec2 dHdxy = vec2(g.x * dFdx(rp.x) + g.y * dFdx(rp.y), g.x * dFdy(rp.x) + g.y * dFdy(rp.y));
+    normal = sr2Perturb(-vViewPosition, normal, dHdxy * amp, faceDirection);
+  }
 }
 `
 
@@ -364,7 +384,9 @@ const fragmentEmissive = /* glsl */ `
   // its glow on the wet road (T0: under the bloom line, it reads as reflection)
   em += edgeCol * spill * (0.16 + 0.34 * wet) * (1.0 + 0.6 * uNight) * uGlowT0;
   em += uLaneColor * lane * uGlowT1;
-  em += uChevColor * chev * mix(uGlowT0 * 0.55, uGlowT2, chevPulse);
+  // lit at every moment (a steady T1 glow with a soft halo), and a T2 comet
+  // racing through them in the direction of the corner
+  em += uChevColor * chev * mix(uGlowT1 * 0.85, uGlowT2, chevPulse);
   em += uLoopColor * ring * uGlowT2;
   em += uWallColor * rib * uGlowT1;
   em += uBoostColor * (boostArrow * uGlowT2 + boostEdge * uGlowT1 + boostFill * 0.16);
@@ -380,7 +402,11 @@ const fragmentEmissive = /* glsl */ `
   if (uHeadOn > 0.001) {
     vec3 toP = vRoadWorld - uHeadPos;
     float dist = length(toP);
-    float cone = smoothstep(0.86, 0.975, dot(toP / max(dist, 1e-3), uHeadDir));
+    // A bell-shaped falloff to the sides (brightest straight ahead, no flat
+    // top): a plateau with a ramp at each side reads as a fan with two
+    // straight borders; a bell has no corners for the eye to find.
+    // (1 - cos) is about half the angle squared: half bright at ~13 degrees.
+    float cone = exp(-(1.0 - dot(toP / max(dist, 1e-3), uHeadDir)) / 0.038);
     float beam = cone * uHeadOn / (1.0 + dist * dist * 0.0022) * (1.0 - smoothstep(50.0, 75.0, dist));
     em += uHeadColor * beam * (0.05 + 0.10 * (1.0 - wet));
     em += uHeadColor * (lane + start) * beam * uGlowT1 * 0.9 + uChevColor * chev * beam * uGlowT1 * 0.6;
@@ -415,14 +441,45 @@ outgoingLight = min(outgoingLight, vec3(48.0));
 #include <opaque_fragment>
 `
 
-// The sun's analytic highlight on a mirror-wet road is a white-hot slab that
-// swamps the picture at sundown; the sky reflection already draws the sun's
-// streak. So the road keeps only part of the DIRECT lights' mirror highlight
-// by day, and all of it at night (where it is the headlights' glare).
-const fragmentLightsEnd = /* glsl */ `
-#include <lights_fragment_end>
-reflectedLight.directSpecular *= uDirectSpec;
+// The key light's mirror highlight on the wet road. The sun's analytic
+// highlight is a white-hot slab that swamps the picture at sundown (the sky
+// reflection already draws the sun's streak), so the road keeps only
+// uKeySpec of it. At night the key light is the planet's cool glow, a T0 sky
+// object: its highlight is squeezed under uKeyCap (a soft knee, never a
+// flat clip), so it can never be the brightest thing on screen. The
+// headlights (spot lights) keep their full glare: they are lit before the
+// key light, so only the key light's share is touched.
+const KEY_START = '#if ( NUM_SUN_LIGHTS > 0 ) && defined( RE_Direct )'
+const KEY_END = '#if ( NUM_RECT_AREA_LIGHTS > 0 ) && defined( RE_Direct_RectArea )'
+const lightsBegin = THREE.ShaderChunk.lights_fragment_begin
+const keyLightsSplit = lightsBegin.includes(KEY_START) && lightsBegin.includes(KEY_END)
+const fragmentLightsBegin = keyLightsSplit
+  ? lightsBegin.replace(KEY_START, `vec3 sr2SpecBeforeKey = reflectedLight.directSpecular;\n${KEY_START}`).replace(
+      KEY_END,
+      `{
+  vec3 key = (reflectedLight.directSpecular - sr2SpecBeforeKey) * uKeySpec;
+  key = mix(key, key / (1.0 + key / uKeyCap), uKeyCapOn);
+  reflectedLight.directSpecular = sr2SpecBeforeKey + key;
+}
+${KEY_END}`,
+    )
+  : '#include <lights_fragment_begin>'
+if (!keyLightsSplit) console.error('[look] three.js light chunk changed: the road scales all direct highlights together (key-light split unavailable)')
+const fragmentLightsEnd = keyLightsSplit
+  ? '#include <lights_fragment_end>'
+  : `#include <lights_fragment_end>
+reflectedLight.directSpecular *= uKeySpec;
 `
+
+/** Live road tunables (__dev.lookRoad). */
+export const ROAD_TUNE = {
+  /** Share of the key light's mirror highlight the road keeps. */
+  keySpec: 0.35,
+  /** At full night the key light's highlight is squeezed under this (HDR; bloom starts at 1). */
+  nightKeyCap: 0.4,
+  /** Strength of the player's headlight pool drawn on the road (1 = as designed). */
+  headPool: 1,
+}
 
 /**
  * The wet road material. One instance per track build; dispose it with the mesh.
@@ -446,10 +503,11 @@ export function makeRoadMaterial(uniforms: RoadUniforms): THREE.MeshStandardMate
       .replace('#include <roughnessmap_fragment>', fragmentFields)
       .replace('#include <normal_fragment_maps>', fragmentNormal)
       .replace('#include <emissivemap_fragment>', fragmentEmissive)
+      .replace('#include <lights_fragment_begin>', fragmentLightsBegin)
       .replace('#include <lights_fragment_end>', fragmentLightsEnd)
   }
   // One program for every road material (the shader text never changes).
-  mat.customProgramCacheKey = () => 'sr2-road-v5'
+  mat.customProgramCacheKey = () => 'sr2-road-v6'
   return mat
 }
 
@@ -458,8 +516,17 @@ export function lanesFor(width: number): number {
   return Math.max(2, Math.min(5, Math.round(width / 4.6)))
 }
 
+/**
+ * A repeat length near `target` metres that divides the lap exactly, so a
+ * pattern laid along s (dashes, chevrons, the barrier comets) meets itself
+ * at the start line instead of jumping there.
+ */
+export function lapPeriodFor(length: number, target: number): number {
+  if (!(length > 0)) return target
+  return length / Math.max(1, Math.round(length / target))
+}
+
 /** A dash period near 9 m that divides the road length exactly, so dashes meet at the line. */
 export function dashPeriodFor(length: number): number {
-  if (!(length > 0)) return 9
-  return length / Math.max(1, Math.round(length / 9))
+  return lapPeriodFor(length, 9)
 }
