@@ -13,37 +13,72 @@
 //
 //  group.userData (plain data, safe to clone):
 //    collider  { halfExtents, offset }  the chassis box (net uses it)
-//    anchors   CarAnchors               light / underglow / wheel points (look uses it)
+//    anchors   CarAnchors               light / underglow / wheel / bonnet-camera points (look and camera use it)
 //    bodyId
 //
 //  8 draw calls per car: paint, glass, trim, lights, 4 wheels.
 //
+//  Colours:
+//    paint   the player's paint, plus a contrast ACCENT (wings, fins,
+//            endplates) in a deep shade of their glow colour, so every
+//            car is two-tone like a team car
+//    lights  livery strips and the wheel rings in the glow colour, white
+//            headlights, pink-red tail lights
+//    rocket  the nozzle core idles softly in the glow colour; when the
+//            car boosts (CarState.boost, or setCarBoost for a car with
+//            no registry entry) it flares, and a flame in the same
+//            colour, white-hot at the nozzle, shoots out of the back
+//
 //  Live animation (suspension, steering, wheel spin, body roll, brake
 //  lights) goes through poseCarModel(); colours through
-//  setCarColors(). Both are allocation-free.
+//  setCarColors(). Both are allocation-free. The rocket ticks itself
+//  just before the car's lights draw.
+//
+//  Dev: __dev.nozzle(0..1) forces every car's rocket on (nozzle() to
+//  let go); __game.get('carBodies') lists triangles per body.
 // ============================================================
 
 import * as THREE from 'three'
 import { GLOW, PALETTE } from '../core/palette'
-import { environment } from '../core/telemetry'
+import { cars, environment } from '../core/telemetry'
 import type { CarAnchors } from '../core/telemetry'
-import { bodyEntry } from './bodies/catalog'
+import { registerDev, registerInspector } from '../core/devHandles'
+import { BODIES, bodyEntry } from './bodies/catalog'
 import type { BodyId } from './bodies/catalog'
 import { bodyGeometry, wheelGeometry } from './bodies/build'
 import { CHASSIS, ROAD_Y_AT_REST, WHEEL } from './tuning'
 
+interface LightUniforms {
+  uLivery: { value: THREE.Color }
+  uHead: { value: THREE.Color }
+  uTail: { value: THREE.Color }
+  uNozzle: { value: THREE.Color }
+  uFlame: { value: THREE.Color }
+  uFlameHot: { value: THREE.Color }
+  /** 0..1: how far the flames are stretched out (each flame's own length x this). */
+  uFlameOut: { value: number }
+}
+
 /** Everything needed to animate one model. Kept outside userData (materials don't clone). */
 interface CarRig {
+  group: THREE.Group
   sprung: THREE.Group
   steer: THREE.Group[]
   spin: THREE.Group[]
   materials: THREE.Material[]
   paint: THREE.MeshPhysicalMaterial | null
-  lightUniforms: { uLivery: { value: THREE.Color }; uHead: { value: THREE.Color }; uTail: { value: THREE.Color } } | null
+  accent: { value: THREE.Color } | null
+  lightUniforms: LightUniforms | null
   wheelUniforms: { uGlow: { value: THREE.Color } } | null
+  /** The glow colour, linear (the nozzle idles in it). */
+  glow: THREE.Color
   lastPaint: string
   lastGlow: string
   lastBrake: number
+  /** Boost set by hand (garage, car lab); a car in the registry uses its CarState.boost. */
+  boost: number
+  /** The boost the rocket is showing right now (-1 = not drawn yet). */
+  shownBoost: number
 }
 
 const rigs = new WeakMap<THREE.Group, CarRig>()
@@ -54,55 +89,124 @@ const WHEEL_X = [WHEEL.halfTrack, -WHEEL.halfTrack, WHEEL.halfTrack, -WHEEL.half
 const WHEEL_Z = [WHEEL.halfBase, WHEEL.halfBase, -WHEEL.halfBase, -WHEEL.halfBase]
 
 const _c = new THREE.Color()
+const HOT_COLOUR = new THREE.Color(PALETTE.coreHot)
+/** How dark the paint accent is next to the glow colour it comes from (linear multiplier). */
+const ACCENT_SHADE = 0.45
+/** Dark chrome for rims, nozzles and bars: the ground's sheen with a little planet-ring silver. */
+const CHROME = new THREE.Color(PALETTE.groundSheen).lerp(new THREE.Color(PALETTE.planetRing), 0.35)
+const RUBBER = new THREE.Color(PALETTE.ground)
 
 // ---------------------------------------------------------------- materials
 
 /**
- * One material for every glowing part of a car. `aLight` per vertex picks
- * livery (0), headlight (1) or tail light (2); the colours are HDR uniforms
- * (colour x GLOW tier), so the lights bloom and the brake lights can flare
- * without touching geometry.
+ * A material that keeps its shader patch when cloned. Material.clone() does
+ * not copy onBeforeCompile, so a clone (multiplayer cars clone every material
+ * to fade them in) would lose the lights, the accent and the sun term.
+ * The clone shares the original's uniforms, so recolouring still reaches it.
  */
-function makeLightMaterial(): { mat: THREE.MeshBasicMaterial; uniforms: NonNullable<CarRig['lightUniforms']> } {
-  const uniforms = {
+function keepPatchOnClone<T extends THREE.Material>(mat: T): T {
+  const baseClone = Object.getPrototypeOf(mat).clone as (this: THREE.Material) => THREE.Material
+  const patched = function (this: THREE.Material): THREE.Material {
+    const c = baseClone.call(this)
+    c.onBeforeCompile = this.onBeforeCompile
+    c.customProgramCacheKey = this.customProgramCacheKey
+    return c
+  }
+  ;(mat as THREE.Material).clone = patched as THREE.Material['clone']
+  return mat
+}
+
+/**
+ * One material for every glowing part of a car. `aLight` per vertex picks
+ * livery (0), headlight (1), tail light (2), rocket core (3) or rocket flame
+ * (4); the colours are HDR uniforms (colour x GLOW tier), so the lights bloom
+ * and the brake lights and rocket can flare without touching geometry. The
+ * flame's vertices slide backward by `aFlame` x uFlameOut in the vertex
+ * shader, so it grows out of the nozzle with no extra mesh.
+ */
+function makeLightMaterial(): { mat: THREE.MeshBasicMaterial; uniforms: LightUniforms } {
+  const uniforms: LightUniforms = {
     uLivery: { value: new THREE.Color() },
     uHead: { value: new THREE.Color() },
     uTail: { value: new THREE.Color() },
+    uNozzle: { value: new THREE.Color() },
+    uFlame: { value: new THREE.Color() },
+    uFlameHot: { value: new THREE.Color() },
+    uFlameOut: { value: 0 },
   }
-  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff })
+  const mat = new THREE.MeshBasicMaterial()
   mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uLivery = uniforms.uLivery
-    shader.uniforms.uHead = uniforms.uHead
-    shader.uniforms.uTail = uniforms.uTail
+    Object.assign(shader.uniforms, uniforms)
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aLight;\nvarying float vLight;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLight = aLight;')
+      .replace(
+        '#include <common>',
+        '#include <common>\nattribute float aLight;\nattribute float aFlame;\nuniform float uFlameOut;\nvarying float vLight;\nvarying float vFlame;',
+      )
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvLight = aLight;\nvFlame = aFlame;\nif (aLight > 3.5) transformed.z -= aFlame * uFlameOut;',
+      )
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uLivery;\nuniform vec3 uHead;\nuniform vec3 uTail;\nvarying float vLight;')
+      .replace(
+        '#include <common>',
+        '#include <common>\nuniform vec3 uLivery;\nuniform vec3 uHead;\nuniform vec3 uTail;\nuniform vec3 uNozzle;\nuniform vec3 uFlame;\nuniform vec3 uFlameHot;\nvarying float vLight;\nvarying float vFlame;',
+      )
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
-        'vec3 lightCol = vLight < 0.5 ? uLivery : (vLight < 1.5 ? uHead : uTail);\nvec4 diffuseColor = vec4( lightCol, opacity );',
+        [
+          'vec3 lightCol;',
+          'if (vLight < 0.5) lightCol = uLivery;',
+          'else if (vLight < 1.5) lightCol = uHead;',
+          'else if (vLight < 2.5) lightCol = uTail;',
+          'else if (vLight < 3.5) lightCol = uNozzle;',
+          // white-hot at the nozzle, the car's own colour along the plume, dimming toward the tip
+          'else lightCol = mix(uFlameHot, uFlame, clamp(vFlame * 2.2, 0.0, 1.0)) * (1.0 - 0.55 * clamp(vFlame, 0.0, 1.0));',
+          'vec4 diffuseColor = vec4( lightCol, opacity );',
+        ].join('\n'),
       )
   }
-  mat.customProgramCacheKey = () => 'sr2-car-lights'
-  return { mat, uniforms }
+  mat.customProgramCacheKey = () => 'sr2-car-lights-v2'
+  return { mat: keepPatchOnClone(mat), uniforms }
 }
 
-/** Wheel: palette vertex colours, plus an emissive rim ring (`aGlow`) in the car's glow colour. */
+/** Wheel: rubber or dark chrome per vertex (`aMetal`), plus an emissive rim ring (`aGlow`) in the car's glow colour. */
 function makeWheelMaterial(): { mat: THREE.MeshStandardMaterial; uniforms: NonNullable<CarRig['wheelUniforms']> } {
   const uniforms = { uGlow: { value: new THREE.Color() } }
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.55 })
+  const shared = { uRubber: { value: RUBBER }, uChrome: { value: CHROME } }
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 })
   mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uGlow = uniforms.uGlow
+    Object.assign(shader.uniforms, uniforms, shared)
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = aGlow;')
+      .replace('#include <common>', '#include <common>\nattribute float aGlow;\nattribute float aMetal;\nvarying float vGlow;\nvarying float vMetal;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = aGlow;\nvMetal = aMetal;')
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uGlow;\nvarying float vGlow;')
+      .replace('#include <common>', '#include <common>\nuniform vec3 uGlow;\nuniform vec3 uRubber;\nuniform vec3 uChrome;\nvarying float vGlow;\nvarying float vMetal;')
+      .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( mix( uRubber, uChrome, vMetal ), opacity );')
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix( roughnessFactor, 0.24, vMetal );')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = mix( metalnessFactor, 0.9, vMetal );')
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += uGlow * vGlow;')
   }
-  mat.customProgramCacheKey = () => 'sr2-car-wheel'
-  return { mat, uniforms }
+  mat.customProgramCacheKey = () => 'sr2-car-wheel-v2'
+  return { mat: keepPatchOnClone(mat), uniforms }
+}
+
+/** Trim: matte black parts and dark chrome parts (`aMetal`) in one material. Double-sided: plates and bells. */
+function makeTrimMaterial(): THREE.MeshStandardMaterial {
+  const shared = { uChrome: { value: CHROME } }
+  const mat = new THREE.MeshStandardMaterial({ color: PALETTE.citySilhouette, metalness: 0.3, roughness: 0.62, side: THREE.DoubleSide })
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, shared)
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aMetal;\nvarying float vMetal;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvMetal = aMetal;')
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform vec3 uChrome;\nvarying float vMetal;')
+      .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( mix( diffuse, uChrome, vMetal ), opacity );')
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix( roughnessFactor, 0.2, vMetal );')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = mix( metalnessFactor, 0.92, vMetal );')
+  }
+  mat.customProgramCacheKey = () => 'sr2-car-trim-v1'
+  return keepPatchOnClone(mat)
 }
 
 // ---------------------------------------------------------------- paint: warm sun side
@@ -163,19 +267,27 @@ if (uSunWarm.r + uSunWarm.g + uSunWarm.b > 0.001) {
   float ndv = clamp(dot(normal, eyeV), 0.0, 1.0);
   float paintLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
   float dark = 1.0 - smoothstep(0.04, 0.45, paintLuma);
-  float wash = wrap * wrap * (0.015 + 0.12 * dark);
-  // the wash takes on the paint's own hue (navy warms to violet-red, plum to
-  // magenta), so dark paints stay told apart; sheen and rim are the light's colour
+  float wash = wrap * wrap * (0.015 + 0.07 * dark);
+  // the wash takes on most of the paint's own hue (navy warms to violet, plum to
+  // magenta, never all to maroon), so every garage paint still reads as itself;
+  // sheen and rim are the light's colour
   vec3 hue = diffuseColor.rgb / max(max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b)), 1e-4);
-  vec3 washTint = mix(vec3(1.0), hue, 0.55);
-  float sheen = pow(clamp(dot(reflect(-eyeV, normal), sunV), 0.0, 1.0), 4.0) * (0.12 + 0.5 * pow(1.0 - ndv, 3.0));
-  float rim = pow(1.0 - ndv, 3.0) * smoothstep(0.0, 0.6, ndl) * 0.35;
-  totalEmissiveRadiance += uSunWarm * (washTint * wash + sheen + rim);
+  vec3 washTint = hue;
+  float sheen = pow(clamp(dot(reflect(-eyeV, normal), sunV), 0.0, 1.0), 6.0) * (0.06 + 0.3 * pow(1.0 - ndv, 3.0));
+  float rim = pow(1.0 - ndv, 3.0) * smoothstep(0.0, 0.6, ndl) * 0.28;
+  // the wash is the paint's own hue in half-warm light; sheen and rim are the light itself
+  vec3 washLight = mix(uSunWarm, vec3(dot(uSunWarm, vec3(0.2126, 0.7152, 0.0722)) * 2.2), 0.5);
+  totalEmissiveRadiance += washLight * washTint * wash + uSunWarm * (sheen + rim);
 }
 `
 
-/** The car paint: dark metal flake under a clear coat, plus the warm sun side (above). */
-function makePaintMaterial(paint: string): THREE.MeshPhysicalMaterial {
+/**
+ * The car paint: dark metal flake under a clear coat, plus the warm sun side
+ * (above). `aAccent` per vertex swaps the paint for the accent colour, so the
+ * whole painted body stays one draw call.
+ */
+function makePaintMaterial(paint: string): { mat: THREE.MeshPhysicalMaterial; accent: { value: THREE.Color } } {
+  const accent = { value: new THREE.Color() }
   const mat = new THREE.MeshPhysicalMaterial({
     color: paint,
     metalness: 0.5,
@@ -187,12 +299,17 @@ function makePaintMaterial(paint: string): THREE.MeshPhysicalMaterial {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunWarm = paintSun.uSunWarm
     shader.uniforms.uSunDir = paintSun.uSunDir
+    shader.uniforms.uAccent = accent
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aAccent;\nvarying float vAccent;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvAccent = aAccent;')
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\n${paintSunPars}`)
+      .replace('#include <common>', `#include <common>\n${paintSunPars}\nuniform vec3 uAccent;\nvarying float vAccent;`)
+      .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( mix( diffuse, uAccent, vAccent ), opacity );')
       .replace('#include <emissivemap_fragment>', paintSunFragment)
   }
-  mat.customProgramCacheKey = () => 'sr2-car-paint-sun-v1'
-  return mat
+  mat.customProgramCacheKey = () => 'sr2-car-paint-sun-v5'
+  return { mat: keepPatchOnClone(mat), accent }
 }
 
 /** One shared see-through material per ghost model. */
@@ -208,6 +325,59 @@ function makeGhostMaterial(): THREE.MeshStandardMaterial {
     metalness: 0,
   })
 }
+
+// ---------------------------------------------------------------- the rocket
+
+/** __dev.nozzle(b): force every rocket to this boost (-1 = off, follow the cars). */
+let nozzleOverride = -1
+
+/** The boost this model should show: its car's CarState.boost, else the hand-set value. */
+function liveBoost(rig: CarRig): number {
+  if (nozzleOverride >= 0) return nozzleOverride
+  const g = rig.group
+  const parent = g.parent
+  for (let i = 0; i < cars.length; i++) {
+    const c = cars[i]
+    // a car's owner registers the model itself (player, Ai, ghost) or the group it hangs from (multiplayer)
+    if (c.object === g || (parent !== null && c.object === parent)) {
+      const b = Number.isFinite(c.boost) ? c.boost : 0
+      return b > rig.boost ? b : rig.boost
+    }
+  }
+  return rig.boost
+}
+
+/**
+ * Light the rocket for this frame: idle, the core glows softly in the car's
+ * own colour; boosting, it flares toward white-hot (inside the T2 band) and
+ * the flame, in the same colour, stretches out with a little flicker.
+ */
+function tickRocket(rig: CarRig): void {
+  const u = rig.lightUniforms
+  if (!u) return
+  const raw = liveBoost(rig)
+  const b = raw < 0 ? 0 : raw > 1 ? 1 : raw
+  if (b < 0.002 && rig.shownBoost === 0) return
+  rig.shownBoost = b < 0.002 ? 0 : b
+  const t = performance.now() * 0.001
+  u.uNozzle.value
+    .copy(rig.glow)
+    .lerp(HOT_COLOUR, 0.45 * b)
+    .multiplyScalar(GLOW.T1 * 0.75 + (GLOW.T2 * 1.5 - GLOW.T1 * 0.75) * b)
+  u.uFlame.value.copy(rig.glow).multiplyScalar(GLOW.T2 * (0.6 + 0.6 * b) * (b > 0 ? 1 : 0))
+  u.uFlameHot.value.copy(rig.glow).lerp(HOT_COLOUR, 0.7).multiplyScalar(GLOW.T2 * 1.4 * b)
+  const flicker = 0.9 + 0.1 * Math.sin(t * 47) * Math.sin(t * 29 + 1)
+  u.uFlameOut.value = Math.pow(b, 0.7) * flicker
+}
+
+registerDev(
+  'nozzle',
+  ((b?: number) => {
+    nozzleOverride = typeof b === 'number' && Number.isFinite(b) && b >= 0 ? Math.min(1, b) : -1
+    return nozzleOverride < 0 ? 'rockets follow each car again' : `every rocket forced to boost ${nozzleOverride}`
+  }) as never,
+  'nozzle(b): force every car rocket to boost b (0..1) - visual only; nozzle() hands it back to the cars',
+)
 
 // ---------------------------------------------------------------- build
 
@@ -230,6 +400,7 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
 
   const materials: THREE.Material[] = []
   let paintMat: THREE.MeshPhysicalMaterial | null = null
+  let accent: CarRig['accent'] = null
   let lightUniforms: CarRig['lightUniforms'] = null
   let wheelUniforms: CarRig['wheelUniforms'] = null
   let glassMat: THREE.Material
@@ -245,9 +416,11 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
   } else {
     // Dark glossy paint: metal flake under a clear coat, so it mirrors the neon world,
     // with the sunset's warmth on the side facing the sun.
-    paintMat = makePaintMaterial(paint)
+    const pm = makePaintMaterial(paint)
+    paintMat = pm.mat
+    accent = pm.accent
     glassMat = new THREE.MeshPhysicalMaterial({ color: PALETTE.road, metalness: 0.9, roughness: 0.06, clearcoat: 1, envMapIntensity: 1.5 })
-    trimMat = new THREE.MeshStandardMaterial({ color: PALETTE.citySilhouette, metalness: 0.3, roughness: 0.62 })
+    trimMat = makeTrimMaterial()
     const lm = makeLightMaterial()
     lightMat = lm.mat
     lightUniforms = lm.uniforms
@@ -264,16 +437,18 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
   const glassMesh = new THREE.Mesh(g.glass, glassMat)
   const trimMesh = new THREE.Mesh(g.trim, trimMat)
   const lightMesh = new THREE.Mesh(g.lights, lightMat)
+  // the flame grows out of the geometry's bounds in the shader: never cull it early
+  lightMesh.frustumCulled = false
   sprung.add(paintMesh, glassMesh, trimMesh, lightMesh)
 
   const steer: THREE.Group[] = []
   const spin: THREE.Group[] = []
-  const wg = wheelGeometry()
+  const wg = wheelGeometry(g.wheel)
   for (let i = 0; i < 4; i++) {
     const s = new THREE.Group()
     s.position.set(WHEEL_X[i], WHEEL_REST_Y, WHEEL_Z[i])
     const sp = new THREE.Group()
-    // Mirror the right-hand pair so the disc face and glow ring sit outboard on both sides.
+    // Mirror the right-hand pair so the rim face and glow ring sit outboard on both sides.
     if (i % 2 === 1) sp.scale.set(-1, 1, 1)
     const wm = new THREE.Mesh(wg, wheelMat)
     wm.castShadow = !!opts.shadows
@@ -290,6 +465,7 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     headLights: g.headLights.map((v) => v.clone()),
     underglow: { ...g.underglow },
     wheels: [0, 1, 2, 3].map((i) => new THREE.Vector3(WHEEL_X[i], ROAD_Y_AT_REST, WHEEL_Z[i])),
+    bonnet: g.bonnet.clone(),
   }
   group.userData.collider = {
     halfExtents: { ...CHASSIS.halfExtents },
@@ -299,18 +475,24 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
   group.userData.bodyId = id
 
   const rig: CarRig = {
+    group,
     sprung,
     steer,
     spin,
     materials,
     paint: paintMat,
+    accent,
     lightUniforms,
     wheelUniforms,
+    glow: new THREE.Color(),
     lastPaint: '',
     lastGlow: '',
     lastBrake: -1,
+    boost: 0,
+    shownBoost: -1,
   }
   rigs.set(group, rig)
+  if (lightUniforms) lightMesh.onBeforeRender = () => tickRocket(rig)
   setCarColors(group, paint, glow)
   setCarBrake(group, 0)
   return group
@@ -326,11 +508,14 @@ export function setCarColors(group: THREE.Group, paint: string, glow: string): v
   }
   if (glow !== rig.lastGlow) {
     rig.lastGlow = glow
+    rig.glow.set(glow)
+    rig.accent?.value.copy(rig.glow).multiplyScalar(ACCENT_SHADE)
     if (rig.lightUniforms) {
-      rig.lightUniforms.uLivery.value.set(glow).multiplyScalar(GLOW.T2)
+      rig.lightUniforms.uLivery.value.copy(rig.glow).multiplyScalar(GLOW.T2)
       rig.lightUniforms.uHead.value.set(PALETTE.laneLine).multiplyScalar(GLOW.T2)
     }
-    if (rig.wheelUniforms) rig.wheelUniforms.uGlow.value.set(glow).multiplyScalar(GLOW.T2 * 0.8)
+    if (rig.wheelUniforms) rig.wheelUniforms.uGlow.value.copy(rig.glow).multiplyScalar(GLOW.T2 * 0.8)
+    rig.shownBoost = -1 // re-light the rocket in the new colour
   }
 }
 
@@ -342,6 +527,12 @@ export function setCarBrake(group: THREE.Group, brake: number): void {
   if (b === rig.lastBrake) return
   rig.lastBrake = b
   rig.lightUniforms.uTail.value.copy(_c.set(PALETTE.sunBottom)).multiplyScalar(GLOW.T1 + (GLOW.T2 * 1.4 - GLOW.T1) * b)
+}
+
+/** Rocket nozzle: 0 idle .. 1 full boost, for a model with no car in the registry (garage, car lab). */
+export function setCarBoost(group: THREE.Group, boost: number): void {
+  const rig = rigs.get(group)
+  if (rig) rig.boost = Number.isFinite(boost) ? boost : 0
 }
 
 /** Per-frame pose data for a model (the sim's wheel and body state). */
@@ -376,3 +567,16 @@ export function disposeCarModel(group: THREE.Group): void {
   rigs.delete(group)
   group.removeFromParent()
 }
+
+/** Draw calls and triangles per body (one car: paint, glass, trim, lights + 4 wheels). */
+export function carBodyStats(): Record<string, { draws: number; triangles: number; body: number; wheel: number }> {
+  const out: Record<string, { draws: number; triangles: number; body: number; wheel: number }> = {}
+  for (const b of BODIES) {
+    const g = bodyGeometry(b.id)
+    const wheel = wheelGeometry(g.wheel).getAttribute('position').count / 3
+    out[b.id] = { draws: 8, triangles: Math.round(g.triangles + 4 * wheel), body: Math.round(g.triangles), wheel: Math.round(wheel) }
+  }
+  return out
+}
+
+registerInspector('carBodies', carBodyStats)

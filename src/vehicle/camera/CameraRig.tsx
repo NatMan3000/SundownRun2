@@ -26,7 +26,7 @@ import * as THREE from 'three'
 import { useFrame, useThree } from '@react-three/fiber'
 import { controlSignals } from '../../core/controls'
 import { urlParam, registerDev } from '../../core/devHandles'
-import { environment, telemetry } from '../../core/telemetry'
+import { environment, getCar, telemetry } from '../../core/telemetry'
 import { getSettings, useSettings } from '../../core/settings'
 import type { CameraMode } from '../../core/settings'
 import { getGame } from '../../core/store'
@@ -114,7 +114,9 @@ function rigTarget(rig: CameraRigSpec, mode: CameraMode, speed: number, outPos: 
   const set = getSettings()
   const carPos = telemetry.carPosition
   if (rig.kind === 'mount') {
-    _tmp.set(0, rig.mountY, rig.mountZ).applyQuaternion(telemetry.carQuaternion)
+    // each body says where its bonnet camera sits (CarAnchors.bonnet); the rig's numbers are the fallback
+    const mount = getCar('player')?.anchors?.bonnet
+    _tmp.set(0, mount ? mount.y : rig.mountY, mount ? mount.z : rig.mountZ).applyQuaternion(telemetry.carQuaternion)
     outPos.copy(carPos).add(_tmp)
     outLook.copy(outPos).addScaledVector(telemetry.carForward, rig.lookAhead + speed * rig.lookAheadSpeedGain).addScaledVector(telemetry.carUp, rig.lookHeight)
     return
