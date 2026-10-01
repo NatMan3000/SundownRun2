@@ -425,8 +425,11 @@ export function CameraRig() {
       fovOffset = lerp(rigA.fovOffset, rigB.fovOffset, ease)
       const lead = lerp(rigA.velocityLead, rigB.velocityLead, ease)
       if (lead > 0.001) {
-        _targetPos.addScaledVector(telemetry.carVelocity, lead * posSmooth)
-        _targetLook.addScaledVector(telemetry.carVelocity, lead * lookSmooth)
+        // The discrete spring lags a moving target by v x (smooth - dt/2), not v x smooth, so lead
+        // by that: a full v x smooth over-led the bonnet camera by half a frame of travel (0.46 m
+        // at 200 km/h), out past its own car's nose.
+        _targetPos.addScaledVector(telemetry.carVelocity, lead * Math.max(0, posSmooth - dt / 2))
+        _targetLook.addScaledVector(telemetry.carVelocity, lead * Math.max(0, lookSmooth - dt / 2))
       }
 
       // Under a low ceiling - an overpass, or a loop's way-out leg over the ground beside its
