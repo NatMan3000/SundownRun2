@@ -25,6 +25,7 @@ import { useAfterPhysicsStep } from '@react-three/rapier'
 import { installPlay } from '../core/api'
 import { registerDev, registerInspector } from '../core/devHandles'
 import { getGame } from '../core/store'
+import { getTrack } from '../track/current'
 import { recentEvents } from '../core/events'
 import { ModeController, devFinish, devRace, newRound, restartSession } from './ModeController'
 import { AiRacers } from './AiRacers'
@@ -118,6 +119,22 @@ export function PlayLayer() {
       registerDev('race', ((n: number) => devRace(n)) as never, 'race(n): start a race now with n Ai racers (0-5)'),
       registerDev('finishRace', () => devFinish(), 'end the running race (or stunt run) now and show results'),
       registerDev('aiResets', () => [...drivers.values()].map((d) => `${d.id}: ` + d.resetLog.map((r) => `${r.why}@${r.s}m ${r.kmh}kmh lat${r.lateral}`).join(', ')).join(' | '), 'where and why each Ai racer reset'),
+      registerDev('aiLoops', () => [...drivers.values()].map((d) => `${d.id}: ` + d.loopLog.map((r) => `s${r.s}(-${r.toLoop}m) ${r.kmh}/${r.targetKmh}kmh lat${r.lateral} hdg${r.headingDeg}`).join(', ')).join(' | '), 'each Ai racer\'s last loop approaches: speed/target, lateral, heading error every 10 m'),
+      registerDev(
+        'lineDump',
+        ((s0: number, s1: number, step = 10) => {
+          const t = getTrack()
+          if (!t) return 'no track'
+          const S = t.samples
+          const out: string[] = []
+          for (let s = s0; s <= s1; s += step) {
+            const i = Math.floor(t.wrapS(s) / S.ds) % S.count
+            out.push(`${s}: off${t.racingLine.offset[i].toFixed(1)} v${Math.round(t.racingLine.speed[i] * 3.6)} hw${S.halfWidth[i].toFixed(1)} k${(S.curvature[i] * 1000).toFixed(1)} su${S.surface[i]} ty${S.ty[i].toFixed(2)}`)
+          }
+          return out.join(' | ')
+        }) as never,
+        'lineDump(s0, s1, step=10): racing line offset/speed, half width, curvature (1/km), surface code, slope along the road',
+      ),
       registerDev('raceSummary', () => raceSummary(), 'one-line race status: stage, each racer laps/metres, Ai modes, resets'),
       registerInspector('play', inspectPlay),
     ]

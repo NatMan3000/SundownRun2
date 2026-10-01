@@ -154,3 +154,5 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ⬜ [play] Stunt run ends instantly on resume after a pause longer than the time left (ui-1 P1).
 - ⬜ [vehicle] Held trigger through pause is ignored after resume until re-pressed (car coasts into a wall); limit the anti-leak to menu keys.
 - ⬜ [vehicle] NaN torque at spawn caught by the firewall on Afterglow (orchestrator probe 19:52).
+- ⬜ [track, next worker] Racing-line speed through wall rides assumes ~1.9 g while its offset keeps cars on the flat; either assume flat grip there or run the offset up the wall (play).
+- ⬜ [designer] Afterglow boost pads 110-165 m before the loop with a corner in between: everyone arrives 40-90 km/h too fast and misses the loop mouth (play).

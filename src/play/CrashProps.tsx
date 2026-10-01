@@ -546,9 +546,19 @@ function PropField({ track }: { track: TrackRuntime }) {
       ((c: number, metres = 40) => aimAt(track, st.bx[c] ?? 0, st.by[c] ?? 0, st.bz[c] ?? 0, metres)) as never,
       'propAim(c, metres=40): put the player facing prop cluster c from that far back',
     )
+    // Multiplayer seam check without a second machine: queue a burst exactly as net does.
+    const offRemote = registerDev(
+      'propRemotePop',
+      ((c: number) => {
+        propsSignal.pending.push({ cluster: c, vx: 20, vy: 0, vz: 0 })
+        return `queued remote burst of cluster ${c}`
+      }) as never,
+      'propRemotePop(c): pretend another player burst cluster c (tests the propsSignal.pending path: burst, no points)',
+    )
     return () => {
       offInspect()
       offDev()
+      offRemote()
     }
   }, [st, track])
 

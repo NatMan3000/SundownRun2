@@ -373,7 +373,7 @@ export function ModeController() {
   }, [])
 
   useFrame((_, delta) => {
-    const g = getGame()
+    let g = getGame()
     playFlags.layoutRound = propsSignal.shared ? propsSignal.round : g.round
     if (g.multiplayer) return // the world never pauses in multiplayer, and net owns race flow
     const now = performance.now()
@@ -386,6 +386,7 @@ export function ModeController() {
     if (flow.pausedAt > 0) {
       slideClocks(now - flow.pausedAt)
       flow.pausedAt = 0
+      g = getGame() // the slide moved stuntEndsAt / raceGoAt: never compare against the old ones
     }
 
     if (flow.kind === 'none') return
