@@ -24,6 +24,9 @@
 //   6. The catch floor catches anything that gets below the ground.
 //   7. Every big-air run: at 100 and 150 km/h a car stays planted over the big
 //      hill and only flies off the kicker (200 km/h is reported, not judged).
+//   8. Live bank rebuilds (tracks with a bank slider): the physics ground is
+//      updated in place the way the game does it, through the slider's
+//      ends and back, and must match the rebuilt ground every time.
 //
 //  The checks that need no physics (line, winding, smooth, banking,
 //  bridges, loops, tracking, ground) live in gates.ts, shared with the
@@ -35,7 +38,8 @@ import type { TrackRuntime, NearestHit, TrackFrame } from './types'
 import { SURFACE_CODE } from './types'
 import { BIGAIR_LAYOUT } from './terrain'
 import { createRoadColliders, createWorldColliders } from './colliders'
-import { createTerrainTiles } from './terrainTiles'
+import { createTerrainTiles, removeTerrainTiles, updateTerrainTiles } from './terrainTiles'
+import { buildTrack } from './build'
 import { SIDE_RUN } from './ramps'
 import { LOOP_RUN_IN, loopShape } from './road'
 import { where } from './gates'
@@ -656,6 +660,49 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     }
     if (!pass) ok = false
     lines.push(`${pass ? 'ok  ' : 'FAIL'} big-air run at (${f.x}, ${f.z}): starting on the big hill's top (u ${(BIGAIR_LAYOUT.bigHillU * k).toFixed(0)}), the kicker crest is at u ${crestU.toFixed(0)}. ${results.join('; ')}`)
+  }
+
+  // ---- 8. live bank rebuilds: the physics ground follows the road every time ----
+  const adj = t.file.road.banking.adjustable
+  if (adj) {
+    const w2 = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+    const tiles = createTerrainTiles(w2, RAPIER, t)
+    const seq = [adj.max, adj.min, t.params.bankDeg ?? t.file.road.banking.maxDeg]
+    const ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 })
+    const onlyTerrain = (c: Collider) => surfaceOf(c.handle) === 'terrain'
+    let prev = t
+    let worst = 0
+    let worstAt = ''
+    let rebuilt = 0
+    for (const b of seq) {
+      const tb = buildTrack(t.file, { ...t.params, bankDeg: b }, prev)
+      rebuilt += updateTerrainTiles(w2, RAPIER, tiles, tb)
+      w2.step()
+      const S = tb.samples
+      const top = tb.terrain.maxHeight + 50
+      for (let i = 0; i < S.count; i += 3) {
+        for (let l = -S.halfWidth[i] - 4; l <= S.halfWidth[i] + 4; l += 2) {
+          const x = S.px[i] + S.rx[i] * l
+          const z = S.pz[i] + S.rz[i] * l
+          ray.origin = { x, y: top, z }
+          const h = w2.castRay(ray, 10000, true, undefined, undefined, undefined, undefined, onlyTerrain)
+          if (!h) continue
+          const err = Math.abs(top - h.timeOfImpact - tb.terrainHeight(x, z))
+          if (err > worst) {
+            worst = err
+            worstAt = `bank ${b} deg, ${where(tb, i * S.ds)}`
+          }
+        }
+      }
+      prev = tb
+    }
+    removeTerrainTiles(w2, tiles)
+    w2.free()
+    const pass = worst < 0.01
+    if (!pass) ok = false
+    lines.push(
+      `${pass ? 'ok  ' : 'FAIL'} live bank rebuilds ${seq.join(' -> ')} deg (${rebuilt} ground tiles rebuilt in place): the physics ground matches the rebuilt ground along the road, worst ${(worst * 100).toFixed(2)} cm${pass ? '' : ` at ${worstAt} (a builder bug, not your file)`}`,
+    )
   }
 
   world.free()

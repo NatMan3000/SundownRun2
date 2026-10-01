@@ -31,8 +31,13 @@ export interface TerrainTiles {
   /** Tiles per side. */
   tn: number
   n: number
-  /** Collider handle per tile (-1 = none). */
-  handles: Int32Array
+  /**
+   * Collider handle per tile (-1 = none). A Float64Array on purpose: rapier's handles
+   * are 64-bit numbers that pack an index and a generation, so an Int32Array mangles
+   * them (every handle came back as 0, a live rebuild removed the wrong collider, and
+   * the old ground stayed solid under the new road).
+   */
+  handles: Float64Array
   /** The heights the tiles were built from (to spot changed tiles on a rebuild). */
   heights: Float32Array
   half: number
@@ -98,7 +103,7 @@ export function createTerrainTiles(world: World, R: Rapier, t: TrackRuntime): Te
     body: world.createRigidBody(R.RigidBodyDesc.fixed()),
     tn,
     n,
-    handles: new Int32Array(tn * tn).fill(-1),
+    handles: new Float64Array(tn * tn).fill(-1),
     heights: new Float32Array(t.terrain.heights),
     half: t.terrain.half,
     cellSize: t.terrain.cellSize,
