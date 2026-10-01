@@ -3,3 +3,6 @@
 export function World() {
   return <color attach="background" args={['#1b0b3a']} />
 }
+export function WorldPhysics() {
+  return null
+}

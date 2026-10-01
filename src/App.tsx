@@ -14,7 +14,7 @@ import { useGame } from './core/store'
 import { PerfProbe } from './core/perf'
 import { useTrack } from './track/current'
 import { TrackPhysics } from './track'
-import { World } from './world'
+import { World, WorldPhysics } from './world'
 import { RoadView, CarFx, FxSystem, PostStack } from './look'
 import { VehicleLayer, CameraRig, InputSystem } from './vehicle'
 import { PlayLayer } from './play'
@@ -40,6 +40,7 @@ function Scene() {
       {track && !editing && (
         <Physics key={`${track.id}:${trackVersion}`} timeStep={1 / 60} interpolate paused={paused} colliders={false}>
           <TrackPhysics />
+          <WorldPhysics />
           <VehicleLayer />
           <PlayLayer />
           <NetLayer />
