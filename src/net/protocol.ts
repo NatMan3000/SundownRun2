@@ -173,7 +173,18 @@ export interface BumpMsg {
   dvz: number
 }
 
-export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg
+/**
+ * "I was player `oldId` in this race; my connection dropped and I'm back as a
+ * new id." Everyone (and the relay's memory of the round) swaps the old id
+ * for the sender's new one, so the racer keeps their grid place and result.
+ */
+export interface RejoinMsg {
+  t: 'rejoin'
+  raceId: number
+  oldId: number
+}
+
+export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg
 
 // ---------------------------------------------------------------- relay -> client
 

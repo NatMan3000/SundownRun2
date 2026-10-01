@@ -47,9 +47,9 @@ import { resumeGame, showResults } from '../core/session'
 import { getTrack } from '../track/current'
 import { urlParam } from '../core/devHandles'
 import { playerName } from './identity'
-import { onMessage, send, statsExtra, weAreDriving } from './client'
+import { onMessage, previousId, send, statsExtra, weAreDriving } from './client'
 import { carIdFor, getNet, peerLive, relayIdOf, useNet } from './netStore'
-import type { FinishMsg, StartMsg, TagMsg, TagTimeMsg } from './protocol'
+import type { FinishMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg } from './protocol'
 
 /** Countdown length, ms (3, 2, 1, GO). */
 export const COUNTDOWN_MS = 3000
@@ -95,7 +95,17 @@ interface Round {
   settleAt: number
   /** performance.now() of the last store sync (a few times a second at most). */
   syncedAt: number
+  /** performance.now() our connection dropped mid-round (0 = connected). */
+  offlineSince: number
+  /** Tag: performance.now() the "it" player went missing (0 = here). */
+  itMissingSince: number
 }
+
+/** "It" must be gone this long before it passes on (a quick reconnect keeps it). */
+const IT_MISSING_MS = 3000
+
+/** How long a dropped racer has to reconnect before their round is over for them. */
+const REJOIN_GRACE_MS = 15000
 
 let round: Round | null = null
 
@@ -136,7 +146,7 @@ function driversNow(): number[] {
 export function requestStart(): boolean {
   const net = getNet()
   if (net.status !== 'online' || !net.myId) return false
-  if (round && !round.ended) return false
+  if (round && !round.ended && !wrappingUp(round)) return false
   if (getGame().phase === 'editor' || getGame().phase === 'title' || getGame().phase === 'loading') return false
   const track = getTrack()
   if (!track) return false
@@ -166,11 +176,30 @@ export function requestStart(): boolean {
 const _slotPos = new THREE.Vector3()
 const _slotQuat = new THREE.Quaternion()
 
+/**
+ * A round that's over for us in all but name: we're only watching it, the tag
+ * clock has run out (results settling), or we've crossed the finish line.
+ * The player who presses G next may have wrapped up a moment sooner.
+ */
+function wrappingUp(r: Round): boolean {
+  if (r.ended || !r.inGrid) return true
+  if (r.kind === 'tag') return performance.now() >= r.endsAt
+  return r.finishes.has(myId())
+}
+
 function applyStart(msg: StartMsg, agoMs: number): void {
   if (round && !round.ended) {
     if (round.raceId === msg.raceId) return
-    // Two starts crossed: the lower raceId wins everywhere. A running round is never interrupted.
-    if (round.started || msg.raceId > round.raceId) return
+    if (wrappingUp(round)) {
+      // Close ours properly (results, events) and take the new one.
+      if (round.inGrid && round.started) {
+        if (round.kind === 'tag') endTag(round)
+        else endRace(round)
+      } else round.ended = true
+    } else if (round.started || msg.raceId > round.raceId) {
+      // Two starts crossed: the lower raceId wins everywhere. A running round is never interrupted.
+      return
+    }
   }
   const now = performance.now()
   const me = myId()
@@ -197,6 +226,8 @@ function applyStart(msg: StartMsg, agoMs: number): void {
     seconds: new Map(msg.grid.map((id) => [id, 0])),
     settleAt: 0,
     syncedAt: 0,
+    offlineSince: 0,
+    itMissingSince: 0,
   }
   round = r
 
@@ -346,6 +377,61 @@ function endTag(r: Round): void {
   }
 }
 
+// ---------------------------------------------------------------- reconnects
+
+/** Someone's relay id changed mid-round (a reconnect): carry their place, time and name over. */
+function remap(r: Round, oldId: number, newId: number): void {
+  if (oldId === newId) return
+  r.grid = r.grid.map((id) => (id === oldId ? newId : id))
+  const name = r.names.get(oldId)
+  if (name !== undefined) {
+    r.names.delete(oldId)
+    r.names.set(newId, name)
+  }
+  const fin = r.finishes.get(oldId)
+  if (fin) {
+    r.finishes.delete(oldId)
+    r.finishes.set(newId, fin)
+  }
+  const secs = r.seconds.get(oldId)
+  if (secs !== undefined) {
+    r.seconds.delete(oldId)
+    r.seconds.set(newId, secs)
+  }
+  if (r.itId === oldId) r.itId = newId
+  if (r.inGrid && r.kind === 'tag') useGame.setState({ tagItId: carIdOn(r.itId), tagSeconds: secondsRecord(r) })
+}
+
+/** We're back online with a new relay id: rejoin the round we were in, or let it go. */
+function rejoinAfterReconnect(liveRaceId: number | null): void {
+  const r = round
+  if (!r || r.ended || !r.offlineSince) return
+  const oldId = previousId()
+  const newId = myId()
+  if (liveRaceId !== r.raceId || !oldId || !r.grid.includes(oldId)) {
+    endOffline(r)
+    return
+  }
+  r.offlineSince = 0
+  const msg: RejoinMsg = { t: 'rejoin', raceId: r.raceId, oldId }
+  send(msg)
+  remap(r, oldId, newId)
+  // Anything we did while offline never reached anyone: say it again.
+  const fin = r.finishes.get(newId)
+  if (fin) send({ t: 'finish', raceId: r.raceId, ms: fin.ms, bestLapMs: fin.bestLapMs })
+  if (r.kind === 'tag' && r.settleAt) send({ t: 'tagTime', raceId: r.raceId, seconds: r.seconds.get(newId) ?? 0 })
+}
+
+/** Offline too long (or the round is gone from the relay): it's over for us. */
+function endOffline(r: Round): void {
+  r.ended = true
+  r.offlineSince = 0
+  statsExtra.lap = -1
+  getCar('player')?.api?.setFrozen(false)
+  useGame.setState({ raceState: 'idle', tagItId: null, tagEndsAt: 0 })
+  for (const c of cars) c.isIt = false
+}
+
 // ---------------------------------------------------------------- every frame
 
 let lastRaceNonce = -1
@@ -362,6 +448,11 @@ export function roundsTick(dt: number): void {
   const r = round
   if (!r || r.ended) return
   const now = performance.now()
+  if (r.offlineSince) {
+    // Offline: our view of who's here is empty, so judge nothing until we're back.
+    if (now - r.offlineSince > REJOIN_GRACE_MS) endOffline(r)
+    return
+  }
 
   if (!r.started) {
     if (now < r.goAt) return
@@ -420,6 +511,27 @@ function tickTag(r: Round, now: number, dt: number): void {
     return
   }
 
+  // "It" walked off (tab closed, wifi gone): after IT_MISSING_MS, hand it on to
+  // the lowest relay id still here, which every screen picks the same way.
+  // Waiting first means a quick reconnect (rejoin) keeps "it" where it was.
+  if (r.itId !== myId() && !getNet().peers[r.itId]) {
+    if (!r.itMissingSince) r.itMissingSince = now
+    else if (now - r.itMissingSince > IT_MISSING_MS) {
+      let next = 0
+      for (let i = 0; i < r.grid.length; i++) {
+        const id = r.grid[i]
+        if ((id === myId() || getNet().peers[id]) && (next === 0 || id < next)) next = id
+      }
+      r.itMissingSince = 0
+      if (next) {
+        r.itId = next
+        r.noTagUntil = now + NO_TAG_BACK_MS
+        useGame.setState({ tagItId: carIdOn(r.itId) })
+        emit('tag.it', { id: carIdOn(r.itId), name: nameOf(r.itId), byId: null })
+      }
+    }
+  } else r.itMissingSince = 0
+
   // Whoever is "it" glows (look draws the aura from CarState.isIt).
   for (let i = 0; i < cars.length; i++) {
     const c = cars[i]
@@ -463,6 +575,7 @@ export function startRounds(): void {
 
   unsubs.push(
     onMessage('welcome', (m) => {
+      rejoinAfterReconnect(m.live ? m.live.raceId : null)
       if (!m.live) return
       // A round is already on: deal the same props, and watch until the next one.
       propsSignal.round = m.live.round
@@ -478,6 +591,9 @@ export function startRounds(): void {
       if (!r.firstFinishAt) r.firstFinishAt = performance.now()
     }),
     onMessage('tag', (m) => applyTag(m, m.from)),
+    onMessage('rejoin', (m) => {
+      if (round && round.raceId === m.raceId && !round.ended) remap(round, m.oldId, m.from)
+    }),
     onMessage('tagTime', (m) => {
       const r = round
       if (r && r.kind === 'tag' && r.raceId === m.raceId) r.seconds.set(m.from, m.seconds)
@@ -486,27 +602,10 @@ export function startRounds(): void {
       // Only bursts from the same deal: a message that straddles a race start refers to a layout that's gone.
       if (m.round === propsSignal.round) propsSignal.pending.push({ cluster: m.cluster, vx: m.vx, vy: m.vy, vz: m.vz })
     }),
-    onMessage('leave', (m) => {
-      const r = round
-      // "It" walked off: hand it on deterministically (lowest relay id left on the grid).
-      if (r && r.kind === 'tag' && !r.ended && r.itId === m.id) {
-        const left = r.grid.filter((id) => id !== m.id && (id === myId() || !!getNet().peers[id]))
-        if (left.length) {
-          r.itId = Math.min(...left)
-          r.noTagUntil = performance.now() + NO_TAG_BACK_MS
-          useGame.setState({ tagItId: carIdOn(r.itId) })
-          emit('tag.it', { id: carIdOn(r.itId), name: nameOf(r.itId), byId: null })
-        }
-      }
-    }),
-    // Lost the connection mid-round: the round is over for us.
+    // Lost the connection mid-round: keep racing; we have REJOIN_GRACE_MS to come back.
     useNet.subscribe((s, prev) => {
-      if (prev.status === 'online' && s.status !== 'online' && round && !round.ended) {
-        round.ended = true
-        statsExtra.lap = -1
-        getCar('player')?.api?.setFrozen(false)
-        useGame.setState({ raceState: 'idle', tagItId: null, tagEndsAt: 0 })
-        for (const c of cars) c.isIt = false
+      if (prev.status === 'online' && s.status !== 'online' && round && !round.ended && !round.offlineSince) {
+        round.offlineSince = performance.now()
       }
     }),
   )

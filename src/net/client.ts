@@ -76,6 +76,13 @@ let pingTimer: ReturnType<typeof setInterval> | null = null
 let statsTimer: ReturnType<typeof setInterval> | null = null
 let unsubs: (() => void)[] = []
 let warnedBadPose = false
+/** Our relay id on the previous connection (0 = none), so a racer can rejoin a round. */
+let previousMyId = 0
+
+export function previousId(): number {
+  return previousMyId
+}
+
 /** Wall-clock moment we last (re)connected, for the inspector. */
 let connectedAt = 0
 let reconnects = 0
@@ -193,6 +200,7 @@ function open(): void {
     ws = null
     forgetPeers()
     if (!started) return
+    previousMyId = useNet.getState().myId || previousMyId
     useNet.setState({ status: 'connecting', myId: 0, isHost: false })
     reconnects++
     scheduleRetry()

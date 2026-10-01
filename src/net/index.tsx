@@ -27,7 +27,12 @@ import { useFrame } from '@react-three/fiber'
 import { useGame } from '../core/store'
 import { getCar, telemetry } from '../core/telemetry'
 import { registerDev, registerInspector } from '../core/devHandles'
-import { getTrack } from '../track/current'
+import { driveOverride } from '../core/controls'
+import { useSettings } from '../core/settings'
+import { resumeGame } from '../core/session'
+import { propsSignal } from '../core/propsSignal'
+import { getCurrentTrackFile, getTrack, loadTrackById, setTrackFromFile } from '../track/current'
+import { getTrackSource, saveDrawnTrack } from '../track/registry'
 import { applyUrlColor, mpEnabled, playerName } from './identity'
 import { connectionInfo, dropConnection, reconnectNow, sendPose, startNet, weAreDriving } from './client'
 import { getNet, peerLive } from './netStore'
@@ -36,7 +41,7 @@ import { POSE_FLAG } from './protocol'
 import { sendTrackIfHost, startTrackSync } from './trackSync'
 import { RemoteCars } from './RemoteCars'
 import { BumpApplier, startBumps, stats as bumpStats } from './bump'
-import { currentRound, requestStart, roundsTick, startRounds } from './rounds'
+import { canTag, currentRound, requestStart, roundsTick, startRounds } from './rounds'
 
 export { useNet } from './netStore'
 /**
@@ -191,9 +196,34 @@ function netCommand(cmd: string = 'status'): unknown {
   }
 }
 
+/**
+ * The test kit: handles the two-client check (server/mp-check*.ts) drives the
+ * game with. Reached through the dev-handle registry, so it works in a built
+ * preview too (checkers verify builds, where /src modules don't exist).
+ * Everything here is an existing contract API; nothing new is exposed.
+ */
+const netKit = {
+  driveOverride,
+  getTrack,
+  getCurrentTrackFile,
+  setTrackFromFile,
+  loadTrackById,
+  saveDrawnTrack,
+  getTrackSource,
+  useSettings,
+  useGame,
+  resumeGame,
+  propsSignal,
+  telemetry,
+  getCar,
+  net: { getNet, peerPoses, sendPose, dropConnection, reconnectNow },
+  rounds: { requestStart, currentRound, canTag },
+}
+
 function registerNetDev(): void {
   if (devRegistered) return
   devRegistered = true
   registerInspector('net', inspect)
+  registerInspector('netKit', () => netKit)
   registerDev('net', netCommand as (...args: never[]) => unknown, NET_HELP)
 }

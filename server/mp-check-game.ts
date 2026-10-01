@@ -17,6 +17,8 @@
 //    race   synced countdown, frozen grid, a real lap, finish, same winner on both
 //    tag    "it" chosen, "it" rams the other, "it" passes on, the round ends, results agree
 //    props  a crash-prop burst on one screen bursts on the other
+//    robust a 3rd player arriving mid-round, three players, reconnects mid-round
+//           and mid-race, the host reloading its page
 // ============================================================
 
 import type { Page } from 'puppeteer-core'
@@ -41,21 +43,26 @@ interface Kit {
 
 /**
  * Installed into each page as window.__pilot. Loads the game's own modules
- * (Vite serves them at the same URLs the game uses, so these are the SAME
- * instances the running game holds).
+ * through net's dev kit, window.__game.get('netKit'), so it works on the dev
+ * server and on a built preview alike).
  */
 const PILOT = `(async () => {
   if (window.__pilot) return true
-  const [tel, controls, current, store, settings, registry, net, rounds] = await Promise.all([
-    import('/src/core/telemetry.ts'),
-    import('/src/core/controls.ts'),
-    import('/src/track/current.ts'),
-    import('/src/core/store.ts'),
-    import('/src/core/settings.ts'),
-    import('/src/track/registry.ts'),
-    import('/src/net/netStore.ts'),
-    import('/src/net/rounds.ts'),
-  ])
+  // The game's own handles, from net's dev kit (present in dev AND built previews).
+  let K = null
+  for (let i = 0; i < 200 && !K; i++) {
+    K = window.__game && window.__game.get('netKit')
+    if (!K) await new Promise((r) => setTimeout(r, 100))
+  }
+  if (!K) throw new Error('netKit not registered: is this a multiplayer page (?mp=1) with a track loaded?')
+  const tel = { telemetry: K.telemetry, getCar: K.getCar }
+  const controls = { driveOverride: K.driveOverride }
+  const current = { getTrack: K.getTrack, getCurrentTrackFile: K.getCurrentTrackFile, setTrackFromFile: K.setTrackFromFile, loadTrackById: K.loadTrackById }
+  const store = { useGame: K.useGame }
+  const settings = { useSettings: K.useSettings }
+  const registry = { saveDrawnTrack: K.saveDrawnTrack, getTrackSource: K.getTrackSource }
+  const net = { getNet: K.net.getNet }
+  const rounds = K.rounds
   const o = controls.driveOverride
   const frame = { s: 0, position: { x: 0, y: 0, z: 0 }, tangent: {}, up: {}, right: {}, halfWidth: 0, bank: 0, curvature: 0, surface: 'road' }
   // three's Vector3 is needed by frameAt's out object; borrow one from telemetry's vectors.
@@ -94,7 +101,7 @@ const PILOT = `(async () => {
     requestAnimationFrame(step)
   }
   window.__pilot = {
-    tel, controls, current, store, settings, registry, net, rounds,
+    K, tel, controls, current, store, settings, registry, net, rounds,
     go(chase, kmh) { target = chase || null; if (kmh) maxKmh = kmh; o.active = true; if (!running) { running = true; requestAnimationFrame(step) } },
     stop() { running = false; o.active = false; o.throttle = 0; o.steer = 0; o.brake = 1 },
     release() { running = false; o.active = false; o.brake = 0 },
@@ -310,14 +317,14 @@ export async function runGameChecks(k: Kit): Promise<void> {
     check(`a real ${laps}-lap race finished on the host`, !!done, hostResults)
     check('the joiner gets results too, with the same finishing order', !!joinDone && hostResults.length === 2 && joinResults.length === 2 && hostResults.map((r) => r[1]).join() === joinResults.map((r) => r[1]).join(), { host: hostResults, joiner: joinResults })
     check('the winner has a finishing time', typeof hostResults[0]?.[2] === 'number', hostResults[0])
-    const props = [await host.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.round)()`), await join.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.round)()`)]
+    const props = [await host.evaluate(`window.__pilot.K.propsSignal.round`), await join.evaluate(`window.__pilot.K.propsSignal.round`)]
     check('the race dealt one shared crash-prop round to both', props[0] === props[1] && props[0] !== 0, props)
     for (const p of [host, join]) await p.evaluate(`window.__pilot.stop()`)
   }
 
   if (k.sections.includes('tag')) {
     console.log('\n== tag: G in tag mode starts a round; "it" passes on contact')
-    for (const p of [host, join]) await p.evaluate(`(async () => { window.__pilot.stop(); (await import('/src/core/session.ts')).resumeGame(); window.__pilot.store.useGame.setState({ mode: 'tag' }) })()`)
+    for (const p of [host, join]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame(); window.__pilot.store.useGame.setState({ mode: 'tag' }) })()`)
     await sleep(500)
     await host.evaluate(`window.__pilot.rounds.requestStart()`)
     const it0 = await until<{ itId: number; grid: number[] }>(join, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'tag' ? { itId: r.itId, grid: r.grid } : null })()`, 3000)
@@ -365,15 +372,114 @@ export async function runGameChecks(k: Kit): Promise<void> {
 
   if (k.sections.includes('props')) {
     console.log('\n== props: a crash-prop burst on one screen bursts on the other')
-    const round = [await host.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.round)()`), await join.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.round)()`)]
+    const round = [await host.evaluate(`window.__pilot.K.propsSignal.round`), await join.evaluate(`window.__pilot.K.propsSignal.round`)]
     check('both screens play the same prop deal', round[0] === round[1], round)
+    const clusters = (await host.evaluate(`window.__pilot.current.getTrack().props.length`)) as number
+    if (clusters === 0) console.log('  (this track has no crash props: run props on afterglow to test a burst)')
     const before = (await join.evaluate(`window.__events.recent.filter((e) => e.type === 'prop.burst' && e.remote).length`)) as number
     // The host bursts cluster 0 exactly the way play reports a local burst.
-    await host.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.onLocalPop({ cluster: 0, vx: 20, vy: 0, vz: 0 }))()`)
+    await host.evaluate(`window.__pilot.K.propsSignal.onLocalPop({ cluster: 0, vx: 20, vy: 0, vz: 0 })`)
     const got = await until<number>(join, `(() => { const n = window.__events.recent.filter((e) => e.type === 'prop.burst' && e.remote).length; return n > ${before} ? n : 0 })()`, 4000)
-    check('the joiner bursts the same cluster (prop.burst remote, no points)', !!got, { remoteBursts: got })
+    if (clusters > 0) check('the joiner bursts the same cluster (prop.burst remote, no points)', !!got, { remoteBursts: got })
   }
+
+  if (k.sections.includes('robust')) await robust(k, host, join, q)
 
   await host.close()
   await join.close()
+}
+
+/**
+ * Stage C: three players, a player arriving mid-round, a reconnect mid-round
+ * (tag and race), and the host reloading its page.
+ */
+async function robust(k: Kit, host: Page, join: Page, q: string): Promise<void> {
+  const { check, until, sleep } = k
+  console.log('\n== robust: mid-round arrival, three players, reconnects, host reload')
+  const idOf = (p: Page) => p.evaluate(`window.__pilot.net.getNet().myId`) as Promise<number>
+  const roundOf = (p: Page) => p.evaluate(`(() => { const r = window.__pilot.rounds.currentRound(); return r ? { raceId: r.raceId, kind: r.kind, grid: r.grid, inGrid: r.inGrid, ended: r.ended, itId: r.itId } : null })()`) as Promise<{ raceId: number; kind: string; grid: number[]; inGrid: boolean; ended: boolean; itId: number } | null>
+  for (const p of [host, join]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame(); window.__pilot.store.useGame.setState({ mode: 'tag' }) })()`)
+  await sleep(800)
+
+  // ---- a tag round starts with two; a third player arrives in the middle of it ----
+  check('a 2-player tag round starts', (await host.evaluate(`window.__pilot.rounds.requestStart()`)) === true)
+  const r1 = await until<{ raceId: number }>(host, `(() => { const r = window.__pilot.rounds.currentRound(); return r && !r.ended ? { raceId: r.raceId } : null })()`, 3000)
+  await sleep(4000)
+  const mum = await k.openPage(`${k.joinBase}/?${q}&name=MUM&color=mint&track=${k.joinTrack}&mode=free`, 'mum')
+  await mum.evaluate(PILOT)
+  const mumRound = await until<{ raceId: number; inGrid: boolean }>(mum, `(() => { const r = window.__pilot.rounds.currentRound(); return r ? { raceId: r.raceId, inGrid: r.inGrid } : null })()`, 20000)
+  const mumState = await mum.evaluate(`window.__game.state.raceState`)
+  const props3 = [await host.evaluate(`window.__pilot.K.propsSignal.round`), await mum.evaluate(`window.__pilot.K.propsSignal.round`)]
+  check('a player arriving mid-round learns the live round and watches it (not on the grid)', !!mumRound && mumRound.raceId === r1?.raceId && mumRound.inGrid === false && mumState !== 'countdown' && mumState !== 'running', { mumRound, mumState })
+  check('the late arrival plays the same crash-prop deal', props3[0] === props3[1], props3)
+
+  // ---- three players see each other ----
+  const sees = async (p: Page) => (await until<string[]>(p, `(() => { const n = window.__game.cars.filter((c) => c.kind === 'remote').map((c) => c.name).sort(); return n.length === 2 ? n : null })()`, 20000)) ?? []
+  const seen = { host: await sees(host), join: await sees(join), mum: await sees(mum) }
+  check('three players: everyone sees the other two in cars', seen.host.join() === 'DAD,MUM' && seen.join.join() === 'JOSH,MUM' && seen.mum.join() === 'DAD,JOSH', seen)
+  await mum.screenshot({ path: `${k.shots}/robust-three-players.png` })
+
+  // ---- the next round includes the late arrival ----
+  await until<boolean>(host, `(() => { const r = window.__pilot.rounds.currentRound(); return !!r && r.ended })()`, 40000)
+  for (const p of [host, join, mum]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame(); window.__pilot.store.useGame.setState({ mode: 'tag' }) })()`)
+  await sleep(1000)
+  check('the next round starts (G)', (await host.evaluate(`window.__pilot.rounds.requestStart()`)) === true)
+  await sleep(500)
+  const rounds3 = [await roundOf(host), await roundOf(join), await roundOf(mum)]
+  check('...with all three on the same grid and the same "it"', rounds3.every((r) => r && r.grid.length === 3 && r.inGrid && r.raceId === rounds3[0]!.raceId && r.itId === rounds3[0]!.itId), rounds3)
+
+  // ---- a reconnect mid-round keeps your place ----
+  await until<boolean>(join, `window.__game.state.raceState === 'running'`, 6000)
+  await sleep(1500)
+  const oldId = await idOf(join)
+  await join.evaluate(`window.__pilot.K.net.dropConnection()`)
+  const newId = await until<number>(join, `(() => { const s = window.__pilot.net.getNet(); return s.status === 'online' && s.myId !== ${oldId} ? s.myId : 0 })()`, 8000)
+  await sleep(800)
+  const afterRe = [await roundOf(host), await roundOf(join), await roundOf(mum)]
+  check('mid-round reconnect: the dropped player comes back with a new id', !!newId && newId !== oldId, { oldId, newId })
+  check('...and every screen swaps them onto the grid under the new id (round still on)', afterRe.every((r) => r && !r.ended && r.grid.includes(newId!) && !r.grid.includes(oldId)), afterRe)
+  check('...and they are still in the round on their own screen', (await join.evaluate(`window.__game.state.raceState`)) === 'running')
+  // The round ends with three results everywhere.
+  const ends = await Promise.all([host, join, mum].map((p) => until<boolean>(p, `(() => { const r = window.__pilot.rounds.currentRound(); return !!r && r.ended && window.__game.state.raceState === 'finished' })()`, 45000)))
+  const names = await Promise.all([host, join, mum].map((p) => p.evaluate(`window.__game.state.raceResults.map((r) => r.name).join()`)))
+  // Results carry real names on every screen (the ui shows "You" for your own row).
+  check('the 3-player round ends on every screen with three results in the same order', ends.every(Boolean) && names.every((n) => (n as string).split(',').length === 3) && new Set(names).size === 1, names)
+
+  // ---- the host reloads its page ----
+  const joinTrackVersion = await join.evaluate(`window.__game.state.trackVersion`)
+  const joinKey = await join.evaluate(`window.__pilot.current.getTrack().key`)
+  await host.reload({ waitUntil: 'load' })
+  const hostLeft = await until<boolean>(join, `window.__events.recent.some((e) => e.type === 'mp.leave' && e.name === 'JOSH')`, 10000)
+  await host.evaluate(PILOT)
+  const hostBack = await until<boolean>(host, `window.__pilot.net.getNet().isHost`, 20000)
+  const joinSeesHost = await until<boolean>(join, `window.__game.cars.some((c) => c.kind === 'remote' && c.name === 'JOSH')`, 20000)
+  await sleep(2000)
+  const joinAfter = { trackVersion: await join.evaluate(`window.__game.state.trackVersion`), key: await join.evaluate(`window.__pilot.current.getTrack().key`), isHost: await join.evaluate(`window.__pilot.net.getNet().isHost`) }
+  check('host reload: joiners see the host leave', !!hostLeft)
+  check('...the reloaded page is the host again', !!hostBack)
+  check('...joiners see the host car again', !!joinSeesHost)
+  // The reloaded host boots its link's ?track (or its last played track), which may differ
+  // from what it was on. Joiners follow it either way; same track means no rebuild.
+  const hostKeyAfter = await host.evaluate(`window.__pilot.current.getTrack().key`)
+  const sameTrack = hostKeyAfter === joinKey
+  check(`...and joiners follow the host's track${sameTrack ? ' without a rebuild' : ' (it booted a different one)'}`, joinAfter.key === hostKeyAfter && joinAfter.isHost === false && (!sameTrack || joinAfter.trackVersion === joinTrackVersion), { before: { trackVersion: joinTrackVersion, key: joinKey }, after: joinAfter, hostKeyAfter })
+
+  // ---- a reconnect mid-RACE keeps your grid place ----
+  for (const p of [host, join, mum]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame(); window.__pilot.store.useGame.setState({ mode: 'race' }) })()`)
+  await sleep(1500)
+  check('a 3-player race starts', (await host.evaluate(`window.__pilot.rounds.requestStart()`)) === true)
+  await until<boolean>(join, `window.__game.state.raceState === 'running'`, 6000)
+  for (const p of [host, join, mum]) await p.evaluate(`window.__pilot.go(null, 80)`)
+  await sleep(3000)
+  const raceOld = await idOf(join)
+  await join.evaluate(`window.__pilot.K.net.dropConnection()`)
+  const raceNew = await until<number>(join, `(() => { const s = window.__pilot.net.getNet(); return s.status === 'online' && s.myId !== ${raceOld} ? s.myId : 0 })()`, 8000)
+  await sleep(800)
+  const raceAfter = [await roundOf(host), await roundOf(join), await roundOf(mum)]
+  check('mid-race reconnect: every screen keeps the racer on the grid under the new id', !!raceNew && raceAfter.every((r) => r && r.kind === 'race' && !r.ended && r.grid.includes(raceNew!) && !r.grid.includes(raceOld)), { raceOld, raceNew, raceAfter })
+  check('...and they are still racing on their own screen', (await join.evaluate(`window.__game.state.raceState`)) === 'running')
+  const hostSeesRacer = await until<boolean>(host, `window.__game.cars.some((c) => c.kind === 'remote' && c.name === 'DAD')`, 8000)
+  check('...and the others see their car again', !!hostSeesRacer)
+  for (const p of [host, join, mum]) await p.evaluate(`window.__pilot.stop()`)
+  await mum.close()
 }

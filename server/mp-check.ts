@@ -51,7 +51,7 @@ const RELAY = Number(arg('relay-port') ?? 5218)
 const TRACK = arg('track') ?? 'afterglow'
 const JOIN_TRACK = arg('join-track') ?? 'hyperdrome'
 const SHOTS = arg('shots') ?? '/tmp/sr2/net'
-const ONLY = (arg('only') ?? 'client,game,drawn,props,race,tag').split(',')
+const ONLY = (arg('only') ?? 'client,game,drawn,props,race,tag,robust').split(',')
 mkdirSync(SHOTS, { recursive: true })
 const ROOT = dirname(import.meta.dir)
 const SNAPSHOT = join(arg('snapshot-dir') ?? '/tmp/sr2-mpcheck', 'game')
@@ -181,11 +181,12 @@ try {
   // ============================================================ client
   if (ONLY.includes('client')) {
     console.log('\n== client: the bare net client (no game scene needed)')
-    // Load the page (any URL without ?track) and drive client.ts directly.
+    // Load the page (no ?track: it sits on the title screen, connected) and drive the client directly.
     const q = `?mp=1&relay=${RELAY}`
     const host = await openPage(`${hostBase}/${q}&name=HOSTY`, 'host')
     const join = await openPage(`${joinBase}/${q}&name=JOINY&color=orange`, 'join')
-    const start = `(async () => { const c = await import('/src/net/client.ts'); window.__netc = c; window.__nets = await import('/src/net/netStore.ts'); window.__netp = await import('/src/net/poses.ts'); c.startNet(); return true })()`
+    // ?mp=1 starts the client by itself; reach it through net's dev kit (works on a built preview too).
+    const start = `(async () => { let K = null; for (let i = 0; i < 200 && !K; i++) { K = window.__game && window.__game.get('netKit'); if (!K) await new Promise((r) => setTimeout(r, 100)) } window.__netc = K.net; window.__nets = K.net; window.__netp = K.net; return !!K })()`
     await host.evaluate(start)
     await sleep(300)
     await join.evaluate(start)
@@ -227,7 +228,7 @@ try {
   }
 
   // ============================================================ game sections
-  const gameSections = ['game', 'drawn', 'props', 'race', 'tag'].filter((s) => ONLY.includes(s))
+  const gameSections = ['game', 'drawn', 'props', 'race', 'tag', 'robust'].filter((s) => ONLY.includes(s))
   if (gameSections.length) {
     const { runGameChecks } = await import('./mp-check-game')
     await runGameChecks({ hostBase, joinBase, relayPort: RELAY, track: TRACK, joinTrack: JOIN_TRACK, shots: SHOTS, sections: gameSections, check, until, openPage, sleep })

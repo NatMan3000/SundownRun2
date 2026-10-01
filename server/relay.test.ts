@@ -6,8 +6,9 @@
 //  host) and others through this machine's LAN address (so they look
 //  like a second computer). Checks the things the game relies on:
 //  who hosts, the host's track reaching a late joiner, pose packets
-//  tagged with the sender, ping/pong, and the host handing over when
-//  it leaves and coming back when it returns.
+//  tagged with the sender, ping/pong, a racer rejoining a remembered
+//  race under a new id, and the host handing over when it leaves and
+//  coming back when it returns.
 // ============================================================
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
@@ -128,6 +129,19 @@ test('the loopback client hosts, its track reaches a late LAN joiner, poses are 
   const wm = await mid.waitFor((m) => m.t === 'welcome')
   expect(wm.live?.raceId).toBe(7)
   expect(wm.live?.from).toBe(wl.id)
+
+  // A racer reconnects with a new id: the relay's memory of the race follows them.
+  const re = new Client(lan)
+  await re.opened
+  const wr = await re.waitFor((m) => m.t === 'welcome')
+  re.send({ t: 'rejoin', raceId: 7, oldId: wl.id })
+  await host.waitFor((m) => m.t === 'rejoin' && m.from === wr.id && m.oldId === wl.id)
+  const after = new Client(lan)
+  await after.opened
+  const wa = await after.waitFor((m) => m.t === 'welcome')
+  expect(wa.live?.grid).toEqual([wh.id, w0.id, wr.id])
+  after.close()
+  re.close()
 
   // The host leaves: the longest-connected LAN client takes over and everyone hears it.
   host.close()

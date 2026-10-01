@@ -168,6 +168,14 @@ export function startRelay(port = RELAY_PORT, log: (line: string) => void = (l) 
             live = { msg: { ...msg, from: data.id }, startedAt: Date.now() }
             log(`[relay] ${msg.kind} started by player ${data.id}`)
             break
+          case 'rejoin':
+            // A racer came back with a new id: keep the remembered round in step.
+            if (live && live.msg.raceId === msg.raceId) {
+              live.msg.grid = live.msg.grid.map((id: number) => (id === msg.oldId ? data.id : id))
+              if (live.msg.itId === msg.oldId) live.msg.itId = data.id
+              log(`[relay] player ${msg.oldId} rejoined the ${live.msg.kind} as ${data.id}`)
+            }
+            break
         }
         msg.from = data.id
         broadcast(data.id, JSON.stringify(msg))
