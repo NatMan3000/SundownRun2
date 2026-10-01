@@ -34,9 +34,15 @@ export class Effects {
   readonly counts: Record<string, number> = {}
   private readonly rnd = mulberry32(0x5eed5)
   private readonly lastAt: Record<string, number> = {}
-  /** Audio-clock times of the countdown beeps already scheduled (so menu calls don't double them). */
-  private countdownAt: number[] = []
+  // the race countdown (see watchCountdown)
+  /** store.raceGoAt of the countdown already booked (-1 = booked from an event with no store time). */
+  private bookedGoAtMs = 0
+  /** Audio-clock time of the booked GO. */
   private goAt = -1
+  /** The booked beeps play through this, so an aborted countdown can be silenced. */
+  private countdownBus: GainNode | null = null
+  /** The last aborted countdown's bus, kept only so the inspector can show it went silent. */
+  private abortedBus: GainNode | null = null
 
   constructor(
     private readonly fx: VoiceKit,
@@ -101,35 +107,33 @@ export class Effects {
         noiseHit(k, t, 0.025, 'lowpass', 700, 0.8, 0.002, 0.08)
         break
       case 'countdown':
-        // If a race countdown is already scheduled near now, that beep is it.
-        if (this.nearScheduled(this.countdownAt, 0.35)) return
-        this.beep(k, t, false)
-        break
       case 'go':
-        if (this.goAt > 0 && Math.abs(this.goAt - k.ctx.currentTime) < 0.4) return
-        this.beep(k, t, true)
+        // The race countdown belongs to the event (booked on the audio clock).
+        // While one is booked, a menu call for the same sound is ignored.
+        if (this.countdownLive()) return
+        this.beep(k, t, kind === 'go')
         break
     }
     this.count(`ui.${kind}`)
   }
 
-  private nearScheduled(times: number[], within: number): boolean {
-    const t = this.fx.ctx.currentTime
-    for (let i = 0; i < times.length; i++) if (Math.abs(times[i] - t) < within) return true
-    return false
+  /** The race-start beep in the current key. */
+  private beep(k: VoiceKit, t: number, go: boolean): void {
+    this.beepAt(k, t, go, musicKey.root)
   }
 
-  /** The race-start beep. GO is an octave up, longer, with a fifth and a low punch. */
-  private beep(k: VoiceKit, t: number, go: boolean): void {
-    const hz = midiToHz(musicKey.root + (go ? 36 : 24))
+  /** The race-start beep on `root`. GO is an octave up, longer, with a fifth and a low punch. */
+  private beepAt(k: VoiceKit, t: number, go: boolean, root: number, dest?: AudioNode): void {
+    const hz = midiToHz(root + (go ? 36 : 24))
+    const o = dest ? { dest } : undefined
     if (go) {
-      tone(k, 'triangle', hz, t, 0.16, 0.004, 0.7)
-      tone(k, 'sine', hz * 1.5, t, 0.08, 0.004, 0.6)
-      tone(k, 'square', hz / 2, t, 0.025, 0.004, 0.35)
-      thump(k, t, 0.22, 140, 45, 0.3)
+      tone(k, 'triangle', hz, t, 0.16, 0.004, 0.7, o)
+      tone(k, 'sine', hz * 1.5, t, 0.08, 0.004, 0.6, o)
+      tone(k, 'square', hz / 2, t, 0.025, 0.004, 0.35, o)
+      thump(k, t, 0.22, 140, 45, 0.3, o)
     } else {
-      tone(k, 'triangle', hz, t, 0.14, 0.003, 0.16)
-      tone(k, 'sine', hz * 2, t, 0.03, 0.003, 0.08)
+      tone(k, 'triangle', hz, t, 0.14, 0.003, 0.16, o)
+      tone(k, 'sine', hz * 2, t, 0.03, 0.003, 0.08, o)
     }
   }
 
@@ -187,11 +191,11 @@ export class Effects {
         bell(k, midiToHz(brightPentaMidi(4 + (e.sector % 3), 2)), t, 0.03, 0.14, 0.6)
         break
       case 'race.countdown':
-        this.scheduleCountdown(e.seconds)
-        break
+        this.onCountdownEvent(e.seconds)
+        return // counted when booked
       case 'race.start':
-        if (this.goAt > 0 && Math.abs(this.goAt - k.ctx.currentTime) < 0.5) break
-        this.goAt = k.ctx.currentTime
+        // GO was booked with the countdown: don't play it again.
+        if (this.countdownLive() || (this.goAt > 0 && Math.abs(this.goAt - k.ctx.currentTime) < 0.5)) break
         this.beep(k, t, true)
         break
       case 'race.position':
@@ -438,30 +442,104 @@ export class Effects {
   // ================================================================ countdown
 
   /**
-   * Schedule the whole race countdown on the audio clock in one go: a beep
-   * each second and GO at the end. Scheduling it all at once keeps the beats
-   * perfectly even no matter what the frame rate does. If the store already
-   * knows when GO lands (raceGoAt), we line up with it exactly.
+   * The race countdown, booked ONCE per countdown on the audio clock: a beep
+   * on each whole second before GO, then GO. Booking it all at once keeps the
+   * beats perfectly even whatever the frame rate does.
+   *
+   * It is keyed on store.raceGoAt (the exact GO time), so a repeated event, or
+   * the per-frame watch finding the same countdown, never books it twice. The
+   * key the beeps are in is frozen at booking time (the music may change key
+   * during the countdown; the beeps must not). The beeps play through their
+   * own gain, so an aborted countdown (raceState leaves 'countdown' before GO)
+   * silences what is still waiting.
    */
-  private scheduleCountdown(seconds: number): void {
-    const k = this.uiKit
-    const now = k.ctx.currentTime
+  watchCountdown(raceState: string, goAtMs: number): void {
+    const now = this.uiKit.ctx.currentTime
+    if (raceState === 'countdown' && goAtMs > 0 && goAtMs !== this.bookedGoAtMs) {
+      this.abortCountdown()
+      this.abortedBus = null
+      this.bookCountdown(goAtMs, (goAtMs - performance.now()) / 1000)
+      return
+    }
+    const bus = this.countdownBus
+    if (!bus) return
+    // Aborted: no longer counting down, not racing, and GO hasn't happened yet.
+    if (raceState !== 'countdown' && raceState !== 'running' && now < this.goAt - 0.02) this.abortCountdown()
+    // Well after GO: the beeps have finished, let the bus go.
+    else if (now > this.goAt + 1.5) {
+      bus.disconnect()
+      this.countdownBus = null
+    }
+  }
+
+  /** A race.countdown event: book from the store's GO time if it has one, else from the event's seconds. */
+  private onCountdownEvent(seconds: number): void {
     const goAtMs = getGame().raceGoAt
-    let goIn = seconds
     if (goAtMs > 0) {
-      const fromStore = (goAtMs - performance.now()) / 1000
-      if (fromStore > 0 && Math.abs(fromStore - seconds) < 1.2) goIn = fromStore
+      if (goAtMs !== this.bookedGoAtMs) {
+        this.abortCountdown()
+        this.bookCountdown(goAtMs, (goAtMs - performance.now()) / 1000)
+      }
+      return
     }
-    const go = now + LEAD_IN + goIn
-    this.countdownAt = []
-    for (let n = Math.ceil(goIn); n >= 1; n--) {
+    // No GO time in the store yet: book from the event, once while it is live.
+    if (this.countdownLive()) return
+    this.bookCountdown(-1, seconds)
+  }
+
+  private bookCountdown(goAtMs: number, goIn: number): void {
+    const k = this.uiKit
+    const ctx = k.ctx
+    const now = ctx.currentTime
+    if (!(goIn > -0.05) || goIn > 30) return
+    const go = now + LEAD_IN + Math.max(0, goIn)
+    const bus = ctx.createGain()
+    bus.connect(k.out)
+    const root = musicKey.root // frozen for the whole countdown
+    for (let n = Math.floor(goIn + 0.1); n >= 1; n--) {
+      // The first beep is usually due "right now" (or a few ms ago): play it now, don't drop it.
       const at = go - n
-      if (at < now) continue
-      this.countdownAt.push(at)
-      this.beep(k, at, false)
+      if (at < now - 0.1) continue
+      this.beepAt(k, Math.max(at, now + LEAD_IN), false, root, bus)
     }
+    this.beepAt(k, go, true, root, bus)
+    this.countdownBus = bus
+    this.bookedGoAtMs = goAtMs
     this.goAt = go
-    this.beep(k, go, true)
     this.count('countdown')
+  }
+
+  /** Silence any countdown beeps still waiting to play. */
+  private abortCountdown(): void {
+    const bus = this.countdownBus
+    if (!bus) return
+    const t = this.uiKit.ctx.currentTime
+    if (t < this.goAt + 0.05) {
+      bus.gain.cancelScheduledValues(t)
+      bus.gain.setValueAtTime(bus.gain.value, t)
+      bus.gain.linearRampToValueAtTime(0, t + 0.015)
+      this.counts['countdown.aborted'] = (this.counts['countdown.aborted'] ?? 0) + 1
+      // the voices reap themselves; drop the bus once the last booked beep would have ended
+      setTimeout(() => bus.disconnect(), Math.max(0, (this.goAt - t + 1) * 1000))
+      this.abortedBus = bus
+    } else {
+      bus.disconnect()
+    }
+    this.countdownBus = null
+    this.goAt = -1
+  }
+
+  /** Inspector view of the booked countdown. */
+  countdownState(): { live: boolean; aborted: boolean; goAt: number; busGain: number } | null {
+    const r = (v: number) => Math.round(v * 1000) / 1000
+    const bus = this.countdownBus
+    if (bus) return { live: this.countdownLive(), aborted: false, goAt: r(this.goAt), busGain: r(bus.gain.value) }
+    if (this.abortedBus) return { live: false, aborted: true, goAt: -1, busGain: r(this.abortedBus.gain.value) }
+    return null
+  }
+
+  /** True from booking until just after GO. */
+  private countdownLive(): boolean {
+    return this.countdownBus !== null && this.uiKit.ctx.currentTime < this.goAt + 0.5
   }
 }

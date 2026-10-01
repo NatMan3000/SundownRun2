@@ -79,6 +79,17 @@ function hasStickyActivation(): boolean {
   return ua ? ua.hasBeenActive : false
 }
 
+/**
+ * May we try to start sound right now? Only once the page has had a real
+ * gesture: before that the browser refuses (a gamepad press doesn't count)
+ * and every attempt just logs an "AudioContext was not allowed to start"
+ * warning. Browsers without the userActivation API get to try.
+ */
+function mayStartSound(): boolean {
+  const ua = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation
+  return ua ? ua.hasBeenActive : true
+}
+
 export class AudioRig {
   private g: Graph | null = null
   private hidden = typeof document !== 'undefined' ? document.hidden : false
@@ -115,6 +126,9 @@ export class AudioRig {
     window.addEventListener('keydown', this.onGesture, opts)
     window.addEventListener('pointerdown', this.onGesture, opts)
     window.addEventListener('touchstart', this.onGesture, opts)
+    // pointerup / touchend are the events that actually grant activation on touch screens
+    window.addEventListener('pointerup', this.onGesture, opts)
+    window.addEventListener('touchend', this.onGesture, opts)
     document.addEventListener('visibilitychange', this.onVisibility)
     this.pollTimer = setInterval(this.pollActivation, ACTIVATION_POLL_MS)
     this.musicTimer = setInterval(this.tickMusic, TICK_MS)
@@ -164,7 +178,7 @@ export class AudioRig {
 
   /** Start or resume sound. Safe to call any time; from a user gesture it always works. */
   unlock = (): void => {
-    if (this.disposed || this.hidden) return
+    if (this.disposed || this.hidden || !mayStartSound()) return
     if (!this.g) {
       try {
         this.g = this.build()
@@ -212,6 +226,8 @@ export class AudioRig {
     window.removeEventListener('keydown', this.onGesture, opts)
     window.removeEventListener('pointerdown', this.onGesture, opts)
     window.removeEventListener('touchstart', this.onGesture, opts)
+    window.removeEventListener('pointerup', this.onGesture, opts)
+    window.removeEventListener('touchend', this.onGesture, opts)
     document.removeEventListener('visibilitychange', this.onVisibility)
     if (this.pollTimer !== null) clearInterval(this.pollTimer)
     if (this.musicTimer !== null) clearInterval(this.musicTimer)
@@ -249,6 +265,10 @@ export class AudioRig {
       this.airMax = 0
     }
     this.wasAirborne = e.airborne
+
+    // Race countdown: booked once per store.raceGoAt, silenced if the countdown is aborted.
+    const gs = getGame()
+    g.effects.watchCountdown(gs.raceState, gs.raceGoAt)
 
     // Music: intensity from the drive, plus what the arranger needs to know.
     const dt = this.lastFrameT >= 0 ? Math.min(0.1, Math.max(0, t - this.lastFrameT)) : 0
@@ -442,6 +462,7 @@ export class AudioRig {
       },
       engine: g ? roundAll(g.engine.readout) : null,
       counts: g ? { ...g.effects.counts } : {},
+      countdown: g ? g.effects.countdownState() : null,
       faders: g
         ? {
             master: round3(g.mix.master.gain.value),
