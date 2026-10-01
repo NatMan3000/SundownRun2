@@ -9,7 +9,9 @@
 //    useTrack()              React: re-renders when the track changes
 //    setTrackParam(p, v)     live parameter (e.g. bankDeg): rebuilds the
 //                            road in place WITHOUT moving the car; bumps
-//                            trackParamVersion, not trackVersion
+//                            trackParamVersion, not trackVersion. v = null
+//                            goes back to the file's default and forgets
+//                            the saved value
 //
 //  trackVersion bumps on a new track: the physics world remounts and
 //  everything rebuilds. trackParamVersion bumps on a live param change:
@@ -86,13 +88,13 @@ export function loadTrackById(id: string): ValidationResult {
   return setTrackFromFile(file)
 }
 
-/** Change a live track parameter (persisted per track) and rebuild the road in place. */
-export function setTrackParam(param: string, value: number): void {
+/** Change a live track parameter (persisted per track; null = back to the file's default, not saved) and rebuild the road in place. */
+export function setTrackParam(param: string, value: number | null): void {
   if (!current || !currentFile) return
   useSettings.getState().setTrackParam(currentFile.id, param, value)
   const result = validateTrack(currentFile)
   if (!result.ok || !result.track) return
   current = buildTrack(result.track, paramsRecord(currentFile), current)
   useGame.setState((s) => ({ trackParamVersion: s.trackParamVersion + 1 }))
-  emit('track.param', { trackId: currentFile.id, param, value })
+  emit('track.param', { trackId: currentFile.id, param, value: current.params[param] ?? 0 })
 }

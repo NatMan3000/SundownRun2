@@ -183,7 +183,8 @@ let defaults = defaultsFrom(CONFIG)
 
 interface SettingsStore extends Settings {
   set: <K extends SettingKey>(key: K, value: Settings[K]) => void
-  setTrackParam: (trackId: string, param: string, value: number) => void
+  /** Save a live track parameter; null forgets the saved value (back to the track file's default). */
+  setTrackParam: (trackId: string, param: string, value: number | null) => void
   resetAll: () => void
 }
 
@@ -197,9 +198,12 @@ export const useSettings = create<SettingsStore>((set) => ({
     set({ [key]: v } as Partial<SettingsStore>)
   },
   setTrackParam: (trackId, param, value) => {
-    const n = Number.isFinite(value) ? value : 0
     const tp = { ...(saved.trackParams ?? {}) }
-    tp[trackId] = { ...(tp[trackId] ?? {}), [param]: n }
+    const forTrack = { ...(tp[trackId] ?? {}) }
+    if (value === null) delete forTrack[param]
+    else forTrack[param] = Number.isFinite(value) ? value : 0
+    if (Object.keys(forTrack).length) tp[trackId] = forTrack
+    else delete tp[trackId]
     saved.trackParams = tp
     writeSaved(saved)
     set({ trackParams: tp })
