@@ -670,7 +670,8 @@ textarea.sre-input {
 
 /* more map-key swatches */
 .k-boost { height: 7px !important; border-radius: 2px; background: var(--boost); box-shadow: 0 0 6px var(--boost); }
-.k-ramp { height: 7px !important; border-right: 3px solid var(--ramp); border-radius: 2px; background: color-mix(in srgb, var(--ramp) 25%, transparent); }
+/* the ramp's lip is the bright end, as on the map */
+.k-ramp { height: 7px !important; border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--ramp) 25%, transparent) 80%, var(--ramp) 80%); }
 .k-loop { width: 14px !important; height: 10px !important; border-radius: 50%; border: 2px solid var(--loop); margin: 0 2px; }
 .k-wall { height: 4px !important; border-radius: 2px; background: var(--bridge); box-shadow: 0 0 6px var(--bridge); }
 .k-prop { width: 10px !important; height: 10px !important; border: 2px solid var(--prop); margin: 0 4px; }

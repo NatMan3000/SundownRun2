@@ -23,11 +23,11 @@ import { SoundHint } from '../SoundHint'
 
 /**
  * The Map button opens the editor's top-down world map over the paused game.
- * Hidden until the editor's map and its Back (closeMap) are wired, because
- * opening it before then strands the player on an empty screen. Flip to true
- * when the editor lands.
+ * The editor's map and its Back / Esc (closeMap) are wired, so it's on. Set
+ * this to false to hide the button if the map ever breaks: opening a map
+ * with no way back would strand the player on an empty screen.
  */
-const MAP_READY = false
+const MAP_READY = true
 
 const MODE_WORD = { free: 'Free Roam', timetrial: 'Time Trial', race: 'Race', stunt: 'Stunt Attack', tag: 'Tag' } as const
 
