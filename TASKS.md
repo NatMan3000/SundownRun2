@@ -127,15 +127,15 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ✅ [track/world] Ruling: sunset notch in the edge ridge (sun azimuth +/- 40 deg at ~30% rise), city at ~1.6 x world size.
 - ✅ [look] Ruling: Neutral tone mapping (ACES washed the sun gradient; world's A/B screenshots).
 - ✅ [audio] Ruling: audio owns the countdown beeps (from race.countdown).
-- ⬜ [track] Road and skirt triangles wound clockwise (ribbon.ts quad() normal = e2 x e1): road top culled from above, skirt underside shows (look). Also explains editor's "terrain covers road" from top-down.
+- ✅ [track] Road and skirt triangles wound clockwise (ribbon.ts quad() normal = e2 x e1): road top culled from above, skirt underside shows (look). Also explains editor's "terrain covers road" from top-down.
 - ⬜ [track] Afterglow loop entrance is a solid wall at s 3216: cars stop dead; five Ai + demo piled up 4+ min (play). Needs a drive-through physics test.
 - ⬜ [track] Afterglow redesign (orchestrator, game director): rounded rectangle with long straights and an empty middle; wants a flowing layout through the world, 40-60 m elevation, big-air hill by the road, loop toward the sun, wall ride on a sweeper, a crossover bridge.
 - ⬜ [vehicle] First d-pad press after a pad connects fires the menu action twice (ui).
 - ⬜ [look] Live switch to Neutral tone mapping renders black (world).
 - ⬜ [vehicle] Car art: faceted low-poly look and dull red-magenta paint; wants smooth normals + clearcoat. Showroom camera must frame the car in the right half (menus cover the left).
 - ✅ [contract] Planet default elevation 16 deg (was 28: off-frame at night). TrackParamInfo.default added. ResolvedTrackFile.laps typed number | null. Skirt uv semantics. Physics updatePriority -50.
-- ⬜ [audio] Checker audio-1 (11/13): race countdown beeps stack (GO booked 3x, one a semitone off) because a booking happens per race.countdown event. Contract now: emitted once per countdown.
-- ⬜ [ui] Checker audio-1 D1: pad-only player never gets sound (Chrome: pad press isn't user activation). Add a "press any key or click for sound" hint while audio isn't running.
+- ✅ [audio] Checker audio-1 (11/13): race countdown beeps stack (GO booked 3x, one a semitone off) because a booking happens per race.countdown event. Contract now: emitted once per countdown.
+- ⚠️ [ui] Checker audio-1 D1 (hint added, not re-checked): pad-only player never gets sound (Chrome: pad press isn't user activation). Add a "press any key or click for sound" hint while audio isn't running.
 - ⬜ [play] race.countdown emitted every second (should be once); goAt includes settle time so the HUD shows a "4".
 - ⬜ [vehicle] Clean landings classified as intensity-1 crashes (8 per 45 s demo).
 - ⬜ [harness, outside repo] Kai's tabguard hook denies MCP press_key/click/emulate when Canary has a new-tab-page tab (CDP /json/list says chrome://newtab/, MCP lists chrome://new-tab-page/). Not edited (outside the build's scope); checkers work around it.
