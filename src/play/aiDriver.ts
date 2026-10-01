@@ -61,9 +61,11 @@ const REJOIN_RATIO = 5
 /** Trail braking: above this much lock the brake is eased, down to (1 - TRAIL_EASE) at full lock. */
 const TRAIL_FROM = 0.35
 const TRAIL_EASE = 0.8
-/** Ramps: start aiming at the landing this far before the ramp, and aim this far past its end. */
-const RAMP_AIM_M = 60
-const RAMP_LAND_M = 60
+/** Ramps: line up on the ramp's lane from this far out; at the end, aim this far past the ramp. */
+const RAMP_AIM_M = 80
+const RAMP_LAND_M = 50
+/** In the last this-many metres before a ramp, start aiming at the landing. */
+const RAMP_FINAL_M = 15
 /** Clearance from a boost pad's edge for the car to miss it, metres. */
 const PAD_CLEAR = 1.6
 /** The last stretch before a loop is driven dead centre, metres. */
@@ -113,6 +115,9 @@ const STEER_BAND_CENTRES = [10, 27, 42, 60]
 const STEER_LEARN_RATE = 0.01
 /** Pure-pursuit gain on the learned steer response (1 = exactly the arc through the aim point). */
 const PP_WEIGHT = 1.0
+/** Lane-loss governor: kicks in when more than this far off our lane and drifting further at this rate (m/s). */
+const LANE_LOSS_M = 1.0
+const LANE_LOSS_RATE = 0.6
 /** Steering demand (fraction of full lock) above which the brain treats the turn as too tight for its speed. */
 const STEER_SATURATION = 0.7
 /** How hard it slows per unit of demand over that: 0.25 -> 7.5 % below current speed at full lock. */
@@ -194,7 +199,10 @@ function planRunInLane(track: TrackRuntime, s: number, toLoop: number, lim: numb
   return best
 }
 
-/** If a kicker ramp starts within RAMP_AIM_M ahead (or we're on one), the s where it ends; else -1. */
+/** Filled by rampAhead: the ramp we're approaching or on. */
+const rampInfo = { s1: 0, offset: 0, toStart: 0 }
+
+/** If a kicker ramp starts within RAMP_AIM_M ahead (or we're on one), its end s (details in rampInfo); else -1. */
 function rampAhead(track: TrackRuntime, s: number): number {
   const pieces = track.pieces
   for (let i = 0; i < pieces.length; i++) {
@@ -202,7 +210,12 @@ function rampAhead(track: TrackRuntime, s: number): number {
     if (p.type !== 'ramp') continue
     const toStart = track.deltaS(s, p.s0)
     const toEnd = track.deltaS(s, p.s1)
-    if ((toStart >= 0 && toStart <= RAMP_AIM_M) || (toStart < 0 && toEnd >= 0)) return p.s1
+    if ((toStart >= 0 && toStart <= RAMP_AIM_M) || (toStart < 0 && toEnd >= 0)) {
+      rampInfo.s1 = p.s1
+      rampInfo.offset = (p.source as { offset?: number }).offset ?? 0
+      rampInfo.toStart = toStart
+      return p.s1
+    }
   }
   return -1
 }
@@ -274,6 +287,7 @@ export class AiDriver implements Driver {
   private time = 0
   private phase: number
   private passOffset = 0
+  private prevLaneErr = 0
   private lineupFor = -1
   private lineupLane = 0
   private sideShove = 0
@@ -384,8 +398,12 @@ export class AiDriver implements Driver {
     // turning, so it lands off the side. From RAMP_AIM_M before a ramp until
     // we're off it, aim at the landing zone instead: take off already pointing
     // where the road will be.
+    // Run-in: centred on the ramp's own lane, square to the road. Last few metres
+    // and on the ramp: aim at the landing zone (a small heading nudge only, we're
+    // already centred), so the car flies toward where the road will be.
     const ramp = rampAhead(track, this.s)
-    if (ramp >= 0) aimS = ramp + RAMP_LAND_M
+    const rampFinal = ramp >= 0 && rampInfo.toStart <= RAMP_FINAL_M
+    if (rampFinal) aimS = rampInfo.s1 + RAMP_LAND_M
     track.frameAt(aimS, _frame)
     const lineOff = sampleAt(track, track.racingLine.offset, aimS)
     const wander = Math.sin(this.time * 0.37 + this.phase) * this.personality.wander * 0.9
@@ -422,9 +440,11 @@ export class AiDriver implements Driver {
     }
 
     if (ramp >= 0) {
-      desired = 0 // the landing zone's centre
+      // square and centred on the ramp, then the line's lane at the landing
+      desired = rampFinal ? sampleAt(track, track.racingLine.offset, aimS) : rampInfo.offset
       this.passTarget = 0
       this.sideShove = 0
+      this.passOffset = 0
     }
     const lim = Math.max(0, _frame.halfWidth - EDGE_MARGIN)
     desired = clamp(desired, -lim, lim)
@@ -504,6 +524,16 @@ export class AiDriver implements Driver {
     if (demand > STEER_SATURATION && v > 8) {
       const cut = 1 - UNDERSTEER_CUT * (Math.min(demand, 1.8) - STEER_SATURATION)
       if (v * cut < vt) vt = v * cut
+    }
+    // Lane-loss governor: drifting further from our lane even though we're steering
+    // back toward it means the tyres have given up (understeer, often downhill)
+    // before the steering is anywhere near full lock. Slow down until it holds.
+    const laneErr = this.hit.lateral - this.laneNow
+    const laneErrRate = (laneErr - this.prevLaneErr) / dt
+    this.prevLaneErr = laneErr
+    if (Math.abs(laneErr) > LANE_LOSS_M && laneErr * laneErrRate > 0 && Math.abs(laneErrRate) > LANE_LOSS_RATE && this.steer * laneErr < 0 && v > 10) {
+      const cut = v * (1 - Math.min(0.12, 0.03 * Math.abs(laneErrRate)))
+      if (cut < vt) vt = cut
     }
     // a big angle to the aim point means we are well off line: ease off as well
     if (Math.abs(alpha) > 0.35) vt *= 1 - Math.min(0.35, (Math.abs(alpha) - 0.35) * 0.5)
