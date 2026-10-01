@@ -5,7 +5,7 @@
 //  channels feed two group faders (music and effects), and those
 //  feed the master fader and a safety limiter before the speakers.
 //
-//    music ─ musicTone (lowpass, closes on pause) ─ duck ─ musicVol ─┐
+//    music ─ carve ─ musicTone (lowpass, closes on pause) ─ duck ─ musicVol ─┐
 //    engine ─ engineVol (quiet on the title screen, off on pause) ─┐ │
 //    fx (crashes, pickups, tricks) ───────────────────────────────┤ │
 //    ui (menu clicks) ────────────────────────────────────────────┴ sfxVol
@@ -13,6 +13,8 @@
 //                     master (fades for hidden tabs) ─ glue ─ limiter ─ speakers
 //
 //  musicVolume / sfxVolume come from the Settings menu (live).
+//  carve dips the music's low-mids (where the engine's note lives)
+//  as the throttle opens, so the bass line never buries the engine.
 //  duck() pulls the music down under a big crash and lets it swell
 //  back, so the hit lands. The same mixer is built inside the
 //  offline renderer, so a render sounds like the game.
@@ -49,6 +51,7 @@ export interface Mix {
   /** Reads the final output level (inspector only). */
   analyser: AnalyserNode
   // faders the update loop moves
+  musicCarve: BiquadFilterNode
   musicTone: BiquadFilterNode
   musicDuck: GainNode
   musicVol: GainNode
@@ -59,9 +62,13 @@ export interface Mix {
     sfxVol: Knob
     engineVol: Knob
     musicTone: Knob
+    musicCarve: Knob
     master: Knob
   }
 }
+
+/** How far the music's low-mids dip at full throttle (dB, negative). */
+const CARVE_DB = -5
 
 export function buildMix(ctx: BaseAudioContext): Mix {
   // Glue: a gentle compressor that holds the mix together.
@@ -93,6 +100,11 @@ export function buildMix(ctx: BaseAudioContext): Mix {
 
   // ---- music group ----
   const music = ctx.createGain()
+  const musicCarve = ctx.createBiquadFilter()
+  musicCarve.type = 'peaking'
+  musicCarve.frequency.value = 240
+  musicCarve.Q.value = 0.9
+  musicCarve.gain.value = 0
   const musicTone = ctx.createBiquadFilter()
   musicTone.type = 'lowpass'
   musicTone.frequency.value = 20000
@@ -100,7 +112,8 @@ export function buildMix(ctx: BaseAudioContext): Mix {
   const musicDuck = ctx.createGain()
   const musicVol = ctx.createGain()
   musicVol.gain.value = 0
-  music.connect(musicTone)
+  music.connect(musicCarve)
+  musicCarve.connect(musicTone)
   musicTone.connect(musicDuck)
   musicDuck.connect(musicVol)
   musicVol.connect(master)
@@ -128,6 +141,7 @@ export function buildMix(ctx: BaseAudioContext): Mix {
     ui,
     master,
     analyser,
+    musicCarve,
     musicTone,
     musicDuck,
     musicVol,
@@ -138,6 +152,7 @@ export function buildMix(ctx: BaseAudioContext): Mix {
       sfxVol: new Knob(sfxVol.gain, 0.08, 0.0005),
       engineVol: new Knob(engineVol.gain, 0.18, 0.0005),
       musicTone: new Knob(musicTone.frequency, 0.25, 5),
+      musicCarve: new Knob(musicCarve.gain, 0.15, 0.05),
       master: new Knob(master.gain, 0.09, 0.0005),
     },
   }
@@ -162,6 +177,8 @@ export interface MixTargets {
   paused: boolean
   /** True while the tab is hidden or the system is stopping: master fades to silence. */
   silent: boolean
+  /** 0..1 how hard the engine is working (throttle): carves room for it in the music. */
+  engineLoad: number
 }
 
 /** Called every frame with where the faders should be. Cheap: Knob skips unchanged values. */
@@ -170,6 +187,7 @@ export function updateMix(mix: Mix, m: MixTargets, t: number): void {
   mix.knobs.sfxVol.to(sliderToGain(m.sfxVolume) * SFX_LEVEL, t)
   mix.knobs.engineVol.to(m.engineLevel, t)
   mix.knobs.musicTone.to(m.paused ? 650 : 20000, t)
+  mix.knobs.musicCarve.to(CARVE_DB * clamp01(m.engineLoad) * clamp01(m.engineLevel), t)
   mix.knobs.master.to(m.silent ? 0 : MASTER_LEVEL, t, m.silent ? 0.04 : 0.09)
 }
 

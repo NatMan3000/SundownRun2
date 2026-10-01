@@ -24,7 +24,8 @@ import type { AnyGameEvent, GameEventType } from '../core/events'
 import { createRig, destroyRig } from './system'
 import type { AudioRig } from './system'
 import type { EngineInput } from './engine'
-import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMusic, toBase64 } from './render'
+import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMix, renderMusic, toBase64 } from './render'
+import type { MixStem } from './render'
 import type { MoodId } from './music/score'
 
 const DEV_HELP = [
@@ -37,7 +38,7 @@ const DEV_HELP = [
   "audio('mood', m)                   switch the music mood (fresh seed) from the next bar: cruise drive race hyper",
   "audio('section', s)                hold a music section: title intro groove build drop breakdown, or 'auto'",
   "audio('sweep')                      13 s scripted test drive: idle, gears, jump (free-rev), landing, drift, boost, off-road, mag grip",
-  "audio('render', what, night?)      record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | effects | title | cruise | drive | race | hyper (night 0..1)",
+  "audio('render', what, night?)      record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | effects | title | cruise | drive | race | hyper (arg: night 0..1) | mix (arg: all | engine | music | fx)",
 ].join('\n')
 
 export function AudioSystem() {
@@ -99,7 +100,7 @@ function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unkn
     case 'section':
       return rig.setSection(String(a))
     case 'render':
-      return renderToWav(a as string, Number(b ?? 0))
+      return renderToWav(a as string, b)
     default:
       return `unknown audio command "${cmd}". ${DEV_HELP}`
   }
@@ -107,7 +108,13 @@ function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unkn
 
 const MUSIC_RENDERS = ['title', 'cruise', 'drive', 'race', 'hyper']
 
-async function renderToWav(what: string, night: number): Promise<unknown> {
+async function renderToWav(what: string, arg: unknown): Promise<unknown> {
+  const night = Number(arg ?? 0)
+  if (what === 'mix') {
+    const stem = (['all', 'engine', 'music', 'fx'].includes(String(arg)) ? arg : 'all') as MixStem
+    const buf = await renderMix(stem)
+    return { ...measure(buf), stem, wav: toBase64(encodeWav(buf)) }
+  }
   if (what === 'engine' || what === 'effects') {
     const buf = what === 'engine' ? await renderEngineSweep() : await renderEffectsReel()
     return { ...measure(buf), wav: toBase64(encodeWav(buf)) }

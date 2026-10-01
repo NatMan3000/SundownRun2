@@ -345,6 +345,9 @@ export class MusicSystem {
     this.pad.level.to(s === 'drop' ? 0.42 : 0.55, t)
     this.bass.baseCutoff = (230 + 380 * e) * (1 - 0.25 * sc.night)
     this.bass.envAmount = (450 + 1300 * e) * dark
+    // Night pulls the drums back and darkens them, so the pads and echoes carry it.
+    this.band.drumLevel.to(0.9 * (1 - 0.32 * sc.night), t)
+    this.snare.tone.to(2600 * (1 - 0.4 * sc.night), t)
   }
 
   private padChord(t: number): void {
@@ -411,7 +414,7 @@ export class MusicSystem {
         // night thins the quiet hats out
         const skip = hc === 'x' && night > 0.15 && this.rnd() < 0.5 * night
         if (!skip) {
-          const base = sec === 'title' ? 0.35 : sec === 'intro' ? 0.6 : 1
+          const base = (sec === 'title' ? 0.35 : sec === 'intro' ? 0.6 : 1) * (1 - 0.4 * night)
           this.hats.hit(t, this.vel(base * (hc === 'a' || hc === 'o' ? 1 : 0.62)), open)
         }
       }
@@ -427,7 +430,7 @@ export class MusicSystem {
     const every = rate === 16 ? 1 : 2
     const arpOn = sec !== 'intro' || this.barsInSection >= 1
     if (arpOn && s % every === 0) {
-      const rest = this.rnd() < 0.28 * night + (sec === 'title' ? 0.15 : 0)
+      const rest = this.rnd() < 0.38 * night + (sec === 'title' ? 0.15 : 0)
       const idx = this.arpPat[this.arpIndex % this.arpPat.length]
       this.arpIndex++
       if (!rest) {

@@ -12,6 +12,9 @@
 //    renderMusic(mood)     a mood's soundtrack driven through a scripted
 //                          drive (intro, groove, build, drop, breakdown),
 //                          or the calm title arrangement
+//    renderMix(stem)       everything together on a 32 s scripted drive
+//                          (engine, race music, effects), or one stem of it,
+//                          for checking the balance between them
 //
 //  encodeWav() turns a recording into a 16-bit .wav file, and
 //  toBase64() makes it a string the probe can carry out of the page.
@@ -24,7 +27,7 @@ import type { MixTargets } from './mixer'
 import { EngineVoice, makeEngineInput } from './engine'
 import { Effects } from './effects'
 import { makeKit } from './voices'
-import { makeNoiseBuffer } from './synth'
+import { hashString, makeNoiseBuffer } from './synth'
 import { SWEEP_SECONDS, sweepInput } from './sweep'
 import { MusicSystem, LOOKAHEAD_S } from './music'
 import { MOODS, TITLE_BPM } from './music/score'
@@ -33,7 +36,7 @@ import type { MoodId } from './music/score'
 const RATE = 48000
 
 function fullMix(): MixTargets {
-  return { musicVolume: 0.7, sfxVolume: 0.85, musicMuted: false, engineLevel: 1, paused: false, silent: false }
+  return { musicVolume: 0.7, sfxVolume: 0.85, musicMuted: false, engineLevel: 1, paused: false, silent: false, engineLoad: 0 }
 }
 
 /**
@@ -185,7 +188,7 @@ export interface MusicRenderLog {
  * Render a mood through the scripted drive (24 bars), or the title
  * arrangement (mood 'title', 10 bars). night 0..1 darkens it.
  */
-export async function renderMusic(mood: MoodId | 'title', night = 0, seed = 0x51ed): Promise<{ buf: AudioBuffer; log: MusicRenderLog }> {
+export async function renderMusic(mood: MoodId | 'title', night = 0, seed = hashString(mood)): Promise<{ buf: AudioBuffer; log: MusicRenderLog }> {
   const title = mood === 'title'
   const m = title ? MOODS.drive : MOODS[mood]
   const bars = title ? 10 : 24
@@ -212,6 +215,58 @@ export async function renderMusic(mood: MoodId | 'title', night = 0, seed = 0x51
   log.progression = music.readout.progression
   music.dispose()
   return { buf, log }
+}
+
+export type MixStem = 'all' | 'engine' | 'music' | 'fx'
+
+/** Effects fired during the mix drive: [seconds, event type, payload]. */
+const MIX_EVENTS: [number, GameEventType, Record<string, unknown>][] = [
+  [5.2, 'core.pickup', { index: 0, found: 1, total: 8 }],
+  [8.1, 'trick.land', { tricks: [], airTimeS: 1.4, combo: 2, points: 450, clean: true }],
+  [9.5, 'boost', { strength: 1 }],
+  [14.5, 'crash', { what: 'wall', intensity: 0.85, speedKmh: 170 }],
+  [17.2, 'core.pickup', { index: 1, found: 2, total: 8 }],
+  [20.3, 'lap.complete', { lap: 1, ms: 59000, dirty: false, best: true, previousBestMs: 61000 }],
+  [24.0, 'speedtrap', { kmh: 231, best: false, previousBestKmh: 240 }],
+  [27.5, 'prop.burst', { kind: 'crates', points: 300, remote: false }],
+]
+
+export const MIX_SECONDS = 32
+
+/**
+ * The full mix (or one stem) on a scripted drive: the engine test drive
+ * twice over, race music following the speed, and effects on top, all at
+ * the default volume settings. Stems are the same render with the other
+ * groups muted, so their levels can be compared directly.
+ */
+export async function renderMix(stem: MixStem): Promise<AudioBuffer> {
+  const ctx = new OfflineAudioContext(2, Math.ceil(RATE * MIX_SECONDS), RATE)
+  const mix = buildMix(ctx)
+  const noise = makeNoiseBuffer(ctx)
+  const engine = new EngineVoice(ctx, mix.engine, noise)
+  const effects = new Effects(makeKit(ctx, mix.fx, noise), makeKit(ctx, mix.ui, noise), (d, h) => duck(mix, d, h, ctx.currentTime))
+  const music = new MusicSystem(ctx, mix.music, noise)
+  music.scene.phase = 'playing'
+  music.newSession('race', undefined, hashString('mix'))
+  const targets = fullMix()
+  if (stem === 'engine' || stem === 'fx') targets.musicMuted = true
+  if (stem === 'music' || stem === 'fx') targets.engineLevel = 0
+  if (stem === 'engine' || stem === 'music') mix.fx.gain.value = 0
+  const input = makeEngineInput()
+  let nextEvent = 0
+  return stepRender(ctx, 1 / 60, (t) => {
+    // Effects fire from the step callback (a second suspend at the same moment is not allowed).
+    while (nextEvent < MIX_EVENTS.length && MIX_EVENTS[nextEvent][0] <= t) {
+      const [, type, payload] = MIX_EVENTS[nextEvent++]
+      effects.handleEvent({ type, t: 0, ...payload } as unknown as AnyGameEvent)
+    }
+    sweepInput(t % SWEEP_SECONDS, input)
+    engine.update(input, t)
+    targets.engineLoad = input.throttle
+    updateMix(mix, targets, t)
+    music.scene.intensity = Math.min(1, input.speedKmh / 230 + input.boost * 0.3)
+    music.tick(t)
+  })
 }
 
 // ---------------------------------------------------------------- file output

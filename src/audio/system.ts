@@ -237,6 +237,7 @@ export class AudioRig {
     const c0 = performance.now()
     const t = g.ctx.currentTime
     const e = this.readInput(t)
+    this.lastInput = e
 
     g.engine.update(e, t)
 
@@ -285,6 +286,7 @@ export class AudioRig {
     this.mixScratch.engineLevel = ENGINE_PHASE_LEVEL[phase] ?? 0
     this.mixScratch.paused = phase === 'paused'
     this.mixScratch.silent = silent || this.hidden
+    this.mixScratch.engineLoad = this.lastInput ? this.lastInput.throttle : 0
     return this.mixScratch
   }
 
@@ -295,7 +297,9 @@ export class AudioRig {
     engineLevel: 0,
     paused: false,
     silent: false,
+    engineLoad: 0,
   }
+  private lastInput: EngineInput | null = null
 
   /** Fill the engine input from telemetry (or the dev override / test sweep). */
   private readInput(t: number): EngineInput {

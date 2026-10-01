@@ -108,6 +108,8 @@ export class Band {
   readonly gated: GainNode
   readonly echo: GainNode
   readonly pump: Env
+  /** Drum bus level (night pulls the drums back). */
+  readonly drumLevel: Knob
   /** Every oscillator / noise loop this band started (for dispose and the voice count). */
   readonly sources: AudioScheduledSourceNode[] = []
   private readonly nodes: AudioNode[] = []
@@ -124,6 +126,7 @@ export class Band {
     this.pumped.connect(out)
     this.direct.connect(out)
     this.pump = new Env(this.pumped.gain, 1)
+    this.drumLevel = new Knob(this.drums.gain, 1.5, 0.005)
 
     // hall reverb: a 2.8 s smooth tail
     this.reverb = this.gain(1)
@@ -284,6 +287,8 @@ export class Snare {
   private readonly bodyPitch: AudioParam
   private readonly noise: Env
   private readonly send: Env
+  /** Snare brightness (night darkens it). */
+  readonly tone: Knob
 
   constructor(b: Band) {
     const o = b.osc('triangle', 190)
@@ -294,6 +299,7 @@ export class Snare {
     bg.connect(b.drums)
     const n = b.noiseLoop(0.7)
     const bp = b.filter('bandpass', 2600, 0.55)
+    this.tone = new Knob(bp.frequency, 1.5, 10)
     const hp = b.filter('highpass', 700, 0.7)
     const ng = b.gain(0)
     this.noise = new Env(ng.gain)
