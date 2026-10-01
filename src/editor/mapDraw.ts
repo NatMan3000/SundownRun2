@@ -12,10 +12,11 @@
 // ============================================================
 
 import { FONTS, PALETTE } from '../core/palette'
+import { cars, telemetry } from '../core/telemetry'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
 import type { EditorState } from './draft'
 import { type P } from './geom'
-import { pieceColour, pieceFootprint, piecePlace, toolFor, type PlaceKind } from './pieces'
+import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type PlaceKind } from './pieces'
 import { type RoadCurve, PER, advanceAt, frameAt, roadCurve, wrapAt } from './road'
 import { view, worldToScreen } from './view'
 
@@ -93,6 +94,10 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
   drawProps(ctx, d.props, s.selection, x.hoverPick)
   drawCores(ctx, d.cores, s.selection, x.hoverPick)
   if (x.ghost) drawGhost(ctx, x.ghost, d.width)
+  if (s.mode === 'map') {
+    drawLabels(ctx, s, g.rc)
+    drawCars(ctx)
+  }
   drawPins(ctx, s, g.rc)
   if (x.stroke.length > 1) drawStroke(ctx, x.stroke)
   drawScaleBar(ctx)
@@ -690,4 +695,62 @@ function drawReadout(ctx: CanvasRenderingContext2D, hover: P): void {
   ctx.textBaseline = 'bottom'
   ctx.fillText(`x ${hover.x.toFixed(0)}  z ${hover.z.toFixed(0)}`, 96, view.height - 44)
   ctx.restore()
+}
+
+// ---------------------------------------------------------------- world map extras
+
+/** Names beside every piece, prop pile and core (the world map is for reading, not editing). */
+function drawLabels(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve): void {
+  const d = s.draft
+  const label = (text: string, p: P, colour: string, dy: number) => {
+    const { sx, sy } = worldToScreen(p.x, p.z)
+    if (sx < -60 || sy < -30 || sx > view.width + 60 || sy > view.height + 30) return
+    pill(ctx, text, sx, sy + dy, colour)
+  }
+  for (const p of d.pieces) label(pieceLabel(p).toUpperCase(), piecePlace(rc, p).p, pieceColour(p), -26)
+  for (const p of d.props) label('CRASH PROPS', p, PALETTE.propCrate, -24)
+  d.cores.forEach((c, i) => label(`CORE ${i + 1}`, c, PALETTE.core, -20))
+}
+
+/** Every car: the player as a big cyan arrow with a "YOU" tag, the others as small coloured arrows. */
+/** A car's local +z axis in world space, seen from above (x, z). */
+function localZ(q: { x: number; y: number; z: number; w: number }): { x: number; z: number } {
+  return { x: 2 * (q.x * q.z + q.w * q.y), z: 1 - 2 * (q.x * q.x + q.y * q.y) }
+}
+
+function drawCars(ctx: CanvasRenderingContext2D): void {
+  // Which way is "forward" in a car's own space? Ask the player's car, whose forward we know.
+  let sign = 1
+  for (let i = 0; i < cars.length; i++) {
+    if (cars[i].kind !== 'player') continue
+    const z = localZ(cars[i].quaternion)
+    sign = z.x * telemetry.carForward.x + z.z * telemetry.carForward.z >= 0 ? 1 : -1
+  }
+  for (let i = 0; i < cars.length; i++) {
+    const c = cars[i]
+    if (c.kind === 'ghost') continue
+    const { sx, sy } = worldToScreen(c.position.x, c.position.z)
+    const f = localZ(c.quaternion)
+    const len = Math.hypot(f.x, f.z) || 1
+    const ux = (sign * f.x) / len
+    const uy = (sign * f.z) / len
+    const player = c.kind === 'player'
+    const size = player ? 11 : 7
+    ctx.save()
+    ctx.fillStyle = player ? PALETTE.uiAccent : c.glow
+    ctx.shadowColor = ctx.fillStyle
+    ctx.shadowBlur = player ? 14 : 6
+    ctx.strokeStyle = PALETTE.uiPanelSolid
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(sx + ux * size, sy + uy * size)
+    ctx.lineTo(sx - ux * size * 0.8 - uy * size * 0.7, sy - uy * size * 0.8 + ux * size * 0.7)
+    ctx.lineTo(sx - ux * size * 0.4, sy - uy * size * 0.4)
+    ctx.lineTo(sx - ux * size * 0.8 + uy * size * 0.7, sy - uy * size * 0.8 - ux * size * 0.7)
+    ctx.closePath()
+    ctx.stroke()
+    ctx.fill()
+    ctx.restore()
+    if (player) pill(ctx, 'YOU', sx, sy + 24, PALETTE.uiAccent)
+  }
 }

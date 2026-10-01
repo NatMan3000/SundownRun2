@@ -21,12 +21,13 @@ import { PlayLayer } from './play'
 import { NetLayer } from './net'
 import { AudioSystem } from './audio'
 import { UiRoot } from './ui'
-import { EditorScene, EditorUi } from './editor'
+import { EditorScene, EditorUi, EditorDrive, EditorDriveUi } from './editor'
 
 function Scene() {
   const phase = useGame((s) => s.phase)
   const multiplayer = useGame((s) => s.multiplayer)
   const trackVersion = useGame((s) => s.trackVersion)
+  const mapOpen = useGame((s) => s.mapOpen)
   const track = useTrack()
   const editing = phase === 'editor'
   const paused = !multiplayer && phase === 'paused'
@@ -56,8 +57,9 @@ function Scene() {
         </Physics>
       )}
       {track && !editing && <CarFx />}
+      {track && !editing && <EditorDrive />}
       <FxSystem />
-      {editing ? <EditorScene /> : <CameraRig />}
+      {editing || mapOpen ? <EditorScene /> : <CameraRig />}
       <PostStack />
       <AudioSystem />
     </>
@@ -66,6 +68,7 @@ function Scene() {
 
 export function App() {
   const phase = useGame((s) => s.phase)
+  const mapOpen = useGame((s) => s.mapOpen)
   return (
     <>
       <Canvas
@@ -79,7 +82,8 @@ export function App() {
         </Suspense>
       </Canvas>
       <UiRoot />
-      {phase === 'editor' && <EditorUi />}
+      {(phase === 'editor' || mapOpen) && <EditorUi />}
+      <EditorDriveUi />
     </>
   )
 }

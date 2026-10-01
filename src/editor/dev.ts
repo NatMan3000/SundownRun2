@@ -44,6 +44,8 @@ import {
 } from './draft'
 import { fitToDraft } from './Overlay'
 import { runEditorSelfTest } from './selfTest'
+import { cancelDriveToDraw, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
+import { closeWorldMap, isMapOpen, openWorldMap } from './worldMap'
 import { setView, view } from './view'
 
 const TAU = Math.PI * 2
@@ -123,7 +125,7 @@ function strokeResult(raw: P[]) {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | fit | view [cx,cz,mpp] or pointIndex | selftest | state'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | map | mapClose | selftest | state'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -163,6 +165,25 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     case 'fit':
       fitToDraft()
       return { cx: view.cx, cz: view.cz, mpp: view.mpp }
+    case 'drive':
+      // Start drive to draw (needs <EditorDrive /> mounted by App to record a real car).
+      return startDriveToDraw()
+    case 'driveFeed': {
+      // Add recorded points as if the car had driven there: [[x, z], ...] (y = ground).
+      for (const p of toPoints(arg)) driveRecorder.add(p.x, 0, p.z)
+      return { active: driveRecorder.active, points: driveRecorder.count, metres: driveRecorder.metres }
+    }
+    case 'driveFinish':
+      return finishDriveToDraw()
+    case 'driveCancel':
+      cancelDriveToDraw()
+      return true
+    case 'map':
+      openWorldMap()
+      return isMapOpen()
+    case 'mapClose':
+      closeWorldMap()
+      return isMapOpen()
     case 'selftest':
       return runEditorSelfTest()
     case 'state':

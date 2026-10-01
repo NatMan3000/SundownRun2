@@ -28,6 +28,7 @@ import { inputState } from '../core/controls'
 import { PLACE_TOOLS, toolFor } from './pieces'
 import {
   type EditorTool,
+  testDrive,
   applyStroke,
   beginGesture,
   deleteSelection,
@@ -431,9 +432,47 @@ export function Overlay() {
         setCursor()
       }
     })
+    // ---- controller: left stick pans, triggers zoom, X undo, Y redo, hold View to test drive ----
+    const padWas: boolean[] = []
+    let padHinted = false
+    let viewHeldFor = 0
+    const pollPad = (dt: number) => {
+      const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : []
+      let pad: Gamepad | null = null
+      for (const p of pads) if (p && p.connected) pad = pad ?? p
+      if (!pad) return
+      const dead = (v: number) => (Math.abs(v) < 0.18 ? 0 : (v - Math.sign(v) * 0.18) / 0.82)
+      const lx = dead(pad.axes[0] ?? 0)
+      const ly = dead(pad.axes[1] ?? 0)
+      const lt = pad.buttons[6]?.value ?? 0
+      const rt = pad.buttons[7]?.value ?? 0
+      const pressed = (i: number) => !!pad!.buttons[i]?.pressed
+      const edge = (i: number) => pressed(i) && !padWas[i]
+      const any = lx || ly || lt > 0.1 || rt > 0.1 || pad.buttons.some((b) => b.pressed)
+      if (any && !padHinted) {
+        padHinted = true
+        say('Controller: left stick moves the map, triggers zoom, X undo, Y redo, hold View to test drive. Menu leaves.', 'info')
+      }
+      if (lx || ly) panBy(-lx * 900 * dt, -ly * 900 * dt)
+      if (lt > 0.05 || rt > 0.05) zoomAt(view.width / 2, view.height / 2, Math.exp((lt - rt) * 1.6 * dt))
+      if (useEditor.getState().mode === 'edit') {
+        if (edge(2)) undo()
+        if (edge(3)) redo()
+        if (pressed(8)) {
+          viewHeldFor += dt
+          if (viewHeldFor > 0.8) {
+            viewHeldFor = -999 // once per hold
+            testDrive()
+          }
+        } else viewHeldFor = 0
+      }
+      for (let i = 0; i < pad.buttons.length; i++) padWas[i] = pad.buttons[i].pressed
+    }
+
     const loop = (t: number) => {
       const dt = Math.min(0.05, (t - lastT) / 1000)
       lastT = t
+      pollPad(dt)
       let px = 0
       let py = 0
       if (held.has('KeyA') || held.has('ArrowLeft')) px += 1
@@ -441,7 +480,8 @@ export function Overlay() {
       if (held.has('KeyW') || held.has('ArrowUp')) py += 1
       if (held.has('KeyS') || held.has('ArrowDown')) py -= 1
       if (px || py) panBy(px * KEY_PAN_PX * dt, py * KEY_PAN_PX * dt)
-      if (needsDraw || drawnVersion !== view.version) {
+      // The world map follows moving cars, so it redraws every frame.
+      if (needsDraw || drawnVersion !== view.version || useEditor.getState().mode === 'map') {
         drawnVersion = view.version
         needsDraw = false
         drawMap(ctx, useEditor.getState(), { stroke, hover, ghost, hoverPick })

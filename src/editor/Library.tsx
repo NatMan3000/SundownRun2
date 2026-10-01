@@ -15,10 +15,11 @@ import type { TrackFile } from '../track/schema'
 import { BASE_WORLDS } from './draftFile'
 import { draftFromFile, fileFromDraft, newDraft, replaceDraft, say, useEditor } from './draft'
 import { fitToDraft, pencilHint } from './Overlay'
+import { DRIVE_TRACK_ID } from './driveToDraw'
 
 export function Library(props: { onClose: () => void }) {
   const [version, setVersion] = useState(0)
-  const tracks = useMemo(() => listTracks(), [version])
+  const tracks = useMemo(() => listTracks().filter((t) => t.id !== DRIVE_TRACK_ID), [version])
   const fileInput = useRef<HTMLInputElement>(null)
   const [newWorld, setNewWorld] = useState(BASE_WORLDS[0].id)
   const dirty = useEditor((s) => s.dirty)

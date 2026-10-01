@@ -88,10 +88,8 @@ function roadInvariants(res: CleanResult): string[] {
   if (far > BOUND) bad.push(`point ${far.toFixed(0)} m out from the centre (bound ${BOUND})`)
   const v = validateTrack(draftFile({ id: 'selftest', name: 'Self-test', points: res.points }))
   if (!v.ok) bad.push('validator errors: ' + v.errors.map((e) => `${e.path}: ${e.message}`).join(' / '))
-  for (const w of v.warnings) {
-    if (/crosses itself/.test(w.message) && res.crossings.some((c) => c.over !== null)) continue
-    bad.push(`validator warning: ${w.path} ${w.message}`)
-  }
+  // Bridged crossings must not draw the validator's "crosses itself" warning either.
+  for (const w of v.warnings) bad.push(`validator warning: ${w.path} ${w.message}`)
   for (const c of res.crossings) {
     const explained = c.over !== null || res.issues.some((i) => i.at && dist(i.at, c.at) < 1 && i.level === 'warning')
     if (!explained) bad.push(`crossing at ${c.at.x.toFixed(0)},${c.at.z.toFixed(0)} neither bridged nor flagged`)

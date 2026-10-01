@@ -34,7 +34,11 @@ import { setInputContext } from '../core/controls'
 import { TopDownCamera } from './TopDownCamera'
 import { EditorUi as EditorOverlayUi } from './EditorUi'
 import { onEditorOpen } from './draft'
+import { isMapOpen } from './worldMap'
 import './dev'
+
+export { EditorDrive, EditorDriveUi, startDriveToDraw } from './driveToDraw'
+export { openWorldMap, closeWorldMap } from './worldMap'
 
 export function EditorScene() {
   return <TopDownCamera />
@@ -43,7 +47,8 @@ export function EditorScene() {
 export function EditorUi() {
   useEffect(() => {
     setInputContext('editor')
-    onEditorOpen('edit')
+    // The world map opens over a paused game: never rebuild the track then.
+    if (!isMapOpen()) onEditorOpen('edit')
   }, [])
   return <EditorOverlayUi />
 }

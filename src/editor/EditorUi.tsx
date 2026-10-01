@@ -23,6 +23,7 @@ import { type EditorTool, redo, say, setTool, undo, useEditor } from './draft'
 import { Overlay, fitToDraft, pencilHint } from './Overlay'
 import { Panel } from './Panel'
 import { Library } from './Library'
+import { closeWorldMap } from './worldMap'
 import { PLACE_TOOLS, type PlaceKind } from './pieces'
 import { setView, view, zoomAt } from './view'
 import { FitIcon, GlobeIcon, HandIcon, LibraryIcon, MinusIcon, PencilIcon, PlaceIcon, PlusIcon, SectionIcon, SelectIcon, UndoIcon } from './icons'
@@ -98,7 +99,12 @@ export function EditorUi() {
   )
 }
 
+/** Leave: the world map goes back to the paused game; the editor goes to the title screen (the draft is kept). */
 export function leaveEditor(): void {
+  if (useEditor.getState().mode === 'map') {
+    closeWorldMap()
+    return
+  }
   audio.ui('back')
   endSession()
 }

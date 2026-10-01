@@ -676,3 +676,10 @@ textarea.sre-input {
 .k-prop { width: 10px !important; height: 10px !important; border: 2px solid var(--prop); margin: 0 4px; }
 .k-core { width: 9px !important; height: 9px !important; background: var(--core); transform: rotate(45deg); margin: 0 4px; }
 .k-bank { height: 0 !important; border-top: 3px dashed var(--chevron); }
+
+/* two buttons side by side */
+.sre-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}

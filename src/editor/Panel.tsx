@@ -46,6 +46,7 @@ import {
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
 import { issueLocation, roadGeometry } from './mapDraw'
 import { pieceLabel } from './pieces'
+import { startDriveToDraw } from './driveToDraw'
 import { metresBetween, roadLength } from './road'
 import { setView, view } from './view'
 
@@ -120,9 +121,14 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
           <ColourField label="Edge lights" value={draft.environment.palette?.edge ?? PALETTE.roadEdge} options={EDGE_COLOURS} onChange={setEdgeColour} />
           <TextField label="Made by" value={draft.author} onCommit={setAuthor} placeholder="Your name" />
           <TextField label="About this track" value={draft.description} onCommit={setDescription} placeholder="One line for the track list" multiline max={200} />
-          <button type="button" className="sre-btn" onClick={smoothRoad} title="Evens out wobbles in the whole road. Undo if you don't like it.">
-            Smooth the road
-          </button>
+          <div className="sre-row">
+            <button type="button" className="sre-btn" onClick={smoothRoad} title="Evens out wobbles in the whole road. Undo if you don't like it.">
+              Smooth the road
+            </button>
+            <button type="button" className="sre-btn" onClick={() => startDriveToDraw()} title="Drive anywhere in this world: the car lays a road behind it, and it opens here when you finish.">
+              Drive to draw
+            </button>
+          </div>
         </section>
 
         <Problems />
@@ -429,12 +435,9 @@ function Problems() {
   const warnings = useEditor((s) => s.warnings)
   const notes = useEditor((s) => s.notes)
   const draft = useEditor((s) => s.draft)
-  const hasBridge = draft.points.some((p) => (p.lift ?? 0) >= 6)
   const items = [
     ...errors.map((e) => ({ tone: 'bad' as const, text: plainIssue(e.path, e.message), at: issueLocation(e.path, draft) })),
-    ...warnings
-      .filter((w) => !(/crosses itself/.test(w.message) && hasBridge))
-      .map((w) => ({ tone: 'warn' as const, text: plainIssue(w.path, w.message), at: issueLocation(w.path, draft) })),
+    ...warnings.map((w) => ({ tone: 'warn' as const, text: plainIssue(w.path, w.message), at: issueLocation(w.path, draft) })),
     ...(notes?.issues ?? []).map((i) => ({ tone: i.level === 'error' ? ('bad' as const) : i.level === 'warning' ? ('warn' as const) : ('note' as const), text: i.message, at: i.at ?? null })),
   ]
   if (!items.length) {

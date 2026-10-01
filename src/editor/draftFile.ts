@@ -10,6 +10,7 @@
 //  the city, the music. Pick one and the draft gets a copy of it.
 // ============================================================
 
+import { roadBound as trackRoadBound } from '../track/validate'
 import { TRACK_FORMAT, TRACK_VERSION, type EnvironmentSpec, type Piece, type PropSpot, type CoreSpot, type RoadPoint, type TrackFile } from '../track/schema'
 
 export interface BaseWorld {
@@ -122,14 +123,10 @@ export function draftFile(parts: DraftParts): TrackFile {
 
 /**
  * How far a road's centreline may reach from the map centre, along x or z,
- * in this world. The edge mountains (or the stadium wall) take up the rim
- * of the world, so the road stays clear of them. This matches the track
- * validator's "too close to the world edge" check (src/track/validate.ts).
+ * in this world (the edge mountains or stadium wall take up the rim). The
+ * rule lives with the track validator, so the editor and the validator
+ * can never disagree about it.
  */
 export function roadBound(environment: EnvironmentSpec): number {
-  const size = environment.size ?? 1600
-  const edge = environment.terrain.edge ?? (environment.terrain.kind === 'flat' ? 'wall' : 'ridge')
-  // Mirrors validate.ts until the track worker exports this rule (then import it instead).
-  const edgeMargin = edge === 'ridge' ? Math.min(300, Math.max(170, size * 0.15)) + 30 + 40 : 40
-  return size / 2 - edgeMargin
+  return trackRoadBound(environment).limit
 }
