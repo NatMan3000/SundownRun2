@@ -120,3 +120,10 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 ## Found along the way
 
 (Defects caught by checks and playtests, with owner and status.)
+- ⬜ [track] Hyperdrome bank flips sign across the s=0 seam (-27.5 deg at s=2269 to +22 deg at s=10); grid slot 0 sits on an 18 deg roll and a parked car rolls backwards (vehicle, live probe). Fix the seam wrap and put the line/grid on the flat straight.
+- ⬜ [world] Art: near grid as bright as the road edges; ridge reads as a red-lit wall; sun stripes hairline (orchestrator frame /tmp/sr2/main/a1.png).
+- ⬜ [look] Art: thick lavender centre stripe behind the car (trail or lane line?) reads as a road marking.
+- ✅ [all] Two rapier copies: top-level 0.12 from @types/three vs @react-three/rapier's nested 0.19.2. Rule: never import @dimforge/rapier3d-compat directly (CLAUDE.md gotcha).
+- ✅ [track/world] Ruling: sunset notch in the edge ridge (sun azimuth +/- 40 deg at ~30% rise), city at ~1.6 x world size.
+- ✅ [look] Ruling: Neutral tone mapping (ACES washed the sun gradient; world's A/B screenshots).
+- ✅ [audio] Ruling: audio owns the countdown beeps (from race.countdown).
