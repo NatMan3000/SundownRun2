@@ -13,10 +13,14 @@
 //   - with a hint (the caller's s from last step): search a small
 //     window around it. A car on a bridge stays on the bridge, a car
 //     in a loop stays in the loop, even where another bit of road is
-//     closer in a straight line.
+//     closer in a straight line. The hint is only dropped when the
+//     car has clearly left that bit of road: it is physically on
+//     another road (landed on the road under a bridge), it has fallen
+//     well below the hinted road, or it is far off the road.
 //   - without one: an XZ grid of samples (the "spatial hash") finds
-//     candidates near (x, z); the closest in 3D wins, which prefers
-//     the level of a crossing you're actually on.
+//     candidates near (x, z); the closest wins, with height counted
+//     three times over, so at a crossing it picks the level the car
+//     is on rather than the one straight above or below.
 // ============================================================
 
 import * as THREE from 'three'
@@ -65,8 +69,12 @@ export function buildSampleHash(S: TrackSamples, cell = 12): SampleHash {
 
 /** How far either side of the hint a hinted search looks, metres. */
 const HINT_WINDOW = 40
-/** If the hinted search's best is further than this, the hint was stale: search globally. */
-const HINT_GIVE_UP = 30
+/** Further than this outside the hinted road's edge, the hint is stale: search globally. */
+const HINT_GIVE_UP = 25
+/** This far below the hinted road's surface, the car has fallen off it (a bridge): try other levels. */
+const FELL_BELOW = 3
+/** In the global search a metre of height counts this many metres, so the level you're on wins. */
+const Y_WEIGHT = 3
 
 export interface RoadQueries {
   frameAt: (s: number, out: TrackFrame) => TrackFrame
@@ -186,7 +194,7 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
     for (let k = hash.start[c], e = hash.start[c + 1]; k < e; k++) {
       const i = hash.items[k]
       const dx = S.px[i] - x
-      const dy = S.py[i] - y
+      const dy = (S.py[i] - y) * Y_WEIGHT
       const dz = S.pz[i] - z
       const d2 = dx * dx + dy * dy + dz * dz
       if (d2 < gBestD2) {
@@ -205,7 +213,8 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
     // Rings beyond this cover the whole grid from anywhere.
     const far = Math.max(Math.abs(cx), Math.abs(cz), Math.abs(cx - hash.nx), Math.abs(cz - hash.nz)) + 1
     for (let ring = 0; ring <= far; ring++) {
-      // Every cell in this ring is at least (ring - 1) cells away horizontally.
+      // Every cell in this ring is at least (ring - 1) cells away horizontally (and the
+      // height-weighted distance is never less than the horizontal one).
       const minH = (ring - 1) * hash.cell
       if (gBest >= 0 && minH > 0 && minH * minH > gBestD2) break
       if (ring === 0) {
@@ -236,28 +245,8 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
     surface: 'road',
   }
 
-  const nearest = (x: number, y: number, z: number, out: NearestHit, hintS?: number): NearestHit => {
-    let best = -1
-    let bestD2 = Infinity
-    if (hintS !== undefined && Number.isFinite(hintS)) {
-      const h = Math.round(wrapS(hintS) * invDs)
-      const w = Math.ceil(HINT_WINDOW * invDs)
-      for (let k = -w; k <= w; k++) {
-        const i = (((h + k) % count) + count) % count
-        const dx = S.px[i] - x
-        const dy = S.py[i] - y
-        const dz = S.pz[i] - z
-        const d2 = dx * dx + dy * dy + dz * dz
-        if (d2 < bestD2) {
-          bestD2 = d2
-          best = i
-        }
-      }
-      if (bestD2 > HINT_GIVE_UP * HINT_GIVE_UP) best = -1
-    }
-    if (best < 0) best = globalBest(x, y, z)
-
-    // Refine onto the two segments either side of the best sample.
+  /** Fill `out` for the road near sample `best` (refined onto the segments either side of it). */
+  const resolve = (best: number, x: number, y: number, z: number, out: NearestHit): NearestHit => {
     const prev = best - 1 < 0 ? count - 1 : best - 1
     const dA = segDist2(prev, x, y, z)
     const sA = segS
@@ -277,6 +266,51 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
     out.height = dx * u.x + dy * u.y + dz * u.z
     out.distance = Math.sqrt(dx * dx + dy * dy + dz * dz)
     out.onRoad = sampleOnRoad(out.index, out.lateral, out.height)
+    return out
+  }
+
+  // Scratch for a second candidate (another level), so nearest() never allocates.
+  const other: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+
+  const nearest = (x: number, y: number, z: number, out: NearestHit, hintS?: number): NearestHit => {
+    if (hintS === undefined || !Number.isFinite(hintS)) return resolve(globalBest(x, y, z), x, y, z, out)
+    // The hinted window: the bit of road the car was on last step.
+    let best = -1
+    let bestD2 = Infinity
+    const h = Math.round(wrapS(hintS) * invDs)
+    const w = Math.ceil(HINT_WINDOW * invDs)
+    for (let k = -w; k <= w; k++) {
+      const i = (((h + k) % count) + count) % count
+      const dx = S.px[i] - x
+      const dy = S.py[i] - y
+      const dz = S.pz[i] - z
+      const d2 = dx * dx + dy * dy + dz * dz
+      if (d2 < bestD2) {
+        bestD2 = d2
+        best = i
+      }
+    }
+    // Far off the road: the hint means nothing any more.
+    const giveUp = S.halfWidth[best] + HINT_GIVE_UP
+    if (bestD2 > giveUp * giveUp) return resolve(globalBest(x, y, z), x, y, z, out)
+    resolve(best, x, y, z, out)
+    // On the hinted road: keep it. A car on a bridge stays on the bridge, a car in a loop in the loop.
+    if (out.onRoad) return out
+    // Off it (flying, off-road, fallen): is the car really on another level now? Only switch
+    // if it is physically on that other road, or it has fallen well below the hinted one and
+    // is nearer the other. Flying above the hinted road, or driving on the grass beside it,
+    // keeps the hint.
+    resolve(globalBest(x, y, z), x, y, z, other)
+    if (Math.abs(deltaS(out.s, other.s)) <= HINT_WINDOW) return out
+    const fell = out.height < -FELL_BELOW && Math.abs(other.height) < Math.abs(out.height)
+    if (other.onRoad || fell) {
+      out.s = other.s
+      out.index = other.index
+      out.lateral = other.lateral
+      out.height = other.height
+      out.distance = other.distance
+      out.onRoad = other.onRoad
+    }
     return out
   }
 

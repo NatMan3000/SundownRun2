@@ -240,6 +240,19 @@ for (const path of targets) {
       'give the upper road more `lift` at the crossing (8 m or more).',
     )
   }
+  // Road tracking: nearest() with a hint never jumps to another bit of road by mistake,
+  // and a car that dropped off a bridge is found on the road below.
+  {
+    const r = sel.roadTracking(t)
+    row(
+      'tracking',
+      r.failures.length === 0,
+      r.failures.length
+        ? r.failures.slice(0, 3).join('; ')
+        : `walked the lap with hints in 3 lanes (biggest step ${r.maxStep.toFixed(1)} m)${r.crossings ? `; at ${r.crossings} crossing(s) a car is found on the level it is on, fallen, stale hint or none` : ''}`,
+      'this is a builder bug, not your file: report it.',
+    )
+  }
   // The ground must stay under the road everywhere (at every bank angle a slider allows).
   const adjBank = v.track.road.banking.adjustable
   const variants = adjBank ? [adjBank.min, v.track.road.banking.maxDeg, adjBank.max] : [null]

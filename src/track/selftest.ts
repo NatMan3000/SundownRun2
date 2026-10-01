@@ -163,6 +163,93 @@ export function crossingClearance(t: TrackRuntime): { gap: number; s1: number; s
 }
 
 /**
+ * "Where am I on the road?" must never jump to another bit of road by mistake. Every
+ * car asks nearest() each step with its last s as the hint, so:
+ *  - Walk the whole lap (left, middle, right of the road, at car height) a metre at a
+ *    time with hints: s must never step more than 2 m (crossings and loops included).
+ *  - At every crossing: a car that dropped off the upper road onto (or beside) the
+ *    lower one is found on the lower; a car on either level is found on it with a
+ *    stale hint from the other or with no hint; a car flying above the lower road
+ *    under the bridge, or on the grass beside it, keeps the lower road.
+ */
+export function roadTracking(t: TrackRuntime): { crossings: number; walks: number; maxStep: number; stepAt: number; failures: string[] } {
+  const S = t.samples
+  const n = S.count
+  const hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+  const failures: string[] = []
+  const CAR_Y = 0.55
+  // Point on the road at sample i, `lat` metres right and `up` metres above the surface.
+  const P = { x: 0, y: 0, z: 0 }
+  const at = (i: number, lat: number, up: number) => {
+    P.x = S.px[i] + S.rx[i] * lat + S.ux[i] * up
+    P.y = S.py[i] + S.ry[i] * lat + S.uy[i] * up
+    P.z = S.pz[i] + S.rz[i] * lat + S.uz[i] * up
+    return P
+  }
+  // 1. The whole lap, three lanes.
+  let maxStep = 0
+  let stepAt = 0
+  let walks = 0
+  for (const f of [-1, 0, 1]) {
+    walks++
+    let sh = 0
+    for (let k = 0; k <= n; k++) {
+      const i = k % n
+      const p = at(i, f * Math.max(0, S.halfWidth[i] - 1), CAR_Y)
+      t.nearest(p.x, p.y, p.z, hit, sh)
+      const step = Math.abs(t.deltaS(sh, hit.s))
+      if (step > maxStep) {
+        maxStep = step
+        stepAt = i * S.ds
+      }
+      sh = hit.s
+    }
+  }
+  if (maxStep > 2) failures.push(`walking the lap with hints, s jumped ${maxStep.toFixed(0)} m at ${where(t, stepAt)}`)
+  // 2. Crossings: road samples far apart along the road but on top of each other.
+  const found: { lo: number; hi: number }[] = []
+  for (let i = 0; i < n; i += 2) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    for (let j = i + 80; j < n; j += 2) {
+      if (S.surface[j] !== SURFACE_CODE.road || Math.abs(t.deltaS(i * S.ds, j * S.ds)) < 80) continue
+      if (Math.hypot(S.px[i] - S.px[j], S.pz[i] - S.pz[j]) > 4) continue
+      if (found.some((c) => Math.abs(t.deltaS(c.lo * S.ds, i * S.ds)) < 40 || Math.abs(t.deltaS(c.hi * S.ds, i * S.ds)) < 40)) continue
+      found.push(S.py[i] < S.py[j] ? { lo: i, hi: j } : { lo: j, hi: i })
+    }
+  }
+  const expect = (what: string, hint: number | undefined, want: number) => {
+    t.nearest(P.x, P.y, P.z, hit, hint === undefined ? undefined : hint * S.ds)
+    if (Math.abs(t.deltaS(hit.s, want * S.ds)) > 20) {
+      failures.push(`${what}: found at ${where(t, hit.s)}, should be ${where(t, want * S.ds)}`)
+    }
+  }
+  for (const { lo, hi } of found) {
+    const hwL = S.halfWidth[lo]
+    const hwH = S.halfWidth[hi]
+    for (const f of [-1, 0, 1]) {
+      at(lo, f * (hwL - 1), CAR_Y)
+      expect(`on the lower road under the bridge, hint on the bridge (fell off it)`, hi, lo)
+      expect(`on the lower road under the bridge, no hint`, undefined, lo)
+      at(hi, f * (hwH - 1), CAR_Y)
+      expect(`on the bridge, hint on the road below (stale)`, lo, hi)
+      expect(`on the bridge, no hint`, undefined, hi)
+    }
+    for (const side of [-1, 1]) {
+      // On the grass beside the lower road, under or beside the bridge.
+      const p = at(lo, side * (hwL + 8), 0)
+      P.y = t.terrainHeight(p.x, p.z) + CAR_Y
+      expect(`on the grass beside the lower road, hint on the bridge (fell off it)`, hi, lo)
+      expect(`on the grass beside the lower road, hint on it`, lo, lo)
+    }
+    // In the air over the lower road, between it and the bridge.
+    const gap = S.py[hi] - S.py[lo]
+    at(lo, 0, Math.min(6, gap / 2))
+    expect(`in the air over the lower road under the bridge, hint on it`, lo, lo)
+  }
+  return { crossings: found.length, walks, maxStep, stepAt, failures }
+}
+
+/**
  * Every triangle must face the way its vertex normals say (three.js culls the back
  * of a triangle, so a wrongly wound road is invisible from above). Returns how many
  * triangles disagree, per mesh.
