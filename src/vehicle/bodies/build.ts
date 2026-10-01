@@ -13,14 +13,20 @@
 //    lights  every glowing part in ONE mesh. `aLight` per vertex
 //            picks the colour in the shader (carModel.ts):
 //              0 livery strips, 1 headlights, 2 tail lights,
-//              3 rocket nozzle core, 4 rocket flame
-//            `aFlame` (0 at the nozzle, the flame's full length in
-//            metres at its tip) lets the shader stretch the flame
-//            backward while boosting, so the set stays one draw call
+//              3 rocket nozzle core
+//    plume   the rocket flames (one soft plume per nozzle, all in one
+//            mesh). Drawn only while the car boosts; the shader
+//            stretches each plume out behind its nozzle (carModel.ts)
 //
-//  Wheels are shared by every car with the same rim style: tyre
-//  with sidewall and tread lugs, a designed rim, and a glowing ring
-//  (`aGlow`) - see wheelGeometry() at the bottom.
+//  BIG WHEELS. Each car says how big its tyres look, front and back
+//  (wheels()). The physics wheel is smaller (tuning.ts WHEEL.radius):
+//  it only decides where the suspension ray meets the road, so the
+//  drawn tyre can be any size. Its hub is raised by the difference,
+//  so the bottom of the tyre still sits exactly on the road, and the
+//  fenders cut their arches round the bigger tyre.
+//  Wheels are shared by every car with the same rim style and size:
+//  tyre with sidewall and tread lugs, a designed rim, and a glowing
+//  ring (`aGlow`) - see wheelGeometry() at the bottom.
 //
 //  How a car is made (the RECIPE in profiles.ts calls these):
 //    tub       the main body, lofted from cross-sections nose to tail
@@ -35,11 +41,27 @@ import * as THREE from 'three'
 import type { BodyId } from './catalog'
 import { RECIPES } from './profiles'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { AXLE_Z, bar, curve, densify, HUB_Y, lathe, loft, mirroredRing, PartList, plateSide, ringXY, roundHalf, steps } from './kit'
+import { AXLE_Z, bar, curve, densify, lathe, loft, mirroredRing, PartList, plateSide, ringXY, roundHalf, steps } from './kit'
 import type { Shading, V2 } from './kit'
+import { ROAD_Y_AT_REST } from '../tuning'
 
-/** The tyre as drawn: radius (the physics wheel is 0.34) and width. */
-export const WHEEL_VIS = { radius: 0.35, width: 0.34 }
+/** A tyre as drawn: outer radius and width, metres. */
+export interface TyreSize {
+  r: number
+  w: number
+}
+
+/** Tyre size when a recipe doesn't say (the physics wheel is 0.34: the drawn one is bigger). */
+export const TYRE_DEFAULT: TyreSize = { r: 0.46, w: 0.4 }
+
+/** Room between a tyre and its arch, metres. */
+export const ARCH_GAP = 0.055
+
+/** Paint skin kept over a tyre at its highest (the fender's top never shows the tyre through it). */
+const TYRE_SKIN = 0.03
+
+/** Wheel centre across the car (the physics track never moves). */
+const WHEEL_X = 0.8
 
 export type WheelStyle = 'star' | 'turbine' | 'steelie' | 'aero' | 'pod'
 
@@ -55,6 +77,15 @@ export interface BodyGeometry {
   underglow: { halfWidth: number; halfLength: number; y: number }
   /** Which rim this car rolls on. */
   wheel: WheelStyle
+  /** Tyres as drawn: [front, rear]. */
+  tyres: [TyreSize, TyreSize]
+  /**
+   * Highest a wheel's hub may be drawn, [front, rear], body space (before
+   * lean): above this the tyre would push up through the fender's top.
+   */
+  hubMax: [number, number]
+  /** The rocket plumes (empty for a car with no nozzle). */
+  plume: THREE.BufferGeometry
   /** Bonnet camera mount, car space. */
   bonnet: THREE.Vector3
   /** Triangles in the four body geometries (wheels not included). */
@@ -91,11 +122,14 @@ export interface FenderSpec {
   xOut: V2[]
   /** Top height along the pod: keyframes [z, y]. */
   yTop: V2[]
-  /** Bottom height away from the arch (the sill). */
-  yFloor: number
-  /** Arch radius (the tyre is 0.35). */
-  archR: number
-  /** Size of the rounded outer-top edge. */
+  /**
+   * Bottom height away from the arch (the sill): one height, or keyframes
+   * [z, y] (raise it toward the pod's ends to round them off over the tyre).
+   */
+  yFloor: number | V2[]
+  /** Room between the tyre and the arch (default ARCH_GAP). The arch is cut round the tyre the recipe chose. */
+  gap?: number
+  /** Size of the rounded outer-top edge (the same all along the pod). */
   round: number
   /** How far the top face leans in toward the car (0 flat, 0.1 sloping). */
   lean?: number
@@ -134,7 +168,7 @@ export interface NozzleSpec {
   mirror?: boolean
   /** Squash into an oval (1 round). */
   scaleY?: number
-  /** How long the flame gets at full boost, metres. */
+  /** How long the flame plume gets at full boost, metres (about a car length for the main rocket). */
   flame?: number
 }
 
@@ -142,15 +176,27 @@ const LIGHT_LIVERY = 0
 const LIGHT_HEAD = 1
 const LIGHT_TAIL = 2
 const LIGHT_NOZZLE = 3
-const LIGHT_FLAME = 4
 export const LIGHT_KIND = { livery: LIGHT_LIVERY, head: LIGHT_HEAD, tail: LIGHT_TAIL } as const
 export type LightKind = keyof typeof LIGHT_KIND
 
 /** Crease angles: panels meeting at less than this are smoothed together; sharper meets stay a crisp line. */
 const PAINT_CREASE = 0.62 // ~35 deg: rounded, toy-like panels, crisp at real edges
 const GLASS_CREASE = 0.8
-/** Flames are drawn at rest this long (hidden behind the core), then stretched by the shader. */
-export const FLAME_REST = 0.01
+
+/**
+ * A rocket plume's shape along its length (0 at the nozzle, 1 at the tip):
+ * [how far along, width x the nozzle's radius]. It swells as it leaves the
+ * bell, then tapers; the shader makes its edges soft and stretches it.
+ */
+const PLUME: V2[] = [
+  [0, 0.9],
+  [0.06, 1.5],
+  [0.18, 1.85],
+  [0.38, 1.8],
+  [0.6, 1.45],
+  [0.8, 0.95],
+  [1, 0.3],
+]
 
 /** Half cross-section of a tub station, bottom centre -> top centre. */
 function tubHalf(st: TubStation): V2[] {
@@ -192,6 +238,40 @@ const AEROFOIL: V2[] = [
   [0.05, -0.38],
 ]
 
+// ---------------------------------------------------------------- fender pod helpers
+
+/**
+ * The rounded outer-top edge of a pod at z: the recipe's size all along the
+ * pod (a size that changed along it made the pod look dented), smaller only
+ * where the pod is too thin or too narrow to hold it.
+ */
+function podRound(f: FenderSpec, z: number, yBot: number): number {
+  const yTop = curve(f.yTop, z)
+  const xOut = curve(f.xOut, z)
+  return Math.max(0.01, Math.min(f.round, yTop - yBot - 0.04, (xOut - f.xIn) * 0.45))
+}
+
+/** A pod's sill height at z. */
+function floorAt(f: FenderSpec, z: number): number {
+  return typeof f.yFloor === 'number' ? f.yFloor : curve(f.yFloor, z)
+}
+
+/** Height of a pod's top surface at (x, z): the flat top leaning inward, rounding over at the outer edge. */
+function podTopAt(f: FenderSpec, z: number, r: number, lean: number, x: number): number {
+  const yTop = curve(f.yTop, z)
+  const xOut = curve(f.xOut, z)
+  const edge = xOut - r
+  if (x <= edge) {
+    const span = Math.max(1e-3, edge - f.xIn)
+    return yTop + (lean * (edge - Math.max(f.xIn, x))) / span
+  }
+  // the rounded edge as drawn: (edge, yTop) -> (xOut - 0.29r, yTop - 0.29r) -> (xOut, yTop - r)
+  const xm = xOut - r * 0.29
+  if (x <= xm) return yTop - (0.29 * r * (x - edge)) / Math.max(1e-4, xm - edge)
+  if (x <= xOut) return yTop - 0.29 * r - (0.71 * r * (x - xm)) / Math.max(1e-4, xOut - xm)
+  return yTop - r // the tyre pokes out past the pod's side
+}
+
 // ---------------------------------------------------------------- the builder
 
 /** What a recipe uses to make a car. */
@@ -199,16 +279,52 @@ export class BodyBuilder {
   readonly paintParts = new PartList(['aAccent'])
   readonly glassParts = new PartList()
   readonly trimParts = new PartList(['aMetal'])
-  readonly lightParts = new PartList(['aLight', 'aFlame'])
+  readonly lightParts = new PartList(['aLight'])
+  /** Rocket plumes: `aT` 0 at the nozzle .. 1 at the tip, `aRad` the plume's width there, `aCx`/`aCy` its axis, `aLen` its length at full boost. */
+  readonly plumeParts = new PartList(['aT', 'aRad', 'aCx', 'aCy', 'aLen'])
   headLights: THREE.Vector3[] = []
   tailLights: THREE.Vector3[] = []
   underglow = { halfWidth: 0.72, halfLength: 1.72, y: -0.42 }
   wheel: WheelStyle = 'star'
+  /** Tyres as drawn, front and rear (set with wheels() before any fender). */
+  tyreFront: TyreSize = { ...TYRE_DEFAULT }
+  tyreRear: TyreSize = { ...TYRE_DEFAULT }
+  /** Highest hub per axle before a tyre reaches its fender's top (worked out by fender()). */
+  readonly hubMax: [number, number] = [Infinity, Infinity]
   /** Bonnet camera mount (car space): on the bonnet, by the windscreen base. */
   bonnet = new THREE.Vector3(0, 0.5, 1.55)
   private tubDense: number[][] | null = null
+  private tubBulge = 0.04
   private canopyDense: number[][] | null = null
   private canopyBulge = 0.07
+
+  // ---- wheels
+
+  /**
+   * How big this car's tyres look: radius and width, front and rear (a bigger
+   * rear tyre gives the raked hot-rod stance). Call it before the fenders:
+   * they cut their arches round these.
+   */
+  wheels(front: TyreSize, rear: TyreSize = front): this {
+    this.tyreFront = { ...front }
+    this.tyreRear = { ...rear }
+    return this
+  }
+
+  /** The tyre on the axle at wheel-centre z `zc` (front if zc > 0). */
+  tyre(zc: number): TyreSize {
+    return zc > 0 ? this.tyreFront : this.tyreRear
+  }
+
+  /** Where that axle's hub is drawn at rest: the tyre's bottom on the road. */
+  hubY(zc: number): number {
+    return ROAD_Y_AT_REST + this.tyre(zc).r
+  }
+
+  /** The arch radius over that axle's tyre. */
+  archR(zc: number, gap = ARCH_GAP): number {
+    return this.tyre(zc).r + gap
+  }
 
   // ---- painted parts
 
@@ -218,6 +334,7 @@ export class BodyBuilder {
     const dense = densify(stations, opts.sub ?? 3, [0, 1, 2, 3, 4])
     this.tubDense = dense
     const bulge = opts.bulge ?? 0.04
+    this.tubBulge = bulge
     const rings = dense.map((st) => {
       const half = tubHalf(st)
       const cy = (half[0][1] + half[half.length - 1][1]) / 2
@@ -245,29 +362,57 @@ export class BodyBuilder {
 
   /**
    * A fender pod over one wheel, both sides of the car. The arch is cut out of
-   * its underside as a circle round the hub, so the whole tyre shows.
+   * its underside as a circle round the (drawn) hub, so the whole tyre shows.
+   * It also works out how high that tyre may rise on its suspension before it
+   * would push up through the pod's top (hubMax).
    */
   fender(f: FenderSpec): this {
+    const archR = this.archR(f.zc, f.gap)
+    const hub = this.hubY(f.zc)
+    const r3 = (z: number) => Math.round(z * 1000) / 1000
+    // rings that must stay: the pod's ends, the arch's ends and the legs just outside them
+    const keep = new Set<number>([r3(f.front), r3(f.back)])
+    for (const s of [-1, 1]) for (const d of [archR, archR + 0.003]) keep.add(r3(f.zc + s * d))
     const zs = new Set<number>()
-    for (const z of steps(f.back, f.front, 12)) zs.add(Math.round(z * 1000) / 1000)
-    for (let k = 0; k <= 12; k++) {
-      const z = f.zc + f.archR * Math.cos((k / 12) * Math.PI)
-      if (z > f.back && z < f.front) zs.add(Math.round(z * 1000) / 1000)
+    for (const z of steps(f.back, f.front, 14)) zs.add(r3(z))
+    for (let k = 0; k <= 14; k++) {
+      const z = f.zc + archR * Math.cos((k / 14) * Math.PI)
+      if (z > f.back && z < f.front) zs.add(r3(z))
     }
     // just outside the arch: the legs drop straight to the sill
     for (const s of [-1, 1]) {
-      const z = f.zc + s * (f.archR + 0.003)
-      if (z > f.back && z < f.front) zs.add(Math.round(z * 1000) / 1000)
+      const z = f.zc + s * (archR + 0.003)
+      if (z > f.back && z < f.front) zs.add(r3(z))
     }
-    const sorted = [...zs].sort((a, b) => b - a)
+    // drop in-between rings closer than 1.5 cm to a neighbour: a sliver of a ring makes a crumpled facet
+    const sorted: number[] = []
+    for (const z of [...zs].sort((a, b) => b - a)) {
+      const prev = sorted[sorted.length - 1]
+      if (prev === undefined || keep.has(z) || prev - z > 0.015) sorted.push(z)
+      else if (!keep.has(prev)) sorted[sorted.length - 1] = z
+    }
     const lean = f.lean ?? 0.04
-    const rings = sorted.map((z) => {
+    const yArchAt = (z: number) => {
       const dz = z - f.zc
-      const yArch = Math.abs(dz) < f.archR ? HUB_Y + Math.sqrt(f.archR * f.archR - dz * dz) : f.yFloor
+      return Math.abs(dz) < archR ? hub + Math.sqrt(archR * archR - dz * dz) : floorAt(f, z)
+    }
+    const yBotAt = (z: number) => Math.min(yArchAt(z), curve(f.yTop, z) - 0.05)
+    const rAt = (z: number) => podRound(f, z, yBotAt(z))
+    // the tyre's highest safe hub: under every ring over the tyre, its tread's top stays a skin below the pod's top
+    const ty = this.tyre(f.zc)
+    const xTread = [WHEEL_X - ty.w / 2, WHEEL_X + ty.w / 2]
+    const axle = f.zc > 0 ? 0 : 1
+    for (const z of sorted) {
+      const dz = z - f.zc
+      if (Math.abs(dz) >= ty.r) continue
+      const top = Math.min(podTopAt(f, z, rAt(z), lean, xTread[0]), podTopAt(f, z, rAt(z), lean, xTread[1]))
+      this.hubMax[axle] = Math.min(this.hubMax[axle], top - TYRE_SKIN - Math.sqrt(ty.r * ty.r - dz * dz))
+    }
+    const rings = sorted.map((z) => {
       const yTop = curve(f.yTop, z)
       const xOut = curve(f.xOut, z)
-      const yBot = Math.min(yArch, yTop - 0.05)
-      const r = Math.max(0.01, Math.min(f.round, (yTop - yBot) * 0.45, (xOut - f.xIn) * 0.4))
+      const yBot = yBotAt(z)
+      const r = rAt(z)
       const pts: V2[] = [
         [f.xIn, yBot],
         [xOut - 0.02, yBot],
@@ -319,7 +464,7 @@ export class BodyBuilder {
 
   /**
    * A rocket nozzle: a dark chrome bell, a glowing core inside its throat, and
-   * a flame the shader stretches backward while boosting.
+   * a soft flame plume the shader stretches out behind it while boosting.
    */
   nozzle(n: NozzleSpec): this {
     const sy = n.scaleY ?? 1
@@ -349,24 +494,24 @@ export class BodyBuilder {
       core.scale(1, sy, 1)
       core.translate(at.x, at.y, coreZ)
       this.lightParts.add(core, { attrs: { aLight: LIGHT_NOZZLE }, shading: 'flat' })
-      // the flame: a plume lathed at rest to FLAME_REST long, just inside the core (hidden until boost)
-      const base = coreZ + 0.016
-      const plume: V2[] = [
-        [0.0, 0],
-        [r * 0.5, 0],
-        [r * 0.5, 0.3],
-        [r * 0.26, 0.7],
-        [0.0, 1],
-      ]
-      const flame = lathe(
-        plume.map(([pr, a]) => [pr, a * FLAME_REST] as V2),
+      // the plume: lathed one metre long from the bell's exit; the shader stretches it to
+      // `flame` metres (and back to nothing) with the boost, and softens its edges
+      const exitZ = n.z - L
+      const width = r * (1 + sy) * 0.5
+      const plume = lathe(
+        PLUME.map(([t, k]) => [r * k, t] as V2),
         14,
-        { x: at.x, y: at.y, z: base },
+        { x: at.x, y: at.y, z: exitZ },
         sy,
       )
-      this.lightParts.add(flame, {
-        // aFlame = how far back this point travels at full boost (0 at the nozzle, the flame's length at the tip)
-        attrs: { aLight: LIGHT_FLAME, aFlame: (_x, _y, z) => THREE.MathUtils.clamp((base - z) / FLAME_REST, 0, 1) * flameLen },
+      this.plumeParts.add(plume, {
+        attrs: {
+          aT: (_x, _y, z) => THREE.MathUtils.clamp(exitZ - z, 0, 1),
+          aRad: (_x, _y, z) => width * curve(PLUME, THREE.MathUtils.clamp(exitZ - z, 0, 1)),
+          aCx: at.x,
+          aCy: at.y,
+          aLen: flameLen,
+        },
         shading: 'flat',
       })
     }
@@ -374,12 +519,14 @@ export class BodyBuilder {
   }
 
   /** Dark wheel wells: a plate inboard of each tyre so the arches read deep, not see-through. */
-  wells(x = 0.56, archR = 0.44): this {
+  wells(x = 0.55, gap = ARCH_GAP): this {
     for (const zc of [AXLE_Z, -AXLE_Z]) {
       const pts: V2[] = []
+      const archR = this.archR(zc, gap) + 0.01
+      const hub = this.hubY(zc)
       for (let k = 0; k <= 14; k++) {
         const a = (k / 14) * Math.PI
-        pts.push([zc + archR * Math.cos(a), HUB_Y + archR * Math.sin(a)])
+        pts.push([zc + archR * Math.cos(a), hub + archR * Math.sin(a)])
       }
       pts.push([zc - archR, -0.3], [zc + archR, -0.3])
       // drawn with z flipped, then stood up facing outward (+x)
@@ -455,21 +602,22 @@ export class BodyBuilder {
    * `from` to `to` of the half circle (0 = front, 1 = back).
    */
   archLight(f: FenderSpec, from = 0.06, to = 0.94, width = 0.03, gap = 0.03): this {
-    const n = 20
+    const n = 24
     const rings: THREE.Vector3[][] = []
+    const hub = this.hubY(f.zc)
     for (let k = 0; k <= n; k++) {
       const t = Math.PI * (from + ((to - from) * k) / n)
       const c = Math.cos(t)
       const sn = Math.sin(t)
-      const r0 = f.archR + gap
+      const r0 = this.archR(f.zc, f.gap) + gap
       const r1 = r0 + width
       const z0 = f.zc + r0 * c
       const x = curve(f.xOut, z0)
       rings.push([
-        new THREE.Vector3(x + 0.006, HUB_Y + r0 * sn, f.zc + r0 * c),
-        new THREE.Vector3(x + 0.006, HUB_Y + r1 * sn, f.zc + r1 * c),
-        new THREE.Vector3(x - 0.014, HUB_Y + r1 * sn, f.zc + r1 * c),
-        new THREE.Vector3(x - 0.014, HUB_Y + r0 * sn, f.zc + r0 * c),
+        new THREE.Vector3(x + 0.006, hub + r0 * sn, f.zc + r0 * c),
+        new THREE.Vector3(x + 0.006, hub + r1 * sn, f.zc + r1 * c),
+        new THREE.Vector3(x - 0.014, hub + r1 * sn, f.zc + r1 * c),
+        new THREE.Vector3(x - 0.014, hub + r0 * sn, f.zc + r0 * c),
       ])
     }
     return this.light(loft(rings), 'livery', { mirror: true })
@@ -549,6 +697,52 @@ export class BodyBuilder {
     return this.light(loft(rings), 'livery', { mirror: true })
   }
 
+  /**
+   * A neon line straight across the bonnet at z, riding just proud of the
+   * tub's top (from deck edge to deck edge, `inset` of the way in from each
+   * edge). It is the strip of car the bonnet camera keeps at the bottom of
+   * its frame, and a face to the car from the front at night.
+   */
+  noseLight(z: number, width = 0.016, inset = 0.12): this {
+    const h = this.tubDense
+    if (!h) return this
+    // the tub's cross-section at z, rounded the way the tub was
+    let st = h[h.length - 1]
+    for (let i = 0; i < h.length - 1; i++) {
+      const a = h[i]
+      const b = h[i + 1]
+      if (z <= a[0] && z >= b[0]) {
+        const t = a[0] === b[0] ? 0 : (a[0] - z) / (a[0] - b[0])
+        st = a.map((v, j) => v + (b[j] - v) * t)
+        break
+      }
+    }
+    const half = tubHalf(st)
+    const cy = (half[0][1] + half[half.length - 1][1]) / 2
+    const rh = roundHalf(half, this.tubBulge, cy)
+    // the top panel: deck edge, its rounded middle, crown (points 7, 8, 9 of the rounded half).
+    // The line follows a smooth arc through those three, so it never zigzags over a bulgy top.
+    const [p0, pm, p2] = [rh[7], rh[8], rh[9]]
+    const c: V2 = [2 * pm[0] - (p0[0] + p2[0]) / 2, 2 * pm[1] - (p0[1] + p2[1]) / 2]
+    const arc = (t: number): V2 => {
+      const u = 1 - t
+      return [u * u * p0[0] + 2 * u * t * c[0] + t * t * p2[0], u * u * p0[1] + 2 * u * t * c[1] + t * t * p2[1]]
+    }
+    const pts: V2[] = []
+    for (let k = 0; k <= 12; k++) {
+      const [x, y] = arc(inset + ((1 - inset) * k) / 12)
+      pts.push([x, y + 0.012])
+    }
+    const full: V2[] = [...pts, ...pts.slice(0, -1).reverse().map(([x, y]) => [-x, y] as V2)]
+    const rings = full.map(([x, y]) => [
+      new THREE.Vector3(x, y + 0.004, z + width / 2),
+      new THREE.Vector3(x, y + 0.004, z - width / 2),
+      new THREE.Vector3(x, y - 0.012, z - width / 2),
+      new THREE.Vector3(x, y - 0.012, z + width / 2),
+    ])
+    return this.light(loft(rings), 'livery')
+  }
+
   /** Where the bonnet camera sits on this body. */
   bonnetAt(y: number, z: number): this {
     this.bonnet.set(0, y, z)
@@ -572,7 +766,13 @@ export class BodyBuilder {
     const glass = this.glassParts.build('glass')
     const trim = this.trimParts.build('trim')
     const lights = this.lightParts.build('lights')
+    const plume = this.plumeParts.build('plume')
     const tri = (g: THREE.BufferGeometry) => g.getAttribute('position').count / 3
+    // an axle with no fender over it: let the tyre ride a tyre's height
+    const hubMax: [number, number] = [0, 1].map((a) => {
+      const zc = a === 0 ? AXLE_Z : -AXLE_Z
+      return Number.isFinite(this.hubMax[a]) ? this.hubMax[a] : this.hubY(zc) + this.tyre(zc).r
+    }) as [number, number]
     return {
       paint,
       glass,
@@ -582,8 +782,11 @@ export class BodyBuilder {
       tailLights: this.tailLights,
       underglow: { ...this.underglow },
       wheel: this.wheel,
+      tyres: [{ ...this.tyreFront }, { ...this.tyreRear }],
+      hubMax,
+      plume,
       bonnet: this.bonnet.clone(),
-      triangles: tri(paint) + tri(glass) + tri(trim) + tri(lights),
+      triangles: tri(paint) + tri(glass) + tri(trim) + tri(lights) + tri(plume),
     }
   }
 }
@@ -632,101 +835,157 @@ export function ghostBodyGeometry(id: BodyId): THREE.BufferGeometry {
 
 // ---------------------------------------------------------------- the wheel
 
-const wheelCache = new Map<WheelStyle, THREE.BufferGeometry>()
+const wheelCache = new Map<string, THREE.BufferGeometry>()
 
 /** Shades for wheel parts: `aMetal` 0 = rubber, 0.3 = the satin sidewall band, 1 = dark chrome. */
 const RUBBER = { aGlow: 0, aMetal: 0 }
 const BAND = { aGlow: 0, aMetal: 0.3 }
 const METAL = { aGlow: 0, aMetal: 1 }
 
+/** The rim's size as a share of the tyre's radius: a fat, toy-like balloon sidewall round it. */
+const RIM_SHARE = 0.66
+/** Rims are designed at this radius and scaled to fit each tyre. */
+const RIM_DESIGN = 0.256
+
 /**
- * Tyre + rim + glowing ring, axle along X, outer face at +X. Built to read
- * as a chunky toy wheel inside the fixed radius: a fat rounded tyre with two
- * staggered rows of tread blocks, a satin band round the sidewall, and a rim
- * set deep inside it with spokes that dish inward (so it has real depth),
- * framed by a chrome lip and the glowing ring.
+ * Tyre + rim + glowing ring, axle along X, outer face at +X, at any size.
+ * Built to read as a chunky toy wheel: a fat rounded balloon tyre with two
+ * staggered rows of big tread lugs, a satin band round the sidewall, and a
+ * rim set deep inside it with spokes that dish inward (so it has real
+ * depth), framed by a chrome lip and the glowing ring.
  */
-export function wheelGeometry(style: WheelStyle): THREE.BufferGeometry {
-  const hit = wheelCache.get(style)
+export function wheelGeometry(style: WheelStyle, size: TyreSize): THREE.BufferGeometry {
+  const key = `${style}:${size.r.toFixed(3)}:${size.w.toFixed(3)}`
+  const hit = wheelCache.get(key)
   if (hit) return hit
-  const parts = new PartList(['aGlow', 'aMetal'])
-  const r = WHEEL_VIS.radius
-  const hw = WHEEL_VIS.width / 2
+  const tyreParts = new PartList(['aGlow', 'aMetal'])
+  const r = size.r
+  const hw = size.w / 2
+  const rim = r * RIM_SHARE
+  const s = r / 0.35 // the lugs and shoulders grow with the tyre
 
   // Tyre: lathed round the axle. Inner bead -> fat inner shoulder -> tread with a
   // centre groove -> fat outer shoulder -> outer sidewall -> bead into the rim.
+  const sh = 0.05 * s // shoulder roll
   const prof: V2[] = [
-    [0.25, -hw + 0.01],
-    [0.31, -hw],
-    [r - 0.035, -hw + 0.012],
-    [r - 0.012, -hw + 0.04],
-    [r - 0.012, -0.022],
-    [r - 0.026, -0.014],
-    [r - 0.026, 0.014],
-    [r - 0.012, 0.022],
-    [r - 0.012, hw - 0.04],
-    [r - 0.035, hw - 0.012],
-    [0.31, hw],
-    [0.262, hw - 0.006],
-    [0.255, hw - 0.04],
+    [rim - 0.004, -hw + 0.012],
+    [rim + 0.05 * s, -hw],
+    [r - sh, -hw + 0.008],
+    [r - 0.014 * s, -hw + sh],
+    [r - 0.012 * s, -0.026],
+    [r - 0.03 * s, -0.016],
+    [r - 0.03 * s, 0.016],
+    [r - 0.012 * s, 0.026],
+    [r - 0.014 * s, hw - sh],
+    [r - sh, hw - 0.008],
+    [rim + 0.05 * s, hw],
+    [rim + 0.006, hw - 0.006],
+    [rim, hw - 0.04],
   ]
   const tyre = new THREE.LatheGeometry(
     prof.map(([pr, a]) => new THREE.Vector2(pr, a)),
-    24,
+    28,
   )
   tyre.rotateZ(-Math.PI / 2) // lathe axis +y -> +x
-  parts.add(tyre, { attrs: RUBBER, shading: 0.7 })
+  tyreParts.add(tyre, { attrs: RUBBER, shading: 0.7 })
 
   // The satin sidewall band: a raised ring on the outer sidewall, like a tyre's lettering.
+  const b0 = rim + 0.018 * s
+  const b1 = rim + 0.052 * s
   const band = new THREE.LatheGeometry(
     [
-      [0.268, hw - 0.004],
-      [0.272, hw + 0.006],
-      [0.3, hw + 0.006],
-      [0.305, hw - 0.004],
+      [b0, hw - 0.004],
+      [b0 + 0.004, hw + 0.007],
+      [b1 - 0.004, hw + 0.007],
+      [b1, hw - 0.004],
     ].map(([pr, a]) => new THREE.Vector2(pr, a)),
-    24,
+    28,
   )
   band.rotateZ(-Math.PI / 2)
-  parts.add(band, { attrs: BAND, shading: 0.5 })
+  tyreParts.add(band, { attrs: BAND, shading: 0.5 })
 
-  // Tread blocks: two staggered rows across the tread, standing proud of it.
-  const BLOCKS = 13
-  for (let i = 0; i < BLOCKS; i++) {
+  // Tread lugs: two staggered rows of big blocks across the tread, standing proud of it.
+  const LUGS = 14
+  const lugW = Math.max(0.1, hw - 0.05)
+  for (let i = 0; i < LUGS; i++) {
     for (const side of [-1, 1]) {
-      const a = ((i + (side > 0 ? 0.5 : 0)) / BLOCKS) * Math.PI * 2
-      const blk = new THREE.BoxGeometry(0.12, 0.024, 0.085)
-      blk.translate(side * 0.085, r - 0.012, 0)
+      const a = ((i + (side > 0 ? 0.5 : 0)) / LUGS) * Math.PI * 2
+      const blk = new THREE.BoxGeometry(lugW, 0.03 * s, 0.1 * s)
+      blk.translate(side * (lugW / 2 + 0.012), r - 0.014 * s, 0)
       blk.rotateX(a)
-      parts.add(blk, { attrs: RUBBER, shading: 'flat' })
+      tyreParts.add(blk, { attrs: RUBBER, shading: 'flat' })
     }
   }
 
-  // Rim: a barrel inside the tyre, a dished base deep inside it, the style's
-  // own spokes running from the deep hub out to the lip, the chrome lip.
-  const face = hw - 0.01
-  const barrel = new THREE.CylinderGeometry(0.256, 0.256, 0.16, 22, 1, true)
+  // Rim: designed at RIM_DESIGN radius (a barrel, a dished base, the style's own
+  // spokes from the deep hub to the lip, the chrome lip and the neon ring), then
+  // scaled across to fit this tyre. The depth along the axle stays as designed.
+  const rimParts = new PartList(['aGlow', 'aMetal'])
+  const face = 0
+  const barrel = new THREE.CylinderGeometry(RIM_DESIGN, RIM_DESIGN, 0.16, 24, 1, true)
   barrel.rotateZ(Math.PI / 2)
   barrel.translate(face - 0.08, 0, 0)
-  parts.add(barrel, { attrs: METAL, shading: 0.6 })
-  const base = new THREE.CircleGeometry(0.256, 22)
+  rimParts.add(barrel, { attrs: METAL, shading: 0.6 })
+  const base = new THREE.CircleGeometry(RIM_DESIGN, 24)
   base.rotateY(Math.PI / 2)
   base.translate(face - 0.1, 0, 0)
-  parts.add(base, { attrs: METAL, shading: 'flat' })
-  const lip = new THREE.TorusGeometry(0.252, 0.012, 3, 24)
+  rimParts.add(base, { attrs: METAL, shading: 'flat' })
+  const lip = new THREE.TorusGeometry(RIM_DESIGN - 0.004, 0.012, 3, 28)
   lip.rotateY(Math.PI / 2)
   lip.translate(face - 0.004, 0, 0)
-  parts.add(lip, { attrs: METAL, shading: 0.8 })
-  rimStyle(style, parts, face)
-
+  rimParts.add(lip, { attrs: METAL, shading: 0.8 })
+  rimStyle(style, rimParts, face)
   // The neon ring just inside the lip: the car's glow colour, our signature.
-  const ring = new THREE.TorusGeometry(0.234, 0.012, 3, 32)
+  const ring = new THREE.TorusGeometry(0.234, 0.012, 3, 36)
   ring.rotateY(Math.PI / 2)
   ring.translate(face - 0.012, 0, 0)
-  parts.add(ring, { attrs: { aGlow: 1, aMetal: 0 }, shading: 'keep' })
+  rimParts.add(ring, { attrs: { aGlow: 1, aMetal: 0 }, shading: 'keep' })
+  const rimGeo = rimParts.build(`rim:${style}`)
+  const k = rim / RIM_DESIGN
+  rimGeo.scale(1, k, k) // three turns the normals with it
+  rimGeo.translate(hw - 0.01, 0, 0)
 
-  const merged = parts.build(`wheel:${style}`)
-  wheelCache.set(style, merged)
+  const merged = mergeGeometries([tyreParts.build(`tyre:${key}`), rimGeo], false)
+  if (!merged) throw new Error(`[vehicle] wheel merge failed for "${key}"`)
+  merged.computeBoundingSphere()
+  wheelCache.set(key, merged)
+  return merged
+}
+
+const ghostWheelCache = new Map<string, THREE.BufferGeometry>()
+
+/**
+ * The ghost's tyre: one smooth closed puck, no lugs or spokes. The ghost is
+ * see-through and does not write depth, so every overlapping part of a real
+ * wheel (lugs on the tread, spokes in the rim) would stack into stripes; a
+ * single outward-facing shell shows exactly one layer from any side.
+ */
+export function ghostWheelGeometry(size: TyreSize): THREE.BufferGeometry {
+  const key = `${size.r.toFixed(3)}:${size.w.toFixed(3)}`
+  const hit = ghostWheelCache.get(key)
+  if (hit) return hit
+  const r = size.r
+  const hw = size.w / 2
+  const sh = 0.05 * (r / 0.35)
+  const prof: V2[] = [
+    [0, -hw + 0.02],
+    [r * RIM_SHARE, -hw],
+    [r - sh, -hw + 0.008],
+    [r, -hw + sh],
+    [r, hw - sh],
+    [r - sh, hw - 0.008],
+    [r * RIM_SHARE, hw],
+    [0, hw - 0.02],
+  ]
+  const g = new THREE.LatheGeometry(
+    prof.map(([pr, a]) => new THREE.Vector2(pr, a)),
+    28,
+  )
+  g.rotateZ(-Math.PI / 2)
+  const parts = new PartList(['aGlow', 'aMetal'])
+  parts.add(g, { attrs: RUBBER, shading: 0.7 })
+  const merged = parts.build(`ghost-wheel:${key}`)
+  ghostWheelCache.set(key, merged)
   return merged
 }
 
@@ -738,7 +997,7 @@ function spoke(face: number, r0: number, r1: number, w: number, h: number, angle
   return g
 }
 
-/** Spokes and caps for each rim style. `face` is the rim's outer face (x). */
+/** Spokes and caps for each rim style, at the design size. `face` is the rim's outer face (x). */
 function rimStyle(style: WheelStyle, parts: PartList, face: number): void {
   const cap = (r0: number, r1: number, depth: number, x: number, seg = 14) => {
     const g = new THREE.CylinderGeometry(r1, r0, depth, seg)
@@ -749,13 +1008,13 @@ function rimStyle(style: WheelStyle, parts: PartList, face: number): void {
   switch (style) {
     case 'star': {
       // five fat spokes dishing out to the lip, the all-rounder
-      for (let i = 0; i < 5; i++) parts.add(spoke(face, 0.05, 0.236, 0.05, 0.06, (i / 5) * Math.PI * 2), { attrs: METAL, shading: 'flat' })
+      for (let i = 0; i < 5; i++) parts.add(spoke(face, 0.05, 0.236, 0.055, 0.06, (i / 5) * Math.PI * 2), { attrs: METAL, shading: 'flat' })
       cap(0.075, 0.055, 0.07, face - 0.07)
       break
     }
     case 'turbine': {
       // twelve thin twisted vanes: spins up like a jet
-      for (let i = 0; i < 12; i++) parts.add(spoke(face, 0.06, 0.236, 0.012, 0.045, (i / 12) * Math.PI * 2, 0.5), { attrs: METAL, shading: 'flat' })
+      for (let i = 0; i < 12; i++) parts.add(spoke(face, 0.06, 0.236, 0.014, 0.045, (i / 12) * Math.PI * 2, 0.5), { attrs: METAL, shading: 'flat' })
       cap(0.06, 0.04, 0.08, face - 0.06)
       break
     }
@@ -777,7 +1036,7 @@ function rimStyle(style: WheelStyle, parts: PartList, face: number): void {
     }
     case 'aero': {
       // a flat aero cover flush with the lip, four raised fins: smooth and fast
-      const disc = new THREE.CylinderGeometry(0.236, 0.236, 0.016, 22)
+      const disc = new THREE.CylinderGeometry(0.236, 0.236, 0.016, 24)
       disc.rotateZ(Math.PI / 2)
       disc.translate(face - 0.03, 0, 0)
       parts.add(disc, { attrs: METAL, shading: 0.5 })

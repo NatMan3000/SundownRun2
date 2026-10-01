@@ -21,6 +21,10 @@
 //    ?at=<z>              aim at this point along the car (1.42 = front wheel)
 //    ?paints=1            one body in a row of garage paints: navy, black,
 //                         pearl, red, mint, plum and a custom hue
+//    ?hub=up|down|<m>     pose the suspension: up = as far as it goes on a big
+//                         landing, down = hanging in the air, or metres above
+//                         rest (checks a tyre never pokes through its fender)
+//    ?steer=<rad> ?roll=<rad> ?pitch=<rad>   steer the front wheels, lean the body
 //    ?ghost=1             build them the way the time-trial ghost is built
 //    ?clone=1             swap every material for a clone, the way multiplayer
 //                         cars do to fade in (checks the shader patches survive)
@@ -36,7 +40,8 @@ import { EffectComposer, Bloom, ToneMapping } from '@react-three/postprocessing'
 import { ToneMappingMode } from 'postprocessing'
 import { GLOW, PALETTE } from '../core/palette'
 import { BODIES } from '../vehicle/bodies/catalog'
-import { buildCarModel, setCarBoost, setCarBrake } from '../vehicle/carModel'
+import { buildCarModel, poseCarModel, setCarBoost, setCarBrake, WHEEL_REST_Y } from '../vehicle/carModel'
+import { WHEEL } from '../vehicle/tuning'
 import { SkyDome } from '../world/SkyDome'
 import { SkyEnvironment } from '../world/skyEnv'
 import { sky, updateSky } from '../world/sky'
@@ -63,6 +68,17 @@ const hex = (name: string, fallback: string) => {
 const paint = hex('paint', PALETTE.paintDefault)
 const glow = hex('glow', PALETTE.glowDefault)
 const boost = Number(params.get('boost') ?? 0)
+/** Physics hub heights for ?hub= (full bump: the box touching the road; full droop: the spring fully out). */
+const hubParam = params.get('hub')
+const hubY = hubParam === 'up' ? WHEEL.anchorY : hubParam === 'down' ? WHEEL.anchorY - WHEEL.restLength : hubParam ? WHEEL_REST_Y + Number(hubParam) : null
+const posed = hubY !== null || params.has('steer') || params.has('roll') || params.has('pitch')
+const pose = {
+  wheelHubY: [0, 1, 2, 3].map(() => (hubY !== null && Number.isFinite(hubY) ? hubY : WHEEL_REST_Y)),
+  wheelSpin: [0, 0, 0, 0],
+  steerAngle: Number(params.get('steer') ?? 0),
+  roll: Number(params.get('roll') ?? 0),
+  pitch: Number(params.get('pitch') ?? 0),
+}
 const time = Number(params.get('time') ?? 0.12)
 worldClock.time = Number.isFinite(time) ? THREE.MathUtils.clamp(time, 0, 1) : 0.12
 worldClock.frozen = true
@@ -179,7 +195,10 @@ function Lineup() {
     [],
   )
   useFrame(() => {
-    for (const m of models) setCarBoost(m, boost)
+    for (const m of models) {
+      setCarBoost(m, boost)
+      if (posed) poseCarModel(m, pose)
+    }
   })
   return (
     <>

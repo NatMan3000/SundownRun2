@@ -4,13 +4,13 @@
 //  A car body is a handful of chunky parts glued together, the
 //  way a toy car is: a main tub, four fender pods over the wheels,
 //  a glass canopy, wings, fins, rocket nozzles, lamps. This file
-//  holds the tools that make those parts; bodies/designs.ts says
+//  holds the tools that make those parts; bodies/profiles.ts says
 //  what each car is made of, and bodies/build.ts puts it together.
 //
 //  The tools:
 //    loft       join a row of cross-sections into a closed solid
 //               (tubs, fenders, canopies, wings - most of a car)
-//    lathe      spin a profile round an axis (nozzles, lamps, tyres)
+//    lathe      spin a profile round an axis (nozzles, plumes, lamps, tyres)
 //    plate      cut a flat shape and give it thickness (fins, lamps)
 //    rbox       a rounded box (bumpers, blocks, bars)
 //    mirrorX    the same part on the car's other side
@@ -32,8 +32,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 
 export type V2 = [number, number]
 
-/** Wheel centre height (car space) and the wheel centres' z: shared by every car, never move. */
-export const HUB_Y = -0.2
+/** The wheel centres' z: shared by every car, never moves (each car's drawn hub height comes from its tyre size, see build.ts). */
 export const AXLE_Z = 1.42
 
 // ---------------------------------------------------------------- small maths
