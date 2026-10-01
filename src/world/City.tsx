@@ -61,7 +61,7 @@ const ROWS = [
  * this, so the city reads as a band on the horizon on every track - never a
  * wall, never hidden.
  */
-const VISIBLE_DEG = 6.5
+const VISIBLE_DEG = 5.6
 /**
  * ...but never taller than this above the true horizon, degrees. Behind a very
  * tall ridge the city stays a believable size and is simply hidden from close
@@ -139,7 +139,9 @@ void main() {
   vec2 f = fract( cell );
   float pane = step( 0.2, f.x ) * step( f.x, 0.8 ) * step( 0.22, f.y ) * step( f.y, 0.78 );
   float h = hash12( id + vSeed * 97.0 );
-  float threshold = h / 0.74;                    // a quarter of the windows stay dark
+  // How much of this tower ever lights up: some are busy, some mostly dark.
+  float share = 0.3 + 0.45 * fract( vSeed.y * 7.13 );
+  float threshold = h / share;
   float on = smoothstep( threshold - 0.02, threshold + 0.02, uWindows );
   // Each tower leans warm or cool, with a few cells of the other colour.
   float towerWarm = step( vSeed.x, 0.6 );
@@ -150,7 +152,7 @@ void main() {
   vec2 fw = fwidth( cell );
   float tiny = smoothstep( 0.45, 1.1, max( fw.x, fw.y ) );
   // pane area x share of cells switched on x average brightness
-  float average = 0.336 * clamp( uWindows, 0.0, 1.0 ) * 0.74 * 0.78;
+  float average = 0.336 * clamp( uWindows, 0.0, 1.0 ) * share * 0.78;
   float lit = mix( pane * on * level, average, tiny ) * onWalls;
   // No windows in the hazy base or right at the top.
   lit *= smoothstep( uBaseY + uBaseFade * 0.55, uBaseY + uBaseFade, vWorld.y );
@@ -217,6 +219,7 @@ function buildCity(
   if (!city) return null
   const rand = makeRandom((env.seed ^ 0xc17c) >>> 0)
   const az0 = (city.azimuthDeg ?? env.sky.sunAzimuthDeg ?? 0) * DEG
+  const sunAz = (env.sky.sunAzimuthDeg ?? 0) * DEG
   const arc = (city.arcDeg ?? 120) * DEG
   const dist = city.distance ?? env.size * 2.2
   const density = Math.min(1, Math.max(0.1, city.density ?? 0.7))
@@ -251,7 +254,13 @@ function buildCity(
       if (rand() < edge * edge * 0.55) continue
       const R = dist + row.offset + (rand() - 0.5) * 140
       // Tallest in the middle, falling away to the ends, with plenty of variety.
-      const profile = Math.pow(Math.cos(Math.min(1, edge) * Math.PI * 0.5), 1.3)
+      // Tallest toward the middle of the arc, but dipping low right in front of the
+      // sun, so the setting sun sits in a valley of the skyline, framed by towers.
+      let toSun = Math.abs(az - sunAz) % (Math.PI * 2)
+      if (toSun > Math.PI) toSun = Math.PI * 2 - toSun
+      // Wide enough to still frame the sun from anywhere on the track (the city has parallax, the sun does not).
+      const sunValley = 1 - 0.6 * Math.exp(-((toSun / (17 * DEG)) ** 2))
+      const profile = Math.pow(Math.cos(Math.min(1, edge) * Math.PI * 0.5), 1.1) * sunValley
       const tall = rand() < 0.08 ? 1.25 : 0.25 + rand() * 0.75
       // Rise this many degrees above the skyline in front, seen from the middle of the world.
       const above = 0.6 + VISIBLE_DEG * profile * tall * row.scale

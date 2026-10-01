@@ -94,8 +94,9 @@ const EMISSIVE_MOD = /* glsl */ `
   float camDist = distance( vTerrainWorld, cameraPosition );
   float carDist = distance( vTerrainWorld.xz, uCarPos.xz );
 
-  float minor = pristineGrid( vTerrainWorld.xz / 10.0, 0.022 );
-  float major = pristineGrid( vTerrainWorld.xz / 50.0, 0.0085 );
+  // Lines 14 cm (minor) and 20 cm (major) wide: fine neon threads, not bands.
+  float minor = pristineGrid( vTerrainWorld.xz / 10.0, 0.014 );
+  float major = pristineGrid( vTerrainWorld.xz / 50.0, 0.004 );
   // Minor lines are gone well before the major ones, which run on toward the
   // horizon (the classic synthwave floor) until the haze takes them.
   minor *= 1.0 - smoothstep( 160.0, 420.0, camDist );

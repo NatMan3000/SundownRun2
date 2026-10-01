@@ -279,8 +279,8 @@ export function updateSky(elapsed: number): void {
   _warmKey.copy(C.sunGlow).lerp(C.sunTop, 0.3)
   sky.keyColor.copy(_warmKey).lerp(C.planetRing, toPlanet)
   const sunPart = 3.4 * (1 - smoothstep(0.22, 0.5, t))
-  const planetPart = 0.6 * smoothstep(0.35, 0.75, t)
-  sky.keyIntensity = Math.max(0.45, sunPart + planetPart)
+  const planetPart = 0.46 * smoothstep(0.35, 0.75, t)
+  sky.keyIntensity = Math.max(0.4, sunPart + planetPart)
 
   // ---- hemisphere fill: sky above, dark glass below ----
   sky.hemiSky.copy(u.uSkyMid.value).lerp(u.uSkyHorizonAnti.value, 0.35)
