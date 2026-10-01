@@ -117,8 +117,11 @@ const wallFragmentEmissive = /* glsl */ `
   float v = vWallUv.y;
   float wU = max(fwidth(u), 1e-4);
   float wV = max(fwidth(v), 1e-4);
-  // the top rail: the whole top, brightest along its inner edge
+  // the top rail: a bright line along its inner edge whose light falls away
+  // across the top (a glow, not a flat painted stripe: close up, beside a
+  // steep bank, the top fills a big part of the screen)
   float rail = smoothstep(uRailU - wU, uRailU + wU, u) * (1.0 - smoothstep(uRailU + uRailW - wU, uRailU + uRailW + wU, u));
+  rail *= exp(-max(u - uRailU - 0.06, 0.0) / 0.16);
   float railEdge = sr2Line(u - uRailU - 0.06, 0.05, wU);
   // a thin line along the foot of the inner face
   float base = sr2Line(u - 0.18, 0.03, wU);
@@ -183,6 +186,6 @@ export function makeBarrierMaterial(
       .replace('#include <common>', `#include <common>\n${wallFragmentPars}`)
       .replace('#include <emissivemap_fragment>', wallFragmentEmissive)
   }
-  mat.customProgramCacheKey = () => 'sr2-barrier-v5'
+  mat.customProgramCacheKey = () => 'sr2-barrier-v6'
   return mat
 }

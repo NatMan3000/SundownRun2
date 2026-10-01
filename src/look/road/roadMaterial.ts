@@ -342,7 +342,15 @@ trap *= step(0.0, dEdge);
 // ---- start / finish line: a checkered band across the road at s = 0
 float d0 = sr2SDelta(s, 0.0);
 float startBand = (1.0 - smoothstep(0.8 - wS, 0.8 + wS, abs(d0))) * step(0.0, dEdge - STRIP_IN - STRIP_HW) * isRoad;
-float checker = mod(floor(lat / 0.8) + floor((d0 + 0.8) / 0.8), 2.0);
+// Two rows of 0.8 m squares: the row is fixed by which side of the line
+// you are on, so the band's own soft edges (fading over a pixel past +/-0.8)
+// never pick up a third row's opposite colour (that showed as a 1-px seam).
+// Square edges are softened over a pixel, so the pattern never stair-steps.
+float cu = lat / 0.8;
+float par = abs(mod(floor(cu), 2.0) - step(0.0, d0)); // 0 or 1: column parity xor row
+float dCol = abs(fract(cu + 0.5) - 0.5) * 0.8;        // metres to the nearest column line
+float squareAA = min(smoothstep(0.0, wLat, dCol), smoothstep(0.0, wS, abs(d0)));
+float checker = mix(0.5, par, squareAA);
 checker = mix(checker, 0.5, smoothstep(0.15, 0.5, max(wLat, wS) / 0.8)); // averages out far away
 float start = startBand * checker;
 
@@ -507,7 +515,7 @@ export function makeRoadMaterial(uniforms: RoadUniforms): THREE.MeshStandardMate
       .replace('#include <lights_fragment_end>', fragmentLightsEnd)
   }
   // One program for every road material (the shader text never changes).
-  mat.customProgramCacheKey = () => 'sr2-road-v6'
+  mat.customProgramCacheKey = () => 'sr2-road-v7'
   return mat
 }
 
