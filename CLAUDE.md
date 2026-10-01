@@ -55,4 +55,6 @@ Inherited from v1 (each cost a rework there):
 - Capture the arrow keys on menus so they don't leak into throttle (`src/core/controls.ts` input contexts).
 - Vite HMR orphans Web Workers and AudioContexts unless `import.meta.hot.dispose()` shuts them down.
 - Never `import` from `@dimforge/rapier3d-compat` directly: that resolves to a stray 0.12 copy pulled in by `@types/three`, while `@react-three/rapier` runs its own nested 0.19.2. Use `useRapier()` (`rapier` namespace and `world`) at runtime and derive types from it (`ReturnType<typeof useRapier>['world']`, `RapierRigidBody`, `RapierCollider` from `@react-three/rapier`).
+- Rapier body and collider handles are 64-bit floats. Never store them in an Int32Array or Uint32Array: they truncate (often to 0), and a later remove or untag hits the wrong collider. Use Float64Array or a plain array.
+- Hard CCD (`ccd` on a RigidBody) on rapier 0.19.2 halves a body's travel while it slides in contact with a trimesh, and can stop it dead. Car bodies use `softCcdPrediction` instead.
 - r3f v9 on three 0.186 logs a `THREE.Clock` deprecation warning from inside the library; it is not ours.
