@@ -115,7 +115,7 @@ async function until<T>(page: Page, expr: string, ms = 8000): Promise<T | null> 
  * tab would stop sending its pose, which never happens on two real computers.
  */
 const browsers: Browser[] = []
-async function openPage(url: string, label: string): Promise<Page> {
+async function openPage(url: string, label: string, preload?: string): Promise<Page> {
   const browser = await puppeteer.launch({
     executablePath: findChrome(),
     headless: !flag('headed'),
@@ -137,6 +137,8 @@ async function openPage(url: string, label: string): Promise<Page> {
     if (t === 'error' || t === 'warn') console.log(`  [${label} ${t}] ${m.text()}`)
   })
   page.on('pageerror', (e) => console.log(`  [${label} threw] ${(e as Error).stack ?? (e as Error).message}`))
+  // A script that must run from the page's very first frame (e.g. a sampler).
+  if (preload) await page.evaluateOnNewDocument(preload)
   await page.goto(url, { waitUntil: 'load', timeout: 60000 })
   return page
 }
@@ -209,16 +211,16 @@ try {
     check("joiner sees the host's name from hello", joinState?.peerName === 'HOSTY')
 
     // Poses: the host sends 30 packets; the joiner's buffer for the host fills.
-    await host.evaluate(`(async () => { for (let i = 0; i < 30; i++) { window.__netc.sendPose(i, 2, -i, 0, 0, 0, 1, 100, 0.5, 0.1, 1); await new Promise(r => setTimeout(r, 16)) } })()`)
+    await host.evaluate(`(async () => { for (let i = 0; i < 30; i++) { window.__netc.sendPose(i, 2, -i, 0, 0, 0, 1, 100, 0.5, 0.1, 1, 0); await new Promise(r => setTimeout(r, 16)) } })()`)
     const got = await until<{ n: number; x: number }>(join, `(() => { const s = window.__nets.getNet(); const b = window.__netp.peerPoses.get(s.hostId); return b && b.received >= 30 ? { n: b.received, x: b.latest(0) } : null })()`, 3000)
     check('30 pose packets arrive, newest last', got?.n === 30 && got?.x === 29, got ?? '')
     // The NaN firewall: a broken pose is never sent (or accepted).
-    await host.evaluate(`window.__netc.sendPose(NaN, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0)`)
+    await host.evaluate(`window.__netc.sendPose(NaN, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0)`)
     await sleep(200)
     const after = await join.evaluate(`window.__netp.peerPoses.get(window.__nets.getNet().hostId).received`)
     check('a NaN pose is never sent', after === 30, `received=${after}`)
     // Receive side: a raw socket (no client code) pushes a NaN packet through the relay.
-    const rawId = await host.evaluate(`new Promise((res) => { const w = new WebSocket('ws://localhost:${RELAY}'); w.binaryType = 'arraybuffer'; w.onmessage = (e) => { if (typeof e.data !== 'string') return; const m = JSON.parse(e.data); if (m.t !== 'welcome') return; const f = new Float32Array(11); f[0] = NaN; f[6] = 1; w.send(f); const g = new Float32Array(11); g[0] = 5; g[6] = 1; w.send(g); setTimeout(() => res(m.id), 300); setTimeout(() => w.close(), 1500) } })`)
+    const rawId = await host.evaluate(`new Promise((res) => { const w = new WebSocket('ws://localhost:${RELAY}'); w.binaryType = 'arraybuffer'; w.onmessage = (e) => { if (typeof e.data !== 'string') return; const m = JSON.parse(e.data); if (m.t !== 'welcome') return; const f = new Float32Array(12); f[0] = NaN; f[6] = 1; w.send(f); const g = new Float32Array(12); g[0] = 5; g[6] = 1; w.send(g); setTimeout(() => res(m.id), 300); setTimeout(() => w.close(), 1500) } })`)
     const rawSeen = await join.evaluate(`window.__netp.peerPoses.get(${rawId})?.received ?? 0`)
     check('the receive-side firewall drops a NaN packet and keeps the good one', rawSeen === 1, `raw sender ${rawId}: received=${rawSeen}`)
 

@@ -37,7 +37,7 @@ interface Kit {
   check: (name: string, ok: boolean, detail?: unknown) => void
   until: <T>(page: Page, expr: string, ms?: number) => Promise<T | null>
   /** Opens a page in its own browser (one per player, both in the foreground). */
-  openPage: (url: string, label: string) => Promise<Page>
+  openPage: (url: string, label: string, preload?: string) => Promise<Page>
   sleep: (ms: number) => Promise<unknown>
 }
 
@@ -122,14 +122,46 @@ const PILOT = `(async () => {
   return true
 })()`
 
+/**
+ * Per-frame sampler: the closest any other (remote) car is DRAWN to our own
+ * car, every frame, from when it starts. Read with window.__closest.
+ * As a preload it runs from the page's very first frame.
+ */
+const CLOSEST_SAMPLER = `(() => {
+  const S = (window.__closest = { min: Infinity, frames: 0, under4: 0, worst: null })
+  function f() {
+    const g = window.__game
+    const cars = g && g.cars
+    if (cars) {
+      const me = cars.find((c) => c.kind === 'player')
+      if (me) {
+        for (const c of cars) {
+          if (c.kind !== 'remote' || !c.object || !c.object.visible) continue
+          const d = c.position.distanceTo(me.position)
+          S.frames++
+          if (d < 4) S.under4++
+          if (d < S.min) { S.min = d; S.worst = { t: Math.round(performance.now()), d: +d.toFixed(2) } }
+        }
+      }
+    }
+    requestAnimationFrame(f)
+  }
+  requestAnimationFrame(f)
+})()`
+
+/** Start a fresh closest-car sample on an already-loaded page. */
+const resetClosest = (p: Page) => p.evaluate(`window.__closest ? Object.assign(window.__closest, { min: Infinity, frames: 0, under4: 0, worst: null }) : (${CLOSEST_SAMPLER}, true)`)
+const readClosest = (p: Page) => p.evaluate(`(() => { const c = window.__closest; return c ? { min: c.min === Infinity ? null : +c.min.toFixed(2), frames: c.frames, under4: c.under4, worst: c.worst } : null })()`) as Promise<{ min: number | null; frames: number; under4: number } | null>
+
 export async function runGameChecks(k: Kit): Promise<void> {
   const { check, until, sleep } = k
   const q = `mp=1&relay=${k.relayPort}&tagSeconds=25`
   console.log(`\n== game: two players in a drive on "${k.track}"`)
   // The joiner opens a DIFFERENT track on purpose: the host's must replace it.
-  const host = await k.openPage(`${k.hostBase}/?${q}&name=JOSH&track=${k.track}&mode=free`, 'host')
+  const host = await k.openPage(`${k.hostBase}/?${q}&name=JOSH&track=${k.track}&mode=free`, 'host', CLOSEST_SAMPLER)
   await sleep(1500)
-  const join = await k.openPage(`${k.joinBase}/?${q}&name=DAD&color=orange&track=${k.joinTrack}&mode=free`, 'join')
+  await resetClosest(host)
+  const join = await k.openPage(`${k.joinBase}/?${q}&name=DAD&color=orange&track=${k.joinTrack}&mode=free`, 'join', CLOSEST_SAMPLER)
   for (const p of [host, join]) await p.evaluate(PILOT)
 
   const hostKey = await until<string>(host, `window.__pilot.current.getTrack()?.key`, 20000)
@@ -308,6 +340,23 @@ export async function runGameChecks(k: Kit): Promise<void> {
   if (k.sections.includes('race')) {
     console.log('\n== race: G on the host starts a synced race')
     for (const p of [host, join]) await p.evaluate(`window.__pilot.stop(); window.__pilot.settings.useSettings.getState().set('raceLaps', 1)`)
+    // Far apart before the start (mp-2's repro for the countdown gap).
+    await host.evaluate(`window.__pilot.place(window.__pilot.current.getTrack().length * 0.3, 0)`)
+    await join.evaluate(`window.__pilot.place(window.__pilot.current.getTrack().length * 0.05, 0)`)
+    await sleep(2500)
+    // Every frame on both screens for 12 s: wall time, race state, position, gap text.
+    const RECORD = `new Promise((res) => {
+      const out = []
+      const t0 = performance.now()
+      function f() {
+        const g = window.__game.state
+        out.push([Date.now(), g.raceState, g.racePosition, (document.querySelector('[data-hud="raceGap"]')?.textContent || '').trim()])
+        if (performance.now() - t0 < 12000) requestAnimationFrame(f)
+        else res(out)
+      }
+      requestAnimationFrame(f)
+    })`
+    const recs = Promise.all([host.evaluate(RECORD), join.evaluate(RECORD)]) as Promise<[number, string, number, string][][]>
     // Laps come from the track file when it sets them; the check reads what was actually used.
     await host.evaluate(`window.__pilot.rounds.requestStart()`)
     const hostRound = await until<{ grid: number[]; raceId: number; laps: number }>(host, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'race' ? { grid: r.grid, raceId: r.raceId, laps: r.laps } : null })()`, 3000)
@@ -321,28 +370,39 @@ export async function runGameChecks(k: Kit): Promise<void> {
     const frozenKmh = await join.evaluate(`window.__pilot.tel.telemetry.speedKmh`)
     check('cars are frozen during the countdown', (frozenKmh as number) < 2, { kmh: frozenKmh })
     await join.screenshot({ path: `${k.shots}/race-countdown-joiner.png` })
-    // mp-1's D3: no bogus gap during the countdown (the cars are side by side).
-    const gapText = (p: Page) => p.evaluate(`document.querySelector('[data-hud="raceGap"]')?.textContent?.trim() ?? ''`) as Promise<string>
-    const gaps = [await gapText(host), await gapText(join)]
-    const gapSecs = gaps.map((g) => Number((g.match(/([0-9.]+) s/) || [])[1] ?? 0))
-    check('countdown: the race gap reads under 1 s on both screens (side by side on the grid)', gapSecs.every((x) => x < 1), gaps)
     const goAts = [await host.evaluate(`window.__game.state.raceGoAt - performance.now()`), await join.evaluate(`window.__game.state.raceGoAt - performance.now()`)] as number[]
     check('GO lands within 150 ms on both screens', Math.abs(goAts[0] - goAts[1]) < 150, { goInMs: goAts.map(Math.round) })
-    await host.evaluate(`window.__pilot.go(null, 140)`)
+    // Close racing, as mp-2: 97 against 92 km/h.
+    await host.evaluate(`window.__pilot.go(null, 97)`)
+    await join.evaluate(`window.__pilot.go(null, 92)`)
     const running = await until<boolean>(join, `window.__game.state.raceState === 'running'`, 5000)
     check('GO: the race runs', !!running)
-    // Positions from GO: the two screens must never both claim 1st (or both 2nd).
-    const posSamples: number[][] = []
-    const progressTrace: unknown[] = []
-    for (let i = 0; i < 12; i++) {
-      posSamples.push([(await host.evaluate(`window.__game.state.racePosition`)) as number, (await join.evaluate(`window.__game.state.racePosition`)) as number])
-      if (flag('trace')) progressTrace.push(await join.evaluate(`(() => { const L = window.__pilot.current.getTrack().length; return window.__game.cars.filter((c) => c.kind !== 'ghost').map((c) => c.name + ':' + c.progress.toFixed(4) + '@' + Math.round(c.trackS) + '/' + Math.round(L)) })()`))
-      await sleep(400)
+    const [hostRec, joinRec] = await recs
+    // Countdown, every frame: never a gap over 1 s (they sit side by side on the grid).
+    const countdownGaps = [hostRec, joinRec].map((rec) => rec.filter((x) => x[1] === 'countdown').map((x) => Number((x[3].match(/([0-9.]+) s/) || [])[1] ?? 0)))
+    const worstGap = countdownGaps.map((g) => (g.length ? Math.max(...g) : -1))
+    const worstText = [hostRec, joinRec].map((rec) => rec.filter((x) => x[1] === 'countdown').map((x) => x[3]).find((t) => Number((t.match(/([0-9.]+) s/) || [])[1] ?? 0) >= 1) ?? null)
+    check('countdown, every frame on both screens: no gap of 1 s or more (mp-2 D1)', worstGap.every((g) => g >= 0 && g < 1), { worstGapS: worstGap, frames: countdownGaps.map((g) => g.length), firstBad: worstText })
+    // After GO, every frame: how long do both screens claim the same place at the same wall time?
+    const at = (rec: [number, string, number, string][], t: number) => {
+      let v = rec[0]
+      for (const x of rec) { if (x[0] > t) break; v = x }
+      return v
     }
-    if (flag('trace')) console.log('  progress after GO (joiner screen):', JSON.stringify(progressTrace))
-    const clashes = posSamples.filter(([a, b]) => a === b).length
-    check('after GO the two screens agree on the order (never both P1 or both P2, sampled 12 times over 5 s)', clashes <= 1, { samples: posSamples.map((x) => x.join('/')) })
-    // Let the host win: the joiner backs off to a cruise.
+    const goWall = Math.max(hostRec.find((x) => x[1] === 'running')?.[0] ?? Infinity, joinRec.find((x) => x[1] === 'running')?.[0] ?? Infinity)
+    let clashStart = 0
+    let longest = 0
+    let clashes = 0
+    const end = Math.min(hostRec[hostRec.length - 1][0], joinRec[joinRec.length - 1][0])
+    for (let t = goWall; t <= end; t += 10) {
+      const same = at(hostRec, t)[2] === at(joinRec, t)[2]
+      if (same && !clashStart) { clashStart = t; clashes++ }
+      if (!same && clashStart) { longest = Math.max(longest, t - clashStart); clashStart = 0 }
+    }
+    if (clashStart) longest = Math.max(longest, end - clashStart)
+    check('after GO, every 10 ms for the recorded window: the two screens never claim the same place for 0.5 s or more (mp-2 D2)', Number.isFinite(goWall) && longest < 500, { windowS: Number.isFinite(goWall) ? +((end - goWall) / 1000).toFixed(1) : null, clashes, longestMs: longest })
+    // Then let the host pull away: the joiner backs off to a cruise.
+    await host.evaluate(`window.__pilot.go(null, 140)`)
     await join.evaluate(`window.__pilot.go(null, 90)`)
     const laps = hostRound?.laps ?? 1
     const done = await until<boolean>(host, `window.__game.state.raceState === 'finished'`, 180000 * laps)
@@ -468,6 +528,8 @@ async function spawnChecks(k: Kit, host: Page, join: Page): Promise<void> {
 
   // 1) Joining: both already loaded and on the host's track (the joiner came in on another track).
   await sleep(3000)
+  const c1 = [await readClosest(host), await readClosest(join)]
+  check('arrival, every frame on both screens: the other car is never drawn within 4 m (mp-2 M1)', c1.every((c) => !!c && c.frames > 0 && c.under4 === 0), { host: c1[0], joiner: c1[1] })
   const d1 = await apart()
   const t1 = [await trouble(host, 0), await trouble(join, 0)]
   check('on joining, the two cars spawn on different grid slots (over 3 m apart)', d1 > 3, { apartM: d1, host: await slotOf(host), joiner: await slotOf(join) })
@@ -477,9 +539,12 @@ async function spawnChecks(k: Kit, host: Page, join: Page): Promise<void> {
   // 2) The host switches track: everyone respawns, each on their own slot.
   const otherTrack = (await host.evaluate(`window.__pilot.current.getTrack().id`)) === 'hyperdrome' ? 'afterglow' : 'hyperdrome'
   const since2 = [await host.evaluate(`performance.now()`), await join.evaluate(`performance.now()`)] as number[]
+  for (const p of [host, join]) await resetClosest(p)
   await host.evaluate(`window.__pilot.current.loadTrackById(${JSON.stringify(otherTrack)}).ok`)
   await until<boolean>(join, `window.__pilot.current.getTrack()?.id === ${JSON.stringify(otherTrack)}`, 20000)
   await sleep(4000)
+  const c2 = [await readClosest(host), await readClosest(join)]
+  check('track change, every frame on both screens: the other car is never drawn within 4 m', c2.every((c) => !!c && c.frames > 0 && c.under4 === 0), { host: c2[0], joiner: c2[1] })
   const d2 = await apart()
   const t2 = [await trouble(host, since2[0]), await trouble(join, since2[1])]
   check(`after the host switches to ${otherTrack}, the cars are on different slots (over 3 m apart)`, d2 > 3, { apartM: d2, host: await slotOf(host), joiner: await slotOf(join) })
@@ -488,12 +553,15 @@ async function spawnChecks(k: Kit, host: Page, join: Page): Promise<void> {
 
   // 3) Shift+R (restart at the line) on both: back to their own slots, not slot 0 together.
   const since3 = [await host.evaluate(`performance.now()`), await join.evaluate(`performance.now()`)] as number[]
+  for (const p of [host, join]) await resetClosest(p)
   for (const p of [host, join]) {
     await p.keyboard.down('ShiftLeft')
     await p.keyboard.press('KeyR')
     await p.keyboard.up('ShiftLeft')
   }
   await sleep(3000)
+  const c3 = [await readClosest(host), await readClosest(join)]
+  check('Shift+R, every frame on both screens: the other car is never drawn within 4 m', c3.every((c) => !!c && c.frames > 0 && c.under4 === 0), { host: c3[0], joiner: c3[1] })
   const d3 = await apart()
   const t3 = [await trouble(host, since3[0]), await trouble(join, since3[1])]
   check('after Shift+R on both, they restart on different slots (over 3 m apart)', d3 > 3, { apartM: d3 })

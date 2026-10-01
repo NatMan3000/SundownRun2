@@ -112,7 +112,7 @@ test('the loopback client hosts, its track reaches a late LAN joiner, poses are 
   expect(late.binary[0].byteLength).toBe(TAGGED_POSE_BYTES)
   expect(new DataView(late.binary[0]).getUint32(0, true)).toBe(wh.id)
   expect(new Float32Array(late.binary[0].slice(4))[0]).toBe(12.5)
-  expect(POSE_BYTES).toBe(44)
+  expect(POSE_BYTES).toBe(48)
 
   // Ping is answered to the sender alone.
   late.send({ t: 'ping', c: 42 })
