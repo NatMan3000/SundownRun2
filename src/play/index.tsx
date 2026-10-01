@@ -68,6 +68,8 @@ function inspectPlay() {
       steer: +d.steer.toFixed(2),
       powerScale: +(d.powerScale ?? 1).toFixed(3),
       resets: d.resets,
+      steerGains: Array.from(d.steerGains, (g) => +g.toFixed(4)),
+      loops: `${d.loopsDone}/${d.loopsDone + d.loopsMissed}`,
       resetLog: d.resetLog,
       lapsDone: r?.lapsDone ?? 0,
       dist: r ? Math.round(r.dist) : 0,
@@ -107,7 +109,7 @@ function inspectPlay() {
 function raceSummary(): string {
   const g = getGame()
   const racers = raceBook.racers.map((r) => `${r.name}:${r.lapsDone}L/${Math.round(r.dist)}m${r.finished ? `/F${(r.finishMs / 1000).toFixed(1)}s` : ''}`)
-  const ai = [...drivers.values()].map((d) => `${d.id}:${d.mode}@${Math.round(d.targetKmh)}r${d.resets}`)
+  const ai = [...drivers.values()].map((d) => `${d.id}:${d.mode}@${Math.round(d.targetKmh)}r${d.resets}L${d.loopsDone}/${d.loopsDone + d.loopsMissed}`)
   const resets = recentEvents().filter((e) => e.type === 'reset').length
   return `t=${Math.round(performance.now() / 1000)}s stage=${flow.stage} phase=${g.phase} pos=${g.racePosition}/${g.raceRacers} | ${racers.join(' ')} | ${ai.join(' ')} | resets=${resets}`
 }

@@ -49,18 +49,28 @@ import { raceBook, racerById } from './raceBook'
 
 // ---- tuning (plain numbers, so they are easy to find and change) ----
 
-/** Steering: how hard to turn toward the aim point (per radian of angle) and how much to damp it. */
-const STEER_GAIN = 1.9
+/** Sideways acceleration the brain may spend correcting its position, on top of the road's curve, m/s^2. */
+const CORRECTION_ALAT = 4
+/** Steering damping on how fast the angle to the aim point is changing (stops overshoot). */
 const STEER_DAMP = 0.25
 /** Rejoining the lane: aim at least this many metres ahead per metre off it. */
 const REJOIN_RATIO = 5
+/** Trail braking: above this much lock the brake is eased, down to (1 - TRAIL_EASE) at full lock. */
+const TRAIL_FROM = 0.35
+const TRAIL_EASE = 0.8
+/** Clearance from a boost pad's edge for the car to miss it, metres. */
+const PAD_CLEAR = 1.6
+/** The last stretch before a loop is driven dead centre, metres. */
+const LOOP_CENTRE_M = 45
+/** Final approach to a loop, metres: one steady lane, then centre. */
+const LOOP_LINEUP_M = 260
 /** No overtaking when the road ahead bends tighter than this (1/m): passing is for straights. */
 const PASS_MAX_CURVATURE = 0.006
 /** Aim point distance: base metres + metres per (m/s) of speed. */
 const LOOK_BASE = 7
-const LOOK_PER_MS = 0.38
+const LOOK_PER_MS = 0.55
 const LOOK_MIN = 7
-const LOOK_MAX = 55
+const LOOK_MAX = 75
 /** Braking the brain plans with, m/s^2 (a bit under what the car can do, so it is never late). */
 const PLAN_DECEL = 6.5
 /** How far up the road to look for slow sections, metres (more when fast). */
@@ -91,6 +101,12 @@ const REVERSE_S = 1.3
 const WATCHDOG_S = 4
 const WATCHDOG_MIN_PROGRESS = 5
 const FLIPPED_RESET_S = 2.5
+/** Speeds (m/s) at the centre of each learned steering band. */
+const STEER_BAND_CENTRES = [10, 27, 42, 60]
+/** How quickly the steering response is learned (per physics step). */
+const STEER_LEARN_RATE = 0.01
+/** Pure-pursuit gain on the learned steer response (1 = exactly the arc through the aim point). */
+const PP_WEIGHT = 1.0
 /** Steering demand (fraction of full lock) above which the brain treats the turn as too tight for its speed. */
 const STEER_SATURATION = 0.7
 /** How hard it slows per unit of demand over that: 0.25 -> 7.5 % below current speed at full lock. */
@@ -147,6 +163,44 @@ export const aiWatch = {
   rows: [] as string[],
 }
 
+/**
+ * The best single lane (metres from the centreline) for the run-in to a loop:
+ * touch as few boost pads as possible, a pad nearer the loop counting worse,
+ * and stay near the middle when it's a tie.
+ */
+function planRunInLane(track: TrackRuntime, s: number, toLoop: number, lim: number): number {
+  let best = 0
+  let bestCost = Infinity
+  const zones = track.boostZones
+  for (let x = -lim; x <= lim + 1e-6; x += 0.25) {
+    let cost = Math.abs(x) * 0.15
+    for (let i = 0; i < zones.length; i++) {
+      const z = zones[i]
+      const ahead = track.deltaS(s, z.s0)
+      if (ahead < -2 || ahead > toLoop) continue
+      if (x >= z.lat0 - PAD_CLEAR && x <= z.lat1 + PAD_CLEAR) cost += 10 + 10 * (1 - (toLoop - ahead) / Math.max(1, toLoop))
+    }
+    if (cost < bestCost) {
+      bestCost = cost
+      best = x
+    }
+  }
+  return best
+}
+
+/** Metres along the road to the start of the next loop piece (within 400 m), or -1. */
+function nextLoopStart(track: TrackRuntime, s: number): number {
+  let best = -1
+  const pieces = track.pieces
+  for (let i = 0; i < pieces.length; i++) {
+    const p = pieces[i]
+    if (p.type !== 'loop') continue
+    const d = track.deltaS(s, p.s0)
+    if (d >= 0 && d <= 400 && (best < 0 || d < best)) best = d
+  }
+  return best
+}
+
 /** Is distance s inside a wall-ride piece? */
 function inWallRide(track: TrackRuntime, s: number): boolean {
   const pieces = track.pieces
@@ -177,6 +231,21 @@ export class AiDriver implements Driver {
   resets = 0
   /** The last few resets: where, why, and how fast it was going (for tuning; rare, so allocation is fine). */
   resetLog: { s: number; why: 'flipped' | 'stuck'; kmh: number; lateral: number; height: number }[] = []
+  /**
+   * Learned steering response: road curvature (1/m) the car turns per unit of
+   * steer, in four speed bands (0-20, 20-35, 35-50, 50+ m/s). Starts from a
+   * guess and settles within a few corners. Public for the inspector.
+   */
+  readonly steerGains = new Float32Array([0.14, 0.02, 0.011, 0.005]) // measured on the sim, 1 Oct
+  private prevFwd = new THREE.Vector3()
+  private hasPrevFwd = false
+  private yawDt = 0
+  /** Loops this racer went all the way round (upside down at the top, out past the end). */
+  loopsDone = 0
+  /** Loops it passed the end of without ever going upside down (bypassed or fell off). */
+  loopsMissed = 0
+  private loopIn = -1
+  private loopInverted = false
   /** The approach to the last few loops: every 10 m over the final 60 m (for tuning loop entries). */
   loopLog: { s: number; toLoop: number; kmh: number; targetKmh: number; lateral: number; headingDeg: number }[] = []
   private loopBucket = -1
@@ -186,6 +255,8 @@ export class AiDriver implements Driver {
   private time = 0
   private phase: number
   private passOffset = 0
+  private lineupFor = -1
+  private lineupLane = 0
   private sideShove = 0
   private passTarget = 0
   private passTimer = 0
@@ -252,6 +323,7 @@ export class AiDriver implements Driver {
     _up.set(0, 1, 0).applyQuaternion(car.quaternion)
     _right.crossVectors(_fwd, _up)
     const v = car.velocity.dot(_fwd) // signed forward speed, m/s
+    this.learnSteering(v, dt, car.airborne)
 
     // ---- progress watchdog + recovery ----
     if (prevS >= 0) {
@@ -294,10 +366,35 @@ export class AiDriver implements Driver {
     const wander = Math.sin(this.time * 0.37 + this.phase) * this.personality.wander * 0.9
     let desired = lineOff + this.personality.lane * 0.8 + wander
 
-    desired = this.boostLane(track, desired, v, pace)
-    const followCap = this.racecraft(track, desired, v, dt)
-    this.passOffset += clamp(this.passTarget - this.passOffset, -LANE_SLEW * dt, LANE_SLEW * dt)
-    desired += this.passOffset + this.sideShove
+    // Lining up for a loop: the last LOOP_LINEUP_M metres are dead centre and
+    // square to the road. No lane bias, weave, passing or boost-chasing: a loop
+    // entered off-centre or at an angle is a loop missed.
+    const toLoop = nextLoopStart(track, this.s)
+    const lining = toLoop >= 0 && toLoop <= LOOP_LINEUP_M
+    let followCap = Infinity
+    if (lining) {
+      // One steady lane for the run-in that hits the fewest boost pads (a pad
+      // right before a loop only adds speed we'd have to brake away, and the car
+      // steers badly while boosted), then dead centre for the last stretch.
+      const loopS0 = track.wrapS(this.s + toLoop)
+      if (this.lineupFor !== loopS0) {
+        this.lineupFor = loopS0
+        this.lineupLane = planRunInLane(track, this.s, toLoop, Math.max(0, track.samples.halfWidth[this.hit.index] - EDGE_MARGIN))
+      }
+      desired = toLoop > LOOP_CENTRE_M ? this.lineupLane : 0
+      this.passTarget = 0
+      this.sideShove = 0
+      this.passOffset += clamp(-this.passOffset, -LANE_SLEW * 2 * dt, LANE_SLEW * 2 * dt)
+      // still never drive into the back of someone
+      followCap = this.racecraft(track, desired, v, dt)
+      this.passTarget = 0
+      desired += this.passOffset
+    } else {
+      desired = this.boostLane(track, desired, v, pace)
+      followCap = this.racecraft(track, desired, v, dt)
+      this.passOffset += clamp(this.passTarget - this.passOffset, -LANE_SLEW * dt, LANE_SLEW * dt)
+      desired += this.passOffset + this.sideShove
+    }
 
     const lim = Math.max(0, _frame.halfWidth - EDGE_MARGIN)
     desired = clamp(desired, -lim, lim)
@@ -311,7 +408,19 @@ export class AiDriver implements Driver {
     const alpha = Math.atan2(x, z) // + = aim point to my right
     const alphaRate = clamp((alpha - this.prevAlpha) / dt, -8, 8)
     this.prevAlpha = alpha
-    const steerWanted = STEER_GAIN * alpha + STEER_DAMP * alphaRate
+    // Pure pursuit, done properly: the curvature that arcs the car through the aim
+    // point is 2 sin(alpha) / distance. Turn that into steer with what we've learned
+    // about this car (curvature per unit of steer at this speed - the rack is
+    // speed-sensitive, so the same steer turns far less at 200 km/h than at 50).
+    // A curved road ahead is already in the aim point, so no separate feedforward.
+    const chord = Math.max(3, Math.hypot(x, z))
+    // Correction budget: follow the road's own curve, plus at most CORRECTION_ALAT of
+    // sideways acceleration to fix our position. Without it, a few metres off line at
+    // 250 km/h asks for 4 g, slams full lock and spins the car.
+    const kRoad = sampleAt(track, track.samples.curvature, this.s + chord * 0.5)
+    const kBudget = CORRECTION_ALAT / Math.max(25, speed * speed)
+    const kWanted = clamp((2 * Math.sin(alpha)) / chord, kRoad - kBudget, kRoad + kBudget)
+    const steerWanted = (kWanted / this.steerGain(v)) * PP_WEIGHT + STEER_DAMP * alphaRate
     this.steer = clamp(steerWanted, -1, 1)
 
     // ---- target speed with braking look-ahead ----
@@ -344,7 +453,10 @@ export class AiDriver implements Driver {
       if (k > 0.002 && inWallRide(track, sj)) line = Math.min(line, Math.sqrt(WALL_FLAT_ALAT / k))
       const surf = track.samples.surface[idx]
       if (surf === SURFACE_CODE.loop && loopAt < 0) loopAt = j
-      if ((surf === SURFACE_CODE.loop || surf === SURFACE_CODE.wall) && line < magFloor) line = magFloor
+      // A loop is taken at the line's own loop speed, whatever the difficulty: it works
+      // by magnetic grip, so arriving slower (falls off) or faster (misses the mouth) both fail.
+      if (surf === SURFACE_CODE.loop) line = Math.max(magFloor, track.racingLine.speed[idx])
+      else if (surf === SURFACE_CODE.wall && line < magFloor) line = magFloor
       const brakeHere = Math.max(MIN_DECEL, decel + GRAVITY * slope)
       const allowed = Math.sqrt(line * line + 2 * brakeHere * j)
       if (allowed < vt) vt = allowed
@@ -372,6 +484,11 @@ export class AiDriver implements Driver {
       // a real slow-down ahead (corner, loop, landing): brake
       this.throttle = 0
       this.brake = clamp(-e * 0.22, 0, 1)
+      // Trail braking: the tyres can brake OR turn, not both flat out. When we need
+      // a lot of lock, ease the brake so the front still steers (full brake + full
+      // lock at speed just slides straight on).
+      const lock = Math.abs(this.steer)
+      if (lock > TRAIL_FROM) this.brake = Math.min(this.brake, 1 - TRAIL_EASE * (lock - TRAIL_FROM) / (1 - TRAIL_FROM))
     } else if (e < -1.2) {
       // only over our cruising cap (a boost pad shoved us past it): lift, never brake away a boost
       this.throttle = 0
@@ -383,6 +500,7 @@ export class AiDriver implements Driver {
     this.handbrake = false
     if (this.mode !== 'pass') this.mode = finished ? 'cooldown' : 'drive'
     if (aiWatch.s0 >= 0) this.watchRow(track, car, v, vt)
+    this.countLoops(track, car)
   }
 
   /** Record speed, line and heading every 10 m over the last 60 m before a loop. */
@@ -411,6 +529,83 @@ export class AiDriver implements Driver {
   }
 
   private watchBucket = -1
+
+  private bandOf(v: number): number {
+    return v < 20 ? 0 : v < 35 ? 1 : v < 50 ? 2 : 3
+  }
+
+  /** Curvature per unit steer at speed v (interpolated between bands). */
+  private steerGain(v: number): number {
+    const g = this.steerGains
+    const centres = STEER_BAND_CENTRES
+    if (v <= centres[0]) return g[0]
+    for (let b = 0; b < 3; b++) {
+      if (v <= centres[b + 1]) {
+        const t = (v - centres[b]) / (centres[b + 1] - centres[b])
+        return g[b] + (g[b + 1] - g[b]) * t
+      }
+    }
+    return g[3]
+  }
+
+  /**
+   * Watch how much the car actually turned for the steer we gave it last step:
+   * curvature = yaw rate / speed. Only on the ground, moving, with a real steer.
+   */
+  private learnSteering(v: number, dt: number, airborne: boolean): void {
+    // The car's pose here is the RENDER pose, which only changes once per drawn
+    // frame; when a frame holds two physics steps it hasn't moved between them.
+    // So measure the turn over the real time since the pose last changed.
+    this.yawDt += dt
+    if (this.hasPrevFwd && this.prevFwd.equals(_fwd)) return
+    const span = this.yawDt
+    this.yawDt = 0
+    if (this.hasPrevFwd && !airborne && v > 6 && Math.abs(this.steer) > 0.12 && span > 0 && span < 0.1) {
+      dt = span
+      // yaw about the car's up: + = turning left; curvature + = turning right
+      const cross = this.prevFwd.y * _fwd.z - this.prevFwd.z * _fwd.y
+      const crossY = this.prevFwd.z * _fwd.x - this.prevFwd.x * _fwd.z
+      const crossZ = this.prevFwd.x * _fwd.y - this.prevFwd.y * _fwd.x
+      const sinYaw = cross * _up.x + crossY * _up.y + crossZ * _up.z
+      const curv = -Math.asin(clamp(sinYaw, -1, 1)) / (v * dt)
+      const sample = curv / this.steer
+      if (Number.isFinite(sample) && sample > 0.002 && sample < 0.4) {
+        const b = this.bandOf(v)
+        this.steerGains[b] += (sample - this.steerGains[b]) * STEER_LEARN_RATE
+      }
+    }
+    this.prevFwd.copy(_fwd)
+    this.hasPrevFwd = true
+  }
+
+  /** Loop completions vs misses, for proving the Ai actually go round the loops. */
+  private countLoops(track: TrackRuntime, car: CarState): void {
+    const pieces = track.pieces
+    if (this.loopIn < 0) {
+      for (let i = 0; i < pieces.length; i++) {
+        const p = pieces[i]
+        if (p.type !== 'loop') continue
+        const d = track.deltaS(p.s0, this.s)
+        if (d >= 0 && d < 15) {
+          this.loopIn = i
+          this.loopInverted = false
+          break
+        }
+      }
+      return
+    }
+    const p = pieces[this.loopIn]
+    _up.set(0, 1, 0).applyQuaternion(car.quaternion)
+    if (_up.y < -0.5) this.loopInverted = true
+    const past = track.deltaS(p.s1, this.s)
+    if (past > 5 && past < 200) {
+      if (this.loopInverted) this.loopsDone++
+      else this.loopsMissed++
+      this.loopIn = -1
+    } else if (track.deltaS(p.s0, this.s) < -20 || past >= 200) {
+      this.loopIn = -1 // reset away or wandered off: not a pass either way
+    }
+  }
 
   /** One trace row every 5 m inside the watch window (rare: tuning only). */
   private watchRow(track: TrackRuntime, car: CarState, v: number, vt: number): void {
@@ -451,7 +646,7 @@ export class AiDriver implements Driver {
       const z = zones[i]
       const ahead = track.deltaS(this.s, z.s0)
       const inside = track.deltaS(z.s0, this.s) >= 0 && track.deltaS(this.s, z.s1) >= 0
-      if (!inside && (ahead < 0 || ahead > 70)) continue
+      if (!inside && (ahead < 0 || ahead > 140)) continue
       const centre = (z.lat0 + z.lat1) * 0.5
       if (this.boostUseful(track, z.s1, v, pace)) {
         if (Math.abs(centre - desired) <= 5.5) return centre
