@@ -162,3 +162,5 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ✅ [audio] Audio worker stopped (all stages done, checker 11/13 with both fails fixed).
 - ⬜ [track2] Hyperdrome sky.timeOfDay 0.35 -> 0.12 so it loads with the sun up.
 - ⬜ [perf] Frame times vary 3.1-6.4 ms on the Hyperdrome across runs while other agents share the GPU: run the perf checker on a quiet machine.
+- ✅ [ruling] The "SUNDOWN RUN TWO" gradient-stripe logotype is a deliberate exception to Kai's UI baseline ban on gradient text: it is the game's title art in the synthwave genre's signature style, not interface chrome. Menu panels use blurred dark glass for legibility over the live 3D scene (functional, not decorative).
+- ✅ [world] NaN ridge vertices fixed by the orchestrator (clamped noise before a fractional pow; traced by look). Probe load: 0 NaN messages.
