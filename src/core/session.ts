@@ -78,7 +78,7 @@ export function endSession(): void {
   if (g.phase === 'playing' || g.phase === 'paused' || g.phase === 'results') {
     emit('session.end', { trackId: g.trackId, mode: g.mode })
   }
-  useGame.setState({ ...sessionResetFields(), phase: 'title', mapOpen: false })
+  useGame.setState({ ...sessionResetFields(), phase: 'title', mapOpen: false, garageOpen: false })
   setInputContext('menu')
 }
 

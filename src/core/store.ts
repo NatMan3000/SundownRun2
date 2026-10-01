@@ -132,6 +132,10 @@ export interface GameState {
   /** The editor's top-down world map is open over the PAUSED game (Physics and the car stay mounted). */
   mapOpen: boolean
 
+  // ---- garage (writer: ui, while the Garage screen is mounted; reader: the vehicle camera) ----
+  /** The title screen's Garage is open: the camera frames the car as the hero. */
+  garageOpen: boolean
+
   // ---- graphics (writer: look quality manager) ----
   /** The preset actually in use (auto resolves to one of these). */
   qualityLevel: 'low' | 'medium' | 'high'
@@ -195,6 +199,7 @@ const initial: GameState = {
   playerGridSlot: 0,
 
   mapOpen: false,
+  garageOpen: false,
 
   qualityLevel: 'high',
 }
