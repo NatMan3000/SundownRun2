@@ -27,6 +27,10 @@
 //   8. Live bank rebuilds (tracks with a bank slider): the physics ground is
 //      updated in place the way the game does it, through the slider's
 //      ends and back, and must match the rebuilt ground every time.
+//   9. Steep banks with barriers: a car box parked by, driven along or thrown
+//      at the low barrier stays on the road.
+//  10. Barriers are smooth to slide along: a car body pressed into each barrier
+//      at 200 and 300 km/h is never pushed back along the road or stopped.
 //
 //  The checks that need no physics (line, winding, smooth, banking,
 //  bridges, loops, tracking, ground) live in gates.ts, shared with the
@@ -807,6 +811,111 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     if (fails) ok = false
     lines.push(
       `${fails ? 'FAIL' : 'ok  '} low edge on a steep bank, at bank ${results.join(' / ')} deg: ${runs - fails}/${runs} car boxes parked, driven along or thrown at the low barrier stayed on the road${fails ? ` (first: ${worstTxt}; a builder bug, not your file)` : ''}`,
+    )
+  }
+  // ---- 10. sliding along stadium barriers (hyper-2: the full-throttle line pinned on them) ----
+  // A car body, rounded like the real one and with its one-step look-ahead (soft CCD), slides
+  // along each barrier pressed into it at half a g, at 200 and 300 km/h, from a start every
+  // 130 m round the lap, at the slider's ends and the track's own bank. It is held at ride
+  // height and steered round the bend the way its wheels and tyres would. The barrier has to be smooth
+  // along its length: no barrier contact may push the car back along the road, and no run may
+  // stop. (The old chain of 8 m boxes stopped a car dead at its joints, straights included: the
+  // look-ahead met the next box's square end as a wall across the road.)
+  if (t.file.road.barriers === 'walls') {
+    const banks = adj ? [...new Set([adj.min, t.file.road.banking.maxDeg, adj.max])].sort((a, b) => a - b) : [NaN]
+    const PRESS_G = 0.5
+    const RIDE = 0.7 // body centre over the road: its underside rides 0.3 m up, as the real car's does
+    const ROUND = 0.25
+    const fr: TrackFrame = { ...frame, position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3() }
+    const fr2: TrackFrame = { ...frame, position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3() }
+    const hitS: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+    const fw = new THREE.Vector3()
+    const left = new THREE.Vector3()
+    const acc = new THREE.Vector3()
+    let runs = 0
+    let snagRuns = 0
+    let stops = 0
+    let worstTxt = ''
+    let worstDrop = 0
+    const results: string[] = []
+    for (const b of banks) {
+      const tb = Number.isFinite(b) ? buildTrack(t.file, { ...t.params, bankDeg: b }, t) : t
+      const w4 = new RAPIER.World({ x: 0, y: 0, z: 0 })
+      createRoadColliders(w4, RAPIER, tb)
+      w4.step()
+      for (const kmh of [200, 300]) {
+        for (const side of [-1, 1] as const) {
+          for (let s0 = 0; s0 < tb.length; s0 += 130) {
+            tb.frameAt(s0, fr)
+            if (fr.surface !== 'road') continue
+            runs++
+            const p = fr.position.clone().addScaledVector(fr.right, side * (fr.halfWidth - CAR.hx - 0.02)).addScaledVector(fr.up, RIDE)
+            const v0 = fr.tangent.clone().multiplyScalar(kmh / 3.6)
+            const body = w4.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z).setLinvel(v0.x, v0.y, v0.z).setSoftCcdPrediction(SOFT_CCD).setCanSleep(false))
+            const cd = RAPIER.ColliderDesc.roundCuboid(CAR.hx - ROUND, CAR.hy - ROUND, CAR.hz - ROUND, ROUND).setMass(1200).setFriction(0.1).setRestitution(0.08)
+            cd.setCollisionGroups(((1 << 1) << 16) | (1 << 0))
+            const col = w4.createCollider(cd, body)
+            let sh = s0
+            let snag = ''
+            let stopped = false
+            for (let k = 0; k < 180 && !snag && !stopped; k++) {
+              const q = body.translation()
+              tb.nearest(q.x, q.y, q.z, hitS, sh)
+              sh = hitS.s
+              tb.frameAt(hitS.s, fr)
+              tb.frameAt(hitS.s + 1, fr2)
+              // Face along the road, square to it (tyres steering it round the bend).
+              fw.copy(fr.tangent)
+              left.crossVectors(fr.up, fw).normalize()
+              basis.makeBasis(left, fr.up, fw)
+              quat.setFromRotationMatrix(basis)
+              body.setRotation({ x: quat.x, y: quat.y, z: quat.z, w: quat.w }, true)
+              body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+              // On its wheels: its speed along the road's up is whatever holds the ride height.
+              const lv = body.linvel()
+              const vu = lv.x * fr.up.x + lv.y * fr.up.y + lv.z * fr.up.z
+              const want = Math.max(-30, Math.min(30, 40 * (RIDE - hitS.height)))
+              body.setLinvel({ x: lv.x + fr.up.x * (want - vu), y: lv.y + fr.up.y * (want - vu), z: lv.z + fr.up.z * (want - vu) }, true)
+              const vt = lv.x * fr.tangent.x + lv.y * fr.tangent.y + lv.z * fr.tangent.z
+              // The bend's turn at this speed and the push into the barrier.
+              acc.copy(fr2.tangent).sub(fr.tangent).multiplyScalar((vt * vt) / Math.max(1e-6, tb.deltaS(hitS.s, hitS.s + 1)))
+              acc.addScaledVector(fr.right, side * PRESS_G * 9.81)
+              const m = body.mass() / 60
+              body.applyImpulse({ x: acc.x * m, y: acc.y * m, z: acc.z * m }, true)
+              const lb = body.linvel()
+              const before = Math.hypot(lb.x, lb.y, lb.z)
+              w4.step()
+              w4.contactPairsWith(col, (o) => {
+                if (snag || surfaceOf(o.handle) !== 'barrier') return
+                w4.contactPair(col, o, (mm) => {
+                  let imp = 0
+                  for (let c = 0; c < mm.numContacts(); c++) imp += mm.contactImpulse(c)
+                  const n = mm.normal()
+                  const along = Math.abs(n.x * fr.tangent.x + n.y * fr.tangent.y + n.z * fr.tangent.z)
+                  if (imp > 50 && along > 0.3 && !snag) snag = `pushed back along the road (${Math.round(along * 100)}% of the contact, ${Math.round(imp)} N s) at ${where(tb, hitS.s)}`
+                })
+              })
+              const nv = body.linvel()
+              const after = Math.hypot(nv.x, nv.y, nv.z)
+              worstDrop = Math.max(worstDrop, (before - after) * 3.6)
+              if (after < 5 / 3.6) stopped = true
+            }
+            if (snag || stopped) {
+              if (snag) snagRuns++
+              if (stopped) stops++
+              if (!worstTxt) worstTxt = `bank ${Number.isFinite(b) ? b : tb.params.bankDeg ?? 0} deg, ${kmh} km/h along the ${side < 0 ? 'left' : 'right'} barrier: ${snag || `stopped at ${where(tb, sh)}`}`
+            }
+            w4.removeRigidBody(body)
+          }
+        }
+      }
+      results.push(Number.isFinite(b) ? `${b}` : 'its own')
+      w4.free()
+    }
+    const bad = snagRuns + stops
+    if (bad) ok = false
+    lines.push(
+      `${bad ? 'FAIL' : 'ok  '} barriers smooth to slide along, at bank ${results.join(' / ')} deg: ${runs} car bodies pressed into a barrier at 200 and 300 km/h, ${snagRuns} pushed back along the road, ${stops} stopped (the most speed any lost in one step: ${worstDrop.toFixed(1)} km/h)${worstTxt ? ` (first: ${worstTxt}; a builder bug, not your file)` : ''}`,
     )
   }
   world.free()

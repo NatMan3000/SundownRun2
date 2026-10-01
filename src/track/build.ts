@@ -60,8 +60,13 @@ import { hashString } from './noise'
  *      even S, into the straight as far as the bank there stays near what the bend wants,
  *      then into the banked corner (bankRolls.ts): the Hyperdrome's rolls go from about
  *      95 m to 126 m (bank 30), 162 m (45) and 201-211 m (60).
+ *   8: stadium barriers are one smooth solid along the road in physics (they were a chain of
+ *      8 m boxes whose square ends stopped a car sliding along the wall), and on the ground
+ *      a barrier's back stops at the floor behind it, closed off underneath, with the slab's
+ *      side ending there too (on a steep bank's high edge the back used to meet the ground
+ *      along a stair-stepped line).
  */
-export const BUILDER_VERSION = 7
+export const BUILDER_VERSION = 8
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7

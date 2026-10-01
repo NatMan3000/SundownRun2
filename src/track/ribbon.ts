@@ -183,20 +183,25 @@ export function buildRibbonMeshes(c: Centerline, barriers: boolean, barrierHeigh
     const Qx = cx + Rx * hw
     const Qy = cy + Ry * hw
     const Qz = cz + Rz * hw
+    // Where a stadium barrier stands on the ground, the slab's side stops where the barrier's
+    // underside meets it (addBarrier): the barrier closes everything below, and a side carried
+    // on down poked out of the ground's dips beside a steep bank's high edge.
+    const tl = barriers && barrierStandsOnGround(S, c, i, -1) ? Math.min(t, BARRIER_BACK_FOOT / Uy) : t
+    const tr = barriers && barrierStandsOnGround(S, c, i, 1) ? Math.min(t, BARRIER_BACK_FOOT / Uy) : t
     sk.aHalfWidth = hw
     skRow.push(skirt.vertexCount)
     // left side: lip, then down
     sk.aLateral = -hw
     skirt.vertex(Lx, Ly, Lz, -Rx, -Ry, -Rz, 0, s, sk)
-    skirt.vertex(Lx - Ux * t, Ly - Uy * t, Lz - Uz * t, -Rx, -Ry, -Rz, t, s, sk)
+    skirt.vertex(Lx - Ux * tl, Ly - Uy * tl, Lz - Uz * tl, -Rx, -Ry, -Rz, tl, s, sk)
     // underside: left, middle, right
-    skirt.vertex(Lx - Ux * t, Ly - Uy * t, Lz - Uz * t, -Ux, -Uy, -Uz, t, s, sk)
+    skirt.vertex(Lx - Ux * tl, Ly - Uy * tl, Lz - Uz * tl, -Ux, -Uy, -Uz, tl, s, sk)
     sk.aLateral = 0
     skirt.vertex(cx - Ux * t, cy - Uy * t, cz - Uz * t, -Ux, -Uy, -Uz, t + hw, s, sk)
     sk.aLateral = hw
-    skirt.vertex(Qx - Ux * t, Qy - Uy * t, Qz - Uz * t, -Ux, -Uy, -Uz, t, s, sk)
+    skirt.vertex(Qx - Ux * tr, Qy - Uy * tr, Qz - Uz * tr, -Ux, -Uy, -Uz, tr, s, sk)
     // right side: down, then lip
-    skirt.vertex(Qx - Ux * t, Qy - Uy * t, Qz - Uz * t, Rx, Ry, Rz, t, s, sk)
+    skirt.vertex(Qx - Ux * tr, Qy - Uy * tr, Qz - Uz * tr, Rx, Ry, Rz, tr, s, sk)
     skirt.vertex(Qx, Qy, Qz, Rx, Ry, Rz, 0, s, sk)
   }
   for (let r = 0; r < count; r++) {
@@ -429,7 +434,25 @@ export function barrierAxes(S: TrackSamples, i: number, side: -1 | 1, out: Barri
   return out
 }
 
-/** A stadium barrier along one edge: inner face, top, outer face down past the slab. */
+/**
+ * How far below the road edge's height a barrier's back ends where the road sits on the ground
+ * (metres). The ground behind a walled road is a level floor 5 cm under the edge (terrain.ts,
+ * EDGE_DEPTH), so the back's foot sinks 10 cm into it.
+ */
+const BARRIER_BACK_FOOT = 0.15
+
+/**
+ * True where a stadium barrier stands at sample i on this side (plain road, no wall ride) with
+ * the road on the ground under it: there its back stops at the ground's floor and its underside
+ * closes it off (addBarrier), and the slab's side ends at that underside.
+ */
+function barrierStandsOnGround(S: TrackSamples, c: Centerline, i: number, side: -1 | 1): boolean {
+  if (S.surface[i] !== SURFACE_CODE.road || !S.grounded[i] || S.uy[i] <= 0.2) return false
+  const wall = side < 0 ? c.wallLeft : c.wallRight
+  return !(wall[i] > 0)
+}
+
+/** A stadium barrier along one edge: inner face, top, the back down to the ground (or past the slab on a bridge), and its underside. */
 function addBarrier(bm: MeshBuilder, S: TrackSamples, c: Centerline, side: -1 | 1, H: number): void {
   const count = S.count
   const rows = count + 1
@@ -457,9 +480,31 @@ function addBarrier(bm: MeshBuilder, S: TrackSamples, c: Centerline, side: -1 | 
     // top
     bm.vertex(Ex + Ux * H, Ey + Uy * H, Ez + Uz * H, Ux, Uy, Uz, H, s, ex)
     bm.vertex(Ex + Ux * H + ox * Tk, Ey + Uy * H + oy * Tk, Ez + Uz * H + oz * Tk, Ux, Uy, Uz, H + Tk, s, ex)
-    // outer face, down past the slab
+    // outer face (the back), down to the ground behind it. Where the road sits on the ground it
+    // stops a little way into the level floor there (BARRIER_BACK_FOOT) instead of running on
+    // down to the slab's bottom: on a steep bank the high barrier's back slopes as gently as 30
+    // degrees, and the ground grid dips where it meets the deck's edge, so a back carried on
+    // into the ground met those dips along a stair-stepped line (visual-3 N8). Stopping at the
+    // floor, it meets flat ground on a straight line and passes over the dips. On a bridge it
+    // still runs down past the slab.
+    // (Its up lies between the road's up and straight up, so on ground road Uy > 0.2 too.)
+    const onGround = barrierStandsOnGround(S, c, i, side)
+    const down = onGround ? Math.max(-0.9 * H, Math.min(t, (BARRIER_BACK_FOOT + oy * Tk) / Uy)) : t
+    const Fx = Ex - Ux * down + ox * Tk
+    const Fy = Ey - Uy * down + oy * Tk
+    const Fz = Ez - Uz * down + oz * Tk
     bm.vertex(Ex + Ux * H + ox * Tk, Ey + Uy * H + oy * Tk, Ez + Uz * H + oz * Tk, ox, oy, oz, H + Tk, s, ex)
-    bm.vertex(Ex - Ux * t + ox * Tk, Ey - Uy * t + oy * Tk, Ez - Uz * t + oz * Tk, ox, oy, oz, 2 * H + Tk + t, s, ex)
+    bm.vertex(Fx, Fy, Fz, ox, oy, oz, 2 * H + Tk + down, s, ex)
+    // underside: a level plate at the back's foot, from the foot in to the road slab's side, so
+    // nothing under the barrier shows below its back (the slab's side and the ground's dips by
+    // the edge). On a bridge it folds away to nothing at the foot.
+    const w = onGround ? BARRIER_BACK_FOOT / S.uy[i] : 0
+    const Gx = onGround ? Ex - S.ux[i] * w : Fx
+    const Gy = onGround ? Ey - S.uy[i] * w : Fy
+    const Gz = onGround ? Ez - S.uz[i] * w : Fz
+    const plate = Math.hypot(Fx - Gx, Fy - Gy, Fz - Gz)
+    bm.vertex(Fx, Fy, Fz, 0, -1, 0, 2 * H + Tk + down, s, ex)
+    bm.vertex(Gx, Gy, Gz, 0, -1, 0, 2 * H + Tk + down + plate, s, ex)
   }
   for (let r = 0; r < count; r++) {
     // Skip where the road is a loop or a wall ride on this side.
@@ -473,6 +518,7 @@ function addBarrier(bm: MeshBuilder, S: TrackSamples, c: Centerline, side: -1 | 
     bm.quad(A, A + 1, B + 1, B)
     bm.quad(A + 2, A + 3, B + 3, B + 2)
     bm.quad(A + 4, A + 5, B + 5, B + 4)
+    bm.quad(A + 6, A + 7, B + 7, B + 6)
   }
 }
 

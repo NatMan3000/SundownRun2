@@ -14,9 +14,9 @@
 //                          (road and loop from buildDriveSurface: more
 //                          triangles across only where the road twists)
 //     skirt                the slab's sides and underside
-//     barrier              stadium edge walls (a chain of thick boxes:
-//                          a box can't be tunnelled the way a thin
-//                          wall of triangles can)
+//     barrier              stadium edge walls: one smooth closed solid
+//                          per side, so a car slides along them (see
+//                          addBarrierSolids)
 //     ramp                 one closed triangle mesh per kicker
 //
 //   terrain tiles (terrainTiles.ts): the ground as a grid of trimesh
@@ -106,7 +106,7 @@ export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): C
   const skirt = splitBy(t.meshes.skirt, () => true)
   if (skirt.indices.length) add(world, R, set, R.ColliderDesc.trimesh(skirt.vertices, skirt.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'skirt')
 
-  if (t.meshes.barriers) addBarrierBoxes(world, R, set, t)
+  if (t.meshes.barriers) addBarrierSolids(world, R, set, t)
 
   const extras = trackInternals(t)
   for (const r of extras?.rampSolids ?? []) add(world, R, set, R.ColliderDesc.trimesh(r.vertices, r.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'ramp')
@@ -114,83 +114,256 @@ export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): C
   return set
 }
 
-/** Stadium edge barriers as a chain of thick boxes following the road edge (standing as barrierAxes says). */
-function addBarrierBoxes(world: World, R: Rapier, set: ColliderSet, t: TrackRuntime): void {
-  const S = t.samples
-  const H = t.file.road.barrierHeight
-  const thick = trackInternals(t)?.thickness
-  const step = Math.max(1, Math.round(8 / S.ds))
-  const ax: BarrierAxes = { dx: 0, dy: 0, dz: 0, ox: 0, oy: 0, oz: 0 }
-  for (const side of [-1, 1] as const) {
-    for (let i0 = 0; i0 < S.count; i0 += step) {
-      const i1 = Math.min(S.count, i0 + step)
-      const im = Math.floor((i0 + i1) / 2) % S.count
-      if (S.surface[i0 % S.count] !== SURFACE_CODE.road || S.surface[i1 % S.count] !== SURFACE_CODE.road) continue
-      const hw = S.halfWidth[im]
-      const t0 = thick ? thick[im] : 1.2
-      // Basis: x along the road, y up the barrier's face, z outward on this side.
-      const tx = S.tx[im]
-      const ty = S.ty[im]
-      const tz = S.tz[im]
-      barrierAxes(S, im, side, ax)
-      // Edge point at the segment middle, then the box centre.
-      const ex = S.px[im] + S.rx[im] * side * hw
-      const ey = S.py[im] + S.ry[im] * side * hw
-      const ez = S.pz[im] + S.rz[im] * side * hw
-      // From BARRIER_BELOW under the slab's bottom up to the barrier's top.
-      const below = t0 + BARRIER_BELOW
-      const hy = (H + below) / 2
-      const cx = ex + ax.ox * (BARRIER_DEPTH / 2) + ax.dx * (hy - below)
-      const cy = ey + ax.oy * (BARRIER_DEPTH / 2) + ax.dy * (hy - below)
-      const cz = ez + ax.oz * (BARRIER_DEPTH / 2) + ax.dz * (hy - below)
-      const halfLen = ((i1 - i0) * S.ds) / 2 + 0.4
-      const q = quatFromBasis(tx, ty, tz, ax.dx, ax.dy, ax.dz)
-      const desc = R.ColliderDesc.cuboid(halfLen, hy, BARRIER_DEPTH / 2).setTranslation(cx, cy, cz).setRotation(q)
-      add(world, R, set, desc, 'barrier')
-    }
-  }
+/**
+ * How far (metres) the physics barrier's face may stray from the visible barrier between two
+ * of its rows. Rows are dropped where the barrier runs straight (the straights: one row every
+ * BARRIER_ROW_MAX metres), kept about every 5 m round a bend and every metre or two where it
+ * rolls with the bank. Far under anything a car feels or an eye sees.
+ */
+const BARRIER_ROW_TOL = 0.02
+/** The longest stretch (metres) one row of the physics barrier spans. */
+const BARRIER_ROW_MAX = 24
+
+/**
+ * Stadium edge barriers: on each side one closed solid that follows the road edge, built as a
+ * tube of triangles (inner face, top, back, bottom) with the cross-section barrierAxes gives:
+ * the face from BARRIER_BELOW under the slab's bottom up to the barrier's top, BARRIER_DEPTH
+ * deep, the same block the barrier always was.
+ *
+ * It used to be a chain of 8 m boxes. But a car looks a whole physics step ahead (its soft
+ * CCD: 1.4 m at 300 km/h), and sliding along a wall that look-ahead met the next box's
+ * square end as a wall across the road, so the car stopped dead at a joint, on a straight as
+ * much as on a bend (hyper-2: the full-throttle line pinned in 5 of 6 runs). One continuous
+ * mesh has no ends to meet. It still holds a car driven straight at it at 320 km/h: the same
+ * look-ahead stops the car at the face before it can pass through.
+ */
+function addBarrierSolids(world: World, R: Rapier, set: ColliderSet, t: TrackRuntime): void {
+  const m = barrierSolidMesh(t)
+  if (m.indices.length) add(world, R, set, R.ColliderDesc.trimesh(m.vertices, m.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'barrier')
 }
 
 /**
- * Quaternion for the rotation that turns local x into X and local y into Y
- * (local z becomes X x Y, so the frame is always right-handed).
+ * The barrier's cross-section, going round it: where each corner sits up the barrier's face
+ * (metres above the road edge, BOTTOM = from under the slab) and out from the road (metres).
+ * The inner face, the one cars touch, is cut into strips at the road's edge and half way up,
+ * so its triangles are about car-sized: a full-height sliver 7 m tall caught a car sliding
+ * past at 300 km/h in a bank roll-in (its look-ahead met the sliver's tip as a wall across
+ * the road), where strips don't.
  */
-function quatFromBasis(
-  m00: number, m10: number, m20: number,
-  m01: number, m11: number, m21: number,
-): { x: number; y: number; z: number; w: number } {
-  const m02 = m10 * m21 - m20 * m11
-  const m12 = m20 * m01 - m00 * m21
-  const m22 = m00 * m11 - m10 * m01
-  const tr = m00 + m11 + m22
-  let x: number, y: number, z: number, w: number
-  if (tr > 0) {
-    const s = 0.5 / Math.sqrt(tr + 1)
-    w = 0.25 / s
-    x = (m21 - m12) * s
-    y = (m02 - m20) * s
-    z = (m10 - m01) * s
-  } else if (m00 > m11 && m00 > m22) {
-    const s = 2 * Math.sqrt(1 + m00 - m11 - m22)
-    w = (m21 - m12) / s
-    x = 0.25 * s
-    y = (m01 + m10) / s
-    z = (m02 + m20) / s
-  } else if (m11 > m22) {
-    const s = 2 * Math.sqrt(1 + m11 - m00 - m22)
-    w = (m02 - m20) / s
-    x = (m01 + m10) / s
-    y = 0.25 * s
-    z = (m12 + m21) / s
-  } else {
-    const s = 2 * Math.sqrt(1 + m22 - m00 - m11)
-    w = (m10 - m01) / s
-    x = (m02 + m20) / s
-    y = (m12 + m21) / s
-    z = 0.25 * s
+const BOTTOM = -1
+function profileCorners(H: number): { up: number; out: number }[] {
+  return [
+    { up: BOTTOM, out: 0 },
+    { up: 0, out: 0 },
+    { up: H / 2, out: 0 },
+    { up: H, out: 0 },
+    { up: H, out: BARRIER_DEPTH },
+    { up: BOTTOM, out: BARRIER_DEPTH },
+  ]
+}
+
+/**
+ * How far (metres) the inner face of the barrier (its first `strips` faces round the
+ * cross-section) is from flat between profiles a and b: the largest distance of one corner of
+ * a strip from the plane of its other three. Only the face cars touch has to be this true; the
+ * top, back and bottom only have to be there.
+ */
+function twist(prof: Float64Array, K: number, strips: number, a: number, b: number): number {
+  let worst = 0
+  for (let k = 0; k < strips; k++) {
+    const k2 = (k + 1) % K
+    const A0 = (a * K + k) * 3
+    const A1 = (a * K + k2) * 3
+    const B0 = (b * K + k) * 3
+    const B1 = (b * K + k2) * 3
+    const ux = prof[A1] - prof[A0]
+    const uy = prof[A1 + 1] - prof[A0 + 1]
+    const uz = prof[A1 + 2] - prof[A0 + 2]
+    const vx = prof[B0] - prof[A0]
+    const vy = prof[B0 + 1] - prof[A0 + 1]
+    const vz = prof[B0 + 2] - prof[A0 + 2]
+    const nx = uy * vz - uz * vy
+    const ny = uz * vx - ux * vz
+    const nz = ux * vy - uy * vx
+    const nl = Math.hypot(nx, ny, nz) || 1
+    const d = ((prof[B1] - prof[A0]) * nx + (prof[B1 + 1] - prof[A0 + 1]) * ny + (prof[B1 + 2] - prof[A0 + 2]) * nz) / nl
+    worst = Math.max(worst, Math.abs(d))
   }
-  const l = Math.hypot(x, y, z, w) || 1
-  return { x: x / l, y: y / l, z: z / l, w: w / l }
+  return worst
+}
+
+/** The barrier solids as one triangle mesh (both sides), every face facing out of the solid. */
+export function barrierSolidMesh(t: TrackRuntime): { vertices: Float32Array; indices: Uint32Array } {
+  const S = t.samples
+  const n = S.count
+  const H = t.file.road.barrierHeight
+  const thick = trackInternals(t)?.thickness
+  const ax: BarrierAxes = { dx: 0, dy: 0, dz: 0, ox: 0, oy: 0, oz: 0 }
+  // The barrier runs from sample i to i + 1 where the road is plain road at both.
+  const runsFrom = (i: number) => S.surface[i % n] === SURFACE_CODE.road && S.surface[(i + 1) % n] === SURFACE_CODE.road
+  // Profile of sample i on one side: K corners round the cross-section (profileCorners), xyz
+  // each; then how sharply it bends there (the largest second difference of its corners along
+  // the road, metres per sample squared).
+  const corners = profileCorners(H)
+  const K = corners.length
+  // The inner face's strips: the faces between its corners (the ones standing at out = 0).
+  const strips = corners.filter((c) => c.out === 0).length - 1
+  const prof = new Float64Array(n * K * 3)
+  const bend = new Float64Array(n)
+  const sides: { rows: number[]; closed: boolean[]; runs: [number, number][]; prof: Float64Array }[] = []
+  let vCount = 0
+  let tCount = 0
+  const maxSpan = Math.max(1, Math.round(BARRIER_ROW_MAX / S.ds))
+  for (const side of [-1, 1] as const) {
+    for (let i = 0; i < n; i++) {
+      barrierAxes(S, i, side, ax)
+      const hw = S.halfWidth[i]
+      const ex = S.px[i] + S.rx[i] * side * hw
+      const ey = S.py[i] + S.ry[i] * side * hw
+      const ez = S.pz[i] + S.rz[i] * side * hw
+      const below = (thick ? thick[i] : 1.2) + BARRIER_BELOW
+      const o = i * K * 3
+      for (let k = 0; k < K; k++) {
+        const up = corners[k].up === BOTTOM ? -below : corners[k].up
+        const out = corners[k].out
+        prof[o + k * 3] = ex + ax.dx * up + ax.ox * out
+        prof[o + k * 3 + 1] = ey + ax.dy * up + ax.oy * out
+        prof[o + k * 3 + 2] = ez + ax.dz * up + ax.oz * out
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      const a = ((i + n - 1) % n) * K * 3
+      const b = i * K * 3
+      const c = ((i + 1) % n) * K * 3
+      let m = 0
+      for (let k = 0; k < K * 3; k += 3) {
+        const x = prof[a + k] - 2 * prof[b + k] + prof[c + k]
+        const y = prof[a + k + 1] - 2 * prof[b + k + 1] + prof[c + k + 1]
+        const z = prof[a + k + 2] - 2 * prof[b + k + 2] + prof[c + k + 2]
+        m = Math.max(m, x * x + y * y + z * z)
+      }
+      bend[i] = Math.sqrt(m)
+    }
+    // Contiguous runs of barrier, as [first sample, last sample] (the last may pass n: it wraps).
+    const runs: [number, number][] = []
+    let z = 0
+    while (z < n && runsFrom(z)) z++
+    if (z >= n) runs.push([0, n])
+    else {
+      for (let k = 1; k <= n; k++) {
+        if (!runsFrom((z + k) % n)) continue
+        const a = z + k
+        let b = a
+        while (b - a < n && runsFrom(b % n)) b++
+        runs.push([a, b])
+        k += b - a
+      }
+    }
+    // Rows: from each kept row reach on while a straight line between the two rows stays within
+    // BARRIER_ROW_TOL of the barrier in between (a chord's sag is span^2 / 8 x the bend).
+    const rows: number[] = []
+    const closed: boolean[] = []
+    for (const [a, b] of runs) {
+      rows.push(a)
+      let r0 = a
+      while (r0 < b) {
+        let r1 = r0 + 1
+        let worst = 0
+        while (r1 < b && r1 - r0 < maxSpan) {
+          const w = Math.max(worst, bend[r1 % n])
+          const span = r1 + 1 - r0
+          if ((span * span * w) / 8 > BARRIER_ROW_TOL) break
+          // ...and while each face between the two rows stays flat enough for two triangles:
+          // where the barrier rolls with the bank its face twists along the road.
+          if (twist(prof, K, strips, r0 % n, (r1 + 1) % n) > 4 * BARRIER_ROW_TOL) break
+          worst = w
+          r1++
+        }
+        rows.push(r1)
+        r0 = r1
+      }
+      rows.push(-1) // end of this run
+      const isClosed = b - a >= n
+      closed.push(isClosed)
+      const nRows = rows.length - 1 - rows.lastIndexOf(-1, rows.length - 2) - 1
+      vCount += (isClosed ? nRows - 1 : nRows) * K
+      tCount += (nRows - 1) * K * 2 + (isClosed ? 0 : 2 * (K - 2))
+    }
+    sides.push({ rows, closed, runs, prof: prof.slice() })
+  }
+  const vertices = new Float32Array(vCount * 3)
+  const indices = new Uint32Array(tCount * 3)
+  let vp = 0
+  let ip = 0
+  for (const sd of sides) {
+    const P = sd.prof
+    let start = 0
+    for (let run = 0; run < sd.runs.length; run++) {
+      const end = sd.rows.indexOf(-1, start)
+      const rows = sd.rows.slice(start, end)
+      start = end + 1
+      const isClosed = sd.closed[run]
+      const nv = isClosed ? rows.length - 1 : rows.length // a closed ring's last row is its first
+      const base = vp / 3
+      for (let q = 0; q < nv; q++) {
+        const o = (rows[q] % n) * K * 3
+        for (let c = 0; c < K * 3; c++) vertices[vp++] = P[o + c]
+      }
+      const vi = (q: number, k: number) => base + (q % nv) * K + k
+      // Each face wound to face out of the solid: checked against the solid's middle there.
+      const quad = (A: number, B: number, C: number, D: number, cx: number, cy: number, cz: number) => {
+        const ux = vertices[B * 3] - vertices[A * 3]
+        const uy = vertices[B * 3 + 1] - vertices[A * 3 + 1]
+        const uz = vertices[B * 3 + 2] - vertices[A * 3 + 2]
+        const wx = vertices[C * 3] - vertices[A * 3]
+        const wy = vertices[C * 3 + 1] - vertices[A * 3 + 1]
+        const wz = vertices[C * 3 + 2] - vertices[A * 3 + 2]
+        const mx = (vertices[A * 3] + vertices[C * 3]) / 2 - cx
+        const my = (vertices[A * 3 + 1] + vertices[C * 3 + 1]) / 2 - cy
+        const mz = (vertices[A * 3 + 2] + vertices[C * 3 + 2]) / 2 - cz
+        const out = (uy * wz - uz * wy) * mx + (uz * wx - ux * wz) * my + (ux * wy - uy * wx) * mz
+        if (out >= 0) {
+          indices[ip++] = A; indices[ip++] = B; indices[ip++] = C
+          indices[ip++] = A; indices[ip++] = C; indices[ip++] = D
+        } else {
+          indices[ip++] = A; indices[ip++] = C; indices[ip++] = B
+          indices[ip++] = A; indices[ip++] = D; indices[ip++] = C
+        }
+      }
+      const tri = (A: number, B: number, C: number, cx: number, cy: number, cz: number) => {
+        const ux = vertices[B * 3] - vertices[A * 3]
+        const uy = vertices[B * 3 + 1] - vertices[A * 3 + 1]
+        const uz = vertices[B * 3 + 2] - vertices[A * 3 + 2]
+        const wx = vertices[C * 3] - vertices[A * 3]
+        const wy = vertices[C * 3 + 1] - vertices[A * 3 + 1]
+        const wz = vertices[C * 3 + 2] - vertices[A * 3 + 2]
+        const mx = (vertices[A * 3] + vertices[B * 3] + vertices[C * 3]) / 3 - cx
+        const my = (vertices[A * 3 + 1] + vertices[B * 3 + 1] + vertices[C * 3 + 1]) / 3 - cy
+        const mz = (vertices[A * 3 + 2] + vertices[B * 3 + 2] + vertices[C * 3 + 2]) / 3 - cz
+        const out = (uy * wz - uz * wy) * mx + (uz * wx - ux * wz) * my + (ux * wy - uy * wx) * mz
+        indices[ip++] = A
+        indices[ip++] = out >= 0 ? B : C
+        indices[ip++] = out >= 0 ? C : B
+      }
+      // The middle of a profile: halfway between its inner face's foot and its outer top corner
+      // (inside the solid, as the cross-section is convex).
+      const mid = (q: number, c: number) => (vertices[vi(q, 0) * 3 + c] + vertices[vi(q, K - 2) * 3 + c]) / 2
+      for (let q = 0; q < rows.length - 1; q++) {
+        const cx = (mid(q, 0) + mid(q + 1, 0)) / 2
+        const cy = (mid(q, 1) + mid(q + 1, 1)) / 2
+        const cz = (mid(q, 2) + mid(q + 1, 2)) / 2
+        for (let k = 0; k < K; k++) quad(vi(q, k), vi(q, (k + 1) % K), vi(q + 1, (k + 1) % K), vi(q + 1, k), cx, cy, cz)
+      }
+      if (!isClosed) {
+        // End caps (a fan over the cross-section), facing away from the run.
+        const last = rows.length - 1
+        for (const [q, nb] of [[0, 1], [last, last - 1]]) {
+          for (let k = 1; k < K - 1; k++) tri(vi(q, 0), vi(q, k), vi(q, k + 1), mid(nb, 0), mid(nb, 1), mid(nb, 2))
+        }
+      }
+    }
+  }
+  return { vertices, indices }
 }
 
 /** The world set: catch floor plus the world-edge boundary. */
