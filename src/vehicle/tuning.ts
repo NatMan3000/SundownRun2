@@ -301,6 +301,24 @@ export const MAG = {
   fadeKmh: 15,
   /** Firm extra pull into the surface at full strength, m/s^2 (on top of cancelling gravity). */
   stickAccel: 14,
+  /** ...but on a loop, where the loop support carries the turn, only this much (m/s^2). */
+  loopStickAccel: 4,
+  /**
+   *  LOOPS ARE JUDGED BY THEIR OWN SIZE. On a loop the magnet holds whenever the car is
+   *  going fast enough for that loop's local radius: v^2 / R at or above loopHoldG (in g),
+   *  fading in over loopHoldFadeG below it - not just above the flat magGripKmh. A car
+   *  that entered at a sane speed never lets go at the top; one crawling in still falls.
+   */
+  loopHoldG: 0.6,
+  loopHoldFadeG: 0.2,
+  /**
+   * How much of the turn the loop carries itself (carSim stepLoopSupport, 1 = all of it); the
+   * springs then carry only gravity and the light loop stick, so they stay off their bump stops
+   * and the chassis box's ends stay clear of the curve.
+   */
+  loopSupport: 1,
+  /** Metres either side of the car used to measure the loop's curvature. */
+  loopCurveStep: 1.5,
   /** Wheels that must be on a magnetic surface. */
   minWheels: 2,
   /**
@@ -313,9 +331,14 @@ export const MAG = {
    */
   loopLatK: 2.0, //      1/s: target sideways speed per metre off the line
   loopLatGain: 7, //      1/s: how fast the sideways speed is corrected
-  loopLatMax: 16, //      m/s^2 cap on the correction
-  loopYawK: 7000, //      Nm per rad of heading error to the road
-  loopYawDamp: 2500, //   Nm per rad/s of heading-error rate
+  loopLatMax: 30, //      m/s^2 cap on the correction
+  /**
+   *  ...and its attitude follows the loop like a rail car: a spring (loopAttK, 1/s^2) toward
+   *  the road's attitude and a damper (loopAttD, 1/s) toward the road's own rate of turn x
+   *  speed, per axis, times that axis's inertia. ~7.7 rad/s, a touch under critical.
+   */
+  loopAttK: 60,
+  loopAttD: 14,
   /**
    *  ...but on a loop the tyres carry ~10 g of load, so the car goes where its
    *  nose points and forces alone can't hold it (measured: pinned at the cap and

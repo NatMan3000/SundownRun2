@@ -37,6 +37,7 @@ import { feelTrace } from '../dev/feelTrace'
 import '../dev/feelPad'
 import '../dev/fakePad'
 import '../dev/tune'
+import '../dev/rayProbe'
 import { BODIES } from './bodies/catalog'
 import { buildCarModel, disposeCarModel } from './carModel'
 import { cameraState } from './camera/CameraRig'
@@ -137,11 +138,11 @@ export function VehicleLayer() {
       ),
       registerDev(
         'trace',
-        ((seconds = 8) => {
-          feelTrace.start(Number(seconds) || 8)
+        ((seconds = 8, probeBody = false) => {
+          feelTrace.start(Number(seconds) || 8, links.playerSim, probeBody === true)
           return `recording ${seconds}s`
         }) as never,
-        'trace(seconds): record the player car at 60 Hz (read with traceGet)',
+        'trace(seconds, probeBody = false): record the player car at 60 Hz (read with traceGet); probeBody also checks the chassis for contact every step',
       ),
       registerDev('traceGet', ((every = 1) => feelTrace.get(Number(every) || 1)) as never, 'traceGet(every = 1): the last trace, one row every N steps'),
       registerDev(

@@ -71,6 +71,9 @@ const _tyreSum = new THREE.Vector3()
 const _tmp = new THREE.Vector3()
 const _anchor = new THREE.Vector3()
 const _magN = new THREE.Vector3()
+const _w = new THREE.Vector3()
+const _e = new THREE.Vector3()
+const _d = new THREE.Vector3()
 const _resetPos = new THREE.Vector3()
 const _resetQuat = new THREE.Quaternion()
 const _rv = { x: 0, y: 0, z: 0 }
@@ -213,6 +216,7 @@ export class CarSim {
   /** Average ground normal under the grounded wheels (world up when airborne). */
   readonly groundNormal = new THREE.Vector3(0, 1, 0)
   private readonly prevLinvel = new THREE.Vector3()
+  private readonly prevLinvelForDebug = new THREE.Vector3()
 
   // ---- outputs (telemetry for the player, CarState for everyone) ----
   speed = 0 //          m/s, full 3D
@@ -258,6 +262,19 @@ export class CarSim {
   readonly debugGuide = new Float32Array(4)
   /** Dev: per wheel (FL, FR, RL, RR) x [slip angle rad, lateral force N, longitudinal force N, load N]. */
   readonly debugTyre = new Float32Array(16)
+  /**
+   * Dev: the loop's force budget along the ground normal this step, m/s^2 (+ = away from the
+   * surface, toward the loop's centre): [support, springs, magnet, gravity, measured accel, kappa].
+   */
+  readonly debugLoop = new Float32Array(6)
+  /** Dev: check the body for contact every step (normally only with no wheel down). */
+  debugProbeChassis = false
+  /** Dev: the body was touching the world this step (only measured while debugProbeChassis). */
+  debugChassisContact = false
+  /** Dev: height of the car's origin above the road surface at its track position, m. */
+  get debugRoadHeight(): number {
+    return this.hit.height
+  }
   /** Physics steps since the car (re)spawned. */
   steps = 0
 
@@ -298,8 +315,13 @@ export class CarSim {
     curvature: 0,
     surface: 'road',
   }
+  /** Two more scratch frames, either side of the car, for the loop's local curvature. */
+  private readonly frameA: TrackFrame = { s: 0, position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3(), halfWidth: 7, bank: 0, curvature: 0, surface: 'road' }
+  private readonly frameB: TrackFrame = { s: 0, position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3(), halfWidth: 7, bank: 0, curvature: 0, surface: 'road' }
   private readonly compression = new Float64Array(WHEELS)
   private readonly suspForce = new Float64Array(WHEELS)
+  /** This step's force cap per wheel (raised inside the bump stops). */
+  private readonly suspCap = new Float64Array(WHEELS)
   private readonly rayToi = new Float64Array(WHEELS)
   /** Last step's ray length per wheel (-1 = it had no ground), for the damper's compression rate. */
   private readonly prevToi = new Float64Array(WHEELS).fill(-1)
@@ -326,6 +348,8 @@ export class CarSim {
   private crashCooldown = 0
   /** Auto-hold is gripping the car (stopped, no pedal): see HOLD in tuning.ts. */
   holding = false
+  /** On a loop: the turn it is asking for this step, v^2 / R toward its centre (m/s^2). 0 off a loop. */
+  loopAccel = 0
   private nanReported = false
   private pendingReset: ResetKind | null = null
   private pendingReason = ''
@@ -602,6 +626,7 @@ export class CarSim {
         this.suspForce[i] = 0
         this.rayToi[i] = RAY_LENGTH
         this.prevToi[i] = -1
+        this.suspCap[i] = 0
         continue
       }
       const toi = hit.timeOfImpact
@@ -643,6 +668,7 @@ export class CarSim {
         cap = fMax * SUSPENSION.bumpMaxScale
       }
       this.suspForce[i] = clamp(f, 0, cap) // a suspension pushes, never pulls
+      this.suspCap[i] = cap
     }
     // Guard the maths, not just the firewall: a sum of normals can cancel to zero.
     if (grounded > 0 && this.groundNormal.lengthSq() > 1e-8) this.groundNormal.normalize()
@@ -650,21 +676,29 @@ export class CarSim {
     this.wheelsDown = grounded
     // Wheels up: is the body itself resting on something? (Only checked while no wheel is down.)
     this.chassisTouching = grounded === 0 && chassis !== null && this.touchingWorld(world, chassis)
+    // Dev: the body scraping the world with wheels down too (a trace channel; off by default).
+    this.debugChassisContact = this.debugProbeChassis && chassis !== null && (this.chassisTouching || this.touchingWorld(world, chassis))
     const airborne = grounded === 0
     this.airTime = airborne ? this.airTime + DT : 0
 
     // ---- anti-roll bars: load the outside corner, unload the inside ----
+    // This clamp to the plain maxForce also caps the bump stops at 26 kN a wheel. Letting them
+    // reach their raised cap (65 kN) was tried 2026-10-02: landings bounced (a 4 m drop from rest
+    // left the ground again, settling took 0.55 s instead of 0.27), so the cap stays. Loops no
+    // longer need it: the loop carries its own turn (stepLoopSupport).
     const sf = this.suspForce
     const cp = this.compression
+    const sc = this.suspCap
+    sc[0] = sc[1] = sc[2] = sc[3] = fMax
     if (this.wheelContact[0] || this.wheelContact[1]) {
       const d = (cp[0] - cp[1]) * SUSPENSION.antiRollFront * massRatio
-      sf[0] = clamp(sf[0] + d, 0, fMax)
-      sf[1] = clamp(sf[1] - d, 0, fMax)
+      sf[0] = clamp(sf[0] + d, 0, sc[0])
+      sf[1] = clamp(sf[1] - d, 0, sc[1])
     }
     if (this.wheelContact[2] || this.wheelContact[3]) {
       const d = (cp[2] - cp[3]) * SUSPENSION.antiRollRear * massRatio
-      sf[2] = clamp(sf[2] + d, 0, fMax)
-      sf[3] = clamp(sf[3] - d, 0, fMax)
+      sf[2] = clamp(sf[2] + d, 0, sc[2])
+      sf[3] = clamp(sf[3] - d, 0, sc[3])
     }
 
     // ---- limited-slip diff: torque goes where the load is ----
@@ -681,6 +715,14 @@ export class CarSim {
     _tyreSum.set(0, 0, 0)
     this.debugWheelForceY = 0
     this.debugSuspSum = sf[0] + sf[1] + sf[2] + sf[3]
+    // Dev loop budget: springs push along the car's up; gravity and the measured acceleration along the ground normal.
+    {
+      const gn = this.groundNormal
+      this.debugLoop[1] = (this.debugSuspSum * up.dot(gn)) / mass
+      this.debugLoop[3] = -GRAVITY * gn.y
+      this.debugLoop[4] = _tmp.subVectors(linvel, this.prevLinvelForDebug).dot(gn) / DT
+      this.prevLinvelForDebug.copy(linvel)
+    }
     const cosS = Math.cos(this.steerAngle)
     const sinS = Math.sin(this.steerAngle)
     let nanForce = false
@@ -728,7 +770,10 @@ export class CarSim {
         // Never brake past a standstill: cap at what stops this corner this step.
         fLong -= Math.sign(vLong) * Math.min(brakeF, (Math.abs(vLong) * quarterMass) / DT)
       }
-      fLong -= Math.sign(vLong) * TYRE.rollingResistance * load
+      // On a loop or wall the springs also carry the magnet's pull; that is not weight a tyre rolls
+      // under, so it adds no drag (a loop costs gravity's share of speed and little more).
+      const rollLoad = isMagnetic(this.wheelSurface[i]) ? Math.min(load, quarterMass * GRAVITY) : load
+      fLong -= Math.sign(vLong) * TYRE.rollingResistance * rollLoad
 
       // ---- friction circle: one grip budget for cornering AND driving ----
       const requestedLong = Math.abs(fLong)
@@ -825,6 +870,8 @@ export class CarSim {
     }
 
     // ---- magnetic grip on loops and wall rides ----
+    if (track) this.stepLoopSupport(body, track, mass, magWheels)
+    else this.loopAccel = 0
     this.stepMagnet(body, mass, magWheels, airborne)
     if (track && this.magGrip && this.magSurface === 'loop') this.stepLoopGuide(body, track, mass)
     else this.debugGuide.fill(0)
@@ -1106,7 +1153,14 @@ export class CarSim {
    */
   private stepMagnet(body: RapierRigidBody, mass: number, magWheels: number, airborne: boolean): void {
     const thr = this.handling.magGripKmh
-    const strength = smoothstep(thr - MAG.fadeKmh, thr, this.speedKmh)
+    let strength = smoothstep(thr - MAG.fadeKmh, thr, this.speedKmh)
+    // On a loop, speed is judged against the loop's own size: a car going fast enough to be
+    // pressed into THIS curve (v^2/R past MAG.loopHoldG) keeps its grip, whatever the flat
+    // magGripKmh says. A car that is genuinely too slow for the loop still fades and falls.
+    if (this.magSurface === 'loop' && this.loopAccel > 0) {
+      const g = this.loopAccel / GRAVITY
+      strength = Math.max(strength, smoothstep(MAG.loopHoldG - MAG.loopHoldFadeG, MAG.loopHoldG, g))
+    }
     const touching = magWheels >= MAG.minWheels
     if (touching && _magN.lengthSq() > 1e-8) {
       this.magNormal.copy(_magN).normalize()
@@ -1123,7 +1177,12 @@ export class CarSim {
       // Gravity is (0, -g, 0); its component along n is -g * n.y. Positive = pulling away.
       const away = -GRAVITY * n.y
       const cancel = away > 0 ? away * strength : 0
-      const pull = (cancel + MAG.stickAccel * strength) * mass
+      // On a loop the loop support carries the turn, so the extra pull only has to keep the
+      // wheels in touch: a full-strength pull there squashed the springs onto their bump stops
+      // and let the chassis box's ends scrape the tight curve.
+      const stick = this.magSurface === 'loop' ? MAG.loopStickAccel : MAG.stickAccel
+      const pull = (cancel + stick * strength) * mass
+      this.debugLoop[2] = -pull / mass
       this.addForce(body, -n.x * pull, -n.y * pull, -n.z * pull)
     }
     if (active && !wasGrip) this.news.magOn = this.magSurface
@@ -1133,26 +1192,111 @@ export class CarSim {
     }
   }
 
+  /**
+   * Loop support (MAG.loopSupport): the loop itself carries the turn. Round a 13 m loop at
+   * 150 km/h the car needs ~14 g toward the centre; through four springs that bottomed it out
+   * on its chassis, which scraped ~70 km/h off every climb and dropped it at the top. So the
+   * loop bends the car's path the way the road bends (m v^2 x the road's curvature, up and
+   * sideways) and the springs carry only the magnet and gravity: the car rides a loop like a
+   * rail. Only while the wheels touch the loop: a car that has come off is not held by it.
+   */
+  private stepLoopSupport(body: RapierRigidBody, track: TrackRuntime, mass: number, magWheels: number): void {
+    const touching = magWheels >= MAG.minWheels && this.magSurface === 'loop' && this.hasTrackS
+    if (!touching) {
+      if (this.magGrace <= 0) this.loopAccel = 0 // keep the last value across a seam (the magnet's grace)
+      return
+    }
+    const h = MAG.loopCurveStep
+    const f = track.frameAt(this.trackS, this.frame)
+    const a = track.frameAt(this.trackS - h, this.frameA)
+    const b = track.frameAt(this.trackS + h, this.frameB)
+    // How fast the road's direction turns per metre: its curvature vector, pointing at the
+    // centre of the turn (the loop's centre, tilted a little by the corkscrew). Taken from the
+    // tangent alone on purpose: on a loop the frame's up/right roll up to ~20 deg away from the
+    // real surface (normal . frame up = 0.94 at the top of Neon Pocket's loop), so pushing along
+    // them shoved the car into and off the surface - the lift-off and slam at the top.
+    _tmp.subVectors(b.tangent, a.tangent).divideScalar(2 * h)
+    const kappa = _tmp.length()
+    const vt = this.linvel.dot(f.tangent)
+    const v2 = vt * vt
+    // How hard the turn presses the car into the surface it is on (the magnet's speed test).
+    const n = this.groundNormal
+    const kIn = _tmp.dot(n)
+    this.loopAccel = kIn > 0 && Number.isFinite(kIn) ? v2 * kIn : 0
+    if (MAG.loopSupport <= 0 || !(kappa > 1e-5) || !Number.isFinite(kappa)) return
+    _tmp.multiplyScalar(v2 * MAG.loopSupport)
+    // Square to the car's own motion, so it can bend the path but never speed the car up or
+    // slow it down (pushed along the road's up at a slightly wrong s, it pumped 45 km/h IN).
+    const sp = this.linvel.length()
+    if (sp > 0.5) {
+      _force.copy(this.linvel).divideScalar(sp)
+      _tmp.addScaledVector(_force, -_tmp.dot(_force))
+    }
+    this.addForce(body, _tmp.x * mass, _tmp.y * mass, _tmp.z * mass)
+    this.debugLoop[0] = _tmp.dot(this.groundNormal)
+    this.debugLoop[5] = kappa
+  }
+
   /** Loop guidance: hold the car on the centre line and aligned with the road (MAG.loopLatK ...). */
   private stepLoopGuide(body: RapierRigidBody, track: TrackRuntime, mass: number): void {
     if (!this.hasTrackS) return
     const f = track.frameAt(this.trackS, this.frame)
     const up = this.up
-    // Sideways: drive the lateral speed toward a spring target back to the line.
-    const latVel = this.linvel.dot(f.right)
+    // Sideways: drive the lateral speed toward a spring target back to the line - along the
+    // SURFACE under the car (its tangent x the wheels' ground normal), not the frame's right,
+    // which rolls ~20 deg off the real surface on a loop and turned this into a push off it.
+    _w.crossVectors(f.tangent, this.groundNormal)
+    if (_w.lengthSq() < 1e-6) _w.copy(f.right)
+    else _w.normalize()
+    const latVel = this.linvel.dot(_w)
     const want = -MAG.loopLatK * this.lateral
     const acc = clamp((want - latVel) * MAG.loopLatGain, -MAG.loopLatMax, MAG.loopLatMax) * this.magStrength
-    this.addForce(body, f.right.x * acc * mass, f.right.y * acc * mass, f.right.z * acc * mass)
+    this.addForce(body, _w.x * acc * mass, _w.y * acc * mass, _w.z * acc * mass)
     this.debugGuide[0] = this.lateral
     this.debugGuide[1] = latVel
     this.debugGuide[2] = acc
-    // Heading: yaw (about the car's own up) toward the road tangent.
+    // Attitude: the car turns WITH the loop, like a car on a rail. Its tyres and springs alone
+    // could not swing a 1.2 t car round a 13 m loop at 200 km/h (4.6 rad/s of pitch, plus the
+    // corkscrew's yaw): its heading slid 37 deg off the road and the tyres threw it off the side.
+    // Target spin = the road frame's own rotation per metre x speed; plus a spring toward the
+    // road's attitude, per car axis with that axis's inertia (pitch, yaw, roll).
     _tmp.crossVectors(this.fwd, f.tangent)
-    const err = Math.asin(clamp(_tmp.dot(up), -1, 1))
-    const errRate = this.angvel.dot(up)
-    const tq = (MAG.loopYawK * err - MAG.loopYawDamp * errRate) * this.magStrength * (mass / CHASSIS.mass)
-    this.addTorque(body, up.x * tq, up.y * tq, up.z * tq)
-    this.debugGuide[3] = err
+    this.debugGuide[3] = Math.asin(clamp(_tmp.dot(up), -1, 1)) // heading error, for the trace
+    const h = MAG.loopCurveStep
+    const a = track.frameAt(this.trackS - h, this.frameA)
+    const b = track.frameAt(this.trackS + h, this.frameB)
+    // Target spin: the turn of the road's DIRECTION only (tangent x its change per metre, x speed).
+    // Not the frame's up/right: they roll ~20 deg away from the real surface over a loop, and
+    // chasing that phantom roll yawed the car 8 deg off line at the top.
+    _w.crossVectors(f.tangent, _d.subVectors(b.tangent, a.tangent))
+    _w.multiplyScalar(this.linvel.dot(f.tangent) / (2 * h))
+    // Target attitude from what the car is actually on: up = the wheels' ground normal (the
+    // surface under THIS car, not the centreline's frame a metre away), nose = its velocity laid
+    // into that surface. Attitude error as a small rotation vector: 1/2 sum(car axis x target).
+    const tUp = this.wheelsDown >= 2 ? this.groundNormal : f.up
+    _e.copy(this.linvel).addScaledVector(tUp, -this.linvel.dot(tUp))
+    if (_e.lengthSq() > 25) _e.normalize()
+    else _e.copy(f.tangent).addScaledVector(tUp, -f.tangent.dot(tUp)).normalize()
+    _anchor.copy(_e) // target nose
+    _arm.crossVectors(_anchor, tUp) // target right (nose x up)
+    _e.crossVectors(this.fwd, _anchor)
+    _e.add(_d.crossVectors(up, tUp))
+    _e.add(_d.crossVectors(this.right, _arm))
+    _e.multiplyScalar(0.5)
+    if (!finiteV(_w) || !finiteV(_e)) return
+    const s = this.magStrength * (mass / CHASSIS.mass)
+    const kP = MAG.loopAttK
+    const kD = MAG.loopAttD
+    // pitch about the car's right, yaw about its up, roll about its nose
+    const tp = CHASSIS.inertia.x * (kP * _e.dot(this.right) + kD * (_w.dot(this.right) - this.angvel.dot(this.right))) * s
+    const ty = CHASSIS.inertia.y * (kP * _e.dot(up) + kD * (_w.dot(up) - this.angvel.dot(up))) * s
+    const tr = CHASSIS.inertia.z * (kP * _e.dot(this.fwd) + kD * (_w.dot(this.fwd) - this.angvel.dot(this.fwd))) * s
+    this.addTorque(
+      body,
+      this.right.x * tp + up.x * ty + this.fwd.x * tr,
+      this.right.y * tp + up.y * ty + this.fwd.y * tr,
+      this.right.z * tp + up.z * ty + this.fwd.z * tr,
+    )
   }
 
   /** Wall lip guard (MAG.wallGuardFrom ...): high on a wall ride, upward speed is bent along the wall. */

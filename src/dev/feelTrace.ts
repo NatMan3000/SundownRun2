@@ -14,7 +14,15 @@
 //  boost (envelope 0..1), rack (road-wheel angle, deg), aF / aR (front /
 //  rear slip angle, deg, axle average), fyF / fyR (axle sideways force, kN)
 //  fxF / fxR (axle forward force, kN; braking is negative) and
-//  nFL / nFR / nRL / nRR (each wheel's suspension load, kN; 0 = off the ground).
+//  nFL / nFR / nRL / nRR (each wheel's suspension load, kN; 0 = off the ground)
+//  loopG (the turn a loop is asking for, in g; 0 off a loop) and the loop
+//  guidance: gLatV (sideways speed, m/s), gAcc (its correction, m/s^2) and
+//  gHead (heading error to the road, deg); hgt = the car's height above the
+//  road surface (m, ~0.54 sitting on its wheels); suspG = all four springs'
+//  push in g of the car's weight (1 at rest on the flat); body = the chassis
+//  touching the world (only with trace(s, true)); imp = impact 0..1; and the
+//  loop's force budget along the ground normal, m/s^2 (Lsup support, Lspr
+//  springs, Lmag magnet, Lgrav gravity, Lacc measured, Lk curvature 1/m).
 //  Buffers are preallocated: recording costs a few array writes per step
 //  and nothing at all when idle.
 // ============================================================
@@ -22,7 +30,7 @@
 import type { CarSim } from '../vehicle/carSim'
 import { DT, GRAVITY } from '../vehicle/tuning'
 
-const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody', 'boost', 'rack', 'aF', 'aR', 'fyF', 'fyR', 'fxF', 'fxR', 'nFL', 'nFR', 'nRL', 'nRR'] as const
+const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody', 'boost', 'rack', 'aF', 'aR', 'fyF', 'fyR', 'fxF', 'fxR', 'nFL', 'nFR', 'nRL', 'nRR', 'loopG', 'gLatV', 'gAcc', 'gHead', 'hgt', 'suspG', 'body', 'imp', 'Lsup', 'Lspr', 'Lmag', 'Lgrav', 'Lacc', 'Lk'] as const
 const MAX_STEPS = 60 * 60
 const RAD2DEG = 180 / Math.PI
 
@@ -31,8 +39,9 @@ let count = 0
 let remaining = 0
 
 export const feelTrace = {
-  /** Start recording for `seconds` (max 60). */
-  start(seconds: number): void {
+  /** Start recording for `seconds` (max 60). `body` = 1 also probes the chassis for contact every step. */
+  start(seconds: number, sim?: CarSim | null, probeBody = false): void {
+    if (sim) sim.debugProbeChassis = probeBody
     count = 0
     remaining = Math.min(MAX_STEPS, Math.max(1, Math.round(seconds / DT)))
   },
@@ -82,6 +91,15 @@ export const feelTrace = {
     buf[o + 31] = ty[7] / 1000
     buf[o + 32] = ty[11] / 1000
     buf[o + 33] = ty[15] / 1000
+    buf[o + 34] = s.loopAccel / GRAVITY
+    buf[o + 35] = s.debugGuide[1]
+    buf[o + 36] = s.debugGuide[2]
+    buf[o + 37] = s.debugGuide[3] * RAD2DEG
+    buf[o + 38] = s.debugRoadHeight
+    buf[o + 39] = s.debugSuspSum / (GRAVITY * 1200 * s.tuning.mass)
+    buf[o + 40] = s.debugChassisContact ? 1 : 0
+    buf[o + 41] = s.impact
+    for (let k = 0; k < 6; k++) buf[o + 42 + k] = s.debugLoop[k]
     count++
   },
 
