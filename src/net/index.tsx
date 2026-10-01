@@ -41,6 +41,7 @@ import { POSE_FLAG } from './protocol'
 import { sendTrackIfHost, startTrackSync } from './trackSync'
 import { RemoteCars } from './RemoteCars'
 import { BumpApplier, startBumps, stats as bumpStats } from './bump'
+import { mySlot, spawnStats, spawnTick, startSpawns } from './spawn'
 import { canTag, currentRound, requestStart, roundsTick, startRounds } from './rounds'
 
 export { useNet } from './netStore'
@@ -77,9 +78,12 @@ function PoseSender() {
   return null
 }
 
-/** Runs the race / tag clock and watches G / X. */
+/** Runs the race / tag clock, watches G / X, and puts our car on its own spawn slot. */
 function RoundsTicker() {
-  useFrame((_, dt) => roundsTick(Math.min(dt, 0.1)))
+  useFrame((_, dt) => {
+    roundsTick(Math.min(dt, 0.1))
+    spawnTick()
+  })
   return null
 }
 
@@ -91,6 +95,7 @@ export function NetLayer() {
     startTrackSync()
     startRounds()
     startBumps()
+    startSpawns()
     registerNetDev()
   }, [multiplayer])
   if (!multiplayer) return null
@@ -127,6 +132,7 @@ function inspect() {
     ...connectionInfo(),
     round: roundSummary(),
     bumps: { ...bumpStats },
+    spawn: { slot: mySlot(), ...spawnStats },
     peers: Object.values(net.peers).map((p) => {
       const buf = peerPoses.get(p.id)
       const live = peerLive.get(p.id)

@@ -184,7 +184,20 @@ export interface RejoinMsg {
   oldId: number
 }
 
-export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg
+/**
+ * Tag: "I touched you, and you're it." Sent by a player who rams the "it" car.
+ * The bump shoves "it" away before its own screen sees the contact, so the
+ * "it" player's computer (still the only one that decides) takes this claim
+ * instead and passes "it" on if the no-tag-back time is over.
+ */
+export interface TagTouchMsg {
+  t: 'tagTouch'
+  raceId: number
+  /** Relay id of the "it" player. */
+  to: number
+}
+
+export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg
 
 // ---------------------------------------------------------------- relay -> client
 

@@ -51,7 +51,7 @@ const RELAY = Number(arg('relay-port') ?? 5218)
 const TRACK = arg('track') ?? 'afterglow'
 const JOIN_TRACK = arg('join-track') ?? 'hyperdrome'
 const SHOTS = arg('shots') ?? '/tmp/sr2/net'
-const ONLY = (arg('only') ?? 'client,game,drawn,props,race,tag,robust').split(',')
+const ONLY = (arg('only') ?? 'client,spawn,game,drawn,props,race,tag,robust').split(',')
 mkdirSync(SHOTS, { recursive: true })
 const ROOT = dirname(import.meta.dir)
 const SNAPSHOT = join(arg('snapshot-dir') ?? '/tmp/sr2-mpcheck', 'game')
@@ -172,6 +172,16 @@ if (!flag('no-vite')) {
   if (!up) throw new Error(`game server on ${GAME_PORT} never came up`)
 }
 
+// Interrupted (Ctrl+C, or a harness stopping us): leave nothing running on the ports.
+const cleanup = () => {
+  vite?.kill()
+  for (const b of browsers) b.process()?.kill()
+  relay.stop(true)
+  process.exit(130)
+}
+process.on('SIGINT', cleanup)
+process.on('SIGTERM', cleanup)
+
 const lan = lanIPv4()
 if (!lan) throw new Error('No LAN address: the joiner needs one to look like a second computer.')
 const hostBase = `http://localhost:${GAME_PORT}`
@@ -228,7 +238,7 @@ try {
   }
 
   // ============================================================ game sections
-  const gameSections = ['game', 'drawn', 'props', 'race', 'tag', 'robust'].filter((s) => ONLY.includes(s))
+  const gameSections = ['spawn', 'game', 'drawn', 'props', 'race', 'tag', 'robust'].filter((s) => ONLY.includes(s))
   if (gameSections.length) {
     const { runGameChecks } = await import('./mp-check-game')
     await runGameChecks({ hostBase, joinBase, relayPort: RELAY, track: TRACK, joinTrack: JOIN_TRACK, shots: SHOTS, sections: gameSections, check, until, openPage, sleep })

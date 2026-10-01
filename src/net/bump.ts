@@ -19,6 +19,10 @@
 //    3. The victim's computer adds that velocity change to its own car
 //       on its next physics step. Its new motion flows back out through
 //       its pose stream, so both screens see the shove.
+//    4. The rammer keeps the rest: its velocity goes back to what it was
+//       before the hit, minus the push it handed over (equal cars sharing
+//       the crash), and their body turns see-through for BUMP_GHOST_MS so
+//       it doesn't hit the same stale "wall" again.
 //
 //  The NaN firewall applies to every bump, sent or received.
 // ============================================================
@@ -48,6 +52,8 @@ const lastBumpAt = new Map<number, number>()
 
 const _n = new THREE.Vector3()
 const _sum = { x: 0, y: 0, z: 0 }
+const _keep = { x: 0, y: 0, z: 0 }
+const _keepAng = { x: 0, y: 0, z: 0 }
 const _dv = new THREE.Vector3()
 
 /**
@@ -85,8 +91,27 @@ export function maybeBump(relayId: number, mine: RapierRigidBody, them: CarState
   const msg: BumpMsg = { t: 'bump', to: relayId, dvx: _dv.x, dvy: _dv.y, dvz: _dv.z }
   send(msg)
   stats.sent++
+
+  // Our half of the exchange. On our screen they are an immovable body, so
+  // physics just stopped us dead (and bounced us back). Undo that: carry on
+  // with our speed from before the hit, minus exactly the push we handed them.
+  // RemoteCars then lets us pass through their body for a moment, until their
+  // stream shows them moving off.
+  _keep.x = preStep.x - _dv.x
+  _keep.y = preStep.y
+  _keep.z = preStep.z - _dv.z
+  if (Number.isFinite(_keep.x) && Number.isFinite(_keep.z)) {
+    mine.setLinvel(_keep, true)
+    _keepAng.x = preStep.ax
+    _keepAng.y = preStep.ay
+    _keepAng.z = preStep.az
+    mine.setAngvel(_keepAng, true)
+  }
   return true
 }
+
+/** How long a rammed car stays see-through on the rammer's screen (ms). */
+export const BUMP_GHOST_MS = 350
 
 /** Bumps for our car, waiting for the next physics step. */
 const pending: { x: number; y: number; z: number }[] = []
@@ -117,8 +142,8 @@ export function stopBumps(): void {
   pending.length = 0
 }
 
-/** Our chassis velocity at the start of the current physics step. */
-const preStep = { x: 0, y: 0, z: 0, valid: false }
+/** Our chassis velocity (and spin) at the start of the current physics step. */
+const preStep = { x: 0, y: 0, z: 0, ax: 0, ay: 0, az: 0, valid: false }
 
 interface ColliderWorld {
   forEachCollider: (f: (c: RapierCollider) => void) => void
@@ -161,10 +186,14 @@ export function BumpApplier() {
       return
     }
     const v = body.linvel()
+    const w = body.angvel()
     preStep.x = v.x
     preStep.y = v.y
     preStep.z = v.z
-    preStep.valid = Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)
+    preStep.ax = w.x
+    preStep.ay = w.y
+    preStep.az = w.z
+    preStep.valid = Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z) && Number.isFinite(w.x) && Number.isFinite(w.y) && Number.isFinite(w.z)
     if (pending.length === 0) return
     let x = v.x
     let y = v.y

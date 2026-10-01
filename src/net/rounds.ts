@@ -20,7 +20,7 @@
 //       a late message from an old race can never crown a winner.
 //    4. Tag: only the player who is "it" decides when they bumped
 //       someone (their computer sees the contact with the other car's
-//       body), and announces it. Each hand-over carries a sequence
+//       body, or the other player says "I touched you"), and announces it. Each hand-over carries a sequence
 //       number so an old message can't undo a newer one. The new "it"
 //       can't tag anyone for 2 seconds (no tag-backs). Everyone counts
 //       how long each player has been "it"; least time wins.
@@ -48,8 +48,11 @@ import { getTrack } from '../track/current'
 import { urlParam } from '../core/devHandles'
 import { playerName } from './identity'
 import { onMessage, previousId, send, statsExtra, weAreDriving } from './client'
-import { carIdFor, getNet, peerLive, relayIdOf, useNet } from './netStore'
-import type { FinishMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg } from './protocol'
+import { carIdFor, getNet, peerLive, relayIdOf, remoteCrossings, useNet } from './netStore'
+import type { FinishMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
+
+/** Two cars closer than this along the road count as level (grid order decides), metres. */
+const TIE_M = 1.5
 
 /** Countdown length, ms (3, 2, 1, GO). */
 export const COUNTDOWN_MS = 3000
@@ -230,6 +233,8 @@ function applyStart(msg: StartMsg, agoMs: number): void {
     itMissingSince: 0,
   }
   round = r
+  // Everyone is back behind the line: race progress counts from here.
+  remoteCrossings.clear()
 
   // A fresh shared deal of the crash props, for everyone.
   propsSignal.shared = true
@@ -290,8 +295,13 @@ function sendFinish(r: Round): void {
 
 /** Places: finishers by race time, then everyone else by how far round they got. */
 function racePlaces(r: Round): number[] {
+  // The same progress the HUD's gap reads: the vehicle's lap tracker for our
+  // car, crossings counted in RemoteCars for everyone else (both slightly
+  // negative on the grid behind the line).
   const progress = (id: number): number => {
     if (id === myId()) {
+      const me = getCar('player')
+      if (me) return me.progress
       const track = getTrack()
       return raceLapsDone(r) + (track ? telemetry.trackS / track.length : 0)
     }
@@ -303,7 +313,13 @@ function racePlaces(r: Round): number[] {
     if (fa && fb) return fa.ms - fb.ms
     if (fa) return -1
     if (fb) return 1
-    return progress(b) - progress(a)
+    const d = progress(b) - progress(a)
+    // Side by side (within TIE_M, on the grid or wheel to wheel): keep grid
+    // order, so every screen shows the same order instead of each car's own
+    // guess. Beyond that, whoever is further round is ahead.
+    const track = getTrack()
+    if (track && Math.abs(d) * track.length < TIE_M) return r.grid.indexOf(a) - r.grid.indexOf(b)
+    return d
   })
 }
 
@@ -343,6 +359,24 @@ export function tagged(relayId: number): void {
   const msg: TagMsg = { t: 'tag', raceId: r.raceId, itId: relayId, seq: r.seq + 1, itSeconds: r.seconds.get(myId()) ?? 0 }
   send(msg)
   applyTag(msg, myId())
+}
+
+let lastTouchAt = 0
+
+/**
+ * Our car touched remote car `relayId` while we're NOT "it". If they are "it",
+ * tell them: their screen may never see the contact (our bump shoves them
+ * away first), and only "it" decides a tag.
+ */
+export function touchedIt(relayId: number): void {
+  const r = round
+  if (!r || r.kind !== 'tag' || !r.started || r.ended || !r.inGrid) return
+  if (r.itId !== relayId || r.itId === myId()) return
+  const now = performance.now()
+  if (now < r.noTagUntil || now - lastTouchAt < 500) return
+  lastTouchAt = now
+  const msg: TagTouchMsg = { t: 'tagTouch', raceId: r.raceId, to: relayId }
+  send(msg)
 }
 
 function applyTag(msg: TagMsg, from: number): void {
@@ -591,6 +625,11 @@ export function startRounds(): void {
       if (!r.firstFinishAt) r.firstFinishAt = performance.now()
     }),
     onMessage('tag', (m) => applyTag(m, m.from)),
+    // Someone says they touched us while we're "it": we decide, as always.
+    onMessage('tagTouch', (m) => {
+      if (m.to !== myId() || !round || round.raceId !== m.raceId) return
+      if (canTag() && round.grid.includes(m.from)) tagged(m.from)
+    }),
     onMessage('rejoin', (m) => {
       if (round && round.raceId === m.raceId && !round.ended) remap(round, m.oldId, m.from)
     }),

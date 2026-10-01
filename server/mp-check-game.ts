@@ -152,6 +152,8 @@ export async function runGameChecks(k: Kit): Promise<void> {
   const isHost = [await host.evaluate(`window.__pilot.net.getNet().isHost`), await join.evaluate(`window.__pilot.net.getNet().isHost`)]
   check('isHost: host true, joiner false', isHost[0] === true && isHost[1] === false, isHost)
 
+  if (k.sections.includes('spawn')) await spawnChecks(k, host, join)
+
   if (k.sections.includes('game')) {
     // ---- line up: host in front, joiner 14 m behind it, both stopped ----
     await host.evaluate(`window.__pilot.stop(); window.__pilot.place(60, 0)`)
@@ -221,6 +223,27 @@ export async function runGameChecks(k: Kit): Promise<void> {
       requestAnimationFrame(f)
     })`)
     // One ram: the host chases until its first bump goes out, then lets go.
+    // The rammer's own speed through the hit (mp-1's D2: it used to stop dead and bounce back).
+    const rammerWatch = host.evaluate(`new Promise((res) => {
+      const t = window.__pilot.tel.telemetry
+      const sent0 = window.__game.get('net').bumps.sent
+      let last = 0, hitAt = 0, before = 0, minAfter = 999, after = 0, backwards = false
+      const t0 = performance.now()
+      function f() {
+        const sent = window.__game.get('net').bumps.sent
+        if (!hitAt && sent > sent0) { hitAt = performance.now(); before = last }
+        if (hitAt) {
+          const fwd = t.forwardSpeed * 3.6
+          minAfter = Math.min(minAfter, fwd)
+          if (fwd < -0.5) backwards = true
+          if (performance.now() - hitAt < 120) after = fwd
+        }
+        last = t.speedKmh
+        if (performance.now() - t0 < 9000 && (!hitAt || performance.now() - hitAt < 600)) requestAnimationFrame(f)
+        else res(hitAt ? { before: Math.round(before), after: Math.round(after), minAfter: Math.round(minAfter), backwards } : null)
+      }
+      requestAnimationFrame(f)
+    })`)
     let hostPeak = 0
     let closest = Infinity
     const sentBefore = (await host.evaluate(`window.__game.get('net').bumps.sent`)) as number
@@ -234,6 +257,7 @@ export async function runGameChecks(k: Kit): Promise<void> {
     await host.evaluate(`window.__pilot.stop()`)
     console.log(`  ram: closest the host got to the joiner (centres): ${closest.toFixed(2)} m; bumps host ${JSON.stringify(await host.evaluate(`window.__game.get('net').bumps`))} joiner ${JSON.stringify(await join.evaluate(`window.__game.get('net').bumps`))}`)
     const hit = (await watch) as { moved: number; peakKmh: number; peakImpact: number; hitPeakKmh: number }
+    const rammer = (await rammerWatch) as { before: number; after: number; minAfter: number; backwards: boolean } | null
     if (flag('trace')) console.log(`  ram trace [ms, kmh, y, airborne]: ${JSON.stringify(await join.evaluate('window.__ramTrace'))}`)
     await join.screenshot({ path: `${k.shots}/game-ram.png` })
     await host.evaluate(`window.__pilot.stop()`)
@@ -242,6 +266,8 @@ export async function runGameChecks(k: Kit): Promise<void> {
     // One ram hands over roughly BUMP_SHARE (0.65) of the closing speed: a shove, not a launch.
     // Judged on the 1.5 s after the hit (later, a coasting car can roll over a boost pad).
     check('the shove is in proportion: in the 1.5 s after the hit the joiner peaks at 35-100% of the rammer speed', hit.hitPeakKmh >= hostPeak * 0.35 && hit.hitPeakKmh <= hostPeak, { hostKmh: Math.round(hostPeak), joinerKmhAfterHit: hit.hitPeakKmh })
+    // The rammer keeps its share: about 35% of its speed carries on (no dead stop, no bounce back).
+    check('the rammer carries on (keeps 15-60% of its speed, never goes backwards)', !!rammer && rammer.after >= rammer.before * 0.15 && rammer.after <= rammer.before * 0.6 && !rammer.backwards, rammer)
     const crashEvt = await join.evaluate(`window.__events.recent.filter((e) => e.type === 'crash').map((e) => e.what)`)
     console.log(`  joiner crash events: ${JSON.stringify(crashEvt)}`)
   }
@@ -295,11 +321,27 @@ export async function runGameChecks(k: Kit): Promise<void> {
     const frozenKmh = await join.evaluate(`window.__pilot.tel.telemetry.speedKmh`)
     check('cars are frozen during the countdown', (frozenKmh as number) < 2, { kmh: frozenKmh })
     await join.screenshot({ path: `${k.shots}/race-countdown-joiner.png` })
+    // mp-1's D3: no bogus gap during the countdown (the cars are side by side).
+    const gapText = (p: Page) => p.evaluate(`document.querySelector('[data-hud="raceGap"]')?.textContent?.trim() ?? ''`) as Promise<string>
+    const gaps = [await gapText(host), await gapText(join)]
+    const gapSecs = gaps.map((g) => Number((g.match(/([0-9.]+) s/) || [])[1] ?? 0))
+    check('countdown: the race gap reads under 1 s on both screens (side by side on the grid)', gapSecs.every((x) => x < 1), gaps)
     const goAts = [await host.evaluate(`window.__game.state.raceGoAt - performance.now()`), await join.evaluate(`window.__game.state.raceGoAt - performance.now()`)] as number[]
     check('GO lands within 150 ms on both screens', Math.abs(goAts[0] - goAts[1]) < 150, { goInMs: goAts.map(Math.round) })
     await host.evaluate(`window.__pilot.go(null, 140)`)
     const running = await until<boolean>(join, `window.__game.state.raceState === 'running'`, 5000)
     check('GO: the race runs', !!running)
+    // Positions from GO: the two screens must never both claim 1st (or both 2nd).
+    const posSamples: number[][] = []
+    const progressTrace: unknown[] = []
+    for (let i = 0; i < 12; i++) {
+      posSamples.push([(await host.evaluate(`window.__game.state.racePosition`)) as number, (await join.evaluate(`window.__game.state.racePosition`)) as number])
+      if (flag('trace')) progressTrace.push(await join.evaluate(`(() => { const L = window.__pilot.current.getTrack().length; return window.__game.cars.filter((c) => c.kind !== 'ghost').map((c) => c.name + ':' + c.progress.toFixed(4) + '@' + Math.round(c.trackS) + '/' + Math.round(L)) })()`))
+      await sleep(400)
+    }
+    if (flag('trace')) console.log('  progress after GO (joiner screen):', JSON.stringify(progressTrace))
+    const clashes = posSamples.filter(([a, b]) => a === b).length
+    check('after GO the two screens agree on the order (never both P1 or both P2, sampled 12 times over 5 s)', clashes <= 1, { samples: posSamples.map((x) => x.join('/')) })
     // Let the host win: the joiner backs off to a cruise.
     await join.evaluate(`window.__pilot.go(null, 90)`)
     const laps = hostRound?.laps ?? 1
@@ -352,6 +394,19 @@ export async function runGameChecks(k: Kit): Promise<void> {
     const noBack = await otherPage.evaluate(`window.__pilot.rounds.canTag()`)
     check('no tag-backs right after the hand-over', noBack === false)
     await otherPage.screenshot({ path: `${k.shots}/tag-new-it.png` })
+    // mp-1's observation: ramming "it" when you're NOT "it" must count too (it used
+    // to do nothing, because the bump shoved "it" away before its screen saw contact).
+    await sleep(2300) // past the no-tag-back window
+    const itPageId = await itPage.evaluate(`window.__pilot.net.getNet().myId`)
+    await otherPage.evaluate(`window.__pilot.stop(); window.__pilot.place(110, 0)`)
+    await itPage.evaluate(`window.__pilot.stop(); window.__pilot.place(85, 0)`)
+    await sleep(2000)
+    await otherPage.evaluate(`window.__pilot.release()`)
+    await itPage.evaluate(`window.__pilot.go('net-${otherId}', 60)`)
+    const back = await until<number>(itPage, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.itId === ${itPageId} ? r.seq : 0 })()`, 15000)
+    await itPage.evaluate(`window.__pilot.stop()`)
+    const backAgree = [await host.evaluate(`window.__pilot.rounds.currentRound()?.itId`), await join.evaluate(`window.__pilot.rounds.currentRound()?.itId`)]
+    check('ramming "it" while NOT it passes "it" to the rammer (touch claim), both screens agree', !!back && backAgree[0] === itPageId && backAgree[1] === itPageId, { seq: back, backAgree, expected: itPageId })
     const secs = await host.evaluate(`window.__game.state.tagSeconds`)
     console.log(`  tagSeconds on host: ${JSON.stringify(secs)}`)
     // The round ends (25 s in checks): both get the same results, least time as "it" first.
@@ -387,6 +442,62 @@ export async function runGameChecks(k: Kit): Promise<void> {
 
   await host.close()
   await join.close()
+}
+
+/**
+ * mp-1's D1: every player spawns on their own grid slot, on joining, when the
+ * host changes track, and after Shift+R. Nobody lands on anybody.
+ */
+async function spawnChecks(k: Kit, host: Page, join: Page): Promise<void> {
+  const { check, until, sleep } = k
+  console.log('\n== spawn: own grid slot on join, track change and Shift+R')
+  // Car-on-car trouble since a moment: crashes with another player, long airtime, tricks.
+  const trouble = (p: Page, since: number) => p.evaluate(`(() => {
+    const ev = window.__events.recent.filter((e) => e.t >= ${since})
+    return {
+      carCrashes: ev.filter((e) => e.type === 'crash' && e.what === 'car').length,
+      longAir: ev.filter((e) => e.type === 'trick.land' && e.airTimeS > 1.5).map((e) => +e.airTimeS.toFixed(2)),
+      airborne: window.__pilot.tel.telemetry.airborne,
+    }
+  })()`) as Promise<{ carCrashes: number; longAir: number[]; airborne: boolean }>
+  const apart = async () => {
+    // Measured on the host's screen: our car versus the joiner's drawn car.
+    return (await host.evaluate(`(() => { const r = window.__game.cars.find((c) => c.kind === 'remote'); const p = window.__pilot.tel.telemetry.carPosition; return r ? +r.position.distanceTo(p).toFixed(2) : -1 })()`)) as number
+  }
+  const slotOf = (p: Page) => p.evaluate(`window.__game.get('net').spawn`)
+
+  // 1) Joining: both already loaded and on the host's track (the joiner came in on another track).
+  await sleep(3000)
+  const d1 = await apart()
+  const t1 = [await trouble(host, 0), await trouble(join, 0)]
+  check('on joining, the two cars spawn on different grid slots (over 3 m apart)', d1 > 3, { apartM: d1, host: await slotOf(host), joiner: await slotOf(join) })
+  check('...and nobody hit or landed on anybody', t1.every((t) => t.carCrashes === 0 && t.longAir.length === 0 && !t.airborne), t1)
+  await host.screenshot({ path: `${k.shots}/spawn-join-host.png` })
+
+  // 2) The host switches track: everyone respawns, each on their own slot.
+  const otherTrack = (await host.evaluate(`window.__pilot.current.getTrack().id`)) === 'hyperdrome' ? 'afterglow' : 'hyperdrome'
+  const since2 = [await host.evaluate(`performance.now()`), await join.evaluate(`performance.now()`)] as number[]
+  await host.evaluate(`window.__pilot.current.loadTrackById(${JSON.stringify(otherTrack)}).ok`)
+  await until<boolean>(join, `window.__pilot.current.getTrack()?.id === ${JSON.stringify(otherTrack)}`, 20000)
+  await sleep(4000)
+  const d2 = await apart()
+  const t2 = [await trouble(host, since2[0]), await trouble(join, since2[1])]
+  check(`after the host switches to ${otherTrack}, the cars are on different slots (over 3 m apart)`, d2 > 3, { apartM: d2, host: await slotOf(host), joiner: await slotOf(join) })
+  check('...and nobody hit or landed on anybody', t2.every((t) => t.carCrashes === 0 && t.longAir.length === 0 && !t.airborne), t2)
+  await join.screenshot({ path: `${k.shots}/spawn-switch-joiner.png` })
+
+  // 3) Shift+R (restart at the line) on both: back to their own slots, not slot 0 together.
+  const since3 = [await host.evaluate(`performance.now()`), await join.evaluate(`performance.now()`)] as number[]
+  for (const p of [host, join]) {
+    await p.keyboard.down('ShiftLeft')
+    await p.keyboard.press('KeyR')
+    await p.keyboard.up('ShiftLeft')
+  }
+  await sleep(3000)
+  const d3 = await apart()
+  const t3 = [await trouble(host, since3[0]), await trouble(join, since3[1])]
+  check('after Shift+R on both, they restart on different slots (over 3 m apart)', d3 > 3, { apartM: d3 })
+  check('...and nobody hit or landed on anybody', t3.every((t) => t.carCrashes === 0 && t.longAir.length === 0 && !t.airborne), t3)
 }
 
 /**

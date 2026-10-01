@@ -101,7 +101,7 @@ ${bold}${amber}  SUNDOWN RUN TWO - MULTIPLAYER${reset}
 ${up ? '' : `\n  ${amber}The game server is slow to start - the links below work once it is up.${reset}\n`}
   This computer (the host):  ${bold}${cyan}http://localhost:${gamePort}/?mp=1&name=JOSH${relayQuery}${reset}
   Other computers:           ${bold}${cyan}${ips[0] ? `http://${ips[0]}:${gamePort}/?mp=1&name=DAD&color=orange${relayQuery}` : '(no network address found - is the wifi on?)'}${reset}
-${ips.length > 1 ? `  ${dim}If that one doesn't load, try: ${ips.slice(1).map((ip) => `http://${ip}:${gamePort}/?mp=1${relayQuery}`).join('  ')}${reset}\n` : ''}
+${ips.length > 1 ? `  ${dim}If that one doesn't load, try: ${ips.slice(1).map((ip) => `http://${ip}:${gamePort}/?mp=1&name=DAD&color=orange${relayQuery}`).join('  ')}${reset}\n` : ''}
   ${dim}Change name=... to your own name, and color=... to orange, yellow, mint,
   pink, purple, cyan, red or white (or a hex code like %23ff8a3d) so every car
   looks different. The host picks the track - everyone else gets it sent over,

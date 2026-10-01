@@ -102,3 +102,11 @@ export function carIdFor(relayId: number): string {
 export function relayIdOf(carId: string): number {
   return carId.startsWith('net-') ? Number(carId.slice(4)) || 0 : 0
 }
+
+/**
+ * How many times each remote car has crossed the start line forwards since
+ * the current race began (minus backwards crossings), by relay id. Counted
+ * from the car as drawn here, so its race progress never jumps ahead of the
+ * picture. Cleared at every race start (net/rounds.ts).
+ */
+export const remoteCrossings = new Map<number, number>()
