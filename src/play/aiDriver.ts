@@ -496,7 +496,12 @@ export class AiDriver implements Driver {
     // Correction budget: follow the road's own curve, plus at most CORRECTION_ALAT of
     // sideways acceleration to fix our position. Without it, a few metres off line at
     // 250 km/h asks for 4 g, slams full lock and spins the car.
-    const kRoad = sampleAt(track, track.samples.curvature, this.s + chord * 0.5)
+    // The road's curve ALONG ITS SURFACE, like the aim point's curvature above (measured in the
+    // car's own plane): on a bank a horizontal curve is gentler seen from the road, x cos(bank)
+    // (half on a 60 deg bank). The plain horizontal curvature here held every Ai to twice the
+    // turn a 60 deg end needs, and they steered into its inner barrier.
+    const sMid = this.s + chord * 0.5
+    const kRoad = sampleAt(track, track.samples.curvature, sMid) * Math.cos(sampleAt(track, track.samples.bank, sMid))
     // the further off line, the more we may spend getting back (a car 15 m off
     // the road needs a real turn, not a polite nudge)
     const offLine = Math.abs(this.hit.lateral - this.laneNow)
