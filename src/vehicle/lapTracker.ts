@@ -59,6 +59,14 @@ export class LapTracker {
   private lastS = -1
   private listener: LapListener | null
 
+  /**
+   * The last completed lap's verdict, set in the same step as lap++ (CarState.lastLapDirty /
+   * lastLapMs copy these): the exact ms and dirty flag the 'complete' event carries. A lap
+   * finished untimed (after an R reset) has no time: null, and dirty (it can't be a best).
+   */
+  lastLapMs: number | null = null
+  lastLapDirty = false
+
   constructor(listener: LapListener | null = null) {
     this.listener = listener
   }
@@ -82,6 +90,8 @@ export class LapTracker {
   restartFresh(s: number): void {
     if (this.timing) this.emit({ kind: 'void', reason: 'restart' })
     this.lap = 0
+    this.lastLapMs = null
+    this.lastLapDirty = false
     this.crossedOnce = false
     this.clearLap()
     this.lastS = s
@@ -162,6 +172,8 @@ export class LapTracker {
     if (this.timing && ms < LAP.minLapMs) return // parked on the line, or wobbling over it
     if (all) {
       this.lap++
+      this.lastLapMs = this.timing ? ms : null
+      this.lastLapDirty = this.timing ? this.dirty : true
       this.emit({ kind: 'raceLap', lap: this.lap })
       if (this.timing) this.emit({ kind: 'complete', lap: this.lap, ms, dirty: this.dirty })
     } else if (this.timing) {

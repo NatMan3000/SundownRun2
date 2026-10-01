@@ -164,6 +164,9 @@ export function SimulatedCar(props: SimulatedCarProps) {
       else lap.update(track, sim.trackS, sim.onRoad)
       car.trackS = sim.trackS
       car.lap = lap.lap
+      // Same step as the lap count, so a reader that sees lap change sees that lap's verdict.
+      car.lastLapMs = lap.lastLapMs
+      car.lastLapDirty = lap.lastLapDirty
       car.progress = lap.progress(track, sim.trackS)
     }
     car.speedKmh = sim.speedKmh
