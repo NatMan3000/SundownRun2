@@ -221,6 +221,7 @@ export function VehicleLayer() {
         bookmark: cameraState.bookmark || 'free',
         clipped: cameraState.clipped,
         position: cameraState.position.toArray().map((v) => +v.toFixed(2)),
+        rendered: cameraState.rendered.toArray().map((v) => +v.toFixed(2)),
         up: cameraState.up.toArray().map((v) => +v.toFixed(3)),
       })),
       registerInspector('input', () => ({ ...inputDebug, keys: { ...inputDebug.keys } })),

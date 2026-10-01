@@ -126,4 +126,8 @@ export const CAMERA = {
   /** Never closer than this to the ground or a wall. */
   clearance: 0.5,
   wallPad: 0.35,
+  /** A wall that appears between car and camera pulls the arm in at this rate (1/s: ~95% in 3 frames at 60 fps)... */
+  clipInRate: 60,
+  /** ...and once clear it lets the arm back out at this speed, m/s. */
+  clipOutSpeed: 6,
 }

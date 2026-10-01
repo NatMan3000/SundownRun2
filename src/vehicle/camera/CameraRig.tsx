@@ -58,6 +58,7 @@ const _pivot = new THREE.Vector3()
 const _airFwd = new THREE.Vector3(0, 0, 1)
 const WORLD_UP = new THREE.Vector3(0, 1, 0)
 const _shot: Shot = { position: new THREE.Vector3(), look: new THREE.Vector3() }
+const _rendered = new THREE.Vector3()
 
 /** tan(21.5 deg): how far left of the car the showroom camera aims, per metre of distance. */
 const SHOWROOM_OFFSET = 0.39
@@ -74,7 +75,10 @@ export const cameraState = {
   shot: 'drive' as 'drive' | 'showroom' | 'results' | 'bookmark',
   bookmark: '' as string,
   clipped: false,
+  /** The sprung camera position, before the wall clip and the impact kick. */
   position: _camPos,
+  /** Where the camera really is this frame (after the clip and the kick). */
+  rendered: _rendered,
   up: _up,
 }
 
@@ -136,7 +140,10 @@ export function CameraRig() {
     resetTick: -1,
     cycleSeen: controlSignals.cameraCycle,
     orbitAngle: 0,
-    clipDist: Infinity,
+    /** How far a wall or the road shortens the camera arm right now, metres (0 = clear). */
+    clipPull: 0,
+    /** Last frame's arm length after the clip, metres (Infinity = nothing to ease from). */
+    clipArm: Infinity,
   }).current
   const camera = useThree((st) => st.camera) as THREE.PerspectiveCamera
   const ray = useRef<InstanceType<NonNullable<typeof links.rapier>['Ray']> | null>(null)
@@ -284,7 +291,8 @@ export function CameraRig() {
       _lookPos.copy(_targetLook)
       _up.copy(_targetUp)
       springVel.fill(0)
-      s.clipDist = Infinity
+      s.clipPull = 0
+      s.clipArm = Infinity
     } else {
       _camPos.x = smoothDamp(_camPos.x, _targetPos.x, 0, posSmooth, dt)
       _camPos.y = smoothDamp(_camPos.y, _targetPos.y, 1, posSmooth, dt)
@@ -304,11 +312,14 @@ export function CameraRig() {
     }
 
     // ---- 4. never clip through the road, walls or barriers ----
+    // The bonnet camera is bolted to the car and needs none of this. Crossing to or
+    // from it, the clip test fades with the transition instead of switching at one
+    // end of it: switching made a 0.5-1.4 m one-frame pop on every bonnet change.
     const outPos = camera.position
     outPos.copy(_camPos)
     cameraState.clipped = false
-    const mount = cameraState.mode === 'bonnet' && ease > 0.99
-    if (!mount) {
+    const clipWeight = cameraState.mode === 'bonnet' ? 1 - ease : cameraState.from === 'bonnet' ? ease : 1
+    if (clipWeight > 0.001) {
       _pivot.copy(telemetry.carPosition).addScaledVector(_up, 1.1)
       _tmp.subVectors(outPos, _pivot)
       const want = _tmp.length()
@@ -329,17 +340,33 @@ export function CameraRig() {
         const hit = links.world.castRay(r, want + CAMERA.wallPad, true, undefined, GROUPS.wheelRay, undefined, links.playerBody ?? undefined)
         if (hit) free = Math.max(0.6, hit.timeOfImpact - CAMERA.wallPad)
       }
-      // Pull in at once, ease back out (so a passing post doesn't make it pump).
-      s.clipDist = free < s.clipDist ? free : Math.min(free, s.clipDist + dt * 6)
-      if (s.clipDist < want - 0.01) {
-        outPos.copy(_pivot).addScaledVector(_tmp.normalize(), s.clipDist)
+      // The arm length this frame is the shortest of what the camera wants and two limits:
+      //  - the wall: never past it. The camera swinging INTO a wall stops at it, but a wall that
+      //    APPEARS in front of where the camera already is (a post flicking past) is closed in a
+      //    few frames (clipInRate), a quick glide instead of a one-frame cut;
+      //  - the release: a pull lets go at clipOutSpeed, so passing a post doesn't make it pump.
+      //    It is measured as a shortening of the arm, so the arm itself growing (a mode change,
+      //    more speed) never reads as a clip.
+      let wallArm = free
+      if (Number.isFinite(s.clipArm) && s.clipArm > free) wallArm = s.clipArm + (free - s.clipArm) * (1 - Math.exp(-CAMERA.clipInRate * dt))
+      const releaseArm = want - Math.max(0, s.clipPull - dt * CAMERA.clipOutSpeed)
+      const arm = Math.max(Math.min(want, 0.6), Math.min(want, wallArm, releaseArm))
+      s.clipArm = arm
+      s.clipPull = want - arm
+      const pull = s.clipPull * clipWeight
+      if (pull > 0.01) {
+        outPos.copy(_pivot).addScaledVector(_tmp.normalize(), want - pull)
         cameraState.clipped = true
       }
       // And stay above the ground.
       if (track) {
         const gy = track.terrainHeight(outPos.x, outPos.z)
-        if (Number.isFinite(gy) && outPos.y < gy + CAMERA.clearance) outPos.y = gy + CAMERA.clearance
+        if (Number.isFinite(gy) && outPos.y < gy + CAMERA.clearance) outPos.y += (gy + CAMERA.clearance - outPos.y) * clipWeight
       }
+    } else {
+      // Bolted to the bonnet: nothing between the camera and the car.
+      s.clipPull = 0
+      s.clipArm = Infinity
     }
 
     // ---- 5. impact kick, aim, speed shake ----
@@ -348,6 +375,7 @@ export function CameraRig() {
       outPos.addScaledVector(_up, kick * CAMERA.kickPos * Math.sin(t * 34))
       outPos.addScaledVector(_fwd, kick * CAMERA.kickPos * 0.6 * Math.sin(t * 27))
     }
+    _rendered.copy(outPos)
     camera.up.copy(_up)
     camera.lookAt(_lookPos)
     const shake = (CAMERA.shakeAmp * speedFrac * speedFrac + kick * CAMERA.kickRot) * shakeScale

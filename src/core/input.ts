@@ -58,6 +58,19 @@ const ANALOG_RATE = 26
  * 15 on the keyboard). The stick eases to 14/s by 120 km/h - still under 0.1 s.
  */
 const STICK_STEER_RATE_FAST = 14
+/**
+ * ...and at speed, WINDING ON lock is rate limited the way the keyboard's attack
+ * is tamed: from STICK_TAME_LO_KMH to STICK_TAME_HI_KMH the quickest centre-to-full-
+ * lock goes from instant to STICK_LOCK_SECONDS_FAST. Exponential smoothing alone
+ * still let a flicked stick reach full lock in ~2 frames, and a 400 ms handbrake
+ * tap at 100 km/h peaked at 28 deg (keyboard: 7). Unwinding, crossing centre and
+ * counter-steering a slide are never limited: a catch has to be there NOW.
+ */
+const STICK_TAME_LO_KMH = 40
+const STICK_TAME_HI_KMH = 120
+const STICK_LOCK_SECONDS_FAST = 0.4
+/** Drift angle (rad) past which steering toward the slide counts as a catch (matches the car's counter-steer test). */
+const COUNTER_STEER_BETA = 0.12
 
 const STICK_DEADZONE = 0.14
 const TRIGGER_DEADZONE = 0.05
@@ -475,7 +488,19 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
     const brake = padSuppressed[PAD.LT] ? 0 : deadzone(buttonValue(pad, PAD.LT), TRIGGER_DEADZONE)
     const kmh = Number.isFinite(telemetry.speedKmh) ? telemetry.speedKmh : 0
     const steerRate = ANALOG_RATE + (STICK_STEER_RATE_FAST - ANALOG_RATE) * smoothstep(40, 120, kmh)
-    driveInput.steer = approach(driveInput.steer, steer, steerRate, dt)
+    const was = driveInput.steer
+    let next = approach(was, steer, steerRate, dt)
+    const tame = smoothstep(STICK_TAME_LO_KMH, STICK_TAME_HI_KMH, kmh)
+    if (tame > 0) {
+      const windingOn = Math.abs(next) > Math.abs(was) && (was === 0 || Math.sign(next) === Math.sign(was))
+      const beta = Number.isFinite(telemetry.driftAngle) ? telemetry.driftAngle : 0
+      const catching = Math.abs(beta) > COUNTER_STEER_BETA && Math.sign(next) === Math.sign(beta)
+      if (windingOn && !catching) {
+        const maxStep = dt / (STICK_LOCK_SECONDS_FAST * tame)
+        next = clamp(next, was - maxStep, was + maxStep)
+      }
+    }
+    driveInput.steer = next
     driveInput.throttle = approach(driveInput.throttle, throttle, ANALOG_RATE, dt)
     driveInput.brake = approach(driveInput.brake, brake, ANALOG_RATE, dt)
     driveInput.handbrake = padNow[PAD.A] === 1 && !padSuppressed[PAD.A]

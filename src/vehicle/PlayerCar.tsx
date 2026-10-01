@@ -53,6 +53,9 @@ export function PlayerCar() {
   const glow = useSettings((s) => s.glow)
   const trail = useSettings((s) => s.trail)
   const quality = useGame((s) => s.qualityLevel)
+  // Our start-grid slot (net sets it in multiplayer; 0 solo). Read only when the car spawns,
+  // parks for the title screen or restarts (Shift+R): changing it never moves a driving car.
+  const gridSlot = useGame((s) => s.playerGridSlot)
   const track = useTrack()
 
   const sim = useMemo(() => new CarSim('player'), [])
@@ -176,7 +179,7 @@ export function PlayerCar() {
       seen.phase = g.phase
       const t = getTrack()
       if (g.phase === 'title' && t) {
-        const sS = startPose(t, 0, _pos, _quat)
+        const sS = startPose(t, s.gridSlot, _pos, _quat)
         s.teleport(_pos, _quat, sS)
         s.frozen = true
       } else if (g.phase === 'playing' && was === 'title') {
@@ -309,7 +312,7 @@ export function PlayerCar() {
       paint={paint}
       glow={glow}
       trail={trail}
-      gridSlot={0}
+      gridSlot={gridSlot}
       sim={sim}
       lap={lap}
       beforeStep={beforeStep}
