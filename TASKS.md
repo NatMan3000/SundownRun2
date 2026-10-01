@@ -175,3 +175,4 @@ Updated 2026-10-01 ~20:45 AEST. Lead = this session (Kai). Briefs: scratchpad/br
 - Stopped: track, world, audio (handoffs in /tmp/sr2/reports/).
 - Next checks: ui-2 (ui-1 D1-D4 + play P1 + sound hint on pause), onefile-2 (Neon Pocket gameplay: demo lap, 5 Ai finish, ghost) after vehicle 0-3, feel-2 (loops, wall rides, boost, ramps) after vehicle queue, visual judge (all 3 tracks sundown + night), perf (demo per track on a QUIET machine, after the demo laps cleanly), Hyperdrome bank + speed trap, clean clone (last).
 - Final: regenerate Learn To Code.html (bun run learn) and commit; finish CLAUDE.md; final reply with headings Blocked on me / Changed / Found.
+- ✅ [play] Afterglow 5-Ai proof (worker-run, before loop line-up): all 6 cars finished 3 laps, 15 Ai resets (11 at the bridge approach). Rerun with loop line-up + curvature feedforward steering in progress.
