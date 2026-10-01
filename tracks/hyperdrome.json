@@ -266,7 +266,8 @@
       "edgeAlt": "#ff2bd6"
     },
     "city": {
-      "density": 0.85
+      "density": 0.85,
+      "arcDeg": 360
     },
     "stadium": {
       "standsHeight": 32

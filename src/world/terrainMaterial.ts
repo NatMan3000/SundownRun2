@@ -10,7 +10,9 @@
 //   1. THE GRID. Neon lines every 10 m with brighter lines every
 //      50 m, drawn with the "pristine grid" trick (Ben Golus):
 //      lines keep a real width up close and fade to their average
-//      brightness far away instead of shimmering. Glow tier T1 near
+//      brightness far away instead of shimmering. On steep faces it
+//      is laid on the world plane the face looks along (triplanar),
+//      so a bank or cut keeps its 10 m squares. Glow tier T1 near
 //      the car, T0 by 60 m, gone in the distance.
 //   2. SKY FILL. Each slope picks up a little of the glowing sky
 //      low over the horizon it faces: violet on the side away from
@@ -104,9 +106,10 @@ uniform vec3 uSkyFill;
 uniform vec3 uRimColor;
 
 // Pristine grid (Ben Golus): uv in cells, lineWidth as a fraction of a cell.
-float pristineGrid( vec2 uv, float lineWidth ) {
-  vec4 dd = vec4( dFdx( uv ), dFdy( uv ) );
-  vec2 deriv = vec2( length( dd.xz ), length( dd.yw ) );
+// The screen-space derivatives of uv (dx, dy) are passed in, worked out once
+// outside any branch: derivatives inside a branch are undefined in GLSL.
+float pristineGrid( vec2 uv, vec2 dx, vec2 dy, float lineWidth ) {
+  vec2 deriv = vec2( length( vec2( dx.x, dy.x ) ), length( vec2( dx.y, dy.y ) ) );
   vec2 target = vec2( lineWidth );
   vec2 drawWidth = clamp( target, deriv, vec2( 0.5 ) );
   vec2 lineAA = deriv * 1.5;
@@ -115,6 +118,14 @@ float pristineGrid( vec2 uv, float lineWidth ) {
   g *= clamp( target / drawWidth, 0.0, 1.0 );
   g = mix( g, target, clamp( deriv * 2.0 - 1.0, 0.0, 1.0 ) );
   return mix( g.x, 1.0, g.y );
+}
+
+// Minor lines every 10 m (14 cm wide) and major every 50 m (20 cm), on one
+// plane; uv is metres on that plane, dx / dy its derivatives.
+float gridLines( vec2 uv, vec2 dx, vec2 dy, float minorFade, float majorFade ) {
+  float minor = pristineGrid( uv / 10.0, dx / 10.0, dy / 10.0, 0.014 ) * minorFade;
+  float major = pristineGrid( uv / 50.0, dx / 50.0, dy / 50.0, 0.004 ) * majorFade;
+  return max( minor * 0.7, major );
 }
 `
 
@@ -136,25 +147,32 @@ const EMISSIVE_MOD = /* glsl */ `
   float nv = clamp( dot( tN, tV ), 0.0, 1.0 );
 
   // ---- 1. the grid ----
-  // Lines 14 cm (minor) and 20 cm (major) wide: fine neon threads, not bands.
-  float minor = pristineGrid( vTerrainWorld.xz / 10.0, 0.014 );
-  float major = pristineGrid( vTerrainWorld.xz / 50.0, 0.004 );
-  // Minor lines are gone well before the major ones, which run on toward the
-  // horizon (the classic synthwave floor) until the haze takes them.
-  minor *= 1.0 - smoothstep( 160.0, 420.0, camDist );
-  major *= 1.0 - smoothstep( 1200.0, 2600.0, camDist );
-  // On steep far faces (the edge ridge) the grid goes early: mountains, not a wire curtain.
+  // Fine neon threads, not bands. Minor lines are gone well before the major
+  // ones, which run on toward the horizon (the classic synthwave floor) until
+  // the haze takes them. On steep far faces (the edge ridge) the grid goes
+  // early: mountains, not a wire curtain.
   float flatness = smoothstep( 0.55, 0.85, tN.y );
   float steepFar = ( 1.0 - flatness ) * smoothstep( 300.0, 650.0, camDist );
-  minor *= 1.0 - steepFar;
-  major *= 1.0 - steepFar * 0.9;
-  float lines = max( minor * 0.7, major );
+  float minorFade = ( 1.0 - smoothstep( 160.0, 420.0, camDist ) ) * ( 1.0 - steepFar );
+  float majorFade = ( 1.0 - smoothstep( 1200.0, 2600.0, camDist ) ) * ( 1.0 - steepFar * 0.9 );
+  // Drawn "triplanar": the lines are laid on whichever of the three world
+  // planes the surface faces most, so on a steep bank or cut they keep their
+  // 10 m spacing instead of stretching into a few long streaks. Flat ground
+  // (nearly all of it) only pays for the top plane.
+  vec3 pdx = dFdx( vTerrainWorld );
+  vec3 pdy = dFdy( vTerrainWorld );
+  vec3 tw = pow( abs( tN ), vec3( 4.0 ) );
+  tw /= tw.x + tw.y + tw.z;
+  float lines = gridLines( vTerrainWorld.xz, pdx.xz, pdy.xz, minorFade, majorFade ) * tw.y;
+  if ( tw.y < 0.98 ) {
+    lines += gridLines( vTerrainWorld.zy, pdx.zy, pdy.zy, minorFade, majorFade ) * tw.x;
+    lines += gridLines( vTerrainWorld.xy, pdx.xy, pdy.xy, minorFade, majorFade ) * tw.z;
+  }
   // T1 close to the car, T0 by 60 m (constitution: the grid is dim).
   float tier = mix( ${GLOW.T1.toFixed(3)}, ${GLOW.T0.toFixed(3)}, smoothstep( 12.0, 60.0, carDist ) );
   // Faint shimmer travelling through the grid, slow enough to read as life, not flicker.
   float pulse = 0.88 + 0.12 * sin( uTime * 0.6 - carDist * 0.035 );
-  // A little less grid on steep faces, where xz lines would stretch.
-  totalEmissiveRadiance += uGridColor * lines * tier * pulse * mix( 0.3, 1.0, flatness );
+  totalEmissiveRadiance += uGridColor * lines * tier * pulse * mix( 0.75, 1.0, flatness );
 
   // ---- 2. sky fill: each slope catches the sky low over the horizon it faces ----
   // The zenith is nearly black at sundown; the light that shapes a hill is the
@@ -210,16 +228,19 @@ const EMISSIVE_MOD = /* glsl */ `
   float across = 1.0 - dot( rH, sH );
   float along = tR.y - max( uSunDir.y, 0.0 );
   float streak = exp( -across * 600.0 ) * exp( -along * along * 14.0 ) * step( 0.0, tR.y + 0.02 );
+  // Ground glass only: on a steep bank or cut it would paint a big orange blot.
+  streak *= smoothstep( 0.75, 0.95, tN.y );
   // Only seen side-on (Fresnel): from above, mounds facing the sun stay dark glass.
   totalEmissiveRadiance += uSunStreak * streak * fres * ${STREAK.toFixed(3)};
 
   // ---- 5. key rim: faces leaning toward the sun (planet at night) light up side-on ----
-  // Only real slopes (not every little ripple) and only well side-on, so it
-  // reads as a lit edge, not a smear.
+  // Only real slopes (not every little ripple), only well side-on, and only
+  // away from the camera (it tells you where the sun is from the hills around
+  // you; up close, a big steep face seen side-on would turn wholly magenta).
   vec2 kH = uKeyDir.xz / max( length( uKeyDir.xz ), 1e-4 );
   float lean = smoothstep( 0.12, 0.5, dot( tN.xz, kH ) );
   float sideOn = pow( 1.0 - nv, 4.0 );
-  totalEmissiveRadiance += uRimColor * lean * sideOn * ${RIM.toFixed(3)};
+  totalEmissiveRadiance += uRimColor * lean * sideOn * smoothstep( 40.0, 160.0, camDist ) * ${RIM.toFixed(3)};
   // At night, the planet's light lies on the glass as one broad soft glint
   // (moonlight on still water). No noise in it. At sundown the sun streak
   // above does this job, so the glint fades in with the night.
@@ -304,7 +325,7 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
       .replace('#include <opaque_fragment>', `${HAZE_MOD}\n#include <opaque_fragment>`)
   }
   // One program for every terrain chunk, and a stable cache key.
-  material.customProgramCacheKey = () => 'sr2-terrain-v6'
+  material.customProgramCacheKey = () => 'sr2-terrain-v7'
 
   return { material, uniforms }
 }

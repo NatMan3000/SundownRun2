@@ -141,6 +141,10 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
   }
 
   const relief = localRelief(drawn, side, Math.max(1, Math.round(RELIEF_RADIUS / cellSize)))
+  // Shading normals come from a lightly smoothed copy (one 3 x 3 average), so
+  // a stepped cut slope shades as one surface instead of a row of facets.
+  // Positions stay exact (the drawn ground is still the ground the wheels touch).
+  const shade = boxBlur(drawn, side, 1, 1)
 
   const strides = LEVEL_CELL[quality].map((m) => strideForCell(cellSize, m))
   const per = Math.ceil(n / CHUNKS)
@@ -156,7 +160,7 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
       const levels: THREE.BufferGeometry[] = []
       const triangles: number[] = []
       for (const stride of strides) {
-        const g = buildChunk(drawn, edge, relief, n, half, cellSize, x0, x1, z0, z1, stride)
+        const g = buildChunk(drawn, shade, edge, relief, n, half, cellSize, x0, x1, z0, z1, stride)
         levels.push(g)
         triangles.push((g.index ? g.index.count : 0) / 3)
       }
@@ -179,6 +183,14 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
  * rows and then the columns with a running sum, so it costs the same for any r).
  */
 function localRelief(heights: Float32Array, side: number, r: number): Float32Array {
+  const blurred = boxBlur(heights, side, r, 2)
+  const relief = new Float32Array(heights.length)
+  for (let k = 0; k < heights.length; k++) relief[k] = heights[k] - blurred[k]
+  return relief
+}
+
+/** The height grid averaged over (2r + 1) x (2r + 1) cells, `passes` times over. */
+function boxBlur(heights: Float32Array, side: number, r: number, passes: number): Float32Array {
   const a = Float32Array.from(heights)
   const b = new Float32Array(heights.length)
   const blurLine = (src: Float32Array, dst: Float32Array, start: number, step: number) => {
@@ -203,13 +215,11 @@ function localRelief(heights: Float32Array, side: number, r: number): Float32Arr
       }
     }
   }
-  for (let pass = 0; pass < 2; pass++) {
+  for (let pass = 0; pass < passes; pass++) {
     for (let z = 0; z < side; z++) blurLine(a, b, z * side, 1)
     for (let x = 0; x < side; x++) blurLine(b, a, x, side)
   }
-  const relief = b
-  for (let k = 0; k < heights.length; k++) relief[k] = heights[k] - a[k]
-  return relief
+  return a
 }
 
 /** The lattice positions along one axis of a chunk at a stride (always includes both ends). */
@@ -222,6 +232,7 @@ function axisLattice(a0: number, a1: number, stride: number): number[] {
 
 function buildChunk(
   drawn: Float32Array,
+  shade: Float32Array,
   edge: Float32Array,
   relief: Float32Array,
   n: number,
@@ -259,14 +270,14 @@ function buildChunk(
     return y
   }
 
-  // Smooth normal from the full-detail heights, measured across the stride.
+  // Smooth normal from the (lightly smoothed) full-detail heights, measured across the stride.
   const normalAt = (ix: number, iz: number, out: number[], o: number): void => {
     const xa = Math.max(0, ix - stride)
     const xb = Math.min(n, ix + stride)
     const za = Math.max(0, iz - stride)
     const zb = Math.min(n, iz + stride)
-    const dhdx = (drawn[iz * side + xb] - drawn[iz * side + xa]) / ((xb - xa) * cellSize)
-    const dhdz = (drawn[zb * side + ix] - drawn[za * side + ix]) / ((zb - za) * cellSize)
+    const dhdx = (shade[iz * side + xb] - shade[iz * side + xa]) / ((xb - xa) * cellSize)
+    const dhdz = (shade[zb * side + ix] - shade[za * side + ix]) / ((zb - za) * cellSize)
     const inv = 1 / Math.sqrt(dhdx * dhdx + 1 + dhdz * dhdz)
     out[o] = -dhdx * inv
     out[o + 1] = inv

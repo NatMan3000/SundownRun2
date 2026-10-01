@@ -7,7 +7,9 @@
 //
 //  How it is laid out: several rows of towers along an arc around
 //  the world, tallest in the middle of the arc and falling away
-//  toward its ends, so it reads as one skyline. Rows further back
+//  toward its ends, so it reads as one skyline (a full 360 degree
+//  ring, as around the Hyperdrome, has no ends: it stays tall all
+//  the way round, so every view has a far plane). Rows further back
 //  are hazier, which gives the city its own depth. It stays put in
 //  the world (it does not follow the camera), so as you drive it
 //  slides slowly against the ridge in front of it - real parallax.
@@ -62,6 +64,8 @@ const ROWS = [
  * wall, never hidden.
  */
 const VISIBLE_DEG = 5.6
+/** Round the back of a full-ring city, towers keep at least this share of the full height profile. */
+const RING_FLOOR = 0.32
 /**
  * ...but never taller than this above the true horizon, degrees. Behind a very
  * tall ridge the city stays a believable size and is simply hidden from close
@@ -221,6 +225,13 @@ function buildCity(
   const az0 = (city.azimuthDeg ?? env.sky.sunAzimuthDeg ?? 0) * DEG
   const sunAz = (env.sky.sunAzimuthDeg ?? 0) * DEG
   const arc = (city.arcDeg ?? 120) * DEG
+  // A city that rings the whole horizon (arcDeg near 360, e.g. around a
+  // stadium): in front it rises and tapers exactly like a normal 120 degree arc
+  // (same towers per degree, so the sun is framed the same way), and round the
+  // back it keeps a low, sparser skyline instead of stopping, so every view has
+  // a far plane. Arcs under 240 degrees are laid out exactly as before.
+  const ringness = Math.min(1, Math.max(0, (arc / DEG - 240) / 100))
+  const spread = 1 + ringness * (arc / (120 * DEG) - 1)
   const dist = city.distance ?? env.size * 2.2
   const density = Math.min(1, Math.max(0.1, city.density ?? 0.7))
   const ground = env.terrain.height ?? 0
@@ -245,12 +256,14 @@ function buildCity(
   const list: Tower[] = []
   for (let r = 0; r < ROWS.length; r++) {
     const row = ROWS[r]
-    const count = Math.round(PER_ROW[quality] * density * (r === 0 ? 0.55 : 1))
+    const count = Math.round(PER_ROW[quality] * density * spread * (r === 0 ? 0.55 : 1))
     for (let i = 0; i < count; i++) {
       // Spread along the arc with jitter; the outer ends are sparser.
       const u = (i + 0.5 + (rand() - 0.5) * 0.9) / count - 0.5
       const az = az0 + u * arc
-      const edge = Math.abs(u) * 2
+      const edgeArc = Math.abs(u) * 2
+      const edgeFront = Math.min(1, (Math.abs(u) * arc) / (60 * DEG))
+      const edge = edgeArc + (edgeFront - edgeArc) * ringness
       if (rand() < edge * edge * 0.55) continue
       const R = dist + row.offset + (rand() - 0.5) * 140
       // Tallest in the middle, falling away to the ends, with plenty of variety.
@@ -260,7 +273,9 @@ function buildCity(
       if (toSun > Math.PI) toSun = Math.PI * 2 - toSun
       // Wide enough to still frame the sun from anywhere on the track (the city has parallax, the sun does not).
       const sunValley = 1 - 0.86 * Math.exp(-((toSun / (20 * DEG)) ** 2))
-      const profile = Math.pow(Math.cos(Math.min(1, edge) * Math.PI * 0.5), 1.1) * sunValley
+      // (A ring keeps a low floor round the back: a skyline peeking over the
+      // stands, not a wall around them.)
+      const profile = Math.max(Math.pow(Math.cos(Math.min(1, edge) * Math.PI * 0.5), 1.1), RING_FLOOR * ringness) * sunValley
       const tall = rand() < 0.08 ? 1.25 : 0.25 + rand() * 0.75
       // Rise this many degrees above the skyline in front, seen from the middle of the world.
       const above = 0.6 + VISIBLE_DEG * profile * tall * row.scale
