@@ -9,9 +9,10 @@
 //  which at speed sends the car into a tumble; a curve tips the car
 //  up smoothly so it leaves the lip flying straight.
 //
-//  Its sides slope outward (about 18 degrees where the road has room)
-//  so a car that clips the edge rolls up and off rather than being
-//  flicked sideways.
+//  Its sides slope outward (about 35 degrees where the road has room)
+//  so a car that clips the edge is tipped up and rolls off rather than
+//  being flicked sideways, while the slope stays narrow enough to leave
+//  the rest of the road clear.
 //
 //  The base sinks 0.15 m into the road and the top starts 5 cm below
 //  it, so no face of the ramp lies flat on the road (flat-on-flat
@@ -32,8 +33,8 @@ export interface RampSolid {
 }
 
 const SINK = 0.15
-/** Side slope: this many metres out per metre of height where the road has room (3 = ~18 degrees). */
-const SIDE_RUN = 3
+/** Side slope: this many metres out per metre of height where the road has room (1.4 = ~35 degrees). */
+export const SIDE_RUN = 1.4
 /** The top surface starts this far below the road at the toe. */
 const TOE = 0.05
 /** Slices along the ramp (more = smoother curve). */

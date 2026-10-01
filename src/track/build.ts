@@ -59,6 +59,10 @@ export interface TrackInternals {
   thickness: Float32Array
   /** Edge geometry for colliders. */
   world: TrackWorldInfo
+  /** The control-point position nearest a final s (for messages). */
+  atOfS: (s: number) => number
+  /** 0..1 per sample: how much of the bank comes from a file override. */
+  overrideWeight: Float32Array
 }
 
 const internals = new WeakMap<TrackRuntime, TrackInternals>()
@@ -274,7 +278,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const props: PropAnchor[] = file.props.map((p) => ({ x: p.x, y: groundAt(p.x, p.z), z: p.z, kind: p.kind ?? 'mixed', size: p.size ?? 'medium' }))
   const cores = file.cores.map((c0) => ({ x: c0.x, y: groundAt(c0.x, c0.z) + (c0.y ?? 1.6), z: c0.z }))
 
-  const checkpoints = makeCheckpoints(L)
+  const checkpoints = makeCheckpoints(L, c.loops.map((l) => ({ s0: l.s0, s1: l.s1 })))
   const minimap = makeMinimap(S)
 
   // ---- identity ----
@@ -336,6 +340,8 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     rampSolids: ramps.solids,
     thickness: c.thickness,
     world,
+    atOfS: c.atOfS,
+    overrideWeight: c.overrideWeight,
   })
   return runtime
 }

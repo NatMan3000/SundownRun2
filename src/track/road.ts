@@ -81,6 +81,10 @@ export interface Centerline {
   walls: WallInfo[]
   /** Final s of a control-point position `at` (wraps). */
   sOfAt: (at: number) => number
+  /** The control-point position `at` nearest to a final s (for messages: "s=812 (at 7.4)"). */
+  atOfS: (s: number) => number
+  /** 0..1 per sample: how much of the bank comes from a `bank` override in the file. */
+  overrideWeight: Float32Array
 }
 
 /** Shortest signed distance from a to b on a loop of length L. */
@@ -284,6 +288,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const nz: number[] = []
   const nhw: number[] = []
   const nbank: number[] = []
+  const nover: number[] = []
   const nux: number[] = []
   const nuy: number[] = []
   const nuz: number[] = []
@@ -299,6 +304,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     nz.push(bz[k] + rzh * shift[k])
     nhw.push(bHalf[k])
     nbank.push(bBank[k])
+    nover.push(bOverW[k])
     // up0 = world up made perpendicular to the tangent; roll it by the bank.
     const T0 = btx[k]
     const T1 = bty[k]
@@ -367,6 +373,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
         nz.push(Pz + Rz * lat + Tz * sh.fwd[q] + Mz * w)
         nhw.push(hw)
         nbank.push(0)
+        nover.push(0)
         // Up is the surface normal: perpendicular to the direction of travel, toward the inside.
         nux.push(-Tx * Math.sin(ph))
         nuy.push(Math.cos(ph))
@@ -411,6 +418,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     grounded: new Uint8Array(count),
   }
   const baseS = new Float64Array(count)
+  const overrideWeight = new Float32Array(count)
   let j = 0
   // Positions are kept in float64 until the end so long tracks don't wobble.
   const fx = new Float64Array(count)
@@ -431,6 +439,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     fz[i] = nz[a] + (nz[b] - nz[a]) * f
     S.halfWidth[i] = nhw[a] + (nhw[b] - nhw[a]) * f
     S.bank[i] = nbank[a] + (nbank[b] - nbank[a]) * f
+    overrideWeight[i] = nover[a] + (nover[b] - nover[a]) * f
     hux[i] = nux[a] + (nux[b] - nux[a]) * f
     huy[i] = nuy[a] + (nuy[b] - nuy[a]) * f
     huz[i] = nuz[a] + (nuz[b] - nuz[a]) * f
@@ -514,6 +523,14 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     return (lo + f) * ds
   }
   const sOfAt = (at: number): number => sOfBase(baseSOfAt(at)) % length
+  const atOfS = (sIn: number): number => {
+    const i = ((Math.round(sIn / ds) % count) + count) % count
+    const sd = (baseS[i] + sStart) % Lb
+    const j = Math.min(nodeAtLength(dense, sd), dense.count - 2)
+    const seg = dense.cum[j + 1] - dense.cum[j]
+    const f = seg > 0 ? (sd - dense.cum[j]) / seg : 0
+    return (dense.at[j] + (dense.at[j + 1] - dense.at[j]) * f) % np
+  }
 
   // ---- loops as found on the final road ----
   const loops: LoopInfo[] = []
@@ -569,7 +586,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     }
   })
 
-  return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt }
+  return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt, atOfS, overrideWeight }
 }
 
 /**

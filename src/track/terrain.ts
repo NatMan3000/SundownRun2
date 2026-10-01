@@ -92,17 +92,121 @@ function bell(u: number, v: number, su: number, sv: number): number {
 
 /** How far a feature reaches (beyond this it adds nothing), for a cheap early-out. */
 function featureReach(f: TerrainFeature): number {
-  if (f.type === 'bigAir') return 330 * (f.scale ?? 1)
+  if (f.type === 'bigAir') return BIGAIR_REACH * (f.scale ?? 1)
   return f.radius
 }
 
 /**
- * Height a terrain feature adds at (x, z).
- * bigAir is v1's proven big-air landform made complete: a big round hill you
- * can climb from any side, then a dip that loads the suspension, then a small
- * mountain whose upslope is the launch, in that order along headingDeg.
- * Broad bell curves only, so it is glass-smooth at collider-grid scale.
+ * A 1D shape built from its SLOPE, not its height: each segment's slope changes
+ * linearly (constant curvature) over its length. Building a crest this way pins its
+ * vertical radius exactly, and the vertical radius is what decides whether a car
+ * stays on the ground over it (it goes light above sqrt(g x radius)).
+ * Returns a height table sampled every TABLE_STEP metres.
  */
+const TABLE_STEP = 0.25
+function slopeProfile(segments: [length: number, slopeFrom: number, slopeTo: number][]): Float32Array {
+  const total = segments.reduce((a, s) => a + s[0], 0)
+  const n = Math.ceil(total / TABLE_STEP) + 1
+  const out = new Float32Array(n)
+  let h = 0
+  let seg = 0
+  let segStart = 0
+  for (let i = 1; i < n; i++) {
+    const w = (i - 0.5) * TABLE_STEP
+    while (seg < segments.length - 1 && w > segStart + segments[seg][0]) segStart += segments[seg++][0]
+    const [len, g0, g1] = segments[seg]
+    const f = Math.min(1, Math.max(0, (w - segStart) / len))
+    h += (g0 + (g1 - g0) * f) * TABLE_STEP
+    out[i] = h
+  }
+  return out
+}
+function tableAt(t: Float32Array, w: number): number {
+  if (w <= 0) return t[0]
+  const f = w / TABLE_STEP
+  const i = Math.floor(f)
+  if (i >= t.length - 1) return t[t.length - 1]
+  return t[i] + (t[i + 1] - t[i]) * (f - i)
+}
+
+// ---- the big-air run, at scale 1 (every length and height multiplies by `scale`) ----
+//
+// Nathan's spec: "a big natural hill you can climb from any side, a dip, then a small
+// mountain to launch off". The first version used plain bell curves, and the big
+// hill's own crest (a 55 m vertical radius) launched cars at ~100 km/h straight into
+// the small mountain's face, skipping the dip and the launch. So each part is now
+// shaped by its curvature:
+//
+//  big hill   round, 32 m tall, 158 m in radius. Its whole top is a dome with a
+//             300 m vertical radius: a car crossing its top at up to ~180 km/h stays
+//             planted all the way down the dome (it speeds up as it drops, so the
+//             dome is wider than the top speed alone would need). Then a steady 0.35
+//             slope (19 degrees, climbable) and an 80 m-radius foot.
+//  dip        a shallow 3 m hollow between the two, so the car settles.
+//  kicker     12 m tall: a concave run-up (60 m radius) steepening to a 0.5 slope,
+//             a tight 30 m-radius crest that launches anything over ~62 km/h, and the
+//             ground falling away behind it (0.45 slope, easing out over 80 m) into
+//             open landing ground.
+const BIG_R = 158 //        big hill radius
+const BIG_U = -72 //        big hill centre, along the run
+const BIG_H = 32
+const DIP_U = 104
+const KICK_U = 125 //       where the kicker's run-up starts
+const KICK_HALF = 20 //     full height across +/- this...
+const KICK_FADE = 25 //     ...fading to nothing over this much more
+/** Big hill: height drop from its top, by distance from its centre. */
+const BIG_DROP = slopeProfile([
+  [105, 0, 0.35], // dome: slope grows at 1/300 per metre (300 m vertical radius)
+  [24.8, 0.35, 0.35], // steady side
+  [28, 0.35, 0], //  foot: 80 m radius
+])
+/** Kicker: height along the run from the foot of its run-up. */
+const KICK = slopeProfile([
+  [30, 0, 0.5], //    run-up, 60 m radius
+  [1.5, 0.5, 0.5],
+  [28.5, 0.5, -0.45], // the launch crest, 30 m radius
+  [2, -0.45, -0.45],
+  [36, -0.45, 0], //  falling away, then easing out (80 m radius)
+])
+const KICK_LEN = (KICK.length - 1) * TABLE_STEP
+/** Distance from the feature's centre beyond which a bigAir adds nothing (scale 1). */
+const BIGAIR_REACH = Math.max(-BIG_U + BIG_R, KICK_U + KICK_LEN) + 10
+
+function bigAirHeight(u: number, v: number, k: number): number {
+  let h = 0
+  // Big hill (round).
+  const r = Math.hypot(u - BIG_U * k, v) / k
+  if (r < BIG_R) h += (BIG_H - tableAt(BIG_DROP, r)) * k
+  // Dip.
+  h -= 3 * k * bell(u - DIP_U * k, v, 15 * k, 35 * k)
+  // Kicker (a ridge across the run).
+  const w = u / k - KICK_U
+  const av = Math.abs(v) / k
+  if (w > 0 && w < KICK_LEN && av < KICK_HALF + KICK_FADE) {
+    const across = av <= KICK_HALF ? 1 : (1 + Math.cos((Math.PI * (av - KICK_HALF)) / KICK_FADE)) / 2
+    h += tableAt(KICK, w) * k * across
+  }
+  return h
+}
+
+/** 0..1: how much a big-air run calms the rolling hills at an offset from its centre. */
+function bigAirCalm(f: TerrainFeature & { type: 'bigAir' }, dx: number, dz: number): number {
+  const k = f.scale ?? 1
+  const h = (f.headingDeg * Math.PI) / 180
+  const ax = Math.sin(h)
+  const az = -Math.cos(h)
+  const u = (dx * ax + dz * az) / k
+  const v = (-dx * az + dz * ax) / k
+  const FADE = 50
+  const hill = 1 - smoothstep(BIG_R, BIG_R + FADE, Math.hypot(u - BIG_U, v))
+  // The dip, the kicker and its landing ground.
+  const along = Math.max(BIG_U - u, u - (KICK_U + KICK_LEN + 60), 0)
+  const across = Math.max(Math.abs(v) - (KICK_HALF + KICK_FADE), 0)
+  const lane = u > BIG_U ? 1 - smoothstep(0, FADE, Math.hypot(along, across)) : 0
+  return Math.max(hill, lane)
+}
+
+/** Height a terrain feature adds at (x, z). */
 function featureHeight(f: TerrainFeature, x: number, z: number): number {
   const dx = x - f.x
   const dz = z - f.z
@@ -112,18 +216,27 @@ function featureHeight(f: TerrainFeature, x: number, z: number): number {
     const t = Math.hypot(dx, dz) / f.radius
     return f.height * (1 - smoothstep(0.55, 1, t))
   }
-  // bigAir: heading 0 = north (-z), 90 = east (+x).
+  // bigAir: heading 0 = north (-z), 90 = east (+x). u runs along the run, v across it.
   const k = f.scale ?? 1
   const h = (f.headingDeg * Math.PI) / 180
   const ax = Math.sin(h)
   const az = -Math.cos(h)
-  const u = dx * ax + dz * az //  along the run
-  const v = -dx * az + dz * ax // across it
-  return (
-    32 * k * bell(u + 70 * k, v, 42 * k, 42 * k) - //  the big hill (round: climb it from any side)
-    6 * k * bell(u - 20 * k, v, 20 * k, 34 * k) + //  the dip that loads the launch
-    14 * k * bell(u - 80 * k, v, 22 * k, 34 * k) //   the small mountain you fly off
-  )
+  const u = dx * ax + dz * az
+  const v = -dx * az + dz * ax
+  return bigAirHeight(u, v, k)
+}
+
+/** The big-air run's key points along its heading (scale 1), for tests and docs. */
+export const BIGAIR_LAYOUT = {
+  bigHillU: BIG_U,
+  bigHillRadius: BIG_R,
+  bigHillCrestRadius: 300,
+  dipU: DIP_U,
+  kickerFootU: KICK_U,
+  kickerCrestU: KICK_U + 30 + 1.5 + 28.5 * (0.5 / 0.95),
+  kickerCrestRadius: 30,
+  kickerEndU: KICK_U + KICK_LEN,
+  reach: BIGAIR_REACH,
 }
 
 /** Builds the natural ground for a track's environment. */
@@ -209,14 +322,20 @@ export function makeNaturalTerrain(env: Env): NaturalTerrain {
 
   const height = (x: number, z: number): number => {
     let h = base
-    if (relief > 0) h += relief * 0.8 * fbm(hills, x * invScale + 0.37, z * invScale - 0.71, 4)
+    let feat = 0
+    // A big-air run is a designed shape: the rolling hills fade out under it, or their
+    // own bumps would add crests that launch the car before the kicker.
+    let calm = 0
     for (let i = 0; i < features.length; i++) {
       const f = features[i]
       const dx = x - f.x
       const dz = z - f.z
       if (dx * dx + dz * dz > reach2[i]) continue
-      h += featureHeight(f, x, z)
+      feat += featureHeight(f, x, z)
+      if (f.type === 'bigAir') calm = Math.max(calm, bigAirCalm(f, dx, dz))
     }
+    if (relief > 0) h += relief * 0.8 * fbm(hills, x * invScale + 0.37, z * invScale - 0.71, 4) * (1 - calm)
+    h += feat
     if (edge === 'ridge') h += ridgeAt(x, z)
     return h
   }
@@ -464,7 +583,8 @@ function keepUnderRoad(grid: NaturalGrid, h: Float32Array, S: TrackSamples): voi
             lowered++
           }
         }
-        if (lowered === 0) for (const v of corners) h[v] -= drop
+        // Still poking up after a few passes (the road edge cuts the cell awkwardly): lower the whole cell.
+        if (lowered === 0 || pass >= 3) for (const v of corners) h[v] -= lowered === 0 ? drop : drop * 0.5
         fixed++
       }
     }

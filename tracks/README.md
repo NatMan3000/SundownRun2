@@ -34,6 +34,11 @@ Pieces (and the start line) say where they are with `at`: a road-point index plu
 - `at: 3.5` is halfway from point 3 to point 4.
 - `at: 3.9` is most of the way to point 4.
 - `at` must be at least 0 and less than the number of points. After the last point the road joins back to point 0, so with 20 points, `at: 19.5` is halfway from point 19 back to point 0.
+- `at` always refers to the points **in your file**, before anything is built. A loop adds road, but it never changes what `at` means.
+
+### Distances along the built road: `s`
+
+The checker reports places as `s=812 (at 7.4)`. `s` is metres along the **built** road from the start line, so it includes the extra road each loop adds (about 5 x radius). The `at` in brackets is the matching position in your file, which is the number you edit.
 
 ## The minimal complete track
 
@@ -126,17 +131,17 @@ Every piece has a `type` and an `at`.
 | type | Fields (defaults) | What it is |
 |---|---|---|
 | `boost` | `offset` 0 (metres right of the centre, minus = left), `length` 10, `width` 5, `strength` 1 | A glowing pad that kicks you forward. Centred on `at`. |
-| `ramp` | `offset` 0, `width` 8, `length` 12, `height` 2.4 | A curved kicker ramp. It grows out of the road with no bump and gets steeper toward the lip, which faces the driving direction. Its sides slope gently (about 18 degrees where the road has room) so clipping the edge rolls you up and off rather than flicking you. Centred on `at`. |
+| `ramp` | `offset` 0, `width` 8, `length` 12, `height` 2.4 | A curved kicker ramp. It grows out of the road with no bump and gets steeper toward the lip, which faces the driving direction. Its sides slope at about 35 degrees, so clipping the edge tips you up and off rather than flicking you sideways, and the slope stays narrow (about 1.4 x height wide) so the rest of the road is clear. An offset ramp leaves a lane beside it; `tracks:check --physics` drives that lane. Centred on `at`. |
 | `loop` | `radius` 12 (the loop is 2 x radius tall) | A corkscrew loop with magnetic grip. The road slides sideways over 80 m before it, goes up and over a teardrop loop (gentle at the bottom, tight at the top) while drifting across by the road width plus 1 m, then slides back over 80 m. The way in and the way out run side by side. The loop adds about 5 x radius metres of road. |
 | `wallride` | `side` (required: `"left"`, `"right"` or `"both"`), `length` 120, `height` 9 (the wall's curve radius) | A curved quarter-pipe wall along the edge, rising from the road through vertical to about 100 degrees, with magnetic grip. It runs `length` metres forward from `at` and ramps in and out over 15 m at each end. `both` makes a half-pipe. |
 | `speedtrap` | none | Measures and records your speed as you pass `at` |
 
 Placing pieces well:
 
-- **Loops** need a level straight: about 100 m before and after `at` with no bends (radius over 400 m) and no climb. Put a boost pad 100-150 m before the loop; the Ai takes loops at about 120 km/h.
+- **Loops** need a level straight: no bend tighter than a 400 m radius from 100 m before `at` to 100 m after it, and no climb. That 200 m already includes the 80 m sideways slides either side of the loop. Getting a truly straight road out of the spline: the road between points i and i+1 is only straight when points i-1, i, i+1 and i+2 all lie on one line. So for a straight, put at least four points in a line, and put the loop between the 2nd and 3rd of them (with points 100 m or more apart). A loop at the 4th of 5 points in a line sits where the curve already starts and gets flagged. Put a boost pad 100-150 m before the loop; the Ai takes loops at about 120 km/h.
 - **Wall rides** belong on the **outside** of a long bend: `right` on a left-hander, `left` on a right-hander.
 - **Ramps** work best on straights. A ramp that launches you into a tight corner is mean (the Ai slows down for it).
-- **Nothing but boosts and speed traps on the start grid**: keep other pieces at least 70 m before or 25 m after the start line.
+- **Nothing but boosts and speed traps on the start grid**: no other piece anywhere from 70 m before the start line to 25 m after it. The grid itself (12 slots) reaches 47 m behind the line. Put it on straight, flat road: the checker warns if anywhere from 50 m behind to 10 m after the line bends tighter than a 400 m radius or is banked more than 3 degrees.
 - Loops, wall rides and ramps each need their own stretch of road; overlapping ones get a warning.
 
 ### props
@@ -158,14 +163,14 @@ Energy-core spots. Each hunt round picks `hunt.count` of them.
 | `x`, `z` | metres | required | |
 | `y` | metres above the ground | 1.6 | Put some up high as a challenge, for example over a jump's landing. On a road, it is measured from the road surface. |
 
-Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corners, the foothills of the edge mountains.
+Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corners (off-road is fine, that's the point of the hunt), the foothills of the edge mountains. Keep cores out of a loop's footprint (the 40 m either side of its `at`), where the loop's own road passes overhead.
 
 ### environment
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `seed` | number | made from the `id` | Seed for everything random (hills, mountains, billboard picks). Change it to reshuffle the hills. |
-| `size` | metres, 400-6000 | 1600 | The world square's side. With a `ridge` edge, the mountains start rising about `0.15 x size + 30` metres in from the edge (200-330 m), so keep the road at least that plus 40 m in from the edge. The validator warns when a point is closer. |
+| `size` | metres, 400-6000 | 1600 | The world square's side. Keep every road point at least the **edge margin** in from the edge, i.e. `max(abs(x), abs(z)) <= size/2 - margin`. With a `ridge` edge the margin is `clamp(0.15 x size, 170, 300) + 70` (the mountains start that much minus 40 m in): 240 m for a 1000 m world, 310 m for 1600, 340 m for 1800, 370 m for 2000 or more. With a `wall` edge it is 40 m. The validator warns when a point is closer. |
 | `terrain` | object | required | See below |
 | `sky` | object | see below | |
 | `palette` | object | see below | |
@@ -192,7 +197,7 @@ Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corn
 | `hill` | `x`, `z`, `radius`, `height` | A round hill |
 | `bowl` | `x`, `z`, `radius`, `depth` | A round dip |
 | `mesa` | `x`, `z`, `radius`, `height` | A flat-topped hill with steep sides |
-| `bigAir` | `x`, `z`, `headingDeg`, `scale` (default 1, 0.3-3) | The big-air run: a big round hill you can climb from any side (32 m tall at scale 1), then a dip, then a small mountain whose upslope launches you, in that order along `headingDeg`. Scale 1 is about 260 m long, and `x, z` is the middle of the run. Put it off-road, but where players will see it from the road, and aim it at open ground so the landing is clear. |
+| `bigAir` | `x`, `z`, `headingDeg`, `scale` (default 1, 0.3-3) | The big-air run, in this order along `headingDeg`: a big round hill you can climb from any side (32 m tall, 140 m radius), a shallow dip, then a small 12 m mountain whose tight rounded crest launches you, with the ground falling away behind it for the landing. The big hill's top is a broad dome (220 m vertical radius), so a car stays planted over it up to about 165 km/h and only the small mountain throws it in the air (it launches anything over ~60 km/h). The rolling hills fade out under the run so their bumps can't spoil it. At scale 1 the run is about 420 m long, and `x, z` is its middle: the big hill's top is 72 m behind it, the launch crest 160 m ahead. Every length and height multiplies by `scale` (so crest radii do too). Put it off-road but where players will see it from the road, with about 150 m of open ground past the launch crest. `tracks:check --physics` sends a car over it at 100, 150 and 200 km/h and reports every jump. |
 
 **sky**
 
@@ -214,7 +219,7 @@ Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corn
 
 **city**: `azimuthDeg` (default: the sun's), `arcDeg` (120), `distance` (2.2 x size), `density` 0-1 (0.7). `false` means no city.
 
-**roadside**: `posts` is `{ spacing }` (default 45 m: smashable neon posts along both edges) or `false`. `billboards` is how many holographic billboards to place (default 10). The game picks billboard spots itself, 25-45 m out on the outside of bends, facing the road.
+**roadside**: `posts` is `{ spacing }` (default 45 m: smashable neon posts along both edges) or `false`. `billboards` is the most holographic billboards to place (default 10). The game picks the spots itself, 25-45 m out on the outside of bends, facing the road and clear of other road. A small or tightly packed track may have room for fewer, and the checker then prints a warning with the number placed.
 
 **music**: `mood` is `"cruise"`, `"drive"` (default), `"race"` or `"hyper"`. `bpm` defaults from the mood (92 / 108 / 122 / 132).
 
@@ -235,25 +240,31 @@ You never write these; they come from the file:
 |---|---|
 | `road` | Length, samples, tightest corner radius, steepest bank |
 | `height` | Road heights, how much is on the ground, terrain range |
-| `pieces`, `derived`, `racing`, `meshes`, `world`, `build` | What got built and how long it took |
-| `line` | The racing line is a real line: little of it pinned at the edge, never closer than the margin, never planning more grip than the car has |
-| `winding` | Every triangle faces the way its normal says (the game hides the back of a triangle, so a wrongly wound road would be invisible) |
-| `smooth` | No kinks: the sharpest turn per metre on the road and in loops |
-| `banking` | Banking leans into every corner and rolls gently (at most 1.5 degrees per metre), including across the start line |
-| `bridges` | Where the road passes over itself, the gap between the levels (needs 6.2 m) |
-| `ground` | The ground stays under the road everywhere, at every bank the slider allows, and meets the edge nearly flush |
-| `warning` | It works, but check it: tight corners, a loop on a bend, a piece on the grid, a road running into the mountains, a field name with a typo |
+| `pieces` | Every piece with where it ended up (`s` and `at`) |
+| `checkpts` | Where the lap checkpoints fell (`at`). They are spaced evenly from the start line; one that would land inside a loop moves to 10 m before it. |
+| `derived`, `racing`, `meshes`, `world`, `build` | What got built and how long it took |
+| `crests` | Every crest with its vertical radius and the speed above which a car goes light (leaves the ground): `sqrt(9.81 x radius)` |
+| `line` (gate) | The Ai racing line. Limits: no more than 35% of the lap pinned at the edge limit, no pinned stretch longer than 150 m, never closer to an edge than 2.5 m (3 m with walls), and planned grip at most 1.45 g. A FAIL names the limit it broke. The builder plans the line itself, so a failure means a corner is too abrupt: spread its points or add one so it tightens gradually. |
+| `winding` (gate) | Every triangle faces the way its normal says. The game hides the back of a triangle, so a wrongly wound road would be invisible. A FAIL is a builder bug, not your file. |
+| `smooth` (gate) | No kinks: the sharpest turn per metre is 4 degrees on the road and 9 in loops, and the roll is 4. A FAIL usually means a corner under ~15 m radius or two points almost on top of each other. |
+| `banking` (gate) | The road leans INTO every corner and its roll changes by at most 1.5 degrees per metre, including across the start line. Up to 5 m of lean the wrong way is allowed, because rolling smoothly through an S-bend means the lean trails the curve briefly. "Leaning out of a corner" means the auto-bank tilts the wrong way where the road curves (radius under 600 m, measured over 40 m). It usually happens at a point squeezed between two bends; move that point a little so the bend flows. Lean caused on purpose by a `bank` override (off-camber) is allowed and reported separately, never as a failure. |
+| `bridges` (gate) | Where the road passes over itself, the gap between the levels (needs 6.2 m) |
+| `ground` (gate) | The ground stays under the road everywhere (3 cm tolerance), at every bank the slider allows, and meets the edge nearly flush (median under 10 cm). A FAIL is a builder bug, not your file. |
+| `warning` | It works, but check it: tight corners, a loop on a bend, a piece on the grid, the grid on a bend, fewer billboards than asked, a road running into the mountains, a field name with a typo |
+| `result` | ✓ OK or ✗ FAILED for this track |
 
-Add `--physics` to drop and fire test cars in a real physics world (the same rapier the game runs): the terrain collider matches the ground, cars rest on the road, cars fired at 60 m/s onto every kind of surface stay on top, frictionless cars slid along the road into every loop, ramp, wall ride and checkpoint never hit a face, a 12 x 12 drop grid over the whole world holds, cars fired at the edge at 90 m/s from 24 directions (plus 5 straight into the sunset notch) stay inside, and the catch floor works. Add `--bench` for build and query timings.
+Add `--physics` to drop and fire test cars in a real physics world (the same rapier the game runs): the terrain collider matches the ground, cars rest on the road, cars fired at 60 m/s onto every kind of surface stay on top, frictionless cars slid along the road into every loop, ramp, wall ride and checkpoint never hit a face, a car sent over every big-air run at 100 and 150 km/h stays planted over the big hill and flies off the launch crest, a 12 x 12 drop grid over the whole world holds, cars fired at the edge at 90 m/s from 24 directions (plus 5 straight into the sunset notch) stay inside, and the catch floor works. Add `--bench` for build and query timings.
 
-Anything marked FAIL, or an error, makes the command exit with code 1.
+Every FAIL row prints a `fix:` line saying what to change. Anything marked FAIL, or an error, makes the command exit with code 1, and the last line counts failed **tracks** ("1 of 3 track(s) failed"), not failed rows.
+
+If a physics `drive-through` hit is reported, something solid crosses the road there, usually two pieces overlapping or a loop on a bend or slope. The message gives the `at` to look at.
 
 ## Design tips
 
 - **Keep corners above a 25 m radius.** A tighter one gets a warning, and cars struggle.
 - **Spacing.** Points 60-150 m apart make flowing roads. Use closer points only where you want a tight shape (a hairpin needs 4-5 points round it).
-- **Crests that unload the car**: three points about 40-55 m apart, the middle one with `lift` 2.5-3.5. Run `bun run tracks:check`: a crest with a vertical radius of 120-140 m goes light at about 130 km/h.
+- **Crests that unload the car**: three points about 40-55 m apart, the middle one with `lift` 2.5-3.5. Run `bun run tracks:check` and read the `crests` row: a vertical radius of 120-140 m goes light at about 130 km/h. Smaller radius means lighter at lower speed.
 - **Bridges**: give the upper road `lift` 8 or more where it crosses (the gap must be at least 6.2 m: a slab plus a car). The validator warns when the lifts at a crossing are less than 6.2 m apart, and `tracks:check` measures the real gap.
 - **Elevation**: let the terrain do it (`relief`, `hill` features). The road follows the ground through its points.
-- **Start line**: on a straight, pointing at the sun (`sunAzimuthDeg`), with at least 60 m of clear road behind it for the grid.
+- **Start line**: on a straight, pointing at the sun (`sunAzimuthDeg`), with at least 50 m of straight, flat road behind it for the grid and no pieces from 70 m behind the line to 25 m after it.
 - **Stay inside the world edge**: see `size` above. The validator warns when a point is too close.

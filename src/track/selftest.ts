@@ -18,19 +18,34 @@
 //   5. The world edge: boxes fired outward at 90 m/s from 24 bearings
 //      stay inside world.playRadius.
 //   6. The catch floor catches anything that gets below the ground.
+//   7. Every big-air run: at 100 and 150 km/h a car stays planted over the big
+//      hill and only flies off the kicker (200 km/h is reported, not judged).
 // ============================================================
 
 import type { Collider, Rapier, RigidBody } from './rapierTypes'
 import type { TrackRuntime, NearestHit, TrackFrame } from './types'
 import { SURFACE_CODE } from './types'
-import { requiredClearance } from './terrain'
+import { requiredClearance, BIGAIR_LAYOUT } from './terrain'
+import { trackInternals } from './build'
 import { createRoadColliders, createWorldColliders } from './colliders'
 import { createTerrainTiles } from './terrainTiles'
+import { SIDE_RUN } from './ramps'
 import { surfaceOf } from '../core/physics'
 import * as THREE from 'three'
 
 /** Half extents of a car-sized test box, metres (a car is about 1.9 x 1.2 x 4.3). */
 const CAR = { hx: 0.95, hy: 0.55, hz: 2.15 }
+
+/**
+ * A road position for messages: "s=812 (at 7.4)". s is metres along the built road
+ * from the start line (loops included); at is the control-point position in the file
+ * (point index + fraction), which is what you edit.
+ */
+export function where(t: TrackRuntime, s: number): string {
+  const x = trackInternals(t)
+  const sw = t.wrapS(s)
+  return x ? `s=${sw.toFixed(0)} (at ${x.atOfS(sw).toFixed(1)})` : `s=${sw.toFixed(0)}`
+}
 
 /**
  * Worst gap between the ground and the road surface, measured across every
@@ -185,10 +200,12 @@ export function windingErrors(t: TrackRuntime): Record<string, { bad: number; to
  * including across the start-line seam) and how many metres lean the wrong way by
  * more than 2 degrees out of a clearly curved bit of road (curvature averaged over
  * +/-20 m, radius under 600 m).
- * Bank overrides in the file can lean on purpose (off-camber), so those are reported
- * by the caller, not judged here.
+ * Where a `bank` override in the file makes the road lean out on purpose (off-camber),
+ * those metres are counted separately as overrideOut and not treated as a fault.
  */
-export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; wrongSign: number; wrongAt: number } {
+export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; wrongSign: number; wrongAt: number; overrideOut: number } {
+  const over = trackInternals(t)?.overrideWeight
+  let overrideOut = 0
   const S = t.samples
   const n = S.count
   const W = Math.max(1, Math.round(20 / S.ds))
@@ -210,12 +227,17 @@ export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; w
     const bankDeg = (S.bank[i] * 180) / Math.PI
     // + bank = left edge up = leaning into a right-hander (+ curvature).
     if (S.surface[i] === SURFACE_CODE.road && Math.abs(kAvg) > 1 / 600 && Math.abs(bankDeg) > 2 && Math.sign(bankDeg) !== Math.sign(kAvg)) {
-      wrongSign++
-      if (wrongAt < 0) wrongAt = i * S.ds
+      // Leaning out of a corner because the FILE asks for it (a negative bank override,
+      // off-camber on purpose) is allowed and counted separately; the builder doing it is a fault.
+      if (over && over[i] > 0.5) overrideOut++
+      else {
+        wrongSign++
+        if (wrongAt < 0) wrongAt = i * S.ds
+      }
     }
     sum += S.curvature[(i + W + 1) % n] - S.curvature[(i - W + n) % n]
   }
-  return { maxRate, rateAt, wrongSign: Math.round(wrongSign * S.ds), wrongAt }
+  return { maxRate, rateAt, wrongSign: Math.round(wrongSign * S.ds), wrongAt, overrideOut: Math.round(overrideOut * S.ds) }
 }
 
 /**
@@ -443,7 +465,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       const sz = frame.position.z
       const ss = s
       shots.push({
-        what: `road s=${s.toFixed(0)}`,
+        what: `road ${where(t, s)}`,
         x: sx,
         y: sy + 4,
         z: sz,
@@ -475,7 +497,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         const hw = frame.halfWidth
         const start = base.clone().addScaledVector(o, hw - 3).addScaledVector(frame.up, 1)
         shots.push({
-          what: `barrier (${side > 0 ? 'right' : 'left'}) s=${s.toFixed(0)}`,
+          what: `barrier (${side > 0 ? 'right' : 'left'}) ${where(t, s)}`,
           x: start.x,
           y: start.y,
           z: start.z,
@@ -576,7 +598,14 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         // Straight up the ramp, and (for an offset ramp) past it on the centreline, clipping its side slope.
         const off = (pc.source as { offset?: number }).offset ?? 0
         runs.push({ what: 'ramp', s: pc.s0 - 25, until: pc.s1 + 5, v: 30, lat: off })
-        if (Math.abs(off) > 0.5) runs.push({ what: 'beside an offset ramp', s: pc.s0 - 25, until: pc.s1 + 5, v: 30, lat: 0 })
+        // And past an offset ramp in the clear lane beside it (just outside its sloped side).
+        if (Math.abs(off) > 0.5) {
+          const src = pc.source as { width?: number; height?: number }
+          const clear = (src.width ?? 8) / 2 + SIDE_RUN * (src.height ?? 2.4) + CAR.hx + 0.3
+          const lat = off - Math.sign(off) * clear
+          t.frameAt(pc.s0, frame)
+          if (Math.abs(lat) + CAR.hx < frame.halfWidth) runs.push({ what: 'beside an offset ramp', s: pc.s0 - 25, until: pc.s1 + 5, v: 30, lat })
+        }
       }
       else if (pc.type === 'wallride') runs.push({ what: 'wall ride', s: pc.s0 - 20, until: pc.s0 + Math.min(span, 60), v: 30 })
     }
@@ -615,11 +644,25 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         t.nearest(p.x, p.y, p.z, hit2, sNow)
         sNow = hit2.s
         if (t.deltaS(r.until, sNow) >= 0) break
+        // Steer like a driver: keep the box heading along the road (drop any sideways
+        // drift), so it follows bends instead of sliding off the outside of them.
+        t.frameAt(sNow, frame)
+        const vt = lv.x * frame.tangent.x + lv.y * frame.tangent.y + lv.z * frame.tangent.z
+        const vu = lv.x * frame.up.x + lv.y * frame.up.y + lv.z * frame.up.z
+        body.setLinvel(
+          { x: frame.tangent.x * vt + frame.up.x * vu, y: frame.tangent.y * vt + frame.up.y * vu, z: frame.tangent.z * vt + frame.up.z * vu },
+          true,
+        )
+        negRight.copy(frame.right).negate()
+        basis.makeBasis(negRight, frame.up, frame.tangent)
+        quat.setFromRotationMatrix(basis)
+        const ang = body.angvel()
+        if (Math.abs(ang.y) > 0) body.setAngvel({ x: ang.x, y: 0, z: ang.z }, true)
       }
       // Gravity alone on a vertical loop face is ~10 m/s^2; a face across the lane is hundreds.
       if (worstDecel > 40) {
         fails++
-        if (failed.length < 6) failed.push(`${r.what} (from s=${r.s.toFixed(0)} at ${r.v} m/s): ${worstDecel.toFixed(0)} m/s^2 jolt, stopped near s=${sNow.toFixed(0)}`)
+        if (failed.length < 6) failed.push(`${r.what} (from ${where(t, r.s)} at ${r.v} m/s): ${worstDecel.toFixed(0)} m/s^2 jolt, stopped near ${where(t, sNow)}. Something solid crosses the road there: check for a piece overlapping another, or a loop on a bend or slope`)
       }
       world.removeRigidBody(body)
     }
@@ -721,6 +764,65 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     if (!pass) ok = false
     lines.push(`${pass ? 'ok  ' : 'FAIL'} catch floor: a box below the reset height landed at y ${p.y.toFixed(1)} (floor top ${t.world.catchFloorY.toFixed(1)}, reset below ${t.world.resetY.toFixed(1)})`)
     world.removeRigidBody(body)
+  }
+
+  // ---- 7. big-air runs: planted over the big hill, launched by the kicker ----
+  for (const f of t.file.environment.terrain.features) {
+    if (f.type !== 'bigAir') continue
+    const k = f.scale ?? 1
+    const hd = (f.headingDeg * Math.PI) / 180
+    const ax = Math.sin(hd)
+    const az = -Math.cos(hd)
+    const crestU = BIGAIR_LAYOUT.kickerCrestU * k
+    const results: string[] = []
+    let pass = true
+    for (const kmh of [100, 150, 200]) {
+      const v0 = kmh / 3.6
+      const u0 = BIGAIR_LAYOUT.bigHillU * k
+      const x0 = f.x + ax * u0
+      const z0 = f.z + az * u0
+      quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(ax, az))
+      const body = spawnBox(x0, t.terrainHeight(x0, z0) + CAR.hy + 0.05, z0, quat, ax * v0, 0, az * v0)
+      const col = body.collider(0)
+      // Low friction so the box keeps its speed like a car under power would.
+      col.setFriction(0.02)
+      col.setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
+      const flights: { from: number; to: number; time: number }[] = []
+      let flying = false
+      let from = 0
+      let tAir = 0
+      for (let i = 0; i < 60 * 25; i++) {
+        world.step()
+        let touching = false
+        world.contactPairsWith(col, (other) => {
+          world.contactPair(col, other, (m) => {
+            if (m.numContacts() > 0) touching = true
+          })
+        })
+        const p = body.translation()
+        const u = (p.x - f.x) * ax + (p.z - f.z) * az
+        if (!touching && !flying) {
+          flying = true
+          from = u
+          tAir = 0
+        } else if (!touching && flying) tAir += 1 / 60
+        else if (touching && flying) {
+          flying = false
+          // A box has no suspension: ignore skips under 0.3 s, count real air.
+          if (tAir > 0.3) flights.push({ from, to: u, time: tAir })
+          if (from >= crestU - 15 * k) break
+        }
+        if (u > (BIGAIR_LAYOUT.kickerEndU + 400) * k) break
+      }
+      world.removeRigidBody(body)
+      const early = flights.find((fl) => fl.from < crestU - 15 * k)
+      const launch = flights.find((fl) => fl.from >= crestU - 15 * k)
+      if (kmh <= 150 && (early || !launch)) pass = false
+      const describe = (fl: { from: number; to: number; time: number }) => `${fl.time.toFixed(1)} s from u ${fl.from.toFixed(0)} to ${fl.to.toFixed(0)}`
+      results.push(`${kmh} km/h: ${flights.length ? flights.map(describe).join(', ') : 'never left the ground'}`)
+    }
+    if (!pass) ok = false
+    lines.push(`${pass ? 'ok  ' : 'FAIL'} big-air run at (${f.x}, ${f.z}): starting on the big hill's top (u ${(BIGAIR_LAYOUT.bigHillU * k).toFixed(0)}), the kicker crest is at u ${crestU.toFixed(0)}. ${results.join('; ')}`)
   }
 
   world.free()

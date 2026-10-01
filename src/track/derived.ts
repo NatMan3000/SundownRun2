@@ -23,11 +23,23 @@ const G = 9.81
 
 // ---------------------------------------------------------------- checkpoints
 
-/** 8-16 sector lines spaced evenly, the first on the start line. */
-export function makeCheckpoints(length: number): Float32Array {
+/**
+ * 8-16 sector lines spaced evenly, the first on the start line. A line that would
+ * fall inside a loop moves back to 10 m before the loop's entry (a lap checker or a
+ * respawn should never have to stand on a loop).
+ */
+export function makeCheckpoints(length: number, avoid: { s0: number; s1: number }[] = []): Float32Array {
   const n = clamp(Math.round(length / 200), 8, 16)
   const out = new Float32Array(n)
-  for (let k = 0; k < n; k++) out[k] = (k * length) / n
+  for (let k = 0; k < n; k++) {
+    let s = (k * length) / n
+    for (const a of avoid) {
+      const d = (((s - a.s0) % length) + length) % length
+      const span = (((a.s1 - a.s0) % length) + length) % length
+      if (k > 0 && d <= span) s = (((a.s0 - 10) % length) + length) % length
+    }
+    out[k] = s
+  }
   return out
 }
 
