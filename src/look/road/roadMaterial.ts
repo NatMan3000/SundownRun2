@@ -37,6 +37,8 @@ import { ROAD_GLSL } from './glsl'
 /** Most boost pads / speed traps one track can show (extra ones are skipped with a warning). */
 export const MAX_BOOSTS = 32
 export const MAX_TRAPS = 4
+/** Most loops / wall rides per track whose slab sides get hoops (skirt shader). */
+export const MAX_RANGES = 8
 
 export interface RoadLook {
   /** Track accent for the edge strips (file.environment.palette.edge). */
@@ -51,6 +53,11 @@ export interface RoadLook {
   boosts: readonly { s0: number; s1: number; lat0: number; lat1: number }[]
   /** Speed trap lines (s). */
   traps: readonly number[]
+  /** Loop and wall-ride pieces along the road (s0..s1): their slab sides get hoops / ribs. */
+  loops: readonly { s0: number; s1: number }[]
+  walls: readonly { s0: number; s1: number }[]
+  /** The megacity's compass direction and spread (null = no city), for its glow on the wet road at night. */
+  city: { azimuthDeg: number; arcDeg: number } | null
 }
 
 /** Uniforms the road shader reads. Shared so RoadView can animate time. */
@@ -79,7 +86,40 @@ export function makeRoadUniforms(look: RoadLook) {
     uBoostCount: { value: Math.min(MAX_BOOSTS, look.boosts.length) },
     uTrap: { value: trapValues(look) },
     uTrapCount: { value: Math.min(MAX_TRAPS, look.traps.length) },
+    uLoopRange: { value: rangeVectors(look.loops) },
+    uLoopCount: { value: Math.min(MAX_RANGES, look.loops.length) },
+    uWallRange: { value: rangeVectors(look.walls) },
+    uWallCount: { value: Math.min(MAX_RANGES, look.walls.length) },
+    // The player's headlights (HeadlightRig writes headlightState; RoadView ticks these).
+    uHeadPos: { value: new THREE.Vector3() },
+    uHeadDir: { value: new THREE.Vector3(0, 0, 1) },
+    uHeadOn: { value: 0 },
+    uHeadColor: { value: c(PALETTE.laneLine) },
+    // The city's lit skyline, mirrored in the wet road at night.
+    uCityDir: { value: cityDir(look) },
+    uCityCos: { value: cityCos(look) },
+    uCityOn: { value: 0 },
+    uCityWarm: { value: c(PALETTE.cityWindowWarm) },
+    uCityCool: { value: c(PALETTE.cityWindowCool) },
   }
+}
+
+function rangeVectors(list: readonly { s0: number; s1: number }[]): THREE.Vector2[] {
+  const out: THREE.Vector2[] = []
+  for (let i = 0; i < MAX_RANGES; i++) out.push(list[i] ? new THREE.Vector2(list[i].s0, list[i].s1) : new THREE.Vector2(-1e6, -1e6))
+  return out
+}
+
+/** Unit xz vector toward the city (0 deg = north = -z, 90 = east = +x). */
+function cityDir(look: RoadLook): THREE.Vector2 {
+  const a = THREE.MathUtils.degToRad(look.city?.azimuthDeg ?? 0)
+  return new THREE.Vector2(Math.sin(a), -Math.cos(a))
+}
+
+/** cos of the city's half arc (outer edge) and of 70% of it (fully lit). */
+function cityCos(look: RoadLook): THREE.Vector2 {
+  const half = THREE.MathUtils.degToRad((look.city?.arcDeg ?? 0) / 2)
+  return look.city ? new THREE.Vector2(Math.cos(half), Math.cos(half * 0.7)) : new THREE.Vector2(2, 3)
 }
 
 function boostVectors(look: RoadLook): THREE.Vector4[] {
@@ -112,6 +152,12 @@ varying float vHalf;
 varying float vCurv;
 varying float vKind;
 varying float vS;
+varying vec3 vRoadWorld;
+`
+
+const vertexWorld = /* glsl */ `
+#include <project_vertex>
+vRoadWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
 `
 
 const vertexMain = /* glsl */ `
@@ -148,6 +194,16 @@ uniform vec4 uBoost[${MAX_BOOSTS}];
 uniform int uBoostCount;
 uniform float uTrap[${MAX_TRAPS}];
 uniform int uTrapCount;
+uniform vec3 uHeadPos;
+uniform vec3 uHeadDir;
+uniform float uHeadOn;
+uniform vec3 uHeadColor;
+uniform vec2 uCityDir;
+uniform vec2 uCityCos;
+uniform float uCityOn;
+uniform vec3 uCityWarm;
+uniform vec3 uCityCool;
+varying vec3 vRoadWorld;
 ${ROAD_GLSL}
 // Signed distance along the road from b to a, wrapped into (-L/2, L/2].
 float sr2SDelta(float a, float b) {
@@ -192,7 +248,7 @@ float xs = dEdge - STRIP_IN;
 float tube = sr2Line(xs, STRIP_HW, wLat);
 float tubeCore = sr2Line(xs, STRIP_HW * 0.32, wLat);
 // The tube's glow on the wet road beside it (a reflection, under the bloom line).
-float spill = exp(-max(abs(xs) - STRIP_HW, 0.0) / 0.9) * (1.0 - tube) * step(-0.4, dEdge);
+float spill = exp(-max(abs(xs) - STRIP_HW, 0.0) / 0.7) * (1.0 - tube) * step(-0.4, dEdge);
 
 // ---- lane lines between lanes, dashed along the road
 float laneU = (lat / hw * 0.5 + 0.5) * uLanes;
@@ -304,7 +360,7 @@ const fragmentEmissive = /* glsl */ `
   // the tube: coloured body at T2, a whiter core inside it
   vec3 em = edgeCol * tube * uGlowT2 + mix(edgeCol, vec3(1.0), 0.6) * tubeCore * uGlowT2 * 0.45;
   // its glow on the wet road (T0: under the bloom line, it reads as reflection)
-  em += edgeCol * spill * (0.16 + 0.34 * wet) * (1.0 + 0.8 * uNight) * uGlowT0;
+  em += edgeCol * spill * (0.16 + 0.34 * wet) * (1.0 + 0.6 * uNight) * uGlowT0;
   em += uLaneColor * lane * uGlowT1;
   em += uChevColor * chev * mix(uGlowT0 * 0.55, uGlowT2, chevPulse);
   em += uLoopColor * ring * uGlowT2;
@@ -312,8 +368,49 @@ const fragmentEmissive = /* glsl */ `
   em += uBoostColor * (boostArrow * uGlowT2 + boostEdge * uGlowT1 + boostFill * 0.16);
   em += uTrapColor * trap * uGlowT2;
   em += uLaneColor * start * uGlowT1;
+
+  vec3 viewW = normalize(vRoadWorld - cameraPosition);
+  vec3 nW = inverseTransformDirection(normal, viewMatrix);
+
+  // The player's headlights. The real spot lights light everything, but this
+  // road is near-black glass, so their pool is drawn here too, and painted
+  // lines flare in the beam the way retroreflective road paint does.
+  if (uHeadOn > 0.001) {
+    vec3 toP = vRoadWorld - uHeadPos;
+    float dist = length(toP);
+    float cone = smoothstep(0.86, 0.975, dot(toP / max(dist, 1e-3), uHeadDir));
+    float beam = cone * uHeadOn / (1.0 + dist * dist * 0.0022) * (1.0 - smoothstep(50.0, 75.0, dist));
+    em += uHeadColor * beam * (0.05 + 0.10 * (1.0 - wet));
+    em += uHeadColor * (lane + start) * beam * uGlowT1 * 0.9 + uChevColor * chev * beam * uGlowT1 * 0.6;
+  }
+
+  // The lit city skyline mirrored in the wet road at night: the horizon band
+  // around the city's compass direction, broken into building columns.
+  if (uCityOn > 0.001) {
+    vec3 rW = reflect(viewW, nW);
+    // Ripples on a wet road smear reflections into long vertical streaks, so
+    // the band reaches much higher than the skyline itself (fading as it goes).
+    float band = smoothstep(-0.01, 0.004, rW.y) * (1.0 - smoothstep(0.0, 0.22, rW.y));
+    vec2 rh = normalize(rW.xz + vec2(1e-5, 0.0));
+    float arc = smoothstep(uCityCos.x, uCityCos.y, dot(rh, uCityDir));
+    if (band * arc > 0.001) {
+      float az = atan(rh.y, rh.x);
+      float lit = smoothstep(0.35, 0.8, sr2Noise(vec2(az * 60.0, 0.5)));
+      vec3 cityCol = mix(uCityWarm, uCityCool, step(0.5, sr2Noise(vec2(az * 23.0, 3.0))));
+      float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(nW, -viewW), 0.0, 1.0), 5.0);
+      em += cityCol * band * arc * lit * fres * (0.35 + 0.65 * wet) * uCityOn * 1.1;
+    }
+  }
   totalEmissiveRadiance += em;
 }
+`
+
+// HDR safety: a mirror-wet highlight can exceed what a half-float pixel holds
+// (65504) and turn into infinity, which bloom then smears over the whole frame.
+// Nothing on the road needs to be brighter than this.
+const fragmentClamp = /* glsl */ `
+outgoingLight = min(outgoingLight, vec3(48.0));
+#include <opaque_fragment>
 `
 
 // The sun's analytic highlight on a mirror-wet road is a white-hot slab that
@@ -340,15 +437,17 @@ export function makeRoadMaterial(uniforms: RoadUniforms): THREE.MeshStandardMate
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${vertexPars}`)
       .replace('#include <uv_vertex>', `#include <uv_vertex>\n${vertexMain}`)
+      .replace('#include <project_vertex>', vertexWorld)
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${fragmentPars}`)
+      .replace('#include <opaque_fragment>', fragmentClamp)
       .replace('#include <roughnessmap_fragment>', fragmentFields)
       .replace('#include <normal_fragment_maps>', fragmentNormal)
       .replace('#include <emissivemap_fragment>', fragmentEmissive)
       .replace('#include <lights_fragment_end>', fragmentLightsEnd)
   }
   // One program for every road material (the shader text never changes).
-  mat.customProgramCacheKey = () => 'sr2-road-v3'
+  mat.customProgramCacheKey = () => 'sr2-road-v4'
   return mat
 }
 

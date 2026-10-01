@@ -25,6 +25,7 @@ import type { RoadLook, RoadUniforms } from './roadMaterial'
 import { makeSkirtMaterial } from './skirtMaterial'
 import { makeBarrierMaterial, makeRampMaterial } from './pieceMaterials'
 import { SpeedTrapSigns } from './SpeedTrapSign'
+import { headlightState } from '../fx/HeadlightRig'
 
 /** Wrap the runtime's arrays in a BufferGeometry (no copies: the arrays are shared). */
 export function geometryFrom(buf: MeshBuffers): THREE.BufferGeometry {
@@ -41,7 +42,9 @@ export function geometryFrom(buf: MeshBuffers): THREE.BufferGeometry {
   return g
 }
 
-export function roadLookFor(track: Pick<TrackRuntime, 'file' | 'length' | 'boostZones' | 'speedTraps'>): RoadLook {
+export function roadLookFor(track: Pick<TrackRuntime, 'file' | 'length' | 'boostZones' | 'speedTraps' | 'pieces'>): RoadLook {
+  const env = track.file.environment
+  const city = env.city
   return {
     edge: track.file.environment.palette?.edge ?? PALETTE.roadEdge,
     lanes: lanesFor(track.file.road.width),
@@ -49,6 +52,9 @@ export function roadLookFor(track: Pick<TrackRuntime, 'file' | 'length' | 'boost
     length: track.length,
     boosts: track.boostZones.map((z) => ({ s0: z.s0, s1: z.s1, lat0: z.lat0, lat1: z.lat1 })),
     traps: track.speedTraps.map((t) => t.s),
+    loops: track.pieces.filter((p) => p.type === 'loop').map((p) => ({ s0: p.s0, s1: p.s1 })),
+    walls: track.pieces.filter((p) => p.type === 'wallride').map((p) => ({ s0: p.s0, s1: p.s1 })),
+    city: city ? { azimuthDeg: city.azimuthDeg ?? env.sky?.sunAzimuthDeg ?? 0, arcDeg: city.arcDeg ?? 120 } : null,
   }
 }
 
@@ -58,6 +64,11 @@ export function tickRoadUniforms(u: RoadUniforms, elapsed: number): void {
   u.uTime.value = elapsed % 600
   u.uNight.value = environment.night
   u.uDirectSpec.value = 0.35 + 0.65 * environment.night
+  u.uHeadOn.value = headlightState.strength
+  u.uHeadPos.value.copy(headlightState.position)
+  u.uHeadDir.value.copy(headlightState.direction)
+  // windows come on from timeOfDay 0.2 to 0.9 (constitution)
+  u.uCityOn.value = THREE.MathUtils.smoothstep(environment.timeOfDay, 0.2, 0.9)
 }
 
 function triCount(g: THREE.BufferGeometry): number {

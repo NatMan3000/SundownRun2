@@ -26,6 +26,16 @@ const INTENSITY = 700
 const _local = new THREE.Vector3()
 const _target = new THREE.Vector3(0, -0.9, 18)
 
+/**
+ * Where the player's headlights are this frame (midpoint of the two lamps,
+ * beam direction, 0..1 strength). The road shader draws their pool from this.
+ */
+export const headlightState = {
+  position: new THREE.Vector3(),
+  direction: new THREE.Vector3(0, 0, 1),
+  strength: 0,
+}
+
 function playerCar(): CarState | null {
   for (let i = 0; i < cars.length; i++) if (cars[i].kind === 'player') return cars[i]
   return null
@@ -48,6 +58,12 @@ export function HeadlightRig() {
   useFrame(() => {
     const car = playerCar()
     const strength = car && car.anchors ? environment.headlights : 0
+    headlightState.strength = strength
+    if (car && car.anchors && strength > 0) {
+      const hl = car.anchors.headLights
+      headlightState.position.set(0, hl.length ? hl[0].y : 0.5, hl.length ? hl[0].z : 2).applyQuaternion(car.quaternion).add(car.position)
+      headlightState.direction.copy(_target).normalize().applyQuaternion(car.quaternion)
+    }
     for (let k = 0; k < 2; k++) {
       const light = rig.lights[k]
       light.intensity = strength * INTENSITY

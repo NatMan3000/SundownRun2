@@ -27,7 +27,7 @@ export const lookState = {
     dpr: 1,
   },
   post: {
-    toneMapping: 'aces' as 'aces' | 'agx' | 'neutral',
+    toneMapping: 'neutral' as 'aces' | 'agx' | 'neutral',
     exposure: 1,
     bloom: false,
     bloomIntensity: 0,

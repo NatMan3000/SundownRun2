@@ -10,8 +10,10 @@
 //                   channel) blooms, so the glow tiers in palette.ts
 //                   decide what glows: T0 never, T1 a soft halo, T2
 //                   the hero glow, T3 a flash.
-//    3. ToneMapping ACES filmic by default (AgX and Neutral can be
-//                   tried with __dev.lookPost). The ONLY tone map in
+//    3. ToneMapping Khronos PBR Neutral (art direction ruling: it keeps
+//                   the sun's yellow -> orange -> pink bands and the
+//                   saturated neon; ACES and AgX can be compared with
+//                   __dev.lookPost). The ONLY tone map in
 //                   the frame: the renderer's own is switched off
 //                   while this stack is mounted, or the picture
 //                   would be tone mapped twice and go milky.
@@ -63,9 +65,9 @@ const TONE_MODES: Record<ToneName, number> = {
 
 /** Tunables (dev command can change them live). */
 const tune = {
-  toneMapping: 'aces' as ToneName,
-  /** ACES in three multiplies by exposure / 0.6, so 0.8 is already a lift. */
-  exposure: 0.82,
+  toneMapping: 'neutral' as ToneName,
+  /** Neutral is close to identity below 0.76, so exposure 1 keeps the palette as written. */
+  exposure: 1.0,
   bloom: true,
   intensity: 0.95,
   threshold: 1.0,

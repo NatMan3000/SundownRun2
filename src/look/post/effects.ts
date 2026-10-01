@@ -33,9 +33,16 @@ const lensFragment = /* glsl */ `
 uniform float uAmount;
 uniform float uMaxOffset;
 
+// HDR guard: a pixel that overflowed half-float (infinity) or went NaN would
+// otherwise poison bloom and tone mapping. This effect runs first in the pass.
+vec3 sr2Safe(vec3 c) {
+  bvec3 bad = bvec3(isnan(c.r) || isinf(c.r), isnan(c.g) || isinf(c.g), isnan(c.b) || isinf(c.b));
+  return any(bad) ? vec3(0.0) : min(c, vec3(64.0));
+}
+
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   if (uAmount <= 0.0) {
-    outputColor = inputColor;
+    outputColor = vec4(sr2Safe(inputColor.rgb), inputColor.a);
     return;
   }
   // Split grows with distance from the centre, so the car stays sharp.
@@ -44,7 +51,7 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   vec2 off = d * (uMaxOffset * uAmount) * (0.25 + 3.0 * r2);
   float red = texture2D(inputBuffer, uv + off).r;
   float blue = texture2D(inputBuffer, uv - off).b;
-  outputColor = vec4(red, inputColor.g, blue, inputColor.a);
+  outputColor = vec4(sr2Safe(vec3(red, inputColor.g, blue)), inputColor.a);
 }
 `
 
@@ -201,6 +208,9 @@ varying vec2 vUv;
 
 void main() {
   vec4 texel = texture2D(inputBuffer, vUv);
+  // never let an overflowed (infinite) or NaN pixel into the blur chain
+  bool bad = isnan(texel.r) || isnan(texel.g) || isnan(texel.b) || isinf(texel.r) || isinf(texel.g) || isinf(texel.b);
+  texel.rgb = bad ? vec3(0.0) : min(texel.rgb, vec3(64.0));
   float m = max(max(texel.r, texel.g), texel.b);
   float knee = max(smoothing, 1e-4);
   float soft = clamp(m - threshold + knee, 0.0, 2.0 * knee);
