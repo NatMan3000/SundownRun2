@@ -1,0 +1,158 @@
+{
+  "format": "sundown-run-track",
+  "version": 1,
+  "id": "hyperdrome",
+  "name": "The Hyperdrome",
+  "author": "Sundown Run Two",
+  "description": "An enclosed neon stadium oval for flat-out top speed. Two 600 m straights, steep banked ends you can tilt live, and a speed trap halfway down the main straight.",
+  "laps": 5,
+  "road": {
+    "points": [
+      {
+        "x": -300,
+        "z": 180
+      },
+      {
+        "x": -150,
+        "z": 180
+      },
+      {
+        "x": 0,
+        "z": 180
+      },
+      {
+        "x": 150,
+        "z": 180
+      },
+      {
+        "x": 300,
+        "z": 180
+      },
+      {
+        "x": 390.0,
+        "z": 155.88
+      },
+      {
+        "x": 455.88,
+        "z": 90.0
+      },
+      {
+        "x": 480.0,
+        "z": 0.0
+      },
+      {
+        "x": 455.88,
+        "z": -90.0
+      },
+      {
+        "x": 390.0,
+        "z": -155.88
+      },
+      {
+        "x": 300,
+        "z": -180
+      },
+      {
+        "x": 150,
+        "z": -180
+      },
+      {
+        "x": 0,
+        "z": -180
+      },
+      {
+        "x": -150,
+        "z": -180
+      },
+      {
+        "x": -300,
+        "z": -180
+      },
+      {
+        "x": -390.0,
+        "z": -155.88
+      },
+      {
+        "x": -455.88,
+        "z": -90.0
+      },
+      {
+        "x": -480.0,
+        "z": -0.0
+      },
+      {
+        "x": -455.88,
+        "z": 90.0
+      },
+      {
+        "x": -390.0,
+        "z": 155.88
+      }
+    ],
+    "width": 22,
+    "barriers": "walls",
+    "barrierHeight": 2.4,
+    "banking": {
+      "auto": true,
+      "maxDeg": 30,
+      "designSpeedKmh": 320,
+      "adjustable": {
+        "label": "Bank angle",
+        "min": 0,
+        "max": 60
+      }
+    }
+  },
+  "pieces": [
+    {
+      "type": "speedtrap",
+      "at": 2
+    },
+    {
+      "type": "boost",
+      "at": 11.5,
+      "offset": -4,
+      "length": 14,
+      "width": 6
+    },
+    {
+      "type": "boost",
+      "at": 12.5,
+      "offset": 4,
+      "length": 14,
+      "width": 6
+    }
+  ],
+  "start": {
+    "at": 0.8
+  },
+  "environment": {
+    "size": 1300,
+    "terrain": {
+      "kind": "flat",
+      "height": 0,
+      "edge": "wall"
+    },
+    "sky": {
+      "timeOfDay": 0.35,
+      "sunAzimuthDeg": 90
+    },
+    "palette": {
+      "edge": "#19e3ff",
+      "edgeAlt": "#ff2bd6"
+    },
+    "city": {
+      "density": 0.85
+    },
+    "stadium": {
+      "standsHeight": 32
+    },
+    "roadside": {
+      "posts": false,
+      "billboards": 12
+    },
+    "music": {
+      "mood": "hyper"
+    }
+  }
+}

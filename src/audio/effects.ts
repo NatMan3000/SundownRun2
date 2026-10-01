@@ -314,8 +314,8 @@ export class Effects {
   private chime(k: VoiceKit, t: number, found: number, total: number): void {
     const step = Math.max(0, found - 1)
     const hz = midiToHz(brightPentaMidi(step, 1))
-    bell(k, hz, t, 0.2, 0.75, 2.2)
-    tone(k, 'triangle', hz * 2, t, 0.05, 0.004, 0.3)
+    bell(k, hz, t, 0.26, 0.75, 2.2)
+    tone(k, 'triangle', hz * 2, t, 0.06, 0.004, 0.3)
     tone(k, 'sine', midiToHz(musicKey.root - 12), t, 0.05, 0.01, 0.4)
     noiseHit(k, t, 0.03, 'highpass', 5000, 0.7, 0.05, 0.2)
     if (found === total) bell(k, hz * 2, t + 0.12, 0.08, 0.9, 1.4)
@@ -324,12 +324,13 @@ export class Effects {
   /** Trick landed: an ascending run, longer and fuller for bigger points, pitched up by the combo. */
   private stinger(k: VoiceKit, t: number, points: number, combo: number): void {
     const big = clamp01(points / 600)
+    if (big > 0.3) this.duck(0.2 + 0.15 * big, 0.25)
     const notes = 2 + Math.round(big * 4)
     const lift = Math.min(4, Math.max(0, combo - 1))
     for (let n = 0; n < notes; n++) {
       const at = t + n * 0.055
       const hz = midiToHz(brightPentaMidi(n + lift, 1))
-      bell(k, hz, at, 0.13 + 0.08 * big, 0.32, 2)
+      bell(k, hz, at, 0.17 + 0.1 * big, 0.32, 2)
       tone(k, 'triangle', hz * 2, at, 0.03 + 0.03 * big, 0.004, 0.16)
     }
     if (big > 0.55) {
@@ -354,9 +355,10 @@ export class Effects {
   /** A clean lap: a quick bright triad. resolved = a touch longer, for finishes. */
   private lapTriad(k: VoiceKit, t: number, resolved = false): void {
     const steps = resolved ? [0, 2, 4, 5] : [0, 2, 4]
+    this.duck(0.25, 0.3)
     for (let n = 0; n < steps.length; n++) {
       const hz = midiToHz(brightPentaMidi(steps[n], 1))
-      bell(k, hz, t + n * 0.09, 0.15, 0.45, 1.8)
+      bell(k, hz, t + n * 0.09, 0.2, 0.45, 1.8)
       tone(k, 'triangle', hz, t + n * 0.09, 0.05, 0.004, 0.25)
     }
   }
@@ -365,16 +367,18 @@ export class Effects {
   private fanfare(k: VoiceKit, t: number, size: number): void {
     const run = [0, 2, 4, 5, 7]
     const n = size >= 0.85 ? 5 : 4
+    // A moment worth hearing: the music steps back for it, then swells in again.
+    this.duck(0.3 + 0.15 * size, 0.6)
     for (let i = 0; i < n; i++) {
       const hz = midiToHz(brightPentaMidi(run[i], 1))
-      bell(k, hz, t + i * 0.085, 0.17, 0.5, 2)
-      tone(k, 'sawtooth', hz, t + i * 0.085, 0.025, 0.006, 0.18)
+      bell(k, hz, t + i * 0.085, 0.24, 0.5, 2)
+      tone(k, 'sawtooth', hz, t + i * 0.085, 0.035, 0.006, 0.18)
     }
     // the held chord under the last note: relative-major root, third, fifth
     const chordAt = t + n * 0.085
     const base = musicKey.root + 3
     const chord = [0, 4, 7, 12]
-    for (let i = 0; i < chord.length; i++) tone(k, 'triangle', midiToHz(base + 12 + chord[i]), chordAt, 0.05 * size, 0.03, 1.1, { pan: (i - 1.5) * 0.3 })
+    for (let i = 0; i < chord.length; i++) tone(k, 'triangle', midiToHz(base + 12 + chord[i]), chordAt, 0.07 * size, 0.03, 1.1, { pan: (i - 1.5) * 0.3 })
     tone(k, 'sine', midiToHz(base - 12), chordAt, 0.14 * size, 0.02, 1.2)
     if (size >= 0.85) {
       noiseHit(k, t, 0.05, 'highpass', 4000, 0.7, 0.35, 0.6)

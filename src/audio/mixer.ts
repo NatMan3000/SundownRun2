@@ -23,7 +23,7 @@
 import { Knob, SILENT, clamp01, holdParam } from './synth'
 
 /** Overall loudness of each group at full slider, before the player's volume. */
-const MUSIC_LEVEL = 0.62
+const MUSIC_LEVEL = 0.45
 const SFX_LEVEL = 1.0
 const MASTER_LEVEL = 0.9
 

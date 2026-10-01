@@ -1,14 +1,53 @@
-// Look worker: road surface + piece visuals, car fx (trails, underglow, headlights),
-// particle fx, the post stack and the quality manager. Mounted inside the Canvas.
-export function RoadView() {
-  return null
-}
+// ============================================================
+//  LOOK - the light itself
+// ------------------------------------------------------------
+//  The look system draws the hero surfaces and the glow:
+//    RoadView   the wet neon road ribbon (road/)
+//    CarFx      every car's light: trails, underglow, headlights
+//    FxSystem   the reflection map + pooled shards, sparks, pulses
+//    PostStack  bloom, tone mapping, vignette, SMAA, boost lens,
+//               plus the quality manager and the F9 screenshot
+//  App.tsx mounts all four inside the Canvas.
+//
+//  Inspect it live:  window.__game.get('look')
+// ============================================================
+
+import { useEffect } from 'react'
+import { registerInspector } from '../core/devHandles'
+import { lookState } from './lookState'
+import { EnvironmentMap } from './EnvironmentMap'
+import { QualityManager } from './QualityManager'
+import { Screenshot } from './Screenshot'
+import { PostStack as Post } from './post/PostStack'
+import { LOOKDEV, LookDev } from './lookdev'
+import { FxPools } from './fx/FxPools'
+import { CarLights } from './fx/CarLights'
+import { HeadlightRig } from './fx/HeadlightRig'
+
+export { RoadView } from './road/RoadView'
+
 export function CarFx() {
-  return null
+  return <CarLights />
 }
+
 export function FxSystem() {
-  return null
+  return (
+    <>
+      <EnvironmentMap />
+      <HeadlightRig />
+      <FxPools />
+      {LOOKDEV && <LookDev />}
+    </>
+  )
 }
+
 export function PostStack() {
-  return null
+  useEffect(() => registerInspector('look', () => lookState), [])
+  return (
+    <>
+      <QualityManager />
+      <Screenshot />
+      <Post />
+    </>
+  )
 }

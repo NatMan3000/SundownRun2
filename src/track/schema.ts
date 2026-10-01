@@ -281,7 +281,8 @@ export interface ValidationResult {
 }
 
 /** A TrackFile after validation: every optional field filled with its default. */
-export type ResolvedTrackFile = TrackFile & {
+export type ResolvedTrackFile = Omit<TrackFile, 'laps'> & {
+  /** null when the file doesn't set laps (use the player's raceLaps setting). */
   laps: number | null
   road: Required<Pick<RoadSpec, 'points' | 'width' | 'barriers' | 'barrierHeight'>> & {
     banking: Required<Omit<BankingSpec, 'adjustable'>> & Pick<BankingSpec, 'adjustable'>

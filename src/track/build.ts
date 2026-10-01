@@ -1,10 +1,342 @@
-// Track worker replaces this file: buildTrack(resolved, params, previous?) -> TrackRuntime (src/track/types.ts).
-import type { ResolvedTrackFile } from './schema'
-import type { TrackRuntime } from './types'
+// ============================================================
+//  BUILD TRACK - a validated track file becomes a TrackRuntime
+// ------------------------------------------------------------
+//  buildTrack(file, params, previous?) runs the whole pipeline:
+//
+//    natural ground  (terrain.ts)  hills / flat + features + edge
+//    road            (road.ts)     spline, samples, banking, loops
+//    ground to road  (terrain.ts)  cut and fill to meet the road
+//    meshes          (ribbon.ts, ramps.ts)
+//    derived data    (derived.ts)  checkpoints, racing line, grid,
+//                                  minimap, roadside, pieces
+//
+//  The result is pure data plus a few query methods: no three.js
+//  scene objects and no physics bodies. index.tsx turns it into
+//  colliders; the look and world workers turn it into visuals.
+//
+//  Live rebuilds (the Hyperdrome's bank slider) pass `previous`: the
+//  natural ground is reused rather than recomputed, so a rebuild only
+//  redoes the road and the cut-and-fill (a few tens of milliseconds).
+// ============================================================
+
+import * as THREE from 'three'
+import type { ResolvedTrackFile, BoostPiece, RampPiece, WallRidePiece } from './schema'
+import type { BoostZone, GroundPose, PropAnchor, ResolvedPiece, TrackFrame, TrackRuntime, TrackWorldInfo } from './types'
+import {
+  flattenToRoad,
+  gridHeight,
+  makeNaturalTerrain,
+  makeTerrainGrid,
+  roundedRadius,
+  roundedToEuclid,
+  sampleNaturalGrid,
+  type NaturalGrid,
+  type NaturalTerrain,
+} from './terrain'
+import { buildCenterline, LOOP_SHIFT, WALL_RAMP } from './road'
+import { buildRibbonMeshes } from './ribbon'
+import { buildRampMeshes } from './ramps'
+import { buildSampleHash, makeRoadQueries } from './query'
+import { makeBillboards, makeCheckpoints, makeMinimap, makePosts, makeRacingLine } from './derived'
+import { hashString } from './noise'
+
+/** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
+const GRID_FIRST = 7
+const GRID_ROW = 8
+/** Cars spawn this far above the road surface. */
+const GRID_LIFT = 0.6
+
+/** Private extras a runtime carries for the next live rebuild and for colliders. */
+export interface TrackInternals {
+  nat: NaturalTerrain
+  natGrid: NaturalGrid
+  envKey: string
+  /** Build time in ms (for the checker and check-tracks). */
+  buildMs: number
+  /** Ramp collider hulls: one convex point cloud per ramp. */
+  rampHulls: Float32Array[]
+  /** Slab thickness per sample. */
+  thickness: Float32Array
+  /** Edge geometry for colliders. */
+  world: TrackWorldInfo
+}
+
+const internals = new WeakMap<TrackRuntime, TrackInternals>()
+
+/** The builder's extras for a runtime (colliders and rebuilds use them). */
+export function trackInternals(t: TrackRuntime): TrackInternals | undefined {
+  return internals.get(t)
+}
+
+/** Seconds of now, in ms, that works in browsers and Bun. */
+function now(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now()
+}
 
 export function buildTrack(file: ResolvedTrackFile, params: Record<string, number>, previous?: TrackRuntime | null): TrackRuntime {
-  void file
-  void params
-  void previous
-  throw new Error('track builder not built yet')
+  const t0 = now()
+  const env = file.environment
+
+  // ---- natural ground (reused from `previous` when the environment is unchanged) ----
+  const envKey = JSON.stringify([env.seed, env.size, env.terrain])
+  const prev = previous ? internals.get(previous) : undefined
+  let nat: NaturalTerrain
+  let natGrid: NaturalGrid
+  if (prev && prev.envKey === envKey) {
+    nat = prev.nat
+    natGrid = prev.natGrid
+  } else {
+    nat = makeNaturalTerrain(env)
+    natGrid = sampleNaturalGrid(nat)
+  }
+
+  // ---- the road ----
+  const banking = file.road.banking
+  const bankMax = banking.adjustable && typeof params.bankDeg === 'number' ? params.bankDeg : banking.maxDeg
+  const c = buildCenterline(file, bankMax, nat)
+  const S = c.samples
+  const L = c.length
+
+  // ---- the ground, cut and filled to the road ----
+  const heights = flattenToRoad(natGrid, { samples: S, thickness: c.thickness })
+  const terrain = makeTerrainGrid(natGrid, heights)
+  const terrainHeight = (x: number, z: number) => gridHeight(terrain, x, z)
+  const terrainNormal = (x: number, z: number, out: THREE.Vector3): THREE.Vector3 => {
+    const e = terrain.cellSize
+    const hx = gridHeight(terrain, x + e, z) - gridHeight(terrain, x - e, z)
+    const hz = gridHeight(terrain, x, z + e) - gridHeight(terrain, x, z - e)
+    return out.set(-hx, 2 * e, -hz).normalize()
+  }
+
+  // ---- queries ----
+  const hash = buildSampleHash(S)
+  const q = makeRoadQueries(S, L, hash, { wallLeft: c.wallLeft, wallRight: c.wallRight, wallRadius: c.wallRadius })
+  const tmpFrame: TrackFrame = {
+    s: 0,
+    position: new THREE.Vector3(),
+    tangent: new THREE.Vector3(),
+    up: new THREE.Vector3(),
+    right: new THREE.Vector3(),
+    halfWidth: 0,
+    bank: 0,
+    curvature: 0,
+    surface: 'road',
+  }
+
+  // ---- pieces on the final road ----
+  const pieces: ResolvedPiece[] = []
+  const boostZones: BoostZone[] = []
+  const speedTraps: { s: number }[] = []
+  const rampSpots: { s: number; piece: RampPiece }[] = []
+  file.pieces.forEach((p, index) => {
+    if (p.type === 'loop') {
+      const info = c.loops.find((l) => l.pieceIndex === index)!
+      pieces.push({ index, type: 'loop', s0: info.s0, s1: q.wrapS(info.s1), center: info.center, source: p, radius: info.radius, loopCenter: info.center })
+      return
+    }
+    const s = c.sOfAt(p.at)
+    if (p.type === 'boost') {
+      const b = p as BoostPiece
+      const len = b.length ?? 10
+      const wid = b.width ?? 5
+      const off = b.offset ?? 0
+      q.frameAt(s, tmpFrame)
+      const center = {
+        x: tmpFrame.position.x + tmpFrame.right.x * off,
+        y: tmpFrame.position.y + tmpFrame.right.y * off,
+        z: tmpFrame.position.z + tmpFrame.right.z * off,
+      }
+      const zone: BoostZone = {
+        s0: q.wrapS(s - len / 2),
+        s1: q.wrapS(s + len / 2),
+        lat0: off - wid / 2,
+        lat1: off + wid / 2,
+        strength: b.strength ?? 1,
+        center,
+        tangent: { x: tmpFrame.tangent.x, y: tmpFrame.tangent.y, z: tmpFrame.tangent.z },
+        up: { x: tmpFrame.up.x, y: tmpFrame.up.y, z: tmpFrame.up.z },
+        length: len,
+        width: wid,
+      }
+      boostZones.push(zone)
+      pieces.push({ index, type: 'boost', s0: zone.s0, s1: zone.s1, center, source: p })
+    } else if (p.type === 'ramp') {
+      const r = p as RampPiece
+      const len = r.length ?? 12
+      q.frameAt(s, tmpFrame)
+      const off = r.offset ?? 0
+      rampSpots.push({ s, piece: r })
+      pieces.push({
+        index,
+        type: 'ramp',
+        s0: q.wrapS(s - len / 2),
+        s1: q.wrapS(s + len / 2),
+        center: {
+          x: tmpFrame.position.x + tmpFrame.right.x * off,
+          y: tmpFrame.position.y + tmpFrame.right.y * off,
+          z: tmpFrame.position.z + tmpFrame.right.z * off,
+        },
+        source: p,
+      })
+    } else if (p.type === 'wallride') {
+      const w = p as WallRidePiece
+      const info = c.walls.find((x) => x.pieceIndex === index)!
+      q.frameAt(info.s0 + (info.s1 - info.s0) / 2, tmpFrame)
+      pieces.push({
+        index,
+        type: 'wallride',
+        s0: q.wrapS(info.s0),
+        s1: q.wrapS(info.s1),
+        center: { x: tmpFrame.position.x, y: tmpFrame.position.y, z: tmpFrame.position.z },
+        source: p,
+        side: w.side,
+        height: info.radius,
+      })
+    } else if (p.type === 'speedtrap') {
+      q.frameAt(s, tmpFrame)
+      speedTraps.push({ s })
+      pieces.push({ index, type: 'speedtrap', s0: s, s1: s, center: { x: tmpFrame.position.x, y: tmpFrame.position.y, z: tmpFrame.position.z }, source: p })
+    }
+  })
+  speedTraps.sort((a, b) => a.s - b.s)
+
+  // ---- meshes ----
+  const ribbon = buildRibbonMeshes(c, file.road.barriers === 'walls', file.road.barrierHeight)
+  const ramps = buildRampMeshes(rampSpots, q, tmpFrame)
+
+  // ---- world edges ----
+  const minGround = Math.min(terrain.minHeight, minOf(S.py) - 2)
+  let playRadius: number
+  if (nat.edge === 'ridge') {
+    playRadius = 0
+    for (let k = 0; k < 360; k++) {
+      const th = (k / 360) * Math.PI * 2
+      playRadius = Math.max(playRadius, roundedToEuclid(nat.ridgeCrestAt(th), th))
+    }
+  } else playRadius = nat.wallRadius
+  const world: TrackWorldInfo = {
+    size: env.size,
+    half: env.size / 2,
+    resetY: minGround - 6,
+    catchFloorY: minGround - 20,
+    edge: nat.edge,
+    playRadius,
+  }
+  const insideWorld = (x: number, z: number, margin: number): boolean => {
+    if (nat.edge === 'ridge') return roundedRadius(x, z) < nat.ridgeFootMin - margin
+    return Math.hypot(x, z) < nat.wallRadius - margin
+  }
+
+  // ---- derived data ----
+  const pinned: { s0: number; s1: number }[] = []
+  const fast: { s0: number; s1: number }[] = []
+  for (const l of c.loops) {
+    pinned.push({ s0: q.wrapS(l.s0 - LOOP_SHIFT - 10), s1: q.wrapS(l.s1 + LOOP_SHIFT + 10) })
+    fast.push({ s0: q.wrapS(l.s0 - 30), s1: q.wrapS(l.s1 + 5) })
+  }
+  for (const w of c.walls) fast.push({ s0: q.wrapS(w.s0 - 10), s1: q.wrapS(w.s1) })
+  for (const r of rampSpots) {
+    const len = r.piece.length ?? 12
+    pinned.push({ s0: q.wrapS(r.s - len / 2 - 25), s1: q.wrapS(r.s + len / 2 + 5) })
+  }
+  const racingLine = makeRacingLine({ samples: S, length: L, pinned, fast, ramps: rampSpots.map((r) => r.s) })
+
+  const noPosts: { s0: number; s1: number }[] = []
+  for (const l of c.loops) noPosts.push({ s0: q.wrapS(l.s0 - LOOP_SHIFT - 15), s1: q.wrapS(l.s1 + LOOP_SHIFT + 15) })
+  for (const w of c.walls) noPosts.push({ s0: q.wrapS(w.s0 - WALL_RAMP), s1: q.wrapS(w.s1 + WALL_RAMP) })
+  for (const r of rampSpots) noPosts.push({ s0: q.wrapS(r.s - 25), s1: q.wrapS(r.s + 25) })
+  // Keep the start grid clear too.
+  noPosts.push({ s0: q.wrapS(-GRID_FIRST - GRID_ROW * 7), s1: 12 })
+  const roadsideIn = { file, c, hash, terrainHeight, insideWorld, noPosts, seed: env.seed }
+  const posts = makePosts(roadsideIn)
+  const billboards = makeBillboards(roadsideIn)
+
+  // Ground height that knows about the road: on a grounded road, its surface.
+  const nearestTmp = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+  const groundAt = (x: number, z: number): number => {
+    const ty = terrainHeight(x, z)
+    q.nearest(x, ty, z, nearestTmp)
+    const i = nearestTmp.index
+    if (Math.abs(nearestTmp.lateral) <= S.halfWidth[i] && S.uy[i] > 0.5 && Math.abs(nearestTmp.height) < 3) {
+      q.frameAt(nearestTmp.s, tmpFrame)
+      const lat = nearestTmp.lateral
+      return Math.max(ty, tmpFrame.position.y + tmpFrame.right.y * lat)
+    }
+    return ty
+  }
+  const props: PropAnchor[] = file.props.map((p) => ({ x: p.x, y: groundAt(p.x, p.z), z: p.z, kind: p.kind ?? 'mixed', size: p.size ?? 'medium' }))
+  const cores = file.cores.map((c0) => ({ x: c0.x, y: groundAt(c0.x, c0.z) + (c0.y ?? 1.6), z: c0.z }))
+
+  const checkpoints = makeCheckpoints(L)
+  const minimap = makeMinimap(S)
+
+  // ---- identity ----
+  const hashText = JSON.stringify({ road: file.road, pieces: file.pieces, start: file.start, params, env: [env.seed, env.size, env.terrain] })
+  const geomHash = hashString(hashText).toString(16).padStart(8, '0')
+
+  const basis = new THREE.Matrix4()
+  const negRight = new THREE.Vector3()
+  const gridSlot = (i: number, outPosition: THREE.Vector3, outQuaternion: THREE.Quaternion): void => {
+    const row = Math.floor(Math.max(0, i) / 2)
+    const col = Math.max(0, i) % 2
+    q.frameAt(-(GRID_FIRST + row * GRID_ROW), tmpFrame)
+    const lat = (col === 0 ? -1 : 1) * Math.min(tmpFrame.halfWidth * 0.42, 3.4)
+    outPosition
+      .copy(tmpFrame.position)
+      .addScaledVector(tmpFrame.right, lat)
+      .addScaledVector(tmpFrame.up, GRID_LIFT)
+    // Car convention: local +z forward, +y up, so local +x is the car's left (-right).
+    negRight.copy(tmpFrame.right).negate()
+    basis.makeBasis(negRight, tmpFrame.up, tmpFrame.tangent)
+    outQuaternion.setFromRotationMatrix(basis)
+  }
+
+  const runtime: TrackRuntime = {
+    file,
+    id: file.id,
+    name: file.name,
+    hash: geomHash,
+    key: `${file.id}@${geomHash}`,
+    params: { ...params },
+    length: L,
+    samples: S,
+    frameAt: q.frameAt,
+    nearest: q.nearest,
+    wrapS: q.wrapS,
+    deltaS: q.deltaS,
+    terrainHeight,
+    terrainNormal,
+    terrain,
+    startS: 0,
+    checkpoints,
+    gridSlot,
+    racingLine,
+    minimap,
+    pieces,
+    boostZones,
+    speedTraps,
+    props,
+    cores,
+    roadside: { posts, billboards },
+    world,
+    meshes: { road: ribbon.road, skirt: ribbon.skirt, barriers: ribbon.barriers, ramps: ramps.mesh },
+  }
+  internals.set(runtime, {
+    nat,
+    natGrid,
+    envKey,
+    buildMs: now() - t0,
+    rampHulls: ramps.hulls,
+    thickness: c.thickness,
+    world,
+  })
+  return runtime
 }
+
+function minOf(a: Float32Array): number {
+  let m = Infinity
+  for (let i = 0; i < a.length; i++) if (a[i] < m) m = a[i]
+  return m
+}
+
+export type { GroundPose }
