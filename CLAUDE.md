@@ -54,4 +54,5 @@ Inherited from v1 (each cost a rework there):
 - A gamepad press isn't a browser gesture: a pad-only player never unlocks WebAudio unless the audio system polls for sticky user activation.
 - Capture the arrow keys on menus so they don't leak into throttle (`src/core/controls.ts` input contexts).
 - Vite HMR orphans Web Workers and AudioContexts unless `import.meta.hot.dispose()` shuts them down.
+- Never `import` from `@dimforge/rapier3d-compat` directly: that resolves to a stray 0.12 copy pulled in by `@types/three`, while `@react-three/rapier` runs its own nested 0.19.2. Use `useRapier()` (`rapier` namespace and `world`) at runtime and derive types from it (`ReturnType<typeof useRapier>['world']`, `RapierRigidBody`, `RapierCollider` from `@react-three/rapier`).
 - r3f v9 on three 0.186 logs a `THREE.Clock` deprecation warning from inside the library; it is not ours.
