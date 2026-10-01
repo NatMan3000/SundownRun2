@@ -130,5 +130,5 @@ export function Stars({ quality, seed }: { quality: QualityLevel; seed: number }
     pts.visible = sky.nightSky > 0.002
   })
 
-  return <points ref={ref} geometry={geometry} material={material} frustumCulled={false} renderOrder={-990} />
+  return <points name="world-stars" ref={ref} geometry={geometry} material={material} frustumCulled={false} renderOrder={-990} />
 }

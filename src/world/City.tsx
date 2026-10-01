@@ -41,6 +41,7 @@ import type { TrackRuntime } from '../track/types'
 import { SKY_GLSL } from './skyGlsl'
 import { sky, skylineAt, skyUniforms } from './sky'
 import { makeRandom } from './textures'
+import { standsSkylineAt } from './stadiumLayout'
 import { worldStats } from './stats'
 
 const DEG = Math.PI / 180
@@ -317,6 +318,7 @@ function buildCity(
   towers.instanceMatrix.needsUpdate = true
   towers.frustumCulled = false
   towers.renderOrder = -970
+  towers.name = 'world-city-towers'
 
   const lg = new THREE.BufferGeometry()
   lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lightPos), 3))
@@ -324,6 +326,7 @@ function buildCity(
   const lights = new THREE.Points(lg, lightMat)
   lights.frustumCulled = false
   lights.renderOrder = -960
+  lights.name = 'world-city-lights'
 
   return {
     towers,
@@ -376,7 +379,7 @@ export function City({ track, quality }: { track: TrackRuntime; quality: Quality
     [],
   )
   const layout = useMemo(
-    () => buildCity(track, quality, material, lightMat, () => 0),
+    () => buildCity(track, quality, material, lightMat, (az) => standsSkylineAt(track, az)),
     [track, quality, material, lightMat],
   )
 

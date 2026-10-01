@@ -50,7 +50,7 @@ export function Terrain({ track, quality }: { track: TrackRuntime; quality: Qual
   // One mesh per chunk, starting at the far level; useFrame picks the real one.
   const { group, meshes, level } = useMemo(() => {
     const g = new THREE.Group()
-    g.name = 'terrain'
+    g.name = 'world-terrain'
     const list: THREE.Mesh[] = []
     for (const c of build.chunks) {
       const m = new THREE.Mesh(c.levels[2], material)
@@ -62,7 +62,7 @@ export function Terrain({ track, quality }: { track: TrackRuntime; quality: Qual
     }
     // The land beyond the world's edge, in the same material (one more draw).
     const apron = new THREE.Mesh(outer, material)
-    apron.name = 'outer-ground'
+    apron.name = 'world-outer-ground'
     apron.receiveShadow = false
     apron.matrixAutoUpdate = false
     g.add(apron)

@@ -27,6 +27,7 @@ import { PALETTE } from '../core/palette'
 import { environment } from '../core/telemetry'
 import type { TrackRuntime } from '../track/types'
 import { worldClock } from './clock'
+import { standsSkylineAt } from './stadiumLayout'
 
 const DEG = Math.PI / 180
 
@@ -195,7 +196,7 @@ export function skylineAt(track: TrackRuntime, azimuth: number): number {
     const el = Math.atan2(track.terrainHeight(x, z) - eye, d)
     if (el > best) best = el
   }
-  return Math.min(16, Math.max(0, best / DEG))
+  return Math.min(16, Math.max(0, best / DEG, standsSkylineAt(track, azimuth)))
 }
 
 /** The skyline under the sun: averaged over the sun's width, so one spiky peak does not decide it. */

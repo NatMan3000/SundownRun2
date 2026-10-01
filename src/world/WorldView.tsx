@@ -22,6 +22,9 @@ import { Terrain } from './Terrain'
 import { Stars } from './Stars'
 import { Planet } from './Planet'
 import { City } from './City'
+import { Billboards } from './Billboards'
+import { Stadium } from './Stadium'
+import { Ridges } from './Ridges'
 import { worldStats } from './stats'
 
 /** The world for a given track (the editor and the title screen use the same view). */
@@ -72,9 +75,11 @@ export function WorldView({ track }: { track: TrackRuntime }) {
       sunElevationDeg: Number(sky.sunElevationDeg.toFixed(2)),
       keyIntensity: Number(sky.keyIntensity.toFixed(2)),
       shadow: Number(sky.shadow.toFixed(3)),
-      triangles: { terrain: worldStats.terrainTriangles, outerGround: worldStats.outerGroundTriangles, sky: worldStats.skyTriangles, planet: worldStats.planetTriangles },
+      triangles: { terrain: worldStats.terrainTriangles, outerGround: worldStats.outerGroundTriangles, ridges: worldStats.ridgeTriangles, sky: worldStats.skyTriangles, planet: worldStats.planetTriangles },
       stars: worldStats.stars,
       city: { towers: worldStats.cityTowers, triangles: worldStats.cityTriangles },
+      billboards: { count: worldStats.billboards, triangles: worldStats.billboardTriangles },
+      stadium: { triangles: worldStats.stadiumTriangles, crowdLights: worldStats.crowdLights },
       terrain: { strides: worldStats.terrainStrides, chunks: worldStats.terrainChunks },
     }))
     return () => {
@@ -95,7 +100,10 @@ export function WorldView({ track }: { track: TrackRuntime }) {
       <SkyDome />
       <Stars quality={quality} seed={track.file.environment.seed} />
       <Planet />
+      <Ridges track={track} />
       <City track={track} quality={quality} />
+      <Billboards track={track} />
+      <Stadium track={track} quality={quality} />
       <Lighting baseHeight={track.file.environment.terrain.height ?? 0} />
       <Terrain track={track} quality={quality} />
     </>

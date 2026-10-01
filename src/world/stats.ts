@@ -19,4 +19,9 @@ export const worldStats = {
   stars: 0,
   cityTowers: 0,
   cityTriangles: 0,
+  billboards: 0,
+  billboardTriangles: 0,
+  stadiumTriangles: 0,
+  crowdLights: 0,
+  ridgeTriangles: 0,
 }

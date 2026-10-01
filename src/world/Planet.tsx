@@ -237,8 +237,8 @@ export function Planet() {
 
   return (
     <>
-      <mesh ref={planetRef} geometry={sphere} material={planetMat} frustumCulled={false} renderOrder={-980} />
-      <mesh ref={ringRef} geometry={ring} material={ringMat} frustumCulled={false} renderOrder={-979} />
+      <mesh name="world-planet" ref={planetRef} geometry={sphere} material={planetMat} frustumCulled={false} renderOrder={-980} />
+      <mesh name="world-planet-ring" ref={ringRef} geometry={ring} material={ringMat} frustumCulled={false} renderOrder={-979} />
     </>
   )
 }

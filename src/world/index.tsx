@@ -23,6 +23,8 @@
 
 import { useTrack } from '../track/current'
 import { WorldView } from './WorldView'
+import { BillboardColliders } from './Billboards'
+import { StadiumColliders } from './Stadium'
 
 export { WorldView }
 
@@ -32,7 +34,14 @@ export function World() {
   return <WorldView track={track} />
 }
 
-/** The solid parts of the world (mounted inside <Physics>). */
+/** The solid parts of the world (mounted inside <Physics>): billboard poles and the stand front. */
 export function WorldPhysics() {
-  return null
+  const track = useTrack()
+  if (!track) return null
+  return (
+    <>
+      <BillboardColliders track={track} />
+      <StadiumColliders track={track} />
+    </>
+  )
 }

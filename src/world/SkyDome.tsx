@@ -213,6 +213,7 @@ export function SkyDome() {
       geometry={geometry}
       material={material}
       scale={DOME_RADIUS}
+      name="world-sky"
       renderOrder={-1000}
       frustumCulled={false}
     />
