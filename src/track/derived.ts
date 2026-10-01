@@ -18,6 +18,7 @@ import { SURFACE_CODE, type GroundPose, type TrackSamples } from './types'
 import { circularSmooth, type Centerline } from './road'
 import type { SampleHash } from './query'
 import { mulberry32, clamp } from './noise'
+import { FULL_LOCK_GRIP, fullLockG } from '../core/gripTable'
 
 const G = 9.81
 
@@ -269,37 +270,16 @@ function solveOffsets(S: TrackSamples, loB: Float64Array, hiB: Float64Array, off
 export const LINE_GRIP_G = 1.25
 export const LINE_MAX_LAT_G = 1.4
 
-/**
- * How hard the car can corner at full steering lock, in g, by speed: measured by the
- * vehicle worker on flat road (Dart, analog full lock, part throttle, 2026-10-01).
- * Downforce adds a little with speed. If the car's grip or steering rack is retuned,
- * re-measure and update this table: the line's corner speeds come from it.
- */
-const CAR_FULL_LOCK = { kmh: [89, 124, 160, 196], g: [1.37, 1.46, 1.52, 1.57] }
-/** The least grippy body's share of that (Blade 0.95): the line must suit every car. */
-const WORST_BODY_GRIP = 0.95
 /** The line plans at most this share of the worst car's full lock, so the Ai always has steering left to correct with. */
 const FULL_LOCK_SHARE = 0.95
 
 /**
- * The most sideways acceleration (g) the worst-gripping car can reach at full lock at
- * speed v (m/s), from the measured table (held flat beyond its ends).
+ * The most sideways acceleration (g) the least grippy car can reach at full lock at
+ * speed v (m/s). The numbers are the vehicle worker's measurements in
+ * src/core/gripTable.ts (the one place they live).
  */
 export function carFullLockG(v: number): number {
-  const kmh = v * 3.6
-  const K = CAR_FULL_LOCK.kmh
-  const Gs = CAR_FULL_LOCK.g
-  let g = Gs[Gs.length - 1]
-  if (kmh <= K[0]) g = Gs[0]
-  else {
-    for (let i = 0; i < K.length - 1; i++) {
-      if (kmh <= K[i + 1]) {
-        g = Gs[i] + ((Gs[i + 1] - Gs[i]) * (kmh - K[i])) / (K[i + 1] - K[i])
-        break
-      }
-    }
-  }
-  return g * WORST_BODY_GRIP
+  return fullLockG(v * 3.6, FULL_LOCK_GRIP.leastBodyGrip)
 }
 
 /**
