@@ -318,6 +318,8 @@ const SCREENS: Record<ScreenId, () => JSX.Element> = {
 export function UiRoot() {
   const phase = useGame((s) => s.phase)
   const mapOpen = useGame((s) => s.mapOpen)
+  // The quality actually in use (look's quality manager): Low drops the glass blur (see ui.css).
+  const quality = useGame((s) => s.qualityLevel)
   const screen = useActiveScreen()
   const root = useRef<HTMLDivElement | null>(null)
 
@@ -343,6 +345,7 @@ export function UiRoot() {
     <div
       ref={root}
       className="sr-ui"
+      data-quality={quality}
       style={CSS_VARS}
       // Clicks never leave a browser focus behind (our focus model is our own),
       // except in text fields, which need it.

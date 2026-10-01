@@ -37,6 +37,12 @@
 
 .sr-ui ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 
+/* Low quality: no backdrop blur anywhere in the UI. Blur over the WebGL canvas
+   can cost real frame time on a built-in graphics chip; the dense glass tint
+   (--hud-glass, --panel) keeps text legible without it. */
+.sr-ui[data-quality='low'],
+.sr-ui[data-quality='low'] * { backdrop-filter: none !important; }
+
 /* :where() keeps this reset at zero specificity, so any class below wins over it */
 :where(.sr-ui) :where(button) {
   font: inherit;
