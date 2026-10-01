@@ -263,7 +263,12 @@ export interface TrackRuntime {
   readonly meshes: {
     /** Drivable top surface (road, loops, wall rides). Has the shader attributes. */
     road: MeshBuffers
-    /** Sides and underside of the road slab. */
+    /**
+     * Sides and underside of the road slab. uv.x = metres from the top lip
+     * along the cross-section (0 at the lip, growing down the side and
+     * across the underside); uv.y = s. Also carries aLateral and aHalfWidth
+     * like the road, so the edge strip can continue down the side.
+     */
     skirt: MeshBuffers
     /** Edge barrier walls (when road.barriers = 'walls'), else null. */
     barriers: MeshBuffers | null
