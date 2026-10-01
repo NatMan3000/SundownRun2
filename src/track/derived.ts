@@ -283,10 +283,13 @@ export function carFullLockG(v: number): number {
 }
 
 /**
- * The line's cornering cap at speed v (m/s), in g of total sideways acceleration
- * (v^2 x curvature). A bank lets the tyres carry more, but the steering still has
- * to turn the car that tightly, so the cap is on the whole turn: never more than
- * LINE_MAX_LAT_G, and never more than FULL_LOCK_SHARE of the worst car's full lock.
+ * The line's cornering cap at speed v (m/s), in g of turn ALONG THE ROAD (v^2 x the
+ * curve's curvature x cos(bank)): never more than LINE_MAX_LAT_G, and never more than
+ * FULL_LOCK_SHARE of the worst car's full lock. The steering only has to turn the car
+ * along the road's own surface, and on a bank a horizontal curve is gentler seen from
+ * the road (cos(bank) of its curvature: half on a 60 deg bank), so a steeper bank lets
+ * the line go faster through the same corner. Grip is planned separately (the tyres
+ * plus what the bank carries, makeSpeeds).
  */
 export function lineLatCapG(v: number): number {
   return Math.min(LINE_MAX_LAT_G, FULL_LOCK_SHARE * carFullLockG(v))
@@ -371,8 +374,11 @@ function makeSpeeds(inp: RacingLineInput, offset: Float32Array): Float32Array {
     // Grip says v; the steering cap depends on speed too, so settle it: each pass can
     // only lower v, and the cap falls with v, so a few passes land on the speed where
     // v^2 x curvature is exactly the cap (it changes slowly, so this converges fast).
+    // The steering's cap is on the turn along the road's surface: the curve's curvature
+    // x cos(bank) (see lineLatCapG).
+    const kRoad = kk * Math.max(0.1, c)
     let v = Math.min(VMAX, Math.sqrt(Math.max(0, v2)))
-    for (let it = 0; it < 6; it++) v = Math.min(v, Math.sqrt((lineLatCapG(v) * G) / kk))
+    for (let it = 0; it < 6; it++) v = Math.min(v, Math.sqrt((lineLatCapG(v) * G) / kRoad))
     speed[i] = v
   }
 

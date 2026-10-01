@@ -445,7 +445,8 @@ export function racingLineStats(t: TrackRuntime): {
     const into = S.bank[i] * Math.sign(ux * vz - uz * vx)
     const lat = (spd[i] * spd[i] * k * Math.cos(into) - 9.81 * Math.sin(into)) / 9.81
     maxLat = Math.max(maxLat, lat)
-    const share = (spd[i] * spd[i] * k) / 9.81 / carFullLockG(spd[i])
+    // The steering turns the car along the road's surface: on a bank the curve is gentler there (cos).
+    const share = (spd[i] * spd[i] * k * Math.cos(into)) / 9.81 / carFullLockG(spd[i])
     if (share > lockShare) {
       lockShare = share
       lockShareKmh = spd[i] * 3.6
