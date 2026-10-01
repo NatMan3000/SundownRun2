@@ -75,8 +75,27 @@ export function pointsVisible(s: EditorState): boolean {
 
 // ---------------------------------------------------------------- the whole map
 
+/** Screen boxes of every label drawn this frame, so later labels can step around them. */
+let labelBoxes: { x0: number; y0: number; x1: number; y1: number }[] = []
+
+/** A label that steps out of the way of labels already drawn: tries each offset in turn. */
+function placePill(ctx: CanvasRenderingContext2D, text: string, sx: number, sy: number, offsets: readonly number[], colour: string): void {
+  ctx.save()
+  ctx.font = `600 12px ${FONTS.body}`
+  const w = ctx.measureText(text).width + 14
+  ctx.restore()
+  for (const off of offsets) {
+    const r = { x0: sx - w / 2 - 2, y0: sy + off - 12, x1: sx + w / 2 + 2, y1: sy + off + 12 }
+    if (labelBoxes.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0)) continue
+    labelBoxes.push(r)
+    pill(ctx, text, sx, sy + off, colour)
+    return
+  }
+}
+
 export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExtras): void {
   const d = s.draft
+  labelBoxes = []
   ctx.clearRect(0, 0, view.width, view.height)
   const g = roadGeometry(d.points, d.width)
 
@@ -284,7 +303,7 @@ function drawStartLine(ctx: CanvasRenderingContext2D, rc: RoadCurve, startAt: nu
   ctx.closePath()
   ctx.fill()
   ctx.restore()
-  pill(ctx, 'START', mx - ux * 30 - uy * 26, my - uy * 30 + ux * 26, PALETTE.uiText)
+  placePill(ctx, 'START', mx - ux * 30 - uy * 26, my - uy * 30 + ux * 26, [0, 24, -24, 48], PALETTE.uiText)
 }
 
 /** Each raised stretch (a bridge) gets one label beside its highest point. */
@@ -303,7 +322,7 @@ function drawBridges(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[]
     const q = points[(top + 1) % n]
     const len = Math.hypot(q.x - p.x, q.z - p.z) || 1
     const { sx, sy } = worldToScreen(p.x, p.z)
-    pill(ctx, `BRIDGE ${Math.round(p.lift ?? 0)} m`, sx + (-(q.z - p.z) / len) * 30, sy + ((q.x - p.x) / len) * 30, PALETTE.wallRide)
+    placePill(ctx, `BRIDGE ${Math.round(p.lift ?? 0)} m`, sx + (-(q.z - p.z) / len) * 30, sy + ((q.x - p.x) / len) * 30, [0, 24, -24], PALETTE.wallRide)
   }
 }
 
@@ -705,7 +724,7 @@ function drawLabels(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve
   const label = (text: string, p: P, colour: string, dy: number) => {
     const { sx, sy } = worldToScreen(p.x, p.z)
     if (sx < -60 || sy < -30 || sx > view.width + 60 || sy > view.height + 30) return
-    pill(ctx, text, sx, sy + dy, colour)
+    placePill(ctx, text, sx, sy, [dy, -dy, dy * 2, -dy * 2, dy * 3], colour)
   }
   for (const p of d.pieces) label(pieceLabel(p).toUpperCase(), piecePlace(rc, p).p, pieceColour(p), -26)
   for (const p of d.props) label('CRASH PROPS', p, PALETTE.propCrate, -24)
@@ -751,6 +770,6 @@ function drawCars(ctx: CanvasRenderingContext2D): void {
     ctx.stroke()
     ctx.fill()
     ctx.restore()
-    if (player) pill(ctx, 'YOU', sx, sy + 24, PALETTE.uiAccent)
+    if (player) placePill(ctx, 'YOU', sx, sy, [24, -24, 46, -46], PALETTE.uiAccent)
   }
 }

@@ -44,7 +44,7 @@ const CAPACITY = 4000
 /** Back within this many metres of the first point (after laying a full loop) closes it. */
 const CLOSE_M = 30
 /** The glowing line's width on the ground, metres. */
-const LINE_WIDTH = 1.4
+const LINE_WIDTH = 0.8
 
 /** Recording state. Plain mutable data (written every frame) plus a small React store for the bar. */
 const rec = {
@@ -193,12 +193,13 @@ function DriveLine() {
     }
     g.setIndex(new THREE.BufferAttribute(index, 1))
     g.setDrawRange(0, 0)
-    // A line of light, not a lit surface: unlit, HDR (glow tier T2) so bloom picks it up.
+    // A line of light, not a lit surface: unlit, soft-halo glow (tier T1) so it guides
+    // without out-shining the car or the road.
     const m = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(PALETTE.uiAccent).multiplyScalar(GLOW.T2),
+      color: new THREE.Color(PALETTE.uiAccent).multiplyScalar(GLOW.T1),
       toneMapped: false,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.75,
       depthWrite: false,
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
