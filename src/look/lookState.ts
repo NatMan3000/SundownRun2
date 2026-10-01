@@ -39,6 +39,8 @@ export const lookState = {
     smaa: false,
     /** 0..1 how much boost lens (aberration + speed lines) is applied right now. */
     boostLens: 0,
+    /** Headlight lamps whose beams are being drawn this frame. */
+    beamLamps: 0,
     passes: 0,
   },
   env: {
@@ -55,6 +57,8 @@ export const lookState = {
     lanes: 0,
     edgeColor: '',
     rebuilds: 0,
+    /** Bridge pylons standing under raised road on this track. */
+    pylons: 0,
   },
   fx: {
     trails: 0,

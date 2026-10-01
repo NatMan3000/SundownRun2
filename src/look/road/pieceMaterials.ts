@@ -14,6 +14,10 @@
 //    a glowing top rail in the edge colour (T2), a thin base line,
 //    and bands of light racing along the inside face (T1, the
 //    alternate edge colour), so the stadium wall feels fast.
+//    The outer face (seen from the infield or from outside the
+//    stadium) is never a flat dark slab: a thin line on its top
+//    edge, the rail's light washing softly down it, a satin sheen
+//    of the sky, and a thin light line at road level.
 //    uv.x = metres around the wall's profile from the road edge:
 //    up the inner face, across the top, down the outer face.
 // ============================================================
@@ -96,9 +100,11 @@ uniform vec3 uRailColor;
 uniform vec3 uBandColor;
 uniform float uRailU;      // where the top of the inner face starts (barrier height)
 uniform float uRailW;      // width of the top
+uniform float uGlowT0;
 uniform float uGlowT1;
 uniform float uGlowT2;
 uniform float uTime;
+uniform vec3 uHorizon;
 varying vec2 vWallUv;
 ${ROAD_GLSL}
 `
@@ -124,11 +130,25 @@ const wallFragmentEmissive = /* glsl */ `
   band *= 1.0 - smoothstep(0.5, 2.0, wV); // fades out where it would shimmer far away
   totalEmissiveRadiance += uRailColor * (rail * uGlowT1 * 0.7 + railEdge * uGlowT2 + base * uGlowT1)
     + uBandColor * band * uGlowT1;
+
+  // ---- the outer face: from the top's outer edge down past the road
+  float outerTop = uRailU + uRailW;
+  float down = u - outerTop;                       // metres down the outer face
+  float outer = smoothstep(-wU, wU, down);
+  float outerEdge = sr2Line(down - 0.05, 0.03, wU);
+  float wash = exp(-max(down, 0.0) / 0.4);
+  vec3 faceN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
+  float facing = abs(dot(faceN, normalize(vViewPosition)));
+  float sheen = exp(-max(down, 0.0) / 1.1) * (0.14 + 0.5 * pow(1.0 - facing, 2.0));
+  // road level on the outer face is one barrier height below its top
+  float roadLine = sr2Line(down - uRailU + 0.15, 0.035, wU);
+  totalEmissiveRadiance += outer * (uRailColor * (outerEdge * uGlowT1 + wash * uGlowT0 * 0.3 + roadLine * uGlowT1 * 0.7) + uHorizon * sheen);
 }
 `
 
 export function makeBarrierMaterial(
   time: { value: number },
+  horizon: { value: THREE.Color },
   opts: { rail: string; band: string; height: number },
 ): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({ color: PALETTE.groundSheen, roughness: 0.22, metalness: 0.35 })
@@ -139,8 +159,10 @@ export function makeBarrierMaterial(
       uBandColor: { value: new THREE.Color(opts.band) },
       uRailU: { value: opts.height },
       uRailW: { value: 0.7 },
+      uGlowT0: { value: GLOW.T0 },
       uGlowT1: { value: GLOW.T1 },
       uGlowT2: { value: GLOW.T2 },
+      uHorizon: horizon,
     })
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${wallVertexPars}`)
@@ -149,6 +171,6 @@ export function makeBarrierMaterial(
       .replace('#include <common>', `#include <common>\n${wallFragmentPars}`)
       .replace('#include <emissivemap_fragment>', wallFragmentEmissive)
   }
-  mat.customProgramCacheKey = () => 'sr2-barrier-v2'
+  mat.customProgramCacheKey = () => 'sr2-barrier-v3'
   return mat
 }

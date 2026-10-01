@@ -6,6 +6,10 @@
 //  turns them into three.js meshes with the wet neon road material
 //  on top and a dark slab material on the sides.
 //
+//  Under every raised stretch it stands slim neon pylons
+//  (BridgePylons.tsx, placed by pylons.ts), so a bridge reads as a
+//  bridge and not a slab floating across the sky.
+//
 //  It rebuilds when the track changes (trackVersion) or when a
 //  live parameter like the Hyperdrome's bank angle moves
 //  (trackParamVersion): useTrack() hands us a new runtime then, and
@@ -25,6 +29,9 @@ import type { RoadLook, RoadUniforms } from './roadMaterial'
 import { makeSkirtMaterial } from './skirtMaterial'
 import { makeBarrierMaterial, makeRampMaterial } from './pieceMaterials'
 import { SpeedTrapSigns } from './SpeedTrapSign'
+import { skirtExtras } from './skirtExtras'
+import { placePylons } from './pylons'
+import { BridgePylons } from './BridgePylons'
 import { headlightState } from '../fx/HeadlightRig'
 
 /** Wrap the runtime's arrays in a BufferGeometry (no copies: the arrays are shared). */
@@ -69,6 +76,7 @@ export function tickRoadUniforms(u: RoadUniforms, elapsed: number): void {
   u.uHeadDir.value.copy(headlightState.direction)
   // windows come on from timeOfDay 0.2 to 0.9 (constitution)
   u.uCityOn.value = THREE.MathUtils.smoothstep(environment.timeOfDay, 0.2, 0.9)
+  u.uHorizon.value.copy(environment.horizon)
 }
 
 function triCount(g: THREE.BufferGeometry): number {
@@ -84,6 +92,11 @@ export function RoadView() {
     const uniforms = makeRoadUniforms(look)
     const road = geometryFrom(track.meshes.road)
     const skirt = geometryFrom(track.meshes.skirt)
+    // slab thickness + air underneath, per vertex, for the bottom-edge light strip
+    const extras = skirtExtras(track)
+    skirt.setAttribute('aSlabT', new THREE.BufferAttribute(extras.slabT, 1))
+    skirt.setAttribute('aLift', new THREE.BufferAttribute(extras.lift, 1))
+    const pylons = placePylons(track, extras.thickness)
     const roadMat = makeRoadMaterial(uniforms)
     const skirtMat = makeSkirtMaterial(uniforms)
     const ramps = track.meshes.ramps ? geometryFrom(track.meshes.ramps) : null
@@ -91,7 +104,7 @@ export function RoadView() {
     const barriers = track.meshes.barriers ? geometryFrom(track.meshes.barriers) : null
     const pal = track.file.environment.palette
     const barrierMat = barriers
-      ? makeBarrierMaterial(uniforms.uTime, {
+      ? makeBarrierMaterial(uniforms.uTime, uniforms.uHorizon, {
           rail: pal?.edge ?? PALETTE.roadEdge,
           band: pal?.edgeAlt ?? PALETTE.roadEdgeAlt,
           height: track.file.road.barrierHeight,
@@ -102,7 +115,8 @@ export function RoadView() {
     lookState.road.lanes = look.lanes
     lookState.road.edgeColor = look.edge
     lookState.road.rebuilds++
-    return { uniforms, road, skirt, roadMat, skirtMat, ramps, rampMat, barriers, barrierMat }
+    lookState.road.pylons = pylons.length
+    return { uniforms, road, skirt, roadMat, skirtMat, ramps, rampMat, barriers, barrierMat, pylons, edge: look.edge }
   }, [track])
 
   useEffect(
@@ -134,6 +148,7 @@ export function RoadView() {
         <mesh name="road-barriers" geometry={built.barriers} material={built.barrierMat} receiveShadow />
       )}
       {track && track.speedTraps.length > 0 && <SpeedTrapSigns track={track} time={built.uniforms.uTime} />}
+      <BridgePylons pylons={built.pylons} edge={built.edge} />
     </group>
   )
 }

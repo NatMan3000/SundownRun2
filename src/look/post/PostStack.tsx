@@ -6,6 +6,9 @@
 //
 //    1. BoostLens   chromatic aberration while boosting (uniform-
 //                   gated: free when you are not boosting)
+//       Beams       every car's headlight beams at night, drawn as
+//                   soft volumes of light that fade into whatever
+//                   they meet (reads the depth buffer; free by day)
 //    2. Bloom       mipmap blur. Only light above 1.0 (the brightest
 //                   channel) blooms, so the glow tiers in palette.ts
 //                   decide what glows: T0 never, T1 a soft halo, T2
@@ -28,7 +31,8 @@
 //  rebuilds the stack once (rare); boosting never rebuilds anything.
 //
 //  Dev:  __dev.lookPost({ exposure, toneMapping, bloom, intensity,
-//        threshold, knee, radius })  and  __dev.previewBoost(0..1)
+//        threshold, knee, radius }),  __dev.previewBoost(0..1)  and
+//        __dev.lookBeams({ length, spread, intensity, ... })
 // ============================================================
 
 import { useEffect, useMemo, useState } from 'react'
@@ -54,6 +58,8 @@ import { registerDev } from '../../core/devHandles'
 import { QUALITY_PRESETS } from '../quality'
 import { lookState } from '../lookState'
 import { BoostLensEffect, GradeEffect, SpeedLinesEffect, applyTierThreshold } from './effects'
+import { HeadlightBeamsEffect } from './HeadlightBeamsEffect'
+import { BEAM_TUNE } from '../fx/beams'
 
 type ToneName = 'aces' | 'agx' | 'neutral'
 
@@ -87,6 +93,7 @@ class BudgetBloomEffect extends BloomEffect {
 
 const _shadowTint = new THREE.Color()
 const _streak = new THREE.Color()
+const _beamColor = new THREE.Color()
 
 /** Smoothed boost lens amount (eases in and out on its own spring). */
 let lens = 0
@@ -113,7 +120,9 @@ export function PostStack() {
     composer.addPass(new RenderPass(scene, camera))
 
     const boostLens = new BoostLensEffect()
-    const effects: Effect[] = [boostLens]
+    _beamColor.set(PALETTE.stars) // clean cool white: the light itself, not a neon colour
+    const beams = new HeadlightBeamsEffect(_beamColor, preset.beamSteps)
+    const effects: Effect[] = [boostLens, beams]
 
     let bloom: BudgetBloomEffect | null = null
     if (preset.bloom && tune.bloom) {
@@ -157,7 +166,7 @@ export function PostStack() {
     lookState.post.smaa = !!smaa
     lookState.post.passes = composer.passes.length
 
-    return { composer, boostLens, speedLines, effects, main, smaa, bloom }
+    return { composer, boostLens, beams, speedLines, effects, main, smaa, bloom }
   }, [gl, scene, camera, level, version])
 
   // Size the buffers to the drawing buffer (CSS size x pixel ratio).
@@ -206,15 +215,29 @@ export function PostStack() {
       }) as (...args: never[]) => unknown,
       'previewBoost(0..1) - hold the boost aberration + speed lines at a level (-1 = follow the car)',
     )
+    const offC = registerDev(
+      'lookBeams',
+      ((opts?: Partial<typeof BEAM_TUNE>) => {
+        if (opts && typeof opts === 'object') {
+          for (const key of Object.keys(opts) as (keyof typeof BEAM_TUNE)[]) {
+            const v = opts[key]
+            if (key in BEAM_TUNE && typeof v === 'number' && Number.isFinite(v)) BEAM_TUNE[key] = v
+          }
+        }
+        return { ...BEAM_TUNE, lampsDrawn: lookState.post.beamLamps }
+      }) as (...args: never[]) => unknown,
+      'lookBeams({ length, spread, startRadius, intensity, maxBrightness, softContact, aimDrop, fadeNear, fadeFar }) - tune the headlight beams live; no argument returns the current values',
+    )
     return () => {
       offA()
       offB()
+      offC()
     }
   }, [])
 
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.1)
-    const { composer, boostLens, speedLines, bloom } = stack
+    const { composer, boostLens, beams, speedLines, bloom } = stack
 
     // Live tunables (cheap uniform writes).
     gl.toneMappingExposure = tune.exposure
@@ -236,6 +259,9 @@ export function PostStack() {
     speedLines.amount = THREE.MathUtils.smoothstep(lens, 0.05, 0.7)
     speedLines.time = lensTime
     lookState.post.boostLens = lens
+
+    // Headlight beams: this frame's lamps into camera space (after the camera has moved).
+    lookState.post.beamLamps = beams.sync(camera)
 
     composer.render(dt)
   }, 1)

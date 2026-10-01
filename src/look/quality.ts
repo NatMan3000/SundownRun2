@@ -3,7 +3,7 @@
 // ------------------------------------------------------------
 //  Three presets (low, medium, high) plus 'auto'. Each preset is
 //  one row of numbers below: render resolution, bloom size, SMAA,
-//  trail length and particle caps. Everything in src/look reads
+//  trail length, particle caps and headlight-beam detail. Everything in src/look reads
 //  its budget from here, and the world worker reads the level the
 //  game settled on from store.qualityLevel.
 //
@@ -43,6 +43,8 @@ export interface QualityPreset {
    * smooth gradients, so 128 everywhere.
    */
   envSize: number
+  /** Steps along each headlight beam per pixel (fewer = cheaper, a little grainier). */
+  beamSteps: number
 }
 
 export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
@@ -57,6 +59,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     sparkCap: 360,
     pulseCap: 12,
     envSize: 128,
+    beamSteps: 10,
   },
   medium: {
     dpr: 1,
@@ -69,6 +72,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     sparkCap: 220,
     pulseCap: 8,
     envSize: 128,
+    beamSteps: 8,
   },
   low: {
     dpr: 0.85,
@@ -81,6 +85,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     sparkCap: 120,
     pulseCap: 6,
     envSize: 128,
+    beamSteps: 6,
   },
 }
 

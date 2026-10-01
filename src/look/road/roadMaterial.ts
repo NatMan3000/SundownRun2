@@ -101,6 +101,8 @@ export function makeRoadUniforms(look: RoadLook) {
     uCityOn: { value: 0 },
     uCityWarm: { value: c(PALETTE.cityWindowWarm) },
     uCityCool: { value: c(PALETTE.cityWindowCool) },
+    /** The sky's horizon colour right now (environment.horizon), for the slab and barrier sheen. */
+    uHorizon: { value: new THREE.Color(PALETTE.skyHorizonDusk) },
   }
 }
 

@@ -6,9 +6,10 @@
 //      while sliding or boosting; ghosts get a faint one only
 //    - underglow: a glowing strip along each side of the belly, plus
 //      a soft pool of coloured light on the road under the car
-//    - headlight beams at night: soft see-through cones (the player's
-//      real road lighting is HeadlightRig.tsx; these are the visible
-//      beams, and the only headlights the other cars have)
+//    - headlight beams at night: this hands each lamp's position and
+//      aim to fx/beams.ts, and the post stack draws the beams as soft
+//      volumes of light (post/HeadlightBeamsEffect.ts). The player's
+//      real road lighting is HeadlightRig.tsx.
 //    - a pulsing aura on the car that is "it" in tag
 //
 //  Each of those is one instanced mesh shared by every car, so six
@@ -28,6 +29,7 @@ import { useGame } from '../../core/store'
 import { QUALITY_PRESETS } from '../quality'
 import { lookState } from '../lookState'
 import { LightTrails } from './LightTrails'
+import { BEAM_TUNE, MAX_BEAM_LAMPS, beamLamps } from './beams'
 
 /** Live handles for dev inspection (the fx meshes of the mounted CarLights). */
 export const carLightsDebug: { trails: LightTrails | null; pools: THREE.InstancedMesh | null } = { trails: null, pools: null }
@@ -84,37 +86,6 @@ void main() {
   float pool = 1.0 - smoothstep(0.1, 1.0, r);
   pool *= 0.55 + 0.45 * pool;
   float a = pool * vGlow * (1.0 - smoothstep(180.0, 320.0, vDist));
-  if (a < 0.002) discard;
-  gl_FragColor = vec4(vColor * a, 1.0);
-}
-`
-
-/** Headlight beams: brightest at the lamp, fading along the beam and at its silhouette. */
-const coneVertex = /* glsl */ `
-attribute float aGlow;
-varying float vGlow;
-varying vec3 vColor;
-varying float vAlong;
-varying float vFacing;
-void main() {
-  vGlow = aGlow;
-  vColor = instanceColor;
-  vAlong = position.z; // 0 at the lamp, 1 at the far end
-  mat4 mv = modelViewMatrix * instanceMatrix;
-  vec4 p = mv * vec4(position, 1.0);
-  vec3 n = normalize(mat3(mv) * normal);
-  vFacing = abs(dot(n, normalize(-p.xyz)));
-  gl_Position = projectionMatrix * p;
-}
-`
-const coneFragment = /* glsl */ `
-varying float vGlow;
-varying vec3 vColor;
-varying float vAlong;
-varying float vFacing;
-void main() {
-  float along = pow(1.0 - clamp(vAlong, 0.0, 1.0), 1.6);
-  float a = along * vFacing * vFacing * vFacing * vGlow;
   if (a < 0.002) discard;
   gl_FragColor = vec4(vColor * a, 1.0);
 }
@@ -219,9 +190,6 @@ const _p = new THREE.Vector3()
 const _s = new THREE.Vector3()
 const _v = new THREE.Vector3()
 const _m = new THREE.Matrix4()
-const _pitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.07)
-const _qc = new THREE.Quaternion()
-const _beam = new THREE.Color(PALETTE.laneLine)
 const _tag = new THREE.Color(PALETTE.tagIt)
 
 function anchorToWorld(car: CarState, local: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
@@ -242,18 +210,12 @@ export function CarLights() {
     poolGeo.rotateX(-Math.PI / 2)
     const pools = instanced(poolGeo, poolVertex, poolFragment, MAX_FX_CARS, true, 'fx-underglow-pools')
 
-    // beam: open cone, apex at the lamp (z = 0), opening toward +z (z = 1 at the far end)
-    const coneGeo = new THREE.ConeGeometry(1, 1, 20, 1, true)
-    coneGeo.translate(0, -0.5, 0)
-    coneGeo.rotateX(-Math.PI / 2)
-    const cones = instanced(coneGeo, coneVertex, coneFragment, MAX_FX_CARS * 2, true, 'fx-headlight-beams')
-
     const auraGeo = new THREE.SphereGeometry(1, 20, 14)
     const auras = instanced(auraGeo, auraVertex, auraFragment, MAX_FX_CARS, true, 'fx-tag-aura')
 
     carLightsDebug.trails = trails
     carLightsDebug.pools = pools.mesh
-    return { trails, bars, pools, cones, auras }
+    return { trails, bars, pools, auras }
   }, [])
 
   useEffect(() => {
@@ -264,12 +226,13 @@ export function CarLights() {
   useEffect(
     () => () => {
       fx.trails.dispose()
-      for (const k of [fx.bars, fx.pools, fx.cones, fx.auras]) {
+      for (const k of [fx.bars, fx.pools, fx.auras]) {
         k.mesh.geometry.dispose()
         ;(k.mesh.material as THREE.Material).dispose()
         k.mesh.dispose()
       }
       for (const c of fxCars) c.id = ''
+      beamLamps.count = 0
     },
     [fx],
   )
@@ -283,8 +246,8 @@ export function CarLights() {
 
     let bars = 0
     let pools = 0
-    let cones = 0
     let auras = 0
+    beamLamps.count = 0
 
     for (let i = 0; i < cars.length; i++) {
       const car = cars[i]
@@ -357,19 +320,16 @@ export function CarLights() {
         pools++
       }
 
-      // ---- headlight beams at night
+      // ---- headlight beams at night: hand each lamp to the post stack
       if (head > 0.01) {
         const hl = anchors.headLights
-        const isPlayer = car.kind === 'player'
-        for (let k = 0; k < hl.length && k < 2; k++) {
-          anchorToWorld(car, hl[k], _p)
-          _qc.copy(car.quaternion).multiply(_pitch)
-          _s.set(1.7, 1.7, 11)
-          _m.compose(_p, _qc, _s)
-          fx.cones.mesh.setMatrixAt(cones, _m)
-          fx.cones.mesh.setColorAt(cones, _beam)
-          fx.cones.glow[cones] = head * (isPlayer ? 0.1 : 0.16)
-          cones++
+        for (let k = 0; k < hl.length && k < 2 && beamLamps.count < MAX_BEAM_LAMPS; k++) {
+          const n = beamLamps.count++
+          anchorToWorld(car, hl[k], beamLamps.position[n])
+          // straight ahead, aimed a little down, each lamp splayed slightly outward
+          _v.set(hl[k].x * 0.035, -BEAM_TUNE.aimDrop, 1).normalize()
+          beamLamps.direction[n].copy(_v).applyQuaternion(car.quaternion)
+          beamLamps.gain[n] = head
         }
       }
 
@@ -400,7 +360,6 @@ export function CarLights() {
     fx.trails.update(dt)
     finish(fx.bars, bars)
     finish(fx.pools, pools)
-    finish(fx.cones, cones)
     finish(fx.auras, auras)
     lookState.fx.trails = fx.trails.activeCount()
   })
@@ -410,7 +369,6 @@ export function CarLights() {
       <primitive object={fx.bars.mesh} />
       <primitive object={fx.pools.mesh} />
       <primitive object={fx.trails.mesh} />
-      <primitive object={fx.cones.mesh} />
       <primitive object={fx.auras.mesh} />
     </>
   )
