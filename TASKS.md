@@ -164,3 +164,14 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ⬜ [perf] Frame times vary 3.1-6.4 ms on the Hyperdrome across runs while other agents share the GPU: run the perf checker on a quiet machine.
 - ✅ [ruling] The "SUNDOWN RUN TWO" gradient-stripe logotype is a deliberate exception to Kai's UI baseline ban on gradient text: it is the game's title art in the synthwave genre's signature style, not interface chrome. Menu panels use blurred dark glass for legibility over the live 3D scene (functional, not decorative).
 - ✅ [world] NaN ridge vertices fixed by the orchestrator (clamped noise before a fractional pow; traced by look). Probe load: 0 NaN messages.
+- ⚠️ [net] Checker mp-1 on adc93dd: 8 pass / 1 fail / 1 partial. PASS: launcher links, join + see each other, smooth remote motion, synced race, tag, drawn track streams, shared props, no Ai in MP. FAIL: cars spawn on the same spot at MP session start / host track change. PARTIAL: rammer stops dead on its own screen (kinematic wall). Display: both show P1 after GO, "+155.9 s" gap in countdown. Routed to net.
+
+## Orchestrator state (resume here after a context summary)
+
+Updated 2026-10-01 ~20:20 AEST. Lead = this session (Kai). Briefs: scratchpad/briefs/*.md (COMMON, CHECKER, per worker). Reports: /tmp/sr2/reports/. Checker verdicts: /tmp/sr2/checks/*-verdict.md.
+
+- Live pane workers: vehicle (consolidated 11-item queue + rack/full-lock g measurement; slowest, often behind on messages), look (idle, standing by), ui (idle), play (Afterglow Ai runs, governor, core pillars), editor (done, 79% context, handoff /tmp/sr2/reports/editor-handoff.md), track2 (loop exit, gradient braking, wall-ride line, drive-through false positive, Hyperdrome timeOfDay 0.12; then rack-aware line cap).
+- Background agents: net (fixing mp-1), learn (Learn To Code.html, scripts/learn-to-code.ts), designer (done), checkers running: onefile-1 (Neon Pocket in game), feel-1 (vehicle stage A on d7ac08e), editor-1 (round trip on 7cdbb60).
+- Stopped: track (handoff /tmp/sr2/reports/track-handoff.md), world (handoff /tmp/sr2/reports/world-handoff.md), audio.
+- Next checks to spawn: ui-2 re-check (ui-1 D1-D4 + play P1), visual judge (both tracks + Neon Pocket, sundown + night; after vehicle body polish), perf (demo per track on a QUIET machine, after the demo uses play's Ai brain and laps cleanly), Hyperdrome bank/speed-trap check, loops + wall rides feel check (after vehicle stage B), mp-2 re-check, clean clone (last).
+- Final steps: regenerate Learn To Code.html; finish CLAUDE.md; final report with three headings (Blocked on me / Changed / Found).
