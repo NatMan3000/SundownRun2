@@ -230,6 +230,12 @@ export class LightTrails {
    */
   feed(index: number, x: number, y: number, z: number, strength: number, colorHex: string, dt: number): void {
     const s = this.slots[index]
+    // Never let a bad pose (a NaN during a physics reset) into the buffer: drop
+    // this frame and start a fresh trail when the car is back.
+    if (!Number.isFinite(x + y + z + strength)) {
+      s.live = false
+      return
+    }
     const N = TRAIL_MAX_POINTS
     const base = index * N * 2 // first vertex of this trail
 

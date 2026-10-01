@@ -290,6 +290,10 @@ export function CarLights() {
       const car = cars[i]
       const anchors = car.anchors
       if (!anchors) continue
+      // skip a car whose pose is not finite this frame (a physics reset in progress)
+      const cp = car.position
+      const cq = car.quaternion
+      if (!Number.isFinite(cp.x + cp.y + cp.z + cq.x + cq.y + cq.z + cq.w)) continue
       let f = fxFor(car.id)
       if (!f) {
         f = freeFx()

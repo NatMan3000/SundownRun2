@@ -164,7 +164,8 @@ function addCrest(
     const R = (half - 12) / k
     const groundY = track.terrainHeight(sx * R, sz * R)
     // Peaks and saddles: a broad shape, sharpened, plus a jagged detail.
-    const peak = Math.pow(shape[i], 2.2) * 0.75 + Math.pow(detail[i], 3) * 0.45
+    // Noise can dip below zero; a negative base to a fractional power is NaN, so clamp first.
+    const peak = Math.pow(Math.max(0, shape[i]), 2.2) * 0.75 + Math.pow(Math.max(0, detail[i]), 3) * 0.45
     let toSun = Math.abs(az - sunAz) % (Math.PI * 2)
     if (toSun > Math.PI) toSun = Math.PI * 2 - toSun
     const notch = 0.3 + 0.7 * Math.min(1, Math.max(0, (toSun - 40 * DEG) / (25 * DEG)))
@@ -232,7 +233,7 @@ function buildRidges(track: TrackRuntime): THREE.BufferGeometry {
         if (d > Math.PI) d = Math.PI * 2 - d
         gap = 1 - Math.min(1, Math.max(0, (d - cityHalfArc * 0.8) / (cityHalfArc * 0.4)))
       }
-      const peakDeg = spec.minDeg + (spec.maxDeg - spec.minDeg) * Math.pow(shape[i] * 0.75 + detail[i] * 0.25, 1.3)
+      const peakDeg = spec.minDeg + (spec.maxDeg - spec.minDeg) * Math.pow(Math.max(0, shape[i] * 0.75 + detail[i] * 0.25), 1.3)
       const R = R0 * (1 + (detail[i] - 0.5) * 0.08)
       const top = eye + Math.tan(peakDeg * DEG) * R * (1 - 0.72 * gap)
       const bottom = ground - 30

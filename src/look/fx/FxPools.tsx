@@ -67,19 +67,20 @@ export function FxPools() {
         const { x, y, z } = o.position
         if (!Number.isFinite(x + y + z)) return
         const v = o.velocity
+        const vOk = !!v && Number.isFinite(v.x + v.y + v.z)
         pools.shards.emit(
           x, y, z,
-          v?.x ?? 0, v?.y ?? 0, v?.z ?? 0,
-          o.color, Math.max(1, Math.round(o.count)), Math.max(0.5, o.speed),
+          vOk ? v.x : 0, vOk ? v.y : 0, vOk ? v.z : 0,
+          o.color, Math.max(1, Math.round(Number.isFinite(o.count) ? o.count : 1)), Math.max(0.5, Number.isFinite(o.speed) ? o.speed : 0.5),
           o.size ?? 0.25, o.life ?? 1.6, groundBelow(x, y, z),
         )
       },
       sparks: (pos, normal, intensity) => {
-        if (!Number.isFinite(pos.x + pos.y + pos.z)) return
+        if (!Number.isFinite(pos.x + pos.y + pos.z + normal.x + normal.y + normal.z + intensity)) return
         pools.sparks.emit(pos.x, pos.y, pos.z, normal.x, normal.y, normal.z, intensity, groundBelow(pos.x, pos.y, pos.z))
       },
       pulse: (pos, color, radius) => {
-        if (!Number.isFinite(pos.x + pos.y + pos.z)) return
+        if (!Number.isFinite(pos.x + pos.y + pos.z + radius)) return
         pools.pulses.emit(pos.x, pos.y + 0.12, pos.z, color, Math.max(0.5, radius))
       },
     })
