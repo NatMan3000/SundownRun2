@@ -87,8 +87,12 @@ const REVERSE_S = 1.3
 const WATCHDOG_S = 4
 const WATCHDOG_MIN_PROGRESS = 5
 const FLIPPED_RESET_S = 2.5
+/** Steering demand (fraction of full lock) above which the brain treats the turn as too tight for its speed. */
+const STEER_SATURATION = 0.7
+/** How hard it slows per unit of demand over that: 0.25 -> 7.5 % below current speed at full lock. */
+const UNDERSTEER_CUT = 0.25
 /** Sideways grip the brain trusts on flat road, m/s^2 (wall-ride corners are taken on this). */
-const WALL_FLAT_ALAT = 9.5
+const WALL_FLAT_ALAT = 7.5
 /** Boost pads: only take one if the road after it can use this much extra speed, m/s. */
 const BOOST_GAIN = 12
 /** If the hinted road point is further than this from the car, the hint is stale (teleport). */
@@ -129,6 +133,16 @@ function sampleAt(track: TrackRuntime, arr: Float32Array, s: number): number {
   return arr[i0] + (arr[i1] - arr[i0]) * t
 }
 
+/**
+ * Tuning aid: trace every Ai driver every 5 m through the stretch [s0, s1]
+ * (set with __dev.aiWatch(s0, s1), read with __dev.aiWatchGet()).
+ */
+export const aiWatch = {
+  s0: -1,
+  s1: -1,
+  rows: [] as string[],
+}
+
 /** Is distance s inside a wall-ride piece? */
 function inWallRide(track: TrackRuntime, s: number): boolean {
   const pieces = track.pieces
@@ -158,7 +172,7 @@ export class AiDriver implements Driver {
   /** How many times this racer has had to reset to the road (inspector, balance checks). */
   resets = 0
   /** The last few resets: where, why, and how fast it was going (for tuning; rare, so allocation is fine). */
-  resetLog: { s: number; why: 'flipped' | 'stuck'; kmh: number; lateral: number }[] = []
+  resetLog: { s: number; why: 'flipped' | 'stuck'; kmh: number; lateral: number; height: number }[] = []
   /** The approach to the last few loops: every 10 m over the final 60 m (for tuning loop entries). */
   loopLog: { s: number; toLoop: number; kmh: number; targetKmh: number; lateral: number; headingDeg: number }[] = []
   private loopBucket = -1
@@ -288,7 +302,8 @@ export class AiDriver implements Driver {
     const alpha = Math.atan2(x, z) // + = aim point to my right
     const alphaRate = clamp((alpha - this.prevAlpha) / dt, -8, 8)
     this.prevAlpha = alpha
-    this.steer = clamp(STEER_GAIN * alpha + STEER_DAMP * alphaRate, -1, 1)
+    const steerWanted = STEER_GAIN * alpha + STEER_DAMP * alphaRate
+    this.steer = clamp(steerWanted, -1, 1)
 
     // ---- target speed with braking look-ahead ----
     const magFloor = (settings.magGripKmh / 3.6) * MAG_MARGIN
@@ -327,8 +342,17 @@ export class AiDriver implements Driver {
     }
     this.logLoopApproach(track, car, loopAt, v)
     if (followCap < vt) vt = followCap
-    // a big steering angle at speed means we are off line: ease off a touch
-    if (Math.abs(alpha) > 0.5) vt *= 1 - Math.min(0.35, (Math.abs(alpha) - 0.5) * 0.5)
+    // Understeer governor. The car's steering is speed-sensitive: at speed even full
+    // lock only turns so tightly. If the brain is asking for most of the lock, the
+    // car can't follow the line at this speed, whatever the line says. Slow down
+    // (brake below the current speed) until the turn fits.
+    const demand = Math.abs(steerWanted)
+    if (demand > STEER_SATURATION && v > 8) {
+      const cut = 1 - UNDERSTEER_CUT * (Math.min(demand, 1.8) - STEER_SATURATION)
+      if (v * cut < vt) vt = v * cut
+    }
+    // a big angle to the aim point means we are well off line: ease off as well
+    if (Math.abs(alpha) > 0.35) vt *= 1 - Math.min(0.35, (Math.abs(alpha) - 0.35) * 0.5)
     this.targetKmh = vt * 3.6
 
     const e = vt - v
@@ -349,6 +373,7 @@ export class AiDriver implements Driver {
     }
     this.handbrake = false
     if (this.mode !== 'pass') this.mode = finished ? 'cooldown' : 'drive'
+    if (aiWatch.s0 >= 0) this.watchRow(track, car, v, vt)
   }
 
   /** Record speed, line and heading every 10 m over the last 60 m before a loop. */
@@ -374,6 +399,28 @@ export class AiDriver implements Driver {
       headingDeg: Math.round((Math.atan2(side, along) * 180) / Math.PI),
     })
     if (this.loopLog.length > 21) this.loopLog.shift()
+  }
+
+  private watchBucket = -1
+
+  /** One trace row every 5 m inside the watch window (rare: tuning only). */
+  private watchRow(track: TrackRuntime, car: CarState, v: number, vt: number): void {
+    const inside = track.deltaS(aiWatch.s0, this.s) >= 0 && track.deltaS(this.s, aiWatch.s1) >= 0
+    if (!inside) {
+      this.watchBucket = -1
+      return
+    }
+    const b = Math.floor(this.s / 5)
+    if (b === this.watchBucket) return
+    this.watchBucket = b
+    const i = this.hit.index
+    const S = track.samples
+    _fwd.set(0, 0, 1).applyQuaternion(car.quaternion)
+    const hdg = (Math.atan2(_fwd.x * S.rx[i] + _fwd.y * S.ry[i] + _fwd.z * S.rz[i], _fwd.x * S.tx[i] + _fwd.y * S.ty[i] + _fwd.z * S.tz[i]) * 180) / Math.PI
+    aiWatch.rows.push(
+      `${this.id} s${Math.round(this.s)} ${Math.round(v * 3.6)}/${Math.round(vt * 3.6)} lat${this.hit.lateral.toFixed(1)}>${this.laneNow.toFixed(1)} h${this.hit.height.toFixed(1)} hdg${Math.round(hdg)} st${this.steer.toFixed(2)} th${this.throttle.toFixed(1)} br${this.brake.toFixed(1)} ${this.mode}`,
+    )
+    if (aiWatch.rows.length > 400) aiWatch.rows.shift()
   }
 
   private idle(): void {
@@ -509,7 +556,7 @@ export class AiDriver implements Driver {
       this.watchProgress = 0
     }
     if (reset && this.resetCooldown <= 0 && car.api) {
-      this.resetLog.push({ s: Math.round(this.s), why: this.flippedT > FLIPPED_RESET_S ? 'flipped' : 'stuck', kmh: Math.round(v * 3.6), lateral: +this.hit.lateral.toFixed(1) })
+      this.resetLog.push({ s: Math.round(this.s), why: this.flippedT > FLIPPED_RESET_S ? 'flipped' : 'stuck', kmh: Math.round(v * 3.6), lateral: +this.hit.lateral.toFixed(1), height: +this.hit.height.toFixed(1) })
       if (this.resetLog.length > 12) this.resetLog.shift()
       car.api.resetToRoad()
       this.resets++

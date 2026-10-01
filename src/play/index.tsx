@@ -27,6 +27,7 @@ import { registerDev, registerInspector } from '../core/devHandles'
 import { getGame } from '../core/store'
 import { getTrack } from '../track/current'
 import { recentEvents } from '../core/events'
+import { aiWatch } from './aiDriver'
 import { ModeController, devFinish, devRace, newRound, restartSession } from './ModeController'
 import { AiRacers } from './AiRacers'
 import { CrashProps } from './CrashProps'
@@ -118,7 +119,7 @@ export function PlayLayer() {
       registerDev('round', () => newRound(), 'new round of the current mode (props and cores re-scatter)'),
       registerDev('race', ((n: number) => devRace(n)) as never, 'race(n): start a race now with n Ai racers (0-5)'),
       registerDev('finishRace', () => devFinish(), 'end the running race (or stunt run) now and show results'),
-      registerDev('aiResets', () => [...drivers.values()].map((d) => `${d.id}: ` + d.resetLog.map((r) => `${r.why}@${r.s}m ${r.kmh}kmh lat${r.lateral}`).join(', ')).join(' | '), 'where and why each Ai racer reset'),
+      registerDev('aiResets', () => [...drivers.values()].map((d) => `${d.id}: ` + d.resetLog.map((r) => `${r.why}@${r.s}m ${r.kmh}kmh lat${r.lateral} h${r.height}`).join(', ')).join(' | '), 'where and why each Ai racer reset'),
       registerDev('aiLoops', () => [...drivers.values()].map((d) => `${d.id}: ` + d.loopLog.map((r) => `s${r.s}(-${r.toLoop}m) ${r.kmh}/${r.targetKmh}kmh lat${r.lateral} hdg${r.headingDeg}`).join(', ')).join(' | '), 'each Ai racer\'s last loop approaches: speed/target, lateral, heading error every 10 m'),
       registerDev(
         'lineDump',
@@ -135,6 +136,17 @@ export function PlayLayer() {
         }) as never,
         'lineDump(s0, s1, step=10): racing line offset/speed, half width, curvature (1/km), surface code, slope along the road',
       ),
+      registerDev(
+        'aiWatch',
+        ((s0: number, s1: number) => {
+          aiWatch.s0 = s0
+          aiWatch.s1 = s1
+          aiWatch.rows.length = 0
+          return `watching s ${s0}..${s1}`
+        }) as never,
+        'aiWatch(s0, s1): trace every Ai every 5 m through that stretch (read with aiWatchGet)',
+      ),
+      registerDev('aiWatchGet', () => aiWatch.rows.join('\n'), 'the aiWatch trace so far'),
       registerDev('raceSummary', () => raceSummary(), 'one-line race status: stage, each racer laps/metres, Ai modes, resets'),
       registerInspector('play', inspectPlay),
     ]
