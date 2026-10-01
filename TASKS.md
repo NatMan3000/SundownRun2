@@ -146,3 +146,7 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ✅ [ruling] One driving brain: the ?demo=1 autopilot drives the player's car with play's Ai Driver (difficulty 1, no catch-up) through driveOverride; play owns the brain's tuning, vehicle owns the demo harness.
 - ⬜ [vehicle/play] Demo autopilot leaves the new Afterglow at s 1028 (downhill right-hander), s 2323 (loop), s 2500-2640 (loop exit to hairpin, airborne), s 3185 (bridge east approach), then re-matches to the lower branch (designer, current tree).
 - ⬜ [vehicle] Ai trackS jumps levels at the crossover (VECTOR 1250 -> 3568).
+- ⬜ [track, next worker] Gradient-aware braking pass in the racing line (downhill right-hander at s~1028 on Afterglow; play's driver now compensates on its side).
+- ⬜ [track, next worker] Drive-through gate false positive: the centreline "road at checkpoint k" run fails when an offset ramp's 18-deg side slope crosses lat 0 within its window; skip/offset those runs over a ramp's s0..s1 (designer repro: afterglow start.at 2.0, ramp at 31.6).
+- ✅ [track] Worker stopped at 92% context after rounds 1-3; handoff at /tmp/sr2/reports/track-handoff.md for a fresh track worker.
+- ✅ [net] Stage C (worker-run): robust 24/24, mp:check against a built preview 37/37, relay tests 18/18. Checker mp-1 running on adc93dd.
