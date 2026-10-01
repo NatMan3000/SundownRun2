@@ -127,3 +127,10 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ✅ [track/world] Ruling: sunset notch in the edge ridge (sun azimuth +/- 40 deg at ~30% rise), city at ~1.6 x world size.
 - ✅ [look] Ruling: Neutral tone mapping (ACES washed the sun gradient; world's A/B screenshots).
 - ✅ [audio] Ruling: audio owns the countdown beeps (from race.countdown).
+- ⬜ [track] Road and skirt triangles wound clockwise (ribbon.ts quad() normal = e2 x e1): road top culled from above, skirt underside shows (look). Also explains editor's "terrain covers road" from top-down.
+- ⬜ [track] Afterglow loop entrance is a solid wall at s 3216: cars stop dead; five Ai + demo piled up 4+ min (play). Needs a drive-through physics test.
+- ⬜ [track] Afterglow redesign (orchestrator, game director): rounded rectangle with long straights and an empty middle; wants a flowing layout through the world, 40-60 m elevation, big-air hill by the road, loop toward the sun, wall ride on a sweeper, a crossover bridge.
+- ⬜ [vehicle] First d-pad press after a pad connects fires the menu action twice (ui).
+- ⬜ [look] Live switch to Neutral tone mapping renders black (world).
+- ⬜ [vehicle] Car art: faceted low-poly look and dull red-magenta paint; wants smooth normals + clearcoat. Showroom camera must frame the car in the right half (menus cover the left).
+- ✅ [contract] Planet default elevation 16 deg (was 28: off-frame at night). TrackParamInfo.default added. ResolvedTrackFile.laps typed number | null. Skirt uv semantics. Physics updatePriority -50.
