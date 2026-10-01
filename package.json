@@ -13,7 +13,9 @@
     "typecheck": "tsc -b",
     "preview": "vite preview",
     "probe": "bun scripts/probe.ts",
-    "tracks:check": "bun scripts/check-tracks.ts"
+    "tracks:check": "bun scripts/check-tracks.ts",
+    "mp:check": "bun server/mp-check.ts",
+    "test:relay": "bun test server/relay.test.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",
