@@ -36,6 +36,9 @@ const _frame: TrackFrame = {
 /** Height of the car's origin above the road when it sits at rest on its wheels. */
 export const RIDE_HEIGHT = 0.55
 
+/** A reset this close before a loop goes back to here, so there's room to build speed. */
+const LOOP_RUNUP = 150
+
 /** Car rotation for a car sitting on a road frame. Writes `out`. */
 export function quatFromFrame(tangent: THREE.Vector3, up: THREE.Vector3, out: THREE.Quaternion): THREE.Quaternion {
   // left = up x tangent (right-handed: tangent x up = right).
@@ -75,6 +78,16 @@ export function roadResetPose(
   // Ramps are road too, but a reset onto a kicker launches you: step back off it.
   for (let n = 0; n < 60 && smp.surface[i] === SURFACE_CODE.ramp; n++) i = (i - 1 + smp.count) % smp.count
   s = i * smp.ds
+  // Never strand a car at a loop's mouth at zero speed (it can't make the loop from a standstill):
+  // if a loop starts within the run-up distance ahead, reset to a full run-up before it.
+  for (const p of track.pieces) {
+    if (p.type !== 'loop') continue
+    const ahead = track.deltaS(s, p.s0)
+    if (ahead >= 0 && ahead < LOOP_RUNUP) {
+      s = track.wrapS(p.s0 - LOOP_RUNUP)
+      break
+    }
+  }
   track.frameAt(s, _frame)
   outPos.copy(_frame.position).addScaledVector(_frame.up, RIDE_HEIGHT + lift)
   quatFromFrame(_frame.tangent, _frame.up, outQuat)

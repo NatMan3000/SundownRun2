@@ -157,7 +157,7 @@ export function PlayerCar() {
   )
 
   // ---------------------------------------------------------------- before each step
-  const beforeStep = (s: CarSim) => {
+  const beforeStep = (s: CarSim, car: CarState) => {
     const g = getGame()
     const set = getSettings()
     const h = s.handling
@@ -197,7 +197,7 @@ export function PlayerCar() {
 
     // Controls: the autopilot channel wins when active (same rack, same tyres).
     const t = getTrack()
-    if (demoDrive.active && t && g.phase === 'playing') demoDrive.update(s, t)
+    if (demoDrive.active && t && g.phase === 'playing') demoDrive.update(s, t, car)
     const c = s.controls
     c.powerScale = 1
     if (driveOverride.active) {

@@ -443,12 +443,15 @@ export class CarSim {
     if (this.settleSteps > 0) {
       this.settleSteps--
     } else {
-      const dv = _tmp.subVectors(linvel, this.prevLinvel).length()
+      _tmp.subVectors(linvel, this.prevLinvel)
+      const dv = _tmp.length()
       const hit = clamp((dv - STATE.impactThreshold) / STATE.impactRange, 0, 1)
-      if (hit > this.impact) this.impact = hit
-      if (hit > STATE.crashImpact && this.crashCooldown <= 0 && chassis) {
+      if (hit > this.impact) this.impact = hit // camera kick + landing thump (landings included)
+      // Crash: only the change across the car's forward / side axes (up axis removed).
+      const dvAcross = _tmp.addScaledVector(up, -_tmp.dot(up)).length()
+      if (dvAcross > STATE.crashMinDv && this.crashCooldown <= 0 && chassis) {
         this.news.crashSpeedKmh = this.prevLinvel.length() * 3.6 // the speed going IN to the hit
-        this.senseCrash(world, chassis, hit)
+        this.senseCrash(world, chassis, clamp((dvAcross - STATE.crashMinDv) / STATE.crashRange, 0.05, 1))
       }
     }
     this.prevLinvel.copy(linvel)
@@ -523,6 +526,10 @@ export class CarSim {
       const lim = 1 - smoothstep(vLimit * DRIVE.limiterLo, vLimit * DRIVE.limiterHi, vLongCar)
       engineTotal = throttle * power * traction * lim
     }
+    // Engine braking on a lifted throttle (fades out at walking pace).
+    if (!reversing && !this.frozen && throttle < 0.05 && vLongCar > 1) {
+      engineTotal -= mass * (DRIVE.engineBrakeBase + DRIVE.engineBrakePerMs * vLongCar) * smoothstep(1, 3, vLongCar)
+    }
     this.reversing = reversing
     const brakeTotal = DRIVE.brakeForce * h.brakes * massRatio
     const brakeFrontWheel = (brakeTotal * DRIVE.brakeFrontBias) / 2
@@ -594,8 +601,9 @@ export class CarSim {
       }
       this.suspForce[i] = clamp(f, 0, cap) // a suspension pushes, never pulls
     }
-    if (grounded > 0) this.groundNormal.normalize()
-    else this.groundNormal.copy(WORLD_UP)
+    // Guard the maths, not just the firewall: a sum of normals can cancel to zero.
+    if (grounded > 0 && this.groundNormal.lengthSq() > 1e-8) this.groundNormal.normalize()
+    else this.groundNormal.copy(grounded > 0 ? up : WORLD_UP)
     this.wheelsDown = grounded
     // Wheels up: is the body itself resting on something? (Only checked while no wheel is down.)
     this.chassisTouching = grounded === 0 && chassis !== null && this.touchingWorld(world, chassis)
@@ -762,7 +770,10 @@ export class CarSim {
     if (!airborne) {
       // ---- yaw stability: a light hand, released for a slide, firmed up hands-off ----
       const yawRate = angvel.dot(up)
-      const hs = smoothstep(ASSIST.hsLo, ASSIST.hsHi, speed) // 0 slow .. 1 flat out (high-speed stability)
+      // High-speed stability, 0 slow .. 1 flat out. It backs off as the driver steers INTO the
+      // corner: at full lock 5 deg of slip is just hard cornering, not a slide (it was pulling a
+      // 200 km/h car straight, 1.27 g at full lock). Lift-off slides on a light wheel keep it.
+      const hs = smoothstep(ASSIST.hsLo, ASSIST.hsHi, speed) * (1 - ASSIST.hsSteerRelief * (counterSteer ? 0 : steerMag))
       let yawK = this.drifting ? ASSIST.yawDampDrift + (ASSIST.yawDampRecover * stab - ASSIST.yawDampDrift) * assistGain : ASSIST.yawDamp
       yawK += ASSIST.hsYawDamp * stab * hs * assistGain
       // Brake stability: braking mid-corner adds yaw damping (never while handbraking).
@@ -995,7 +1006,7 @@ export class CarSim {
     const thr = this.handling.magGripKmh
     const strength = smoothstep(thr - MAG.fadeKmh, thr, this.speedKmh)
     const touching = magWheels >= MAG.minWheels
-    if (touching) {
+    if (touching && _magN.lengthSq() > 1e-8) {
       this.magNormal.copy(_magN).normalize()
       this.magGrace = 0.12
     } else if (this.magGrace > 0) {

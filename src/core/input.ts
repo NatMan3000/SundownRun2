@@ -146,7 +146,6 @@ const padPrev = new Uint8Array(PAD_BUTTONS)
 const padNow = new Uint8Array(PAD_BUTTONS)
 /** Buttons held when we entered 'drive': ignored until released (no menu leak). */
 const padSuppressed = new Uint8Array(PAD_BUTTONS)
-let padStickSuppressed = false
 let padConnected = false
 
 /** Pad menu direction currently held (from d-pad or stick) and its repeat clock. */
@@ -236,13 +235,21 @@ const REPEATABLE: Record<MenuAction, boolean> = {
   tabNext: false,
 }
 
+/** A focused form control owns its arrow / Space keys. */
+function isFormControl(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null
+  if (!el || typeof el.tagName !== 'string') return false
+  return el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON'
+}
+
 function onKeyDown(e: KeyboardEvent): void {
   const ctx = inputState.context
   if (ctx === 'text') return // a text field owns the keyboard
   const code = e.code || e.key
 
-  // Never let the page scroll out from under the game.
-  if (code === 'Space' || code.startsWith('Arrow')) e.preventDefault()
+  // Never let the page scroll out from under the game - but leave a focused form control
+  // (the editor's sliders, selects, buttons) its own arrow and Space keys.
+  if ((code === 'Space' || code.startsWith('Arrow')) && !isFormControl(e.target)) e.preventDefault()
 
   if (code === 'F9') {
     if (!e.repeat) controlSignals.screenshot++
@@ -420,7 +427,6 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
   const ax = pad.axes[0] ?? 0
   const ay = pad.axes[1] ?? 0
   const stickActive = Math.abs(ax) > PAD_ACTIVE_AXIS || Math.abs(ay) > PAD_ACTIVE_AXIS
-  if (!stickActive && Math.abs(ax) < STICK_DEADZONE) padStickSuppressed = false
 
   if (anyRising) {
     // A pad press is not a browser gesture; this is how sound starts for a pad-only player.
@@ -464,7 +470,7 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
 
   // Analog driving (only while the pad owns the car and we are driving).
   if (ctx === 'drive' && device === 'gamepad') {
-    const steer = padStickSuppressed ? 0 : stickCurve(deadzone(ax, STICK_DEADZONE))
+    const steer = stickCurve(deadzone(ax, STICK_DEADZONE))
     const throttle = padSuppressed[PAD.RT] ? 0 : deadzone(buttonValue(pad, PAD.RT), TRIGGER_DEADZONE)
     const brake = padSuppressed[PAD.LT] ? 0 : deadzone(buttonValue(pad, PAD.LT), TRIGGER_DEADZONE)
     const kmh = Number.isFinite(telemetry.speedKmh) ? telemetry.speedKmh : 0
@@ -494,8 +500,9 @@ export function pollInput(nowMs: number): void {
     if (ctx === 'drive') {
       // Anything held from the menu stays dead until it is released.
       clearDriveKeys()
-      for (let i = 0; i < PAD_BUTTONS; i++) padSuppressed[i] = padPrev[i]
-      padStickSuppressed = true
+      // Buttons (they navigate menus) stay dead until released; triggers and the stick never
+      // navigate menus, so a trigger held through a pause drives the moment you resume.
+      for (let i = 0; i < PAD_BUTTONS; i++) padSuppressed[i] = i === PAD.LT || i === PAD.RT ? 0 : padPrev[i]
     } else {
       clearDriveKeys()
     }

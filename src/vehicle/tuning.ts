@@ -128,6 +128,13 @@ export const DRIVE = {
   /** Load-biased limited-slip rear diff: torque goes where the grip is. */
   torqueBiasMin: 0.2,
   torqueBiasMax: 0.8,
+  /**
+   * Engine braking on a lifted throttle, m/s^2 = base + perMs x speed, through the
+   * rear tyres. Coasting used to barely slow (0.1 m/s^2) and read floaty; now a coast
+   * is ~0.7 m/s^2 at 50 km/h (with rolling resistance and drag) and more at speed.
+   */
+  engineBrakeBase: 0.45,
+  engineBrakePerMs: 0.004,
   reverseForce: 3800,
   reverseTopKmh: 45,
   /** Total brake force N (x the brakes setting) and how much of it the front takes. */
@@ -198,6 +205,8 @@ export const ASSIST = {
   hsRestore: 1.5,
   /** Yaw damping added at full speed, Nm per rad/s. */
   hsYawDamp: 3000,
+  /** How much of the high-speed assist a full steering input switches off (cornering is not sliding). */
+  hsSteerRelief: 0.75,
   /** The assist ramps in across this speed band (m/s). */
   assistSpeedLo: 2.5,
   assistSpeedHi: 8,
@@ -317,8 +326,13 @@ export const STATE = {
   impactThreshold: 1.2,
   impactRange: 6,
   impactDecay: 3,
-  /** A crash event fires above this impact, at most this often. */
-  crashImpact: 0.22,
+  /**
+   * A crash is a velocity change ACROSS the car's forward / side axes (a landing is
+   * along its up axis, so it can never be one). Fires above crashMinDv m/s; intensity
+   * = (dv - crashMinDv) / crashRange, so 1 takes a ~50 km/h hit.
+   */
+  crashMinDv: 3,
+  crashRange: 11,
   crashCooldown: 0.6,
   /** Upside down and nearly stopped this long = auto reset. */
   upsideDownSeconds: 2.5,

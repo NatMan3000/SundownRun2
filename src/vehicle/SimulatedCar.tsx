@@ -20,7 +20,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import type { ReactNode } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
-import { CuboidCollider, RigidBody, useBeforePhysicsStep, useRapier } from '@react-three/rapier'
+import { RoundCuboidCollider, RigidBody, useBeforePhysicsStep, useRapier } from '@react-three/rapier'
 import type { RapierCollider, RapierRigidBody } from '@react-three/rapier'
 import { GROUPS, tagCollider, untagCollider } from '../core/physics'
 import { addCar, makeCarState, removeCar } from '../core/telemetry'
@@ -60,6 +60,8 @@ const _p = new THREE.Vector3()
 const _q = new THREE.Quaternion()
 const _spawnPos = new THREE.Vector3()
 const _spawnQuat = new THREE.Quaternion()
+/** Chassis edge radius, metres. */
+const CHASSIS_ROUND = 0.25
 const _hit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
 
 export function SimulatedCar(props: SimulatedCarProps) {
@@ -96,7 +98,15 @@ export function SimulatedCar(props: SimulatedCarProps) {
   const car = useMemo(() => {
     const c = makeCarState(id, kind, name)
     c.api = {
-      teleport: (p, q) => sim.teleport(p, q),
+      // Re-seed the road hint from the target, so the car's track position can't jump to
+      // another level (a crossover bridge) on the first lookup after the move.
+      teleport: (p, q) => {
+        const t = getTrack()
+        if (!t) return sim.teleport(p, q)
+        const near = sim.hasTrackS && sim.pos.distanceTo(p) < 40
+        t.nearest(p.x, p.y, p.z, _hit, near ? sim.trackS : undefined)
+        sim.teleport(p, q, Number.isFinite(_hit.s) ? _hit.s : -1)
+      },
       setFrozen: (f) => {
         sim.frozen = f
       },
@@ -197,15 +207,19 @@ export function SimulatedCar(props: SimulatedCarProps) {
       type="dynamic"
       colliders={false}
       canSleep={false}
-      ccd
+      // Soft CCD, not hard CCD: on rapier 0.19 hard CCD halves the travel of a body sliding on a
+      // trimesh (every surface here is one). Soft prediction still stops a 150 m/s drop.
+      softCcdPrediction={2}
       linearDamping={0}
       angularDamping={CHASSIS.angularDamping}
       position={spawn.position}
       rotation={spawn.rotation}
     >
-      <CuboidCollider
+      {/* Rounded edges, same outer size: a nose that touches a kicker or kerb rides up it
+          instead of its sharp edge digging in (a square box stopped dead on a ramp at 190 km/h). */}
+      <RoundCuboidCollider
         ref={colliderRef}
-        args={[CHASSIS.halfExtents.x, CHASSIS.halfExtents.y, CHASSIS.halfExtents.z]}
+        args={[CHASSIS.halfExtents.x - CHASSIS_ROUND, CHASSIS.halfExtents.y - CHASSIS_ROUND, CHASSIS.halfExtents.z - CHASSIS_ROUND, CHASSIS_ROUND]}
         position={[0, CHASSIS.offsetY, 0]}
         density={0}
         friction={0.1}

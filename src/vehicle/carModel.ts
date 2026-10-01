@@ -155,11 +155,11 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     // Dark glossy paint: metal flake under a clear coat, so it mirrors the neon world.
     paintMat = new THREE.MeshPhysicalMaterial({
       color: paint,
-      metalness: 0.62,
-      roughness: 0.3,
+      metalness: 0.5,
+      roughness: 0.18,
       clearcoat: 1,
-      clearcoatRoughness: 0.06,
-      envMapIntensity: 1.2,
+      clearcoatRoughness: 0.03,
+      envMapIntensity: 1.4,
     })
     glassMat = new THREE.MeshPhysicalMaterial({ color: PALETTE.road, metalness: 0.9, roughness: 0.06, clearcoat: 1, envMapIntensity: 1.5 })
     trimMat = new THREE.MeshStandardMaterial({ color: PALETTE.citySilhouette, metalness: 0.3, roughness: 0.62 })

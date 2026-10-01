@@ -59,6 +59,9 @@ const _airFwd = new THREE.Vector3(0, 0, 1)
 const WORLD_UP = new THREE.Vector3(0, 1, 0)
 const _shot: Shot = { position: new THREE.Vector3(), look: new THREE.Vector3() }
 
+/** tan(21.5 deg): how far left of the car the showroom camera aims, per metre of distance. */
+const SHOWROOM_OFFSET = 0.39
+
 // spring velocities: [0..2] position, [3..5] look, [6..8] up, [9] fov
 const springVel = new Float64Array(10)
 
@@ -220,6 +223,13 @@ export function CameraRig() {
       const c = telemetry.carPosition
       _targetPos.set(c.x + Math.sin(yaw) * r, c.y + hgt, c.z + Math.cos(yaw) * r)
       _targetLook.set(c.x, c.y + 0.55, c.z)
+      if (showroom) {
+        // The menus fill the left half of the screen: aim LEFT of the car so it sits whole in
+        // the right half, ~70% across (21 deg right of centre at this lens).
+        _dir.subVectors(_targetLook, _targetPos).setY(0).normalize()
+        _vel.crossVectors(_dir, WORLD_UP).normalize() // camera right
+        _targetLook.addScaledVector(_vel, -SHOWROOM_OFFSET * r)
+      }
       _targetUp.copy(WORLD_UP)
       posSmooth = 0.6
       lookSmooth = 0.35

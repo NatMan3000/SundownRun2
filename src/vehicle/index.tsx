@@ -30,6 +30,7 @@ import * as THREE from 'three'
 import { installVehicle } from '../core/api'
 import { registerDev, registerInspector } from '../core/devHandles'
 import { initInput, inputDebug, pollInput } from '../core/input'
+import { cars } from '../core/telemetry'
 import { getTrack } from '../track/current'
 import { demoDrive } from '../dev/demoDrive'
 import { feelTrace } from '../dev/feelTrace'
@@ -69,6 +70,7 @@ export function InputSystem() {
 }
 
 const _p = new THREE.Vector3()
+const jumpWatch = { timer: 0, last: new Map<string, number>(), max: new Map<string, number>() }
 const _q = new THREE.Quaternion()
 const _qYaw = new THREE.Quaternion()
 const _e = new THREE.Euler()
@@ -142,6 +144,28 @@ export function VehicleLayer() {
       ),
       registerDev('traceGet', ((every = 1) => feelTrace.get(Number(every) || 1)) as never, 'traceGet(every = 1): the last trace, one row every N steps'),
       registerDev(
+        'trackJumps',
+        (() => {
+          // Start (first call) a 10 Hz watcher; every call returns the biggest trackS jump per car so far.
+          if (!jumpWatch.timer) {
+            jumpWatch.timer = window.setInterval(() => {
+              const t = getTrack()
+              if (!t) return
+              for (const c of cars) {
+                const prev = jumpWatch.last.get(c.id)
+                if (prev !== undefined) {
+                  const d = Math.abs(t.deltaS(prev, c.trackS))
+                  if (d > (jumpWatch.max.get(c.id) ?? 0)) jumpWatch.max.set(c.id, d)
+                }
+                jumpWatch.last.set(c.id, c.trackS)
+              }
+            }, 100)
+          }
+          return Object.fromEntries([...jumpWatch.max].map(([k, v]) => [k, Math.round(v)]))
+        }) as never,
+        'trackJumps(): watch every car; returns the biggest trackS jump (m) per 100 ms sample so far (level-jump check)',
+      ),
+      registerDev(
         'resetCar',
         ((kind: 'road' | 'start' = 'road') => {
           links.playerSim?.requestReset(kind === 'start' ? 'start' : 'road')
@@ -185,7 +209,7 @@ export function VehicleLayer() {
               }
             : null,
           tricks: { ...trickState },
-          demo: demoDrive.active ? { steps: demoDrive.steps, targetKmh: +demoDrive.targetKmh.toFixed(1), unsticks: demoDrive.unsticks } : null,
+          demo: demoDrive.active ? { steps: demoDrive.steps, unsticks: demoDrive.unsticks, brain: 'play aiDriver' } : null,
         }
       }),
       registerInspector('camera', () => ({
