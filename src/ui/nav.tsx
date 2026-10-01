@@ -153,8 +153,14 @@ export function ensureFocus(screen: ScreenId): void {
 
 /** Move focus straight to an item (e.g. after a screen opens with a choice pre-selected). */
 export function focusItem(screen: ScreenId, id: string): void {
+  const it = registry.get(screen)?.items.get(id)
+  if (!usable(it)) {
+    // Never leave focus on something that isn't on screen.
+    ensureFocus(screen)
+    return
+  }
   setFocus(screen, id)
-  scrollIntoNavView(registry.get(screen)?.items.get(id)?.el ?? null)
+  scrollIntoNavView(it.el)
 }
 
 /** The DOM element that currently has menu focus (for the focus ring). */

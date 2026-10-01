@@ -327,6 +327,8 @@ export function ColourRow(p: {
   onChange: (hex: string) => void
   defaultValue?: string
   help?: string
+  /** Narrow layout (garage): label above the swatches, no hex readout. */
+  compact?: boolean
 }) {
   const lower = p.value.toLowerCase()
   const idx = p.swatches.findIndex((s) => s.toLowerCase() === lower)
@@ -363,7 +365,7 @@ export function ColourRow(p: {
   const hue = Math.round(hsl.h / 5) * 5
 
   return (
-    <div className={cx('colour', changed && 'is-changed')}>
+    <div className={cx('colour', p.compact && 'colour--compact', changed && 'is-changed')}>
       <div ref={swatchNav.ref} {...swatchNav.props} className={cx('row row--swatches', swatchNav.focused && 'is-focused', changed && 'is-changed')}>
         <span className="row__label">
           {p.label}
@@ -398,7 +400,7 @@ export function ColourRow(p: {
       </div>
       <SliderRow
         id={`${p.id}:hue`}
-        label={`${p.label} hue`}
+        label={p.compact ? 'Custom' : `${p.label} hue`}
         value={hue}
         min={0}
         max={355}

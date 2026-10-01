@@ -126,6 +126,7 @@ export function GarageScreen() {
                 onChange={(v) => set(c.key, v)}
                 defaultValue={defaults[c.key]}
                 help={c.help}
+                compact
               />
             ))}
           </div>

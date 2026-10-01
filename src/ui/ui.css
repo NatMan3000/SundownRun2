@@ -562,11 +562,15 @@
 /* ---------------------------------------------------------------- settings */
 
 .screen--settings, .screen--garage, .screen--pause { display: flex; align-items: center; padding: 6vh 0 9vh 5vw; }
+.screen--settings { padding-top: 11vh; }
 
 .settings-panel {
+  /* Height follows the tab's rows (no empty glass on short tabs). The panel is
+     pinned at the top, so switching tabs only moves its bottom edge, never the
+     tab row under your eyes. Long tabs scroll inside. */
   width: min(60em, 64vw);
-  height: 100%;
-  max-height: 40em;
+  align-self: flex-start;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   padding: 1.5em 1.4em 1em;
@@ -602,7 +606,7 @@
   scrollbar-color: color-mix(in srgb, var(--accent) 45%, transparent) transparent;
 }
 .settings-rows {
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -627,7 +631,8 @@
 /* ---------------------------------------------------------------- garage */
 
 .garage-panel {
-  width: min(52em, 58vw);
+  /* Narrow, so the car being painted stays in the open right of the panel. */
+  width: min(30em, 40vw);
   max-height: 100%;
   display: flex;
   flex-direction: column;
@@ -677,35 +682,47 @@
 .chev:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); transform: scale(1.06); }
 .chev svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .garage-colours { display: flex; flex-direction: column; gap: 0.2em; }
+.colour--compact .row--swatches { grid-template-columns: 1fr 1.6em; row-gap: 0.55em; }
+.colour--compact .row--swatches .row__label { grid-column: 1; grid-row: 1; }
+.colour--compact .row--swatches .row__reset { grid-column: 2; grid-row: 1; }
+.colour--compact .row--swatches .swatches { grid-column: 1 / -1; grid-row: 2; }
+.colour--compact .row--swatches .row__value { display: none; }
+.colour--compact > .row--slider { grid-template-columns: 4.5em 1fr 2.8em 1.6em; gap: 0.9em; }
+.colour--compact > .row--slider .row__label { padding-left: 0; }
+.garage-panel .car-pick__stats { gap: 0.8em; }
+.garage-panel .car-pick__name { font-size: 2em; }
 
 /* ---------------------------------------------------------------- track select */
 
-.track-layout {
-  position: absolute;
-  left: 5vw;
-  right: 5vw;
-  top: 7vh;
-  bottom: 10vh;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 27em;
-  gap: 1.4em;
+/* One panel, sized to its cards and centred: two tracks make a compact
+   panel, a dozen drawn tracks wrap into rows and scroll inside it. */
+.screen--track { display: flex; align-items: flex-start; justify-content: center; padding: 8vh 4vw 11vh; }
+.track-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2em;
+  padding: 1.5em 1.5em 1.6em;
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
 }
-.track-pick { display: flex; flex-direction: column; gap: 1.2em; padding: 1.5em 1.4em; min-height: 0; }
 .track-grid {
-  flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(20em, 1fr));
-  align-content: start;
-  gap: 1em;
+  grid-template-columns: repeat(var(--cols, 2), 30em);
+  justify-content: center;
+  gap: 1.2em;
   padding: 0.3em;
 }
+@media (min-width: 1500px) { .track-grid { --cols: 3; } }
+.track-grid:has(> :only-child) { --cols: 1; }
+.track-grid:has(> :nth-child(2):last-child) { --cols: 2; }
 .track-grid.is-locked { opacity: 0.45; filter: saturate(0.4); }
 .track-card {
   display: flex;
   flex-direction: column;
-  gap: 0.7em;
-  padding: 0.7em;
+  gap: 0.6em;
+  padding: 0.8em 0.8em 1em;
   border-radius: 12px;
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--ink) 50%, transparent);
@@ -713,11 +730,14 @@
 }
 .track-card.is-focused { background: color-mix(in srgb, var(--accent) 9%, transparent); border-color: transparent; transform: translateY(-0.15em); }
 .track-card.is-disabled { cursor: default; }
-.track-card__thumb { width: 100%; aspect-ratio: 16 / 10; }
-.track-card__body { display: flex; flex-direction: column; gap: 0.4em; padding: 0 0.2em 0.2em; }
-.track-card__name { font-family: var(--font-display); font-size: 1.35em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-.track-card__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4em 0.7em; font-size: 0.88em; color: var(--dim); }
+.track-card__thumb { width: 100%; aspect-ratio: 32 / 19; }
+.track-card__head { display: flex; align-items: center; justify-content: space-between; gap: 0.8em; padding: 0.2em 0.2em 0; }
+.track-card__name { font-family: var(--font-display); font-size: 1.6em; font-weight: 700; line-height: 1.05; letter-spacing: 0.05em; text-transform: uppercase; }
+.track-card__meta { display: flex; flex-wrap: wrap; gap: 0.3em 0.9em; padding: 0 0.2em; font-size: 0.9em; color: var(--dim); }
 .track-card__here { color: var(--accent); }
+.track-card__desc { padding: 0 0.2em; font-size: 0.95em; line-height: 1.45; color: color-mix(in srgb, var(--text) 86%, transparent); }
+.track-card .track-card__stats { margin-top: auto; padding: 0.7em 0.2em 0; border-top: 1px solid var(--line); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.track-card__chips { padding: 0 0.2em; }
 
 .thumb {
   display: block;
@@ -731,14 +751,6 @@
 .thumb__halo { fill: none; stroke-width: 7; opacity: 0.22; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .thumb__road { fill: none; stroke-width: 2.2; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 2px currentColor); }
 .thumb__start { stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-
-.track-detail { display: flex; flex-direction: column; gap: 0.9em; padding: 1.4em; overflow-y: auto; }
-.track-detail__map { width: 100%; aspect-ratio: 16 / 10; }
-.track-detail__head { display: flex; align-items: center; justify-content: space-between; gap: 1em; }
-.track-detail__name { margin: 0; font-family: var(--font-display); font-size: 2.1em; font-weight: 700; line-height: 1; letter-spacing: 0.05em; text-transform: uppercase; }
-.track-detail__author { color: var(--dim); margin-top: -0.4em; }
-.track-detail__desc { margin: 0; line-height: 1.45; color: color-mix(in srgb, var(--text) 88%, transparent); }
-.track-detail__mode { margin-top: auto; padding-top: 0.8em; border-top: 1px solid var(--line); font-family: var(--font-display); font-size: 1.1em; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; display: flex; align-items: baseline; gap: 0.8em; }
 
 .stats { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7em 1em; }
 .stats > div { display: flex; flex-direction: column; gap: 0.15em; }
@@ -833,7 +845,8 @@
   font-size: 0.95em;
   text-shadow: var(--legible);
 }
-.screen--settings .hintbar, .screen--garage .hintbar, .screen--pause .hintbar, .screen--track .hintbar { left: 5vw; bottom: 2.6vh; }
+.screen--settings .hintbar, .screen--garage .hintbar, .screen--pause .hintbar { left: 5vw; bottom: 2.6vh; }
+.screen--track .hintbar { left: 50%; transform: translateX(-50%); bottom: 3.2vh; }
 .hint { display: inline-flex; align-items: center; gap: 0.55em; }
 .hint__label { font-family: var(--font-display); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: color-mix(in srgb, var(--text) 85%, transparent); }
 .glyphs { display: inline-flex; gap: 0.3em; }

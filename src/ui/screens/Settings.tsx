@@ -25,6 +25,7 @@ import type { SettingsTab } from '../uiStore'
 import { CAMERA_CHOICES, QUALITY_CHOICES, SETTINGS_ROWS, TAB_LABELS } from '../settingsSchema'
 import type { RowSpec } from '../settingsSchema'
 import { TrackParamRows } from '../TrackParamRows'
+import { getCurrentTrackFile, trackParamsFor } from '../../track/current'
 
 const QUALITY_WORD = { low: 'Low', medium: 'Medium', high: 'High' } as const
 
@@ -36,7 +37,12 @@ function rowId(tab: SettingsTab, spec: RowSpec, i: number): string {
 function firstRowId(tab: SettingsTab): string {
   const spec = SETTINGS_ROWS[tab][0]
   if (spec.kind === 'colour') return `set:${spec.key}:swatches`
-  if (spec.kind === 'trackParams') return 'settings-track:bankDeg'
+  if (spec.kind === 'trackParams') {
+    // The first live param of the current track, or the Track tab itself when it has none.
+    const file = getCurrentTrackFile()
+    const first = file ? trackParamsFor(file)[0] : undefined
+    return first ? `settings-track:${first.id}` : 'tab:track'
+  }
   return rowId(tab, spec, 0)
 }
 
@@ -95,7 +101,7 @@ function SettingRow(props: { tab: SettingsTab; spec: RowSpec; index: number }) {
         />
       )
     case 'trackParams':
-      return <TrackParamRows idPrefix="settings-track" emptyText="{track} has no live road settings. The Hyperdrome's bank angle lives here when you drive it." />
+      return <TrackParamRows idPrefix="settings-track" emptyText="{track} has no live settings. Tracks that do (like the Hyperdrome's bank angle) show them here." />
     case 'qualityInUse':
       return (
         <div className="row row--info">
