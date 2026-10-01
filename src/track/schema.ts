@@ -219,7 +219,7 @@ export interface SkySpec {
   timeOfDay?: number
   /** Compass direction the sun sets toward (default 0 = north). */
   sunAzimuthDeg?: number
-  /** Where the ringed planet hangs (defaults: 40 degrees right of the sun, 16 degrees up - low enough to sit in the chase camera's frame). */
+  /** Where the ringed planet hangs (defaults: 22 degrees right of the sun, 19 degrees up - in the chase camera's frame and clear of the HUD panels at the start line). */
   planetAzimuthDeg?: number
   planetElevationDeg?: number
 }

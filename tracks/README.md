@@ -205,8 +205,8 @@ Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corn
 |---|---|---|
 | `timeOfDay` | 0.12 | 0 = sundown (the sun's lower half on the horizon) to 1 = full night. The player's setting can override it. |
 | `sunAzimuthDeg` | 0 | The compass direction the sun sets toward. Point the start straight at it. |
-| `planetAzimuthDeg` | sun + 40 | Where the ringed planet hangs |
-| `planetElevationDeg` | 16 | Degrees above the horizon |
+| `planetAzimuthDeg` | sun + 22 | Where the ringed planet hangs |
+| `planetElevationDeg` | 19 | Degrees above the horizon |
 
 **palette** (colours as `"#rrggbb"`; avoid pure primaries like `#ff0000`)
 

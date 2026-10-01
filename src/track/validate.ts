@@ -415,8 +415,8 @@ function validateEnvironment(I: Issues, e: Obj, id: string): ResolvedTrackFile['
   const skyOut = {
     timeOfDay: I.num(sky, 'timeOfDay', 'environment.sky', TRACK_DEFAULTS.timeOfDay, 0, 1),
     sunAzimuthDeg: sunAz,
-    planetAzimuthDeg: I.num(sky, 'planetAzimuthDeg', 'environment.sky', sunAz + 40, -360, 400),
-    planetElevationDeg: I.num(sky, 'planetElevationDeg', 'environment.sky', 16, 5, 85),
+    planetAzimuthDeg: I.num(sky, 'planetAzimuthDeg', 'environment.sky', sunAz + 22, -360, 400),
+    planetElevationDeg: I.num(sky, 'planetElevationDeg', 'environment.sky', 19, 5, 85),
   }
 
   const pal = isObj(e.palette) ? e.palette : {}
