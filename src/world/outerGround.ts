@@ -80,6 +80,8 @@ export function buildOuterGround(track: TrackRuntime): THREE.BufferGeometry {
 
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(position, 3))
+  // Same material as the terrain, which shades hills by relief: out here it is level.
+  g.setAttribute('aRelief', new THREE.BufferAttribute(new Float32Array(position.length / 3), 1))
   g.setIndex(index)
   g.computeVertexNormals()
   // computeVertexNormals follows the winding: make sure "up" is up.

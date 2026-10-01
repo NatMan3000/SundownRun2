@@ -30,7 +30,9 @@
 //
 //  It fades in from time of day 0.3 (with the stars). Glow tier
 //  T0: it is scenery, never brighter than the road. One draw call,
-//  two triangles. __dev.planetRing(false) hides the ring for A/B shots.
+//  two triangles. __dev.planetRing(false) hides the ring for A/B shots,
+//  __dev.planetAt(az, el) tries a placement, and the world inspector's
+//  `planet` entry says where it sits on screen.
 // ============================================================
 
 import { useEffect, useMemo, useRef } from 'react'
@@ -180,6 +182,69 @@ void main() {
 }
 `
 
+// The camera and canvas size of the last frame drawn, for planetInfo() (read on demand by checkers).
+let lastCamera: THREE.Camera | null = null
+const lastSize = { width: 1, height: 1 }
+let lastOffAxis = 1
+
+/**
+ * Where the planet is, for checkers (window.__game.get('world').planet): its
+ * direction, the camera's heading, and the box the ball and ring cover on
+ * screen, in canvas pixels [left, top, right, bottom]. Worked out only when
+ * asked (it allocates a little, which is fine outside the frame loop).
+ */
+export function planetInfo(uniforms: PlanetUniforms | null): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    azimuthDeg: +(sky.planetAzimuth / DEG).toFixed(1),
+    elevationDeg: +(sky.planetElevation / DEG).toFixed(1),
+    sunAzimuthDeg: +(sky.sunAzimuth / DEG).toFixed(1),
+    fade: +sky.nightSky.toFixed(3),
+  }
+  const cam = lastCamera
+  if (!cam || !uniforms) return out
+  const f = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 2).negate()
+  out.viewAzimuthDeg = +((Math.atan2(f.x, -f.z) / DEG + 360) % 360).toFixed(1)
+  out.viewElevationDeg = +(Math.asin(Math.max(-1, Math.min(1, f.y))) / DEG).toFixed(1)
+  const camRight = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0)
+  const camUp = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1)
+  const u = uniforms
+  const axis = u.uAxis.value
+  const e1 = new THREE.Vector3().crossVectors(axis, u.uForward.value).normalize()
+  const e2 = new THREE.Vector3().crossVectors(axis, e1).normalize()
+  const v = new THREE.Vector3()
+  const rel = new THREE.Vector3()
+  const box = [Infinity, Infinity, -Infinity, -Infinity]
+  const add = (px: number, py: number) => {
+    v.copy(u.uCenter.value).addScaledVector(camRight, px * lastOffAxis).addScaledVector(camUp, py * lastOffAxis).project(cam)
+    const x = ((v.x + 1) / 2) * lastSize.width
+    const y = ((1 - v.y) / 2) * lastSize.height
+    box[0] = Math.min(box[0], x)
+    box[1] = Math.min(box[1], y)
+    box[2] = Math.max(box[2], x)
+    box[3] = Math.max(box[3], y)
+  }
+  for (let i = 0; i < 48; i++) {
+    const t = (i / 48) * Math.PI * 2
+    add(Math.cos(t) * RADIUS, Math.sin(t) * RADIUS)
+    rel.copy(e1).multiplyScalar(Math.cos(t) * RADIUS * RING_OUT).addScaledVector(e2, Math.sin(t) * RADIUS * RING_OUT)
+    add(rel.dot(u.uRight.value), rel.dot(u.uUp.value))
+  }
+  out.screenBox = box.map((n) => Math.round(n))
+  out.canvas = [lastSize.width, lastSize.height]
+  return out
+}
+
+interface PlanetUniforms {
+  uCenter: { value: THREE.Vector3 }
+  uForward: { value: THREE.Vector3 }
+  uRight: { value: THREE.Vector3 }
+  uUp: { value: THREE.Vector3 }
+  uAxis: { value: THREE.Vector3 }
+}
+
+/** The live planet's uniforms (set while a Planet is mounted), for planetInfo(). */
+export const planetLive: { uniforms: PlanetUniforms | null } = { uniforms: null }
+
 // scratch (module-level: no allocation per frame)
 const _dir = new THREE.Vector3()
 const _camRight = new THREE.Vector3()
@@ -222,19 +287,34 @@ export function Planet() {
     return { material, geometry, uniforms }
   }, [])
 
-  // Checkers: __dev.planetRing(false) hides the ring (true shows it) to compare frames.
-  useEffect(
-    () =>
-      registerDev(
-        'planetRing',
-        (on: boolean = true) => {
-          uniforms.uRingOn.value = on ? 1 : 0
-          return on ? 'ring shown' : 'ring hidden'
-        },
-        'planetRing(on = true) - show or hide the planet ring (to compare frames)',
-      ),
-    [uniforms],
-  )
+  // Checkers: __dev.planetRing(false) hides the ring (true shows it) to compare
+  // frames; __dev.planetAt(az, el) moves the planet for this session (to try a
+  // placement before writing it into a track file; the night key light moves with it).
+  useEffect(() => {
+    planetLive.uniforms = uniforms
+    const offRing = registerDev(
+      'planetRing',
+      (on: boolean = true) => {
+        uniforms.uRingOn.value = on ? 1 : 0
+        return on ? 'ring shown' : 'ring hidden'
+      },
+      'planetRing(on = true) - show or hide the planet ring (to compare frames)',
+    )
+    const offAt = registerDev(
+      'planetAt',
+      (azimuthDeg?: number, elevationDeg?: number) => {
+        if (typeof azimuthDeg === 'number' && Number.isFinite(azimuthDeg)) sky.planetAzimuth = azimuthDeg * DEG
+        if (typeof elevationDeg === 'number' && Number.isFinite(elevationDeg)) sky.planetElevation = elevationDeg * DEG
+        return { azimuthDeg: +(sky.planetAzimuth / DEG).toFixed(1), elevationDeg: +(sky.planetElevation / DEG).toFixed(1) }
+      },
+      'planetAt(azimuthDeg?, elevationDeg?) - move the planet for this session (compass degrees); no arguments reports where it is',
+    )
+    return () => {
+      if (planetLive.uniforms === uniforms) planetLive.uniforms = null
+      offRing()
+      offAt()
+    }
+  }, [uniforms])
 
   useEffect(() => {
     worldStats.planetTriangles = (geometry.index?.count ?? 0) / 3
@@ -285,6 +365,10 @@ export function Planet() {
     // wherever it sits in the frame (a card farther off-axis is nearer the lens plane).
     _camForward.setFromMatrixColumn(cam.matrixWorld, 2).negate()
     const offAxis = Math.max(0.3, _camForward.dot(_dir))
+    lastCamera = cam
+    lastSize.width = state.size.width
+    lastSize.height = state.size.height
+    lastOffAxis = offAxis
     mesh.position.copy(uniforms.uCenter.value)
     mesh.quaternion.copy(cam.quaternion)
     mesh.scale.setScalar(HALF * offAxis)

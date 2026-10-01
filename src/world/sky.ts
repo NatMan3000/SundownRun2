@@ -172,8 +172,8 @@ export const sky = {
   skylineDeg: 0,
   /** Track-fixed directions (radians), set by configureSky(). */
   sunAzimuth: 0,
-  planetAzimuth: 40 * DEG,
-  planetElevation: 28 * DEG,
+  planetAzimuth: 22 * DEG,
+  planetElevation: 19 * DEG,
   cityAzimuth: 0,
   cityArc: 120 * DEG,
   hasCity: true,
@@ -191,8 +191,10 @@ export function dirFromAzEl(az: number, el: number, out: THREE.Vector3): THREE.V
 export function configureSky(track: TrackRuntime): void {
   const env = track.file.environment
   sky.sunAzimuth = (env.sky.sunAzimuthDeg ?? 0) * DEG
-  sky.planetAzimuth = (env.sky.planetAzimuthDeg ?? (env.sky.sunAzimuthDeg ?? 0) + 40) * DEG
-  sky.planetElevation = (env.sky.planetElevationDeg ?? 28) * DEG
+  // Defaults (22 degrees right of the sun, 19 up) keep the planet clear of the
+  // HUD corners in every track's start-line shot; validate.ts fills them in.
+  sky.planetAzimuth = (env.sky.planetAzimuthDeg ?? (env.sky.sunAzimuthDeg ?? 0) + 22) * DEG
+  sky.planetElevation = (env.sky.planetElevationDeg ?? 19) * DEG
   const city = env.city
   sky.hasCity = !!city
   sky.cityAzimuth = city ? (city.azimuthDeg ?? env.sky.sunAzimuthDeg ?? 0) * DEG : sky.sunAzimuth

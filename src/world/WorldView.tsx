@@ -20,7 +20,7 @@ import { SkyDome } from './SkyDome'
 import { Lighting } from './Lighting'
 import { Terrain } from './Terrain'
 import { Stars } from './Stars'
-import { Planet } from './Planet'
+import { Planet, planetInfo, planetLive } from './Planet'
 import { City } from './City'
 import { Billboards } from './Billboards'
 import { Stadium } from './Stadium'
@@ -81,6 +81,7 @@ export function WorldView({ track }: { track: TrackRuntime }) {
       billboards: { count: worldStats.billboards, triangles: worldStats.billboardTriangles },
       stadium: { triangles: worldStats.stadiumTriangles, crowdLights: worldStats.crowdLights },
       terrain: { strides: worldStats.terrainStrides, chunks: worldStats.terrainChunks },
+      planet: planetInfo(planetLive.uniforms),
     }))
     return () => {
       offDev()

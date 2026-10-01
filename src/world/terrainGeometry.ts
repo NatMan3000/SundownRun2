@@ -29,6 +29,13 @@
 //  The road slab's sides hide the step. On coarse levels, near the
 //  road we use the lowest height we skipped, so a big triangle can
 //  never poke up through the asphalt.
+//
+//  RELIEF. Every vertex also carries `aRelief`: how many metres it
+//  stands above (or sits below) the average ground around it, about
+//  80 m each way. Crests are positive, valley floors negative. The
+//  terrain material uses it to shade hills (valleys catch less sky,
+//  crests more), so a hillside shows its shape and not one flat
+//  tone. Worked out once at load, from a blurred copy of the grid.
 // ============================================================
 
 import * as THREE from 'three'
@@ -48,6 +55,9 @@ const LEVEL_CELL: Record<QualityLevel, [number, number, number]> = {
   medium: [6, 6, 12],
   low: [6, 12, 24],
 }
+
+/** Half-width of each of the two box blurs that find the "average ground" for relief, metres. */
+const RELIEF_RADIUS = 40
 
 /** Camera distance (metres, to the chunk's edge) where mid and far detail take over. */
 export const LEVEL_DISTANCE: [number, number] = [230, 720]
@@ -130,6 +140,8 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
     drawn[k] = h
   }
 
+  const relief = localRelief(drawn, side, Math.max(1, Math.round(RELIEF_RADIUS / cellSize)))
+
   const strides = LEVEL_CELL[quality].map((m) => strideForCell(cellSize, m))
   const per = Math.ceil(n / CHUNKS)
   const chunks: TerrainChunk[] = []
@@ -144,7 +156,7 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
       const levels: THREE.BufferGeometry[] = []
       const triangles: number[] = []
       for (const stride of strides) {
-        const g = buildChunk(drawn, edge, n, half, cellSize, x0, x1, z0, z1, stride)
+        const g = buildChunk(drawn, edge, relief, n, half, cellSize, x0, x1, z0, z1, stride)
         levels.push(g)
         triangles.push((g.index ? g.index.count : 0) / 3)
       }
@@ -161,6 +173,45 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
   return { chunks, strides }
 }
 
+/**
+ * Height above the local average ground, per grid vertex: the heights minus a
+ * blurred copy of them (two box blurs of half-width r cells, each run along the
+ * rows and then the columns with a running sum, so it costs the same for any r).
+ */
+function localRelief(heights: Float32Array, side: number, r: number): Float32Array {
+  const a = Float32Array.from(heights)
+  const b = new Float32Array(heights.length)
+  const blurLine = (src: Float32Array, dst: Float32Array, start: number, step: number) => {
+    // Running sum over [i - r, i + r], clamped at the grid edge.
+    let sum = 0
+    let count = 0
+    for (let i = 0; i <= Math.min(r, side - 1); i++) {
+      sum += src[start + i * step]
+      count++
+    }
+    for (let i = 0; i < side; i++) {
+      dst[start + i * step] = sum / count
+      const add = i + r + 1
+      const drop = i - r
+      if (add < side) {
+        sum += src[start + add * step]
+        count++
+      }
+      if (drop >= 0) {
+        sum -= src[start + drop * step]
+        count--
+      }
+    }
+  }
+  for (let pass = 0; pass < 2; pass++) {
+    for (let z = 0; z < side; z++) blurLine(a, b, z * side, 1)
+    for (let x = 0; x < side; x++) blurLine(b, a, x, side)
+  }
+  const relief = b
+  for (let k = 0; k < heights.length; k++) relief[k] = heights[k] - a[k]
+  return relief
+}
+
 /** The lattice positions along one axis of a chunk at a stride (always includes both ends). */
 function axisLattice(a0: number, a1: number, stride: number): number[] {
   const out: number[] = []
@@ -172,6 +223,7 @@ function axisLattice(a0: number, a1: number, stride: number): number[] {
 function buildChunk(
   drawn: Float32Array,
   edge: Float32Array,
+  relief: Float32Array,
   n: number,
   half: number,
   cellSize: number,
@@ -225,6 +277,7 @@ function buildChunk(
   const vCount = w * h + border
   const position = new Float32Array(vCount * 3)
   const normal = new Float32Array(vCount * 3)
+  const reliefAttr = new Float32Array(vCount)
   const tmp = [0, 0, 0]
 
   for (let j = 0; j < h; j++) {
@@ -239,6 +292,7 @@ function buildChunk(
       normal[v * 3] = tmp[0]
       normal[v * 3 + 1] = tmp[1]
       normal[v * 3 + 2] = tmp[2]
+      reliefAttr[v] = relief[iz * side + ix]
     }
   }
 
@@ -273,6 +327,7 @@ function buildChunk(
     normal[v * 3] = normal[src * 3]
     normal[v * 3 + 1] = normal[src * 3 + 1]
     normal[v * 3 + 2] = normal[src * 3 + 2]
+    reliefAttr[v] = reliefAttr[src]
   }
   for (let r = 0; r < ring.length; r++) {
     const a = ring[r]
@@ -286,6 +341,7 @@ function buildChunk(
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(position, 3))
   g.setAttribute('normal', new THREE.BufferAttribute(normal, 3))
+  g.setAttribute('aRelief', new THREE.BufferAttribute(reliefAttr, 1))
   g.setIndex(new THREE.BufferAttribute(new Uint32Array(index), 1))
   g.computeBoundingBox()
   g.computeBoundingSphere()

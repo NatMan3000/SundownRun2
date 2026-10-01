@@ -15,8 +15,10 @@
 //   2. SKY FILL. Each slope picks up a little of the glowing sky
 //      low over the horizon it faces: violet on the side away from
 //      the sun, pink on the sun's side. Flat glass catches little,
-//      slopes more. This is what gives hills their shape, so no
-//      slope is ever a black hole with lines on it.
+//      slopes more; valley floors less and crests more (the relief
+//      from terrainGeometry.ts), so the tone climbs up every hill.
+//      This is what gives hills their shape, so no slope is ever a
+//      black hole with lines on it, or one flat purple.
 //   3. REFLECTION. The sky mirrored in the glass, strongest at
 //      glancing angles (Fresnel), like a real window seen side-on.
 //   4. THE SUN STREAK. The low sun stretched into one soft band
@@ -71,18 +73,22 @@ export interface TerrainUniforms {
 }
 
 const VERTEX_PARS = /* glsl */ `
+attribute float aRelief;
 varying vec3 vTerrainWorld;
 varying vec3 vTerrainNormal;
+varying float vTerrainRelief;
 `
 const VERTEX_MAIN = /* glsl */ `
 vTerrainWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
 vTerrainNormal = normalize( mat3( modelMatrix ) * objectNormal );
+vTerrainRelief = aRelief;
 `
 
 const FRAGMENT_PARS = /* glsl */ `
 ${SKY_GLSL}
 varying vec3 vTerrainWorld;
 varying vec3 vTerrainNormal;
+varying float vTerrainRelief;
 uniform vec3 uCarPos;
 uniform vec3 uGridColor;
 uniform sampler2D uNoise;
@@ -159,6 +165,7 @@ const EMISSIVE_MOD = /* glsl */ `
   float steep = length( tN.xz );
   vec3 faceDir = vec3( tN.x, 0.0, tN.z ) / max( steep, 1e-4 );
   float faceSun = skySunward( faceDir );
+  vec2 faceSunDirH = uSunDir.xz / max( length( uSunDir.xz ), 1e-4 );
   vec3 coolSide = uSkyHorizonAnti;
   vec3 warmSide = mix( uSkyHorizon, uSkyMid, 0.5 ) + uSkySunGlow * 0.12;
   vec3 faceSky = mix( mix( coolSide, warmSide, faceSun * faceSun ), uSkyFill, 0.6 );
@@ -169,6 +176,17 @@ const EMISSIVE_MOD = /* glsl */ `
   // where hillsides are seen. At grazing angles the reflection takes over.
   float viewCatch = 0.4 + 0.6 * smoothstep( 0.0, 0.65, 1.0 - nv );
   float catchAmt = ( 0.12 + 0.88 * smoothstep( 0.04, 0.32, steep ) ) * viewCatch;
+  // Form, so a hillside is never one even tone (smooth, no noise):
+  //  - relief (terrainGeometry.ts: metres above the ground around it): valley
+  //    floors sit in the shade of their own slopes and catch less sky, crests
+  //    catch more, so the tone climbs up every hill;
+  //  - on the side away from the sun the light comes from the bright band
+  //    opposite it, so faces turned toward that band are lit and faces turned
+  //    sideways fall off, which shades a curved hill across its surface.
+  float reliefLift = smoothstep( -9.0, 9.0, vTerrainRelief );
+  vec3 antiDir = normalize( vec3( -faceSunDirH.x, 0.45, -faceSunDirH.y ) );
+  float bandLight = mix( 0.55, 1.3, smoothstep( -0.15, 0.95, dot( tN, antiDir ) ) );
+  catchAmt *= mix( 0.45, 1.45, reliefLift ) * mix( bandLight, 1.0, faceSun * faceSun );
   // A faint drift of tone through the glass, a tenth either way: too gentle to
   // read as blotches (the old mud was a swing of over half, on warm light).
   totalEmissiveRadiance += fillCol * catchAmt * ${FILL.toFixed(3)} * ( 0.9 + 0.2 * tVar );
@@ -216,7 +234,7 @@ const EMISSIVE_MOD = /* glsl */ `
   float sheen = 0.06 + pow( 1.0 - nv, 4.0 );
   // Boosted at sundown (the sky is bright, the palette sheen is dark); back to
   // the plain sheen at night, so the night ground stays dark glass.
-  totalEmissiveRadiance += uSheen * sheen * mix( ${SHEEN.toFixed(3)}, 1.0, uNight ) * ( 0.7 + 0.5 * tVar + 0.25 * tPlate );
+  totalEmissiveRadiance += uSheen * sheen * mix( ${SHEEN.toFixed(3)}, 1.0, uNight ) * ( 0.7 + 0.5 * tVar + 0.25 * tPlate ) * mix( 0.7, 1.15, reliefLift );
 }
 `
 
@@ -286,7 +304,7 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
       .replace('#include <opaque_fragment>', `${HAZE_MOD}\n#include <opaque_fragment>`)
   }
   // One program for every terrain chunk, and a stable cache key.
-  material.customProgramCacheKey = () => 'sr2-terrain-v5'
+  material.customProgramCacheKey = () => 'sr2-terrain-v6'
 
   return { material, uniforms }
 }
