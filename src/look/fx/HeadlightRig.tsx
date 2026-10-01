@@ -22,7 +22,7 @@ import { cars, environment } from '../../core/telemetry'
 import type { CarState } from '../../core/telemetry'
 
 /** Candela at full night. The road is near-black glass, so it takes a strong lamp to show. */
-const INTENSITY = 900
+const INTENSITY = 700
 const _local = new THREE.Vector3()
 const _target = new THREE.Vector3(0, -0.9, 18)
 

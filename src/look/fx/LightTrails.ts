@@ -46,8 +46,8 @@ void main() {
   float age = uTime - aBirth;
   float t = clamp(age / uLife, 0.0, 1.0);
   float fade = (1.0 - t) * (1.0 - t);
-  // Young light is hotter: the tail-light streak.
-  float hot = 1.0 + 1.6 * exp(-age * 14.0);
+  // Young light is hotter: the tail-light streak (kept inside glow tier T2).
+  float hot = 1.0 + 0.5 * exp(-age * 14.0);
   vec3 p = position;
   vec3 toCam = normalize(cameraPosition - p);
   vec3 side = cross(aDir, toCam);

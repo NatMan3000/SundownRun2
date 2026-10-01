@@ -114,7 +114,7 @@ varying float vAlong;
 varying float vFacing;
 void main() {
   float along = pow(1.0 - clamp(vAlong, 0.0, 1.0), 1.6);
-  float a = along * vFacing * vFacing * vGlow;
+  float a = along * vFacing * vFacing * vFacing * vGlow;
   if (a < 0.002) discard;
   gl_FragColor = vec4(vColor * a, 1.0);
 }
