@@ -45,6 +45,7 @@ import { emit } from '../core/events'
 import { propsSignal } from '../core/propsSignal'
 import { resumeGame, showResults } from '../core/session'
 import { getTrack } from '../track/current'
+import { urlParam } from '../core/devHandles'
 import { playerName } from './identity'
 import { onMessage, send, statsExtra, weAreDriving } from './client'
 import { carIdFor, getNet, peerLive, relayIdOf, useNet } from './netStore'
@@ -52,8 +53,13 @@ import type { FinishMsg, StartMsg, TagMsg, TagTimeMsg } from './protocol'
 
 /** Countdown length, ms (3, 2, 1, GO). */
 export const COUNTDOWN_MS = 3000
-/** Tag round length, seconds. */
+/** Tag round length, seconds. (?tagSeconds=20 shortens it for checks.) */
 export const TAG_SECONDS = 180
+
+function tagSeconds(): number {
+  const n = Number(urlParam('tagSeconds'))
+  return Number.isFinite(n) && n >= 10 && n <= 600 ? n : TAG_SECONDS
+}
 /** After a hand-over, the new "it" can't tag anyone for this long. */
 export const NO_TAG_BACK_MS = 2000
 /** Once someone finishes a race, everyone else has this long before they're marked as not finished. */
@@ -147,7 +153,7 @@ export function requestStart(): boolean {
     raceId,
     round: 1 + Math.floor(Math.random() * 0x7ffffffe),
     laps: track.file.laps ?? getSettings().raceLaps,
-    seconds: TAG_SECONDS,
+    seconds: tagSeconds(),
     // Who starts as "it": picked from the raceId, so it is random but the same everywhere.
     itId: grid[raceId % grid.length],
     grid,

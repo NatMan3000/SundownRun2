@@ -15,7 +15,8 @@
 //    game   join + see each other + host's track reaches the joiner + a ram shoves
 //    drawn  a track that exists only in the host's browser reaches the joiner, drivable
 //    race   synced countdown, frozen grid, a real lap, finish, same winner on both
-//    tag    "it" chosen, "it" rams the other, "it" passes on (both screens agree)
+//    tag    "it" chosen, "it" rams the other, "it" passes on, the round ends, results agree
+//    props  a crash-prop burst on one screen bursts on the other
 // ============================================================
 
 import type { Page } from 'puppeteer-core'
@@ -116,7 +117,7 @@ const PILOT = `(async () => {
 
 export async function runGameChecks(k: Kit): Promise<void> {
   const { check, until, sleep } = k
-  const q = `mp=1&relay=${k.relayPort}`
+  const q = `mp=1&relay=${k.relayPort}&tagSeconds=25`
   console.log(`\n== game: two players in a drive on "${k.track}"`)
   // The joiner opens a DIFFERENT track on purpose: the host's must replace it.
   const host = await k.openPage(`${k.hostBase}/?${q}&name=JOSH&track=${k.track}&mode=free`, 'host')
@@ -289,19 +290,26 @@ export async function runGameChecks(k: Kit): Promise<void> {
     await join.screenshot({ path: `${k.shots}/race-countdown-joiner.png` })
     const goAts = [await host.evaluate(`window.__game.state.raceGoAt - performance.now()`), await join.evaluate(`window.__game.state.raceGoAt - performance.now()`)] as number[]
     check('GO lands within 150 ms on both screens', Math.abs(goAts[0] - goAts[1]) < 150, { goInMs: goAts.map(Math.round) })
-    await host.evaluate(`window.__pilot.go(null, 120)`)
+    await host.evaluate(`window.__pilot.go(null, 140)`)
     const running = await until<boolean>(join, `window.__game.state.raceState === 'running'`, 5000)
     check('GO: the race runs', !!running)
     // Let the host win: the joiner backs off to a cruise.
-    await join.evaluate(`window.__pilot.go(null, 70)`)
+    await join.evaluate(`window.__pilot.go(null, 90)`)
     const laps = hostRound?.laps ?? 1
-    const done = await until<boolean>(host, `window.__game.state.raceState === 'finished'`, 240000 * laps)
-    const results = [await host.evaluate(`window.__game.state.raceResults.map((r) => [r.position, r.name, r.ms])`), await join.evaluate(`window.__game.state.raceResults.map((r) => [r.position, r.name, r.ms])`)] as unknown[][][]
+    const done = await until<boolean>(host, `window.__game.state.raceState === 'finished'`, 180000 * laps)
+    if (!done) {
+      console.log('  host lap state:', JSON.stringify(await host.evaluate(`(() => { const g = window.__game.state; const t = window.__game.telemetry; return { lapCount: g.lapCount, lapStartedAt: g.lapStartedAt, dirty: g.currentLapDirty, sectors: g.sectorsPassed + '/' + g.sectorCount, s: Math.round(t.trackS), kmh: Math.round(t.speedKmh), onRoad: t.onRoad, round: window.__game.get('net').round } })()`)))
+    }
+    const joinDone = await until<boolean>(join, `window.__game.state.raceState === 'finished'`, 60000)
+    // Results read AFTER both have finished; an empty list never counts as agreement.
+    const resultsOf = (p: Page) => p.evaluate(`window.__game.state.raceResults.map((r) => [r.position, r.name, r.ms])`) as Promise<[number, string, number | null][]>
+    const hostResults = await resultsOf(host)
+    const joinResults = await resultsOf(join)
     await host.screenshot({ path: `${k.shots}/race-results-host.png` })
     await join.screenshot({ path: `${k.shots}/race-results-joiner.png` })
-    check(`a real ${laps}-lap race finished on the host`, !!done, results[0])
-    const joinDone = await until<boolean>(join, `window.__game.state.raceState === 'finished'`, 60000)
-    check('the joiner gets results too, with the same winner', !!joinDone && results[1]?.[0]?.[1] === results[0]?.[0]?.[1], { host: results[0], joiner: await join.evaluate(`window.__game.state.raceResults.map((r) => [r.position, r.name, r.ms])`) })
+    check(`a real ${laps}-lap race finished on the host`, !!done, hostResults)
+    check('the joiner gets results too, with the same finishing order', !!joinDone && hostResults.length === 2 && joinResults.length === 2 && hostResults.map((r) => r[1]).join() === joinResults.map((r) => r[1]).join(), { host: hostResults, joiner: joinResults })
+    check('the winner has a finishing time', typeof hostResults[0]?.[2] === 'number', hostResults[0])
     const props = [await host.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.round)()`), await join.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.round)()`)]
     check('the race dealt one shared crash-prop round to both', props[0] === props[1] && props[0] !== 0, props)
     for (const p of [host, join]) await p.evaluate(`window.__pilot.stop()`)
@@ -339,6 +347,31 @@ export async function runGameChecks(k: Kit): Promise<void> {
     await otherPage.screenshot({ path: `${k.shots}/tag-new-it.png` })
     const secs = await host.evaluate(`window.__game.state.tagSeconds`)
     console.log(`  tagSeconds on host: ${JSON.stringify(secs)}`)
+    // The round ends (25 s in checks): both get the same results, least time as "it" first.
+    const tagDone = await Promise.all([host, join].map((p) => until<boolean>(p, `window.__game.state.raceState === 'finished' && window.__game.state.mode === 'tag'`, 40000)))
+    const tagRes = await Promise.all([host, join].map((p) => p.evaluate(`window.__game.state.raceResults.map((r) => [r.position, r.name, r.ms])`))) as [number, string, number][][]
+    const endEvt = await join.evaluate(`window.__events.recent.find((e) => e.type === 'tag.end')?.results ?? null`)
+    await join.screenshot({ path: `${k.shots}/tag-results-joiner.png` })
+    check('the tag round ends on both screens', tagDone.every(Boolean))
+    check('tag results agree on both screens (names and order)', tagRes[0].length === 2 && tagRes[0].map((r) => r[1]).join() === tagRes[1].map((r) => r[1]).join(), { host: tagRes[0], joiner: tagRes[1] })
+    check('least time as "it" wins', tagRes[0].length === 2 && tagRes[0][0][2] <= tagRes[0][1][2], tagRes[0])
+    check('tag.end event fired with every player', Array.isArray(endEvt) && (endEvt as unknown[]).length === 2, endEvt)
+    // Times as "it" agree to within a second across screens.
+    const byName = (r: [number, string, number][]) => Object.fromEntries(r.map((x) => [x[1], x[2]]))
+    const a = byName(tagRes[0])
+    const b = byName(tagRes[1])
+    check('each player\'s time as "it" matches on both screens (within 1 s)', Object.keys(a).every((n) => Math.abs((a[n] ?? 0) - (b[n] ?? -9999)) < 1000), { host: a, joiner: b })
+  }
+
+  if (k.sections.includes('props')) {
+    console.log('\n== props: a crash-prop burst on one screen bursts on the other')
+    const round = [await host.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.round)()`), await join.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.round)()`)]
+    check('both screens play the same prop deal', round[0] === round[1], round)
+    const before = (await join.evaluate(`window.__events.recent.filter((e) => e.type === 'prop.burst' && e.remote).length`)) as number
+    // The host bursts cluster 0 exactly the way play reports a local burst.
+    await host.evaluate(`(async () => (await import('/src/core/propsSignal.ts')).propsSignal.onLocalPop({ cluster: 0, vx: 20, vy: 0, vz: 0 }))()`)
+    const got = await until<number>(join, `(() => { const n = window.__events.recent.filter((e) => e.type === 'prop.burst' && e.remote).length; return n > ${before} ? n : 0 })()`, 4000)
+    check('the joiner bursts the same cluster (prop.burst remote, no points)', !!got, { remoteBursts: got })
   }
 
   await host.close()

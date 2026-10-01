@@ -39,6 +39,13 @@ import { BumpApplier, startBumps, stats as bumpStats } from './bump'
 import { currentRound, requestStart, roundsTick, startRounds } from './rounds'
 
 export { useNet } from './netStore'
+/**
+ * For ui: the results screen's "Again" in multiplayer, or any start button.
+ * Same as pressing G / X: a race, or a tag round in tag mode, for everyone.
+ * Returns false if it couldn't start (offline, a round is on, not driving,
+ * or tag with fewer than two players).
+ */
+export { requestStart as startMultiplayerRound } from './rounds'
 export type { NetState, NetStatus, PeerInfo } from './netStore'
 
 // ?color= goes onto our own car before anything builds it (this module loads
