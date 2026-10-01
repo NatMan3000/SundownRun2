@@ -17,6 +17,8 @@ import { type P, catmullRomClosed, dist, minRadius } from './geom'
 import { validateTrack } from '../track/validate'
 import { buildTrack } from '../track/build'
 import { DEFAULT_BASE_WORLD, draftFile, roadBound } from './draftFile'
+import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, roadCurve, sectionRedraw } from './road'
+import type { RoadPoint } from '../track/schema'
 
 export interface CheckResult {
   name: string
@@ -254,6 +256,95 @@ export function runEditorSelfTest(): CheckResult[] {
     const v = validateTrack(draftFile({ id: 'selftest-eight', name: 'Self-test eight', points: res.points }))
     if (v.errors.some((e) => /not built yet/.test(e.message))) return 'skipped: the track validator is not built yet'
     return v.ok ? [] : v.errors.map((e) => `${e.path}: ${e.message}`)
+  })
+
+  // ---------------------------------------------------------------- editing maths (stage B)
+
+  const ring = (count: number, r: number): RoadPoint[] =>
+    Array.from({ length: count }, (_, i) => ({ x: Math.round(r * Math.sin((i / count) * TAU) * 10) / 10, z: Math.round(-r * Math.cos((i / count) * TAU) * 10) / 10 }))
+
+  check('adding a road point keeps pieces where they were', () => {
+    const pts = ring(40, 200)
+    const before = roadCurve(pts)
+    const ats = [3.25, 7.5, 7.9, 20.1, 39.6]
+    const where = ats.map((a) => frameAt(before, a).p)
+    // Insert a point on the curve halfway along segment 7 -> 8 (new index 8).
+    const mid = frameAt(before, 7.5).p
+    const after = [...pts.slice(0, 8), { x: mid.x, z: mid.z }, ...pts.slice(8)]
+    const rc = roadCurve(after)
+    const bad: string[] = []
+    ats.forEach((a, i) => {
+      const moved = Math.hypot(frameAt(rc, atAfterInsert(a, 8, 0.5)).p.x - where[i].x, frameAt(rc, atAfterInsert(a, 8, 0.5)).p.z - where[i].z)
+      if (moved > 1.5) bad.push(`at ${a} moved ${moved.toFixed(1)} m`)
+    })
+    return bad
+  })
+
+  check('deleting a road point keeps pieces on the rest of the road', () => {
+    const pts = ring(40, 200)
+    const before = roadCurve(pts)
+    const bad: string[] = []
+    for (const del of [0, 12, 39]) {
+      const after = pts.filter((_, i) => i !== del)
+      const rc = roadCurve(after)
+      for (const a of [2.5, 15.25, 30.75]) {
+        // Pieces two or more segments from the deleted point must not move at all (beyond rounding).
+        const gap = Math.min(Math.abs(a - del), 40 - Math.abs(a - del))
+        if (gap < 2.5) continue
+        const was = frameAt(before, a).p
+        const now = frameAt(rc, atAfterDelete(a, del, 40)).p
+        const moved = Math.hypot(now.x - was.x, now.z - was.z)
+        if (moved > 0.5) bad.push(`delete ${del}: at ${a} moved ${moved.toFixed(2)} m`)
+      }
+    }
+    return bad
+  })
+
+  check('a click to the right of the road reads as right (+offset)', () => {
+    const rc = roadCurve(ring(40, 200))
+    const f = frameAt(rc, 10.3)
+    const q = { x: f.p.x + f.right.x * 4, z: f.p.z + f.right.z * 4 }
+    const hit = nearestOnRoad(rc, q)
+    return Math.abs(hit.lateral - 4) < 0.3 && Math.abs(hit.at - 10.3) < 0.05 ? [] : [`lateral ${hit.lateral.toFixed(2)} at ${hit.at.toFixed(2)}`]
+  })
+
+  check('redrawing a stretch changes only that stretch', () => {
+    const pts = ring(60, 250)
+    const rc = roadCurve(pts)
+    // From the road at about 2 o'clock, bulge outward, back to the road at about 4 o'clock.
+    const a = frameAt(rc, 8).p
+    const b = frameAt(rc, 17).p
+    const stroke: P[] = []
+    for (let i = 0; i <= 60; i++) {
+      const t = i / 60
+      const base = { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t }
+      const out = Math.sin(t * Math.PI) * 90
+      const r = Math.hypot(base.x, base.z) || 1
+      stroke.push({ x: base.x + (base.x / r) * out, z: base.z + (base.z / r) * out })
+    }
+    const loop = sectionRedraw(stroke, pts, 14)
+    if (!loop) return ['not recognised as a section redraw']
+    const res = cleanStroke(loop, { ...opts, fairing: 0 })
+    describe(res)
+    if (!res.ok) return ['clean-up failed: ' + res.issues.map((i) => i.message).join(' / ')]
+    const newRc = roadCurve(res.points)
+    const bad: string[] = []
+    // The far side of the circle (8 and 9 o'clock) must not have moved.
+    for (const at of [35, 40, 45]) {
+      const was = frameAt(rc, at).p
+      const hit = nearestOnRoad(newRc, was)
+      if (hit.distance > 3) bad.push(`far side moved ${hit.distance.toFixed(1)} m at ${at}`)
+    }
+    // The bulge must be there: some road at least 60 m outside the old circle.
+    const reach = Math.max(...res.dense.map((p) => Math.hypot(p.x, p.z)))
+    if (reach < 250 + 60) bad.push(`bulge only reaches ${reach.toFixed(0)} m from the centre`)
+    return bad
+  })
+
+  check('a whole new loop is not mistaken for a stretch redraw', () => {
+    const pts = ring(60, 250)
+    const stroke = shaky((t) => ({ x: 250 * Math.sin(t * TAU), z: -250 * Math.cos(t * TAU) }), 300, 2, 9, 0, 1.02)
+    return sectionRedraw(stroke, pts, 14) ? ['treated a full loop as a section'] : []
   })
 
   return results

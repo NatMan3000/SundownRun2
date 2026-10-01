@@ -25,6 +25,8 @@ import { audio } from '../core/api'
 import { BASE_WORLDS, DEFAULT_BASE_WORLD, cloneJson, draftFile, roadBound } from './draftFile'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import type { P } from './geom'
+import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
+import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, reanchor, roadCurve, sectionRedraw, wrapAt } from './road'
 
 export interface Draft {
   id: string
@@ -66,10 +68,24 @@ export interface EditorState {
   preview: 'pending' | 'built' | 'failed'
   /** A short message for the status line (plain words). */
   message: { text: string; tone: 'info' | 'good' | 'warn' | 'bad'; at: number } | null
-  tool: 'pencil' | 'pan'
+  tool: EditorTool
+  /** What the place tool drops. */
+  placeKind: PlaceKind
+  /** The thing selected on the map (select, place and section tools). */
+  selection: Selection | null
   /** 'edit' = the road editor; 'map' = the read-only world map. */
   mode: 'edit' | 'map'
 }
+
+export type EditorTool = 'pencil' | 'pan' | 'select' | 'place' | 'section'
+
+/** Something selected on the map. A section runs from `from` to `to` going forward (both are `at` values). */
+export type Selection =
+  | { kind: 'piece'; index: number }
+  | { kind: 'point'; index: number }
+  | { kind: 'prop'; index: number }
+  | { kind: 'core'; index: number }
+  | { kind: 'section'; from: number; to: number }
 
 const WORKING_KEY = 'sr2.editor.working.v1'
 const HISTORY_MAX = 120
@@ -182,6 +198,8 @@ export const useEditor = create<EditorState>(() => ({
   preview: 'pending',
   message: null,
   tool: 'pencil',
+  placeKind: 'boost',
+  selection: null,
   mode: 'edit',
 }))
 
@@ -210,7 +228,7 @@ export function undo(): void {
   const s = useEditor.getState()
   if (!s.past.length || s.mode === 'map') return
   const prev = s.past[s.past.length - 1]
-  useEditor.setState({ draft: prev, past: s.past.slice(0, -1), future: [s.draft, ...s.future], dirty: true, notes: null })
+  useEditor.setState({ draft: prev, past: s.past.slice(0, -1), future: [s.draft, ...s.future], dirty: true, notes: null, selection: null })
   writeWorking({ draft: prev, savedId: s.savedId, dirty: true })
   audio.ui('back')
   schedulePreview()
@@ -220,7 +238,7 @@ export function redo(): void {
   const s = useEditor.getState()
   if (!s.future.length || s.mode === 'map') return
   const next = s.future[0]
-  useEditor.setState({ draft: next, past: [...s.past, s.draft], future: s.future.slice(1), dirty: true, notes: null })
+  useEditor.setState({ draft: next, past: [...s.past, s.draft], future: s.future.slice(1), dirty: true, notes: null, selection: null })
   writeWorking({ draft: next, savedId: s.savedId, dirty: true })
   audio.ui('select')
   schedulePreview()
@@ -228,7 +246,7 @@ export function redo(): void {
 
 /** Start editing a different track (history is cleared: it is a different track). */
 export function replaceDraft(draft: Draft, savedId: string | null): void {
-  useEditor.setState({ draft, past: [], future: [], dirty: false, savedId, notes: null, mode: 'edit' })
+  useEditor.setState({ draft, past: [], future: [], dirty: false, savedId, notes: null, mode: 'edit', selection: null })
   writeWorking({ draft, savedId, dirty: false })
   previewNow()
 }
@@ -286,6 +304,8 @@ export function strokeOptions(d: Draft, metresPerPixel: number) {
  */
 export function applyStroke(raw: readonly P[], metresPerPixel: number): CleanResult {
   const s = useEditor.getState()
+  const section = sectionRedraw(raw, s.draft.points, s.draft.width)
+  if (section) return applySectionRedraw(section, metresPerPixel)
   const res = cleanStroke(raw, strokeOptions(s.draft, metresPerPixel))
   if (!res.ok) {
     const first = res.issues.find((i) => i.level === 'error')
@@ -412,4 +432,274 @@ export function onEditorOpen(mode: 'edit' | 'map'): void {
     return
   }
   previewNow()
+}
+
+// ---------------------------------------------------------------- redraw part of the road
+
+function applySectionRedraw(loop: P[], metresPerPixel: number): CleanResult {
+  const s = useEditor.getState()
+  const res = cleanStroke(loop, { ...strokeOptions(s.draft, metresPerPixel), fairing: 0 })
+  if (!res.ok) {
+    say(res.issues.find((i) => i.level === 'error')?.message ?? 'That redraw did not work. Try again.', 'warn')
+    audio.ui('error')
+    return res
+  }
+  const oldRc = roadCurve(s.draft.points)
+  const newRc = roadCurve(res.points)
+  commit(
+    (d) => {
+      // Keep per-point bank and width overrides where the road did not move.
+      const oldPoints = d.points
+      d.points = res.points.map((p) => {
+        const near = oldPoints.find((o) => Math.hypot(o.x - p.x, o.z - p.z) < 6)
+        const out = { ...p }
+        if (near?.bank !== undefined) out.bank = near.bank
+        if (near?.width !== undefined) out.width = near.width
+        return out
+      })
+      for (const piece of d.pieces) piece.at = reanchor(oldRc, newRc, piece.at)
+      d.startAt = reanchor(oldRc, newRc, d.startAt)
+    },
+    { crossings: res.crossings, issues: res.issues },
+  )
+  say('Redrew that stretch of road.', 'good')
+  audio.ui('select')
+  return res
+}
+
+// ---------------------------------------------------------------- drag gestures (one undo step per drag)
+
+let gestureStart: Draft | null = null
+
+/** Start a drag: the draft as it is now is what Undo will bring back. */
+export function beginGesture(): void {
+  gestureStart = useEditor.getState().draft
+}
+
+/** Change the draft during a drag (no undo step, no rebuild yet). */
+export function liveChange(change: (d: Draft) => void): void {
+  const s = useEditor.getState()
+  const next = cloneJson(s.draft)
+  change(next)
+  useEditor.setState({ draft: next, dirty: true })
+}
+
+/** Finish a drag: one undo step, then rebuild the 3D preview. */
+export function endGesture(): void {
+  const start = gestureStart
+  gestureStart = null
+  if (!start) return
+  const s = useEditor.getState()
+  if (JSON.stringify(start) === JSON.stringify(s.draft)) return
+  useEditor.setState({ past: [...s.past, start].slice(-HISTORY_MAX), future: [], notes: null })
+  writeWorking({ draft: s.draft, savedId: s.savedId, dirty: true })
+  schedulePreview(60)
+}
+
+// ---------------------------------------------------------------- placing and editing pieces
+
+export function setTool(tool: EditorTool, placeKind?: PlaceKind): void {
+  const s = useEditor.getState()
+  useEditor.setState({ tool, placeKind: placeKind ?? s.placeKind, selection: tool === s.tool ? s.selection : null })
+}
+
+/** Drop the current place tool's thing at world point q. Returns true if something was placed. */
+export function placeAt(q: P): boolean {
+  const s = useEditor.getState()
+  const d = s.draft
+  const kind = s.placeKind
+  const tool = toolFor(kind)
+  if (tool.onRoad) {
+    const rc = roadCurve(d.points)
+    const hit = nearestOnRoad(rc, q)
+    if (hit.distance > d.width / 2 + 12) {
+      say(`Click on the road to put a ${tool.label.toLowerCase()} there.`, 'warn')
+      audio.ui('error')
+      return false
+    }
+    if (kind === 'start') {
+      commit((x) => {
+        x.startAt = Math.round(hit.at * 100) / 100
+      })
+      say('Moved the start line.', 'good')
+      audio.ui('select')
+      return true
+    }
+    const piece = makeRoadPiece(kind, hit, d.width / 2)
+    if (!piece) return false
+    commit((x) => {
+      x.pieces.push(piece)
+    })
+    useEditor.setState({ selection: { kind: 'piece', index: useEditor.getState().draft.pieces.length - 1 } })
+    say(`${tool.label} placed.`, 'good')
+    audio.ui('select')
+    return true
+  }
+  if (kind === 'props') {
+    commit((x) => {
+      x.props.push(makeProp(q))
+    })
+    useEditor.setState({ selection: { kind: 'prop', index: useEditor.getState().draft.props.length - 1 } })
+  } else {
+    commit((x) => {
+      x.cores.push(makeCore(q))
+    })
+    useEditor.setState({ selection: { kind: 'core', index: useEditor.getState().draft.cores.length - 1 } })
+  }
+  say(`${tool.label} placed.`, 'good')
+  audio.ui('select')
+  return true
+}
+
+/** Delete whatever is selected (a piece, prop, core or road point). */
+export function deleteSelection(): void {
+  const s = useEditor.getState()
+  const sel = s.selection
+  if (!sel) return
+  if (sel.kind === 'point') {
+    deletePoint(sel.index)
+    return
+  }
+  if (sel.kind === 'section') return
+  commit((d) => {
+    if (sel.kind === 'piece') d.pieces.splice(sel.index, 1)
+    if (sel.kind === 'prop') d.props.splice(sel.index, 1)
+    if (sel.kind === 'core') d.cores.splice(sel.index, 1)
+  })
+  useEditor.setState({ selection: null })
+  audio.ui('back')
+}
+
+export function updatePiece(index: number, change: (p: Piece) => void): void {
+  commit((d) => {
+    const p = d.pieces[index]
+    if (p) change(p)
+  })
+}
+export function updateProp(index: number, change: (p: PropSpot) => void): void {
+  commit((d) => {
+    const p = d.props[index]
+    if (p) change(p)
+  })
+}
+export function updateCore(index: number, change: (p: CoreSpot) => void): void {
+  commit((d) => {
+    const p = d.cores[index]
+    if (p) change(p)
+  })
+}
+
+// ---------------------------------------------------------------- road points
+
+/** Add a road point at `at` (on the curve, so the road does not move). */
+export function insertPointAt(at: number): void {
+  const s = useEditor.getState()
+  const d = s.draft
+  const count = d.points.length
+  const a = wrapAt(at, count)
+  const k = Math.floor(a)
+  const t = a - k
+  if (t < 0.08 || t > 0.92) {
+    say('There is already a point there.', 'info')
+    return
+  }
+  const where = frameAt(roadCurve(d.points), a).p
+  const index = k + 1
+  commit((x) => {
+    const before = x.points[k]
+    const after = x.points[(k + 1) % count]
+    const point: RoadPoint = { x: Math.round(where.x * 10) / 10, z: Math.round(where.z * 10) / 10 }
+    const lift = (before.lift ?? 0) * (1 - t) + (after.lift ?? 0) * t
+    if (lift > 0.05) point.lift = Math.round(lift * 10) / 10
+    if (before.bank !== undefined && after.bank !== undefined) point.bank = Math.round((before.bank * (1 - t) + after.bank * t) * 10) / 10
+    if (before.width !== undefined && after.width !== undefined) point.width = Math.round(before.width * (1 - t) + after.width * t)
+    x.points.splice(index, 0, point)
+    for (const p of x.pieces) p.at = atAfterInsert(p.at, index, t)
+    x.startAt = atAfterInsert(x.startAt, index, t)
+  })
+  useEditor.setState({ selection: { kind: 'point', index } })
+  audio.ui('select')
+}
+
+export function deletePoint(index: number): void {
+  const s = useEditor.getState()
+  const count = s.draft.points.length
+  if (count <= 8) {
+    say('A road needs at least 8 points. Redraw it instead.', 'warn')
+    audio.ui('error')
+    return
+  }
+  commit((x) => {
+    x.points.splice(index, 1)
+    for (const p of x.pieces) p.at = atAfterDelete(p.at, index, count)
+    x.startAt = atAfterDelete(x.startAt, index, count)
+  })
+  useEditor.setState({ selection: null })
+  audio.ui('back')
+}
+
+/** Gently even out the whole road (keeps every point, piece and setting). */
+export function smoothRoad(): void {
+  commit((d) => {
+    const n = d.points.length
+    for (let pass = 0; pass < 2; pass++) {
+      for (const k of [0.5, -0.53]) {
+        const src = d.points.map((p) => ({ x: p.x, z: p.z }))
+        for (let i = 0; i < n; i++) {
+          const a = src[(i - 1 + n) % n]
+          const c = src[(i + 1) % n]
+          d.points[i].x = Math.round((src[i].x + k * ((a.x + c.x) / 2 - src[i].x)) * 10) / 10
+          d.points[i].z = Math.round((src[i].z + k * ((a.z + c.z) / 2 - src[i].z)) * 10) / 10
+        }
+      }
+    }
+  })
+  say('Smoothed the road a little. Press it again for more, or Undo.', 'good')
+}
+
+// ---------------------------------------------------------------- sections: bank and width
+
+/** Indices of the road points inside a section (at least the nearest one). */
+export function sectionPoints(count: number, from: number, to: number): number[] {
+  const span = wrapAt(to - from, count)
+  const out: number[] = []
+  for (let i = 0; i < count; i++) if (wrapAt(i - from, count) <= span) out.push(i)
+  if (!out.length) out.push(Math.round(wrapAt(from + span / 2, count)) % count)
+  return out
+}
+
+/** Set (or with null, clear back to automatic) the bank in degrees on a stretch of road. */
+export function setSectionBank(from: number, to: number, deg: number | null): void {
+  commit((d) => {
+    for (const i of sectionPoints(d.points.length, from, to)) {
+      if (deg === null) delete d.points[i].bank
+      else d.points[i].bank = Math.round(deg)
+    }
+  })
+}
+
+/** Set (or with null, clear back to the track's width) the road width on a stretch. */
+export function setSectionWidth(from: number, to: number, width: number | null): void {
+  commit((d) => {
+    for (const i of sectionPoints(d.points.length, from, to)) {
+      if (width === null) delete d.points[i].width
+      else d.points[i].width = Math.round(Math.min(24, Math.max(10, width)))
+    }
+  })
+}
+
+// ---------------------------------------------------------------- environment
+
+/** Use the world (ground, sky, city, music) of another track. */
+export function copyEnvironmentFrom(file: TrackFile): void {
+  commit((d) => {
+    d.baseWorld = `copy:${file.id}`
+    d.environment = cloneJson(file.environment)
+  })
+  say(`Using the world from "${file.name}".`, 'good')
+}
+
+/** How far the road (and anything dragged) may reach from the centre in this draft's world, metres. */
+export function roadBoundFor(): number {
+  return roadBound(useEditor.getState().draft.environment) - 10
 }

@@ -521,3 +521,158 @@
     transition: none;
   }
 }
+
+/* ---------------------------------------------------------------- stage B: panel body, sections, inspector */
+
+/* The middle of the panel scrolls; the name stays on top and the buttons at the bottom. */
+.sre-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text) 25%, transparent) transparent;
+}
+
+.sre-section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--font-display);
+  font-size: 0.82em;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent2);
+}
+
+.sre-link {
+  background: none;
+  border: none;
+  padding: 0 6px 0 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: var(--font-body);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+textarea.sre-input {
+  resize: none;
+  line-height: 1.35;
+  font-size: 0.95em;
+}
+
+.sre-inspector {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.sre-inspector-title {
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-display);
+  font-size: 1.35em;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sre-inspector-title:hover {
+  color: var(--accent);
+}
+.sre-inspector .sre-btn.is-danger {
+  align-self: flex-start;
+}
+
+/* segmented choice */
+.sre-seg {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-solid) 70%, transparent);
+  border: 1px solid var(--line);
+}
+.sre-seg-btn {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: none;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+}
+.sre-seg-btn.is-on {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+/* ---------------------------------------------------------------- piece palette (beside the rail) */
+
+.sre-palette {
+  position: absolute;
+  left: 84px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  width: 210px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+}
+.sre-piece {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--dim);
+  text-align: left;
+  cursor: pointer;
+}
+.sre-piece i {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--piece);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--piece) 60%, transparent);
+}
+.sre-piece kbd {
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  color: var(--dim);
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+}
+.sre-piece:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+.sre-piece.is-on {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--piece) 55%, transparent);
+  background: color-mix(in srgb, var(--piece) 12%, transparent);
+}
+.sre-piece:focus-visible,
+.sre-seg-btn:focus-visible,
+.sre-link:focus-visible,
+.sre-inspector-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* more map-key swatches */
+.k-boost { height: 7px !important; border-radius: 2px; background: var(--boost); box-shadow: 0 0 6px var(--boost); }
+.k-ramp { height: 7px !important; border-right: 3px solid var(--ramp); border-radius: 2px; background: color-mix(in srgb, var(--ramp) 25%, transparent); }
+.k-loop { width: 14px !important; height: 10px !important; border-radius: 50%; border: 2px solid var(--loop); margin: 0 2px; }
+.k-wall { height: 4px !important; border-radius: 2px; background: var(--bridge); box-shadow: 0 0 6px var(--bridge); }
+.k-prop { width: 10px !important; height: 10px !important; border: 2px solid var(--prop); margin: 0 4px; }
+.k-core { width: 9px !important; height: 9px !important; background: var(--core); transform: rotate(45deg); margin: 0 4px; }
+.k-bank { height: 0 !important; border-top: 3px dashed var(--chevron); }

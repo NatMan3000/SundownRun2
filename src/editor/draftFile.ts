@@ -129,6 +129,7 @@ export function draftFile(parts: DraftParts): TrackFile {
 export function roadBound(environment: EnvironmentSpec): number {
   const size = environment.size ?? 1600
   const edge = environment.terrain.edge ?? (environment.terrain.kind === 'flat' ? 'wall' : 'ridge')
-  const edgeMargin = edge === 'ridge' ? Math.max(170, size * 0.15) + 40 : 40
+  // Mirrors validate.ts until the track worker exports this rule (then import it instead).
+  const edgeMargin = edge === 'ridge' ? Math.min(300, Math.max(170, size * 0.15)) + 30 + 40 : 40
   return size / 2 - edgeMargin
 }

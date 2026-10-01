@@ -1,0 +1,515 @@
+// ============================================================
+//  EDITOR PANEL - the right-hand side: this track, and what's selected
+// ------------------------------------------------------------
+//  Top to bottom:
+//    the name and a few numbers (length, pieces, bridges)
+//    SELECTED  settings for whatever you clicked on the map: a piece,
+//              a crash-prop pile, an energy core, a road point, or a
+//              stretch of road (its bank and width)
+//    TRACK     width, world, time of day, edge lights, maker, blurb
+//    CHECKS    anything the game wants you to look at; click to go there
+//    MAP KEY   what the marks on the map mean
+//    Save / Library / Test drive / Exit
+// ============================================================
+
+import { useMemo, type ReactNode } from 'react'
+import { PALETTE } from '../core/palette'
+import { audio } from '../core/api'
+import { listTracks } from '../track/registry'
+import { TRACK_DEFAULTS, type Piece } from '../track/schema'
+import { BASE_WORLDS } from './draftFile'
+import {
+  type Draft,
+  type Selection,
+  copyEnvironmentFrom,
+  deletePoint,
+  deleteSelection,
+  saveDraft,
+  sectionPoints,
+  setAuthor,
+  setBaseWorld,
+  setDescription,
+  setEdgeColour,
+  setName,
+  setSectionBank,
+  setSectionWidth,
+  setTimeOfDay,
+  setWidth,
+  smoothRoad,
+  testDrive,
+  updateCore,
+  updatePiece,
+  updateProp,
+  useEditor,
+  commit,
+} from './draft'
+import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
+import { issueLocation, roadGeometry } from './mapDraw'
+import { pieceLabel } from './pieces'
+import { metresBetween, roadLength } from './road'
+import { setView, view } from './view'
+
+/** Edge-strip colours a track can pick (the road's light strips). */
+const EDGE_COLOURS = [PALETTE.roadEdge, PALETTE.roadEdgeAlt, PALETTE.boost, PALETTE.chevron, PALETTE.wallRide, PALETTE.aiColors[0]]
+
+export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
+  const mode = useEditor((s) => s.mode)
+  const draft = useEditor((s) => s.draft)
+  const dirty = useEditor((s) => s.dirty)
+  const savedId = useEditor((s) => s.savedId)
+  const preview = useEditor((s) => s.preview)
+  const selection = useEditor((s) => s.selection)
+  const length = useMemo(() => roadLength(roadGeometry(draft.points, draft.width).rc), [draft.points, draft.width])
+
+  if (mode === 'map') {
+    return (
+      <aside className="sre-panel" aria-label="World map">
+        <header className="sre-head">
+          <div className="sre-kicker">World map</div>
+          <h1 className="sre-title">{draft.name}</h1>
+          <div className="sre-stats">
+            <Stat label="Length" value={`${(length / 1000).toFixed(2)} km`} />
+            <Stat label="Pieces" value={String(draft.pieces.length)} />
+            <Stat label="Cores" value={String(draft.cores.length)} />
+          </div>
+        </header>
+        <div className="sre-body">
+          <Legend />
+        </div>
+        <div className="sre-actions">
+          <button type="button" className="sre-btn is-primary" onClick={props.onExit}>
+            Back to the game
+          </button>
+        </div>
+      </aside>
+    )
+  }
+
+  return (
+    <aside className="sre-panel" aria-label="This track">
+      <header className="sre-head">
+        <div className="sre-kicker">
+          Road editor
+          <span className={`sre-state is-${preview}`}>{preview === 'pending' ? 'building...' : preview === 'failed' ? 'needs fixing' : dirty ? 'not saved' : savedId ? 'saved' : 'new'}</span>
+        </div>
+        <TextField label="Track name" value={draft.name} onCommit={setName} big />
+        <div className="sre-stats">
+          <Stat label="Length" value={`${(length / 1000).toFixed(2)} km`} />
+          <Stat label="Pieces" value={String(draft.pieces.length + draft.props.length + draft.cores.length)} />
+          <Stat label="Bridges" value={String(countBridges(draft))} />
+        </div>
+      </header>
+
+      <div className="sre-body">
+        {selection && <Inspector selection={selection} draft={draft} />}
+
+        <section className="sre-section" aria-label="Track">
+          <span className="sre-section-title">Track</span>
+          <SliderField label="Road width" value={draft.width} min={10} max={24} step={1} unit="m" onCommit={setWidth} help="How wide the road is, edge to edge." />
+          <WorldField draft={draft} />
+          <SliderField
+            label="Time of day"
+            value={draft.environment.sky?.timeOfDay ?? TRACK_DEFAULTS.timeOfDay}
+            min={0}
+            max={1}
+            step={0.05}
+            format={(v) => (v < 0.2 ? 'Sundown' : v < 0.5 ? 'Dusk' : v < 0.8 ? 'Night falling' : 'Night')}
+            onCommit={setTimeOfDay}
+            help="The light this track starts in (players can still change it in Settings)."
+          />
+          <ColourField label="Edge lights" value={draft.environment.palette?.edge ?? PALETTE.roadEdge} options={EDGE_COLOURS} onChange={setEdgeColour} />
+          <TextField label="Made by" value={draft.author} onCommit={setAuthor} placeholder="Your name" />
+          <TextField label="About this track" value={draft.description} onCommit={setDescription} placeholder="One line for the track list" multiline max={200} />
+          <button type="button" className="sre-btn" onClick={smoothRoad} title="Evens out wobbles in the whole road. Undo if you don't like it.">
+            Smooth the road
+          </button>
+        </section>
+
+        <Problems />
+        <Legend />
+      </div>
+
+      <div className="sre-actions">
+        <button type="button" className="sre-btn" onClick={() => saveDraft() && audio.ui('select')}>
+          Save
+        </button>
+        <button type="button" className="sre-btn" onClick={props.onLibrary}>
+          Library
+        </button>
+        <button type="button" className="sre-btn is-primary" onClick={testDrive} data-testid="editor-test-drive">
+          Test drive
+        </button>
+        <button type="button" className="sre-btn is-quiet" onClick={props.onExit}>
+          Exit
+        </button>
+      </div>
+    </aside>
+  )
+}
+
+function countBridges(d: Draft): number {
+  let n = 0
+  for (let i = 0; i < d.points.length; i++) {
+    const lift = d.points[i].lift ?? 0
+    const prev = d.points[(i - 1 + d.points.length) % d.points.length].lift ?? 0
+    if (lift >= 6 && prev < 6) n++
+  }
+  return n
+}
+
+function Stat(p: { label: string; value: string }) {
+  return (
+    <div className="sre-stat">
+      <span className="sre-stat-value">{p.value}</span>
+      <span className="sre-stat-label">{p.label}</span>
+    </div>
+  )
+}
+
+/** The base world picker, plus "use the world from" any built-in track. */
+function WorldField(p: { draft: Draft }) {
+  const builtins = useMemo(() => listTracks().filter((t) => t.source === 'builtin'), [])
+  const options = [
+    ...BASE_WORLDS.map((b) => ({ value: b.id, label: b.name })),
+    ...builtins.map((t) => ({ value: `copy:${t.id}`, label: `World from ${t.name}` })),
+    ...(p.draft.baseWorld === 'custom' ? [{ value: 'custom', label: 'From the original track' }] : []),
+  ]
+  const help = BASE_WORLDS.find((b) => b.id === p.draft.baseWorld)?.blurb ?? 'The ground, sky, city and music of another track.'
+  return (
+    <SelectField
+      label="World"
+      value={p.draft.baseWorld}
+      options={options}
+      help={help}
+      onChange={(v) => {
+        if (v.startsWith('copy:')) {
+          const t = builtins.find((b) => `copy:${b.id}` === v)
+          if (t) copyEnvironmentFrom(t.file)
+        } else setBaseWorld(v)
+      }}
+    />
+  )
+}
+
+// ---------------------------------------------------------------- selected thing
+
+function Inspector(p: { selection: Selection; draft: Draft }) {
+  const sel = p.selection
+  const d = p.draft
+  const rc = roadGeometry(d.points, d.width).rc
+  let title = ''
+  let body: ReactNode = null
+  let canDelete = true
+
+  if (sel.kind === 'piece') {
+    const piece = d.pieces[sel.index]
+    if (!piece) return null
+    title = pieceLabel(piece)
+    body = <PieceFields piece={piece} index={sel.index} roadWidth={d.width} />
+    const from = Math.round(metresBetween(rc, d.startAt, piece.at))
+    body = (
+      <>
+        <p className="sre-help">{from} m after the start line.</p>
+        {body}
+      </>
+    )
+  } else if (sel.kind === 'prop') {
+    const prop = d.props[sel.index]
+    if (!prop) return null
+    title = 'Crash props'
+    body = (
+      <>
+        <Segmented
+          label="What's in the pile"
+          value={prop.kind ?? 'mixed'}
+          options={[
+            { value: 'mixed', label: 'Mixed' },
+            { value: 'crates', label: 'Crates' },
+            { value: 'cubes', label: 'Cubes' },
+            { value: 'tower', label: 'Tower' },
+          ]}
+          onChange={(v) => updateProp(sel.index, (x) => (x.kind = v))}
+        />
+        <Segmented
+          label="How many"
+          value={prop.size ?? 'medium'}
+          options={[
+            { value: 'small', label: 'Few' },
+            { value: 'medium', label: 'Some' },
+            { value: 'large', label: 'Loads' },
+          ]}
+          onChange={(v) => updateProp(sel.index, (x) => (x.size = v))}
+        />
+      </>
+    )
+  } else if (sel.kind === 'core') {
+    const core = d.cores[sel.index]
+    if (!core) return null
+    title = 'Energy core'
+    body = (
+      <SliderField
+        label="Height above the ground"
+        value={core.y ?? TRACK_DEFAULTS.coreHeight}
+        min={0.8}
+        max={30}
+        step={0.2}
+        unit="m"
+        help="Put some up high as a challenge (jump to them)."
+        onCommit={(v) => updateCore(sel.index, (x) => (x.y = v))}
+      />
+    )
+  } else if (sel.kind === 'point') {
+    const point = d.points[sel.index]
+    if (!point) return null
+    title = `Road point ${sel.index + 1} of ${d.points.length}`
+    body = (
+      <>
+        <p className="sre-help">Drag it on the map to reshape the road. Double-click the road to add a point.</p>
+        <SliderField
+          label="Height above the ground"
+          value={point.lift ?? 0}
+          min={0}
+          max={16}
+          step={0.5}
+          unit="m"
+          help="Raise the road here for a crest or a bridge. 8 m or more clears a road underneath."
+          onCommit={(v) =>
+            commit((x) => {
+              if (v > 0) x.points[sel.index].lift = v
+              else delete x.points[sel.index].lift
+            })
+          }
+        />
+      </>
+    )
+  } else {
+    title = 'Stretch of road'
+    canDelete = false
+    const idx = sectionPoints(d.points.length, sel.from, sel.to)
+    const first = d.points[idx[0]]
+    const metres = Math.round(metresBetween(rc, sel.from, sel.to))
+    body = (
+      <>
+        <p className="sre-help">
+          {metres} m of road, {idx.length} point{idx.length === 1 ? '' : 's'}. Banking tilts the road into the corner; auto banks it from how tight the corner is.
+        </p>
+        <SliderField
+          label="Bank"
+          value={first?.bank ?? 0}
+          min={-10}
+          max={45}
+          step={1}
+          format={(v) => (first?.bank === undefined ? 'Auto' : `${v}°`)}
+          reset={first?.bank !== undefined ? { label: 'Auto', onClick: () => setSectionBank(sel.from, sel.to, null) } : undefined}
+          onCommit={(v) => setSectionBank(sel.from, sel.to, v)}
+          help="Degrees into the corner. Negative tilts it the wrong way (off-camber)."
+        />
+        <SliderField
+          label="Width here"
+          value={first?.width ?? d.width}
+          min={10}
+          max={24}
+          step={1}
+          format={(v) => (first?.width === undefined ? `${d.width} m (track)` : `${v} m`)}
+          reset={first?.width !== undefined ? { label: 'Track width', onClick: () => setSectionWidth(sel.from, sel.to, null) } : undefined}
+          onCommit={(v) => setSectionWidth(sel.from, sel.to, v)}
+        />
+      </>
+    )
+  }
+
+  const goTo = () => {
+    const at =
+      sel.kind === 'section'
+        ? issueLocation(`road.points[${sectionPoints(d.points.length, sel.from, sel.to)[0]}]`, d, rc)
+        : issueLocation(`${sel.kind === 'point' ? 'road.points' : sel.kind === 'piece' ? 'pieces' : sel.kind === 'prop' ? 'props' : 'cores'}[${sel.index}]`, d, rc)
+    if (at) setView(at.x, at.z, Math.min(view.mpp, 0.6))
+  }
+
+  return (
+    <section className="sre-section sre-inspector" aria-label="Selected">
+      <span className="sre-section-title">
+        Selected
+        <button type="button" className="sre-link" onClick={() => useEditor.setState({ selection: null })}>
+          Done
+        </button>
+      </span>
+      <button type="button" className="sre-inspector-title" onClick={goTo} title="Show it on the map">
+        {title}
+      </button>
+      {body}
+      {canDelete && (
+        <button type="button" className="sre-btn is-danger" onClick={() => (sel.kind === 'point' ? deletePoint(sel.index) : deleteSelection())}>
+          Delete
+        </button>
+      )}
+    </section>
+  )
+}
+
+function PieceFields(p: { piece: Piece; index: number; roadWidth: number }) {
+  const { piece, index } = p
+  const half = p.roadWidth / 2
+  const sideField = (pieceWidth: number) => {
+    const room = Math.max(0, half - pieceWidth / 2 - 0.3)
+    return (
+      <SliderField
+        label="Across the road"
+        value={piece.type === 'boost' || piece.type === 'ramp' ? (piece.offset ?? 0) : 0}
+        min={-Math.floor(room * 2) / 2}
+        max={Math.floor(room * 2) / 2}
+        step={0.5}
+        format={(v) => (v === 0 ? 'Middle' : v < 0 ? `${-v} m left` : `${v} m right`)}
+        onCommit={(v) =>
+          updatePiece(index, (x) => {
+            if (x.type !== 'boost' && x.type !== 'ramp') return
+            if (v) x.offset = v
+            else delete x.offset
+          })
+        }
+      />
+    )
+  }
+  switch (piece.type) {
+    case 'boost':
+      return (
+        <>
+          <SliderField
+            label="Kick"
+            value={piece.strength ?? TRACK_DEFAULTS.boost.strength}
+            min={0.5}
+            max={2}
+            step={0.1}
+            format={(v) => `${v.toFixed(1)}x`}
+            onCommit={(v) => updatePiece(index, (x) => x.type === 'boost' && (x.strength = v))}
+          />
+          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.boost.length} min={6} max={24} step={1} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'boost' && (x.length = v))} />
+          {sideField(piece.width ?? TRACK_DEFAULTS.boost.width)}
+        </>
+      )
+    case 'ramp':
+      return (
+        <>
+          <SliderField label="Height" value={piece.height ?? TRACK_DEFAULTS.ramp.height} min={1} max={5} step={0.2} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'ramp' && (x.height = v))} help="Taller = more air." />
+          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.ramp.length} min={8} max={24} step={1} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'ramp' && (x.length = v))} help="Longer = gentler." />
+          {sideField(piece.width ?? TRACK_DEFAULTS.ramp.width)}
+        </>
+      )
+    case 'loop':
+      return (
+        <SliderField label="Size (radius)" value={piece.radius ?? TRACK_DEFAULTS.loopRadius} min={8} max={20} step={1} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'loop' && (x.radius = v))} help="Bigger loops need more speed." />
+      )
+    case 'wallride':
+      return (
+        <>
+          <Segmented
+            label="Which side"
+            value={piece.side}
+            options={[
+              { value: 'left', label: 'Left' },
+              { value: 'both', label: 'Both' },
+              { value: 'right', label: 'Right' },
+            ]}
+            onChange={(v) => updatePiece(index, (x) => x.type === 'wallride' && (x.side = v))}
+          />
+          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.wallride.length} min={40} max={300} step={10} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'wallride' && (x.length = v))} />
+          <SliderField label="Wall height" value={piece.height ?? TRACK_DEFAULTS.wallride.height} min={5} max={14} step={1} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'wallride' && (x.height = v))} />
+        </>
+      )
+    case 'speedtrap':
+      return <p className="sre-help">Clocks your speed as you pass. Best on the fastest straight.</p>
+  }
+}
+
+// ---------------------------------------------------------------- checks
+
+/** Everything the game wants to tell you, in plain words; click one to see where it is. */
+function Problems() {
+  const errors = useEditor((s) => s.errors)
+  const warnings = useEditor((s) => s.warnings)
+  const notes = useEditor((s) => s.notes)
+  const draft = useEditor((s) => s.draft)
+  const hasBridge = draft.points.some((p) => (p.lift ?? 0) >= 6)
+  const items = [
+    ...errors.map((e) => ({ tone: 'bad' as const, text: plainIssue(e.path, e.message), at: issueLocation(e.path, draft) })),
+    ...warnings
+      .filter((w) => !(/crosses itself/.test(w.message) && hasBridge))
+      .map((w) => ({ tone: 'warn' as const, text: plainIssue(w.path, w.message), at: issueLocation(w.path, draft) })),
+    ...(notes?.issues ?? []).map((i) => ({ tone: i.level === 'error' ? ('bad' as const) : i.level === 'warning' ? ('warn' as const) : ('note' as const), text: i.message, at: i.at ?? null })),
+  ]
+  if (!items.length) {
+    return (
+      <section className="sre-section sre-problems is-clear">
+        <span className="sre-section-title">Checks</span>
+        <p className="sre-ok">All good: this track builds and drives.</p>
+      </section>
+    )
+  }
+  return (
+    <section className="sre-section sre-problems">
+      <span className="sre-section-title">Checks</span>
+      <ul>
+        {items.slice(0, 10).map((it, i) => (
+          <li key={i}>
+            <button type="button" className={`sre-issue is-${it.tone}`} disabled={!it.at} onClick={() => it.at && setView(it.at.x, it.at.z, Math.min(view.mpp, 0.6))}>
+              {it.text}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+/** The validator talks about "road.points[3]" or "pieces[2]"; Josh doesn't need the path. */
+function plainIssue(path: string, message: string): string {
+  const text = message.charAt(0).toUpperCase() + message.slice(1)
+  if (/^(road\.points|pieces|props|cores)/.test(path) || !path) return text
+  return `${path}: ${text}`
+}
+
+function Legend() {
+  return (
+    <section className="sre-section sre-legend" aria-label="Map key">
+      <span className="sre-section-title">Map key</span>
+      <ul>
+        <li>
+          <i className="k-start" /> Start line
+        </li>
+        <li>
+          <i className="k-arrow" /> Driving direction
+        </li>
+        <li>
+          <i className="k-point" /> Road point
+        </li>
+        <li>
+          <i className="k-bridge" /> Bridge (raised road)
+        </li>
+        <li>
+          <i className="k-boost" /> Boost pad
+        </li>
+        <li>
+          <i className="k-ramp" /> Ramp
+        </li>
+        <li>
+          <i className="k-loop" /> Loop
+        </li>
+        <li>
+          <i className="k-wall" /> Wall ride
+        </li>
+        <li>
+          <i className="k-prop" /> Crash props
+        </li>
+        <li>
+          <i className="k-core" /> Energy core
+        </li>
+        <li>
+          <i className="k-bank" /> Bank set by hand
+        </li>
+        <li>
+          <i className="k-warn" /> Something to check
+        </li>
+      </ul>
+    </section>
+  )
+}

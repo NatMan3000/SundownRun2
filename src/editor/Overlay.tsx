@@ -1,27 +1,50 @@
 // ============================================================
-//  OVERLAY - the pencil, and everything drawn on top of the map
+//  OVERLAY - mouse and keyboard on the map
 // ------------------------------------------------------------
-//  A see-through 2D canvas laid over the 3D top-down view. It does
-//  two jobs:
+//  A see-through 2D canvas laid over the 3D top-down view. It turns
+//  what your hands do into editor actions, depending on the tool:
 //
-//   1. Input. Left-drag draws with the pencil. Right- or middle-
-//      drag (or Space + drag) pans, the wheel zooms where you point,
-//      WASD / arrows pan too, F fits the track, Ctrl+Z undoes.
-//   2. Drawing. The line you are drawing, the road's control points,
-//      the start line and driving direction, bridges, and pins on
-//      anything the game wants to tell you about. These are crisp
-//      2D shapes in screen pixels, so they stay readable at any zoom.
+//    Pencil   drag to draw. A whole loop makes a new road; a line that
+//             starts and ends on the road redraws just that stretch.
+//    Select   click a piece, prop, core or road point to select it,
+//             drag to move it, double-click the road to add a point,
+//             Delete removes what is selected. Drag empty map to pan.
+//    Place    click to drop the chosen piece (a see-through preview
+//             follows the mouse and snaps to the road).
+//    Section  drag along the road to pick a stretch, then set its bank
+//             or width in the panel.
+//    Pan      drag to move the map.
 //
-//  The 3D road under it is the real thing (the live preview), so the
-//  overlay only adds what a map needs: labels and handles.
+//  Everywhere: right or middle drag (or Space + drag) pans, the wheel
+//  zooms where you point, WASD / arrows pan, F fits the track, + and -
+//  zoom, Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes. Number keys pick
+//  a piece to place; P pencil, V select, B section, H pan.
+//
+//  The drawing itself is in mapDraw.ts.
 // ============================================================
 
 import { useEffect, useRef } from 'react'
-import { FONTS, PALETTE } from '../core/palette'
 import { inputState } from '../core/controls'
-import type { RoadPoint } from '../track/schema'
-import { useEditor, undo, redo, applyStroke, say } from './draft'
-import { type P, catmullRomClosed } from './geom'
+import { PLACE_TOOLS, toolFor } from './pieces'
+import {
+  type EditorTool,
+  applyStroke,
+  beginGesture,
+  deleteSelection,
+  endGesture,
+  insertPointAt,
+  liveChange,
+  placeAt,
+  redo,
+  roadBoundFor,
+  say,
+  setTool,
+  undo,
+  useEditor,
+} from './draft'
+import { type P } from './geom'
+import { type MapExtras, type Pick, drawMap, pieceScreen, pointsVisible, roadGeometry } from './mapDraw'
+import { advanceAt, frameAt, metresBetween, nearestOnRoad, wrapAt } from './road'
 import { view, panBy, screenToWorld, worldToScreen, zoomAt, fitBox } from './view'
 
 /** Pixels the pointer must move before the pencil adds another point. */
@@ -46,10 +69,53 @@ export function fitToDraft(): void {
   fitBox(minX - pad, minZ - pad, maxX + pad, maxZ + pad)
 }
 
-/** A key event that belongs to a text field, not to the map. */
+/**
+ * A key event that belongs to a form control, not to the map: anything
+ * typed into a text box, and the arrow keys on a focused slider or list.
+ * Letters and digits still reach the map after you touch a slider.
+ */
 function typing(e: KeyboardEvent): boolean {
   const t = e.target
-  return inputState.context === 'text' || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement
+  if (inputState.context === 'text' || t instanceof HTMLTextAreaElement) return true
+  if (t instanceof HTMLInputElement) return t.type !== 'range' || e.key.startsWith('Arrow')
+  if (t instanceof HTMLSelectElement) return e.key.startsWith('Arrow') || e.key === 'Enter' || e.key === ' '
+  return false
+}
+
+/** The thing under screen point (sx, sy) that the select tool can grab, nearest first. */
+export function pickAt(sx: number, sy: number): Pick | null {
+  const s = useEditor.getState()
+  const d = s.draft
+  const g = roadGeometry(d.points, d.width)
+  let best: Pick | null = null
+  let bestD = Infinity
+  const consider = (pick: Pick, px: number, py: number, radius: number) => {
+    const dd = Math.hypot(px - sx, py - sy)
+    if (dd <= radius && dd < bestD) {
+      bestD = dd
+      best = pick
+    }
+  }
+  d.pieces.forEach((p, i) => {
+    const at = pieceScreen(g.rc, p)
+    consider({ kind: 'piece', index: i }, at.sx, at.sy, 18)
+  })
+  d.props.forEach((p, i) => {
+    const at = worldToScreen(p.x, p.z)
+    consider({ kind: 'prop', index: i }, at.sx, at.sy, 16)
+  })
+  d.cores.forEach((c, i) => {
+    const at = worldToScreen(c.x, c.z)
+    consider({ kind: 'core', index: i }, at.sx, at.sy, 14)
+  })
+  if (pointsVisible(s)) {
+    d.points.forEach((p, i) => {
+      const at = worldToScreen(p.x, p.z)
+      // Points lose to pieces sitting on top of them.
+      consider({ kind: 'point', index: i }, at.sx + 0.01, at.sy, 9)
+    })
+  }
+  return best
 }
 
 export function Overlay() {
@@ -61,14 +127,21 @@ export function Overlay() {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    // ---- state for this mount (plain variables: no React re-renders while drawing) ----
+    // ---- per-mount state (plain variables: no React re-renders while drawing) ----
     let stroke: P[] = []
     let drawing = false
     let panning = false
     let spaceHeld = false
+    let dragging: Pick | null = null
+    let dragOffset = { x: 0, z: 0 }
+    let sectionAnchor: number | null = null
     let lastX = 0
     let lastY = 0
+    // Our own double-click detection (pointer capture stops the browser's dblclick reaching us).
+    let lastDown = { t: 0, x: 0, y: 0 }
     let hover: P | null = null
+    let hoverPick: Pick | null = null
+    let ghost: MapExtras['ghost'] = null
     const held = new Set<string>()
     let needsDraw = true
     let drawnVersion = -1
@@ -89,26 +162,120 @@ export function Overlay() {
     resize()
     fitToDraft()
 
+    const setCursor = () => {
+      const s = useEditor.getState()
+      if (panning) canvas.style.cursor = 'grabbing'
+      else if (spaceHeld || s.tool === 'pan' || s.mode === 'map') canvas.style.cursor = 'grab'
+      else if (s.tool === 'select') canvas.style.cursor = dragging ? 'grabbing' : hoverPick ? 'pointer' : 'default'
+      else if (s.tool === 'place' || s.tool === 'section') canvas.style.cursor = 'copy'
+      else canvas.style.cursor = 'crosshair'
+    }
+
+    /** Move whatever is being dragged so it sits under world point q. */
+    const dragTo = (q: P) => {
+      const pick = dragging
+      if (!pick) return
+      const target = { x: q.x - dragOffset.x, z: q.z - dragOffset.z }
+      const bound = roadBoundFor()
+      const clamp = (v: number) => Math.round(Math.max(-bound, Math.min(bound, v)) * 10) / 10
+      liveChange((d) => {
+        if (pick.kind === 'point') {
+          const p = d.points[pick.index]
+          if (p) {
+            p.x = clamp(target.x)
+            p.z = clamp(target.z)
+          }
+        } else if (pick.kind === 'prop' || pick.kind === 'core') {
+          const p = pick.kind === 'prop' ? d.props[pick.index] : d.cores[pick.index]
+          if (p) {
+            p.x = clamp(target.x)
+            p.z = clamp(target.z)
+          }
+        } else {
+          const piece = d.pieces[pick.index]
+          if (!piece) return
+          const rc = roadGeometry(d.points, d.width).rc
+          const hit = nearestOnRoad(rc, target)
+          // Wall rides are grabbed by their middle but stored by where they start.
+          const at = piece.type === 'wallride' ? hit.at - wallrideHalfAt(rc, piece.at, piece.length) : hit.at
+          piece.at = Math.round(wrapAt(at, d.points.length) * 100) / 100
+          if (piece.type === 'boost' || piece.type === 'ramp') {
+            const pieceW = piece.width ?? (piece.type === 'boost' ? 5 : 8)
+            const room = Math.max(0, d.width / 2 - pieceW / 2 - 0.3)
+            const off = Math.abs(hit.lateral) < 1.5 ? 0 : Math.max(-room, Math.min(room, hit.lateral))
+            if (off) piece.offset = Math.round(off * 10) / 10
+            else delete piece.offset
+          }
+        }
+      })
+    }
+
     // ---- pointer ----
     const onDown = (e: PointerEvent) => {
+      // Clicking the map takes the keyboard back from any panel control.
+      if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur()
       canvas.setPointerCapture(e.pointerId)
       lastX = e.clientX
       lastY = e.clientY
       const s = useEditor.getState()
+      const q = screenToWorld(e.clientX, e.clientY)
       const wantsPan = e.button === 1 || e.button === 2 || spaceHeld || s.tool === 'pan' || s.mode === 'map'
       if (wantsPan) {
         panning = true
-        canvas.style.cursor = 'grabbing'
+        setCursor()
         return
       }
-      if (e.button === 0) {
+      if (e.button !== 0) return
+      if (s.tool === 'pencil') {
         drawing = true
-        stroke = [screenToWorld(e.clientX, e.clientY)]
+        stroke = [q]
         needsDraw = true
+        return
       }
+      if (s.tool === 'place') {
+        placeAt(q)
+        needsDraw = true
+        return
+      }
+      if (s.tool === 'section') {
+        const g = roadGeometry(s.draft.points, s.draft.width)
+        const hit = nearestOnRoad(g.rc, q)
+        if (hit.distance > s.draft.width / 2 + 14) {
+          useEditor.setState({ selection: null })
+          say('Drag along the road to pick a stretch of it.', 'info')
+          return
+        }
+        sectionAnchor = hit.at
+        useEditor.setState({ selection: { kind: 'section', from: hit.at, to: hit.at } })
+        return
+      }
+      // Select tool. A second press within 350 ms on the same spot is a double-click: add a road point.
+      const now = performance.now()
+      const isDouble = now - lastDown.t < 350 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 6
+      lastDown = { t: isDouble ? 0 : now, x: e.clientX, y: e.clientY }
+      if (isDouble) {
+        panning = false
+        onDouble(e)
+        return
+      }
+      const pick = pickAt(e.clientX, e.clientY)
+      if (pick) {
+        useEditor.setState({ selection: pick })
+        dragging = pick
+        const d = s.draft
+        const anchor = pickWorld(pick)
+        dragOffset = anchor ? { x: q.x - anchor.x, z: q.z - anchor.z } : { x: 0, z: 0 }
+        if (d) beginGesture()
+      } else {
+        useEditor.setState({ selection: null })
+        panning = true
+      }
+      setCursor()
     }
     const onMove = (e: PointerEvent) => {
-      hover = screenToWorld(e.clientX, e.clientY)
+      const q = screenToWorld(e.clientX, e.clientY)
+      hover = q
+      const s = useEditor.getState()
       if (panning) {
         panBy(e.clientX - lastX, e.clientY - lastY)
         lastX = e.clientX
@@ -117,10 +284,32 @@ export function Overlay() {
       }
       if (drawing) {
         if (Math.hypot(e.clientX - lastX, e.clientY - lastY) >= PENCIL_STEP_PX) {
-          stroke.push(screenToWorld(e.clientX, e.clientY))
+          stroke.push(q)
           lastX = e.clientX
           lastY = e.clientY
         }
+      } else if (dragging) {
+        dragTo(q)
+      } else if (sectionAnchor !== null) {
+        const g = roadGeometry(s.draft.points, s.draft.width)
+        const hit = nearestOnRoad(g.rc, q)
+        // The section runs forward from the earlier end to the later one.
+        const forward = metresBetween(g.rc, sectionAnchor, hit.at)
+        const backward = metresBetween(g.rc, hit.at, sectionAnchor)
+        const sel = forward <= backward ? { from: sectionAnchor, to: hit.at } : { from: hit.at, to: sectionAnchor }
+        useEditor.setState({ selection: { kind: 'section', ...sel } })
+      } else if (s.tool === 'select') {
+        hoverPick = pickAt(e.clientX, e.clientY)
+        setCursor()
+      } else if (s.tool === 'place') {
+        const tool = toolFor(s.placeKind)
+        if (tool.onRoad) {
+          const g = roadGeometry(s.draft.points, s.draft.width)
+          const hit = nearestOnRoad(g.rc, q)
+          if (hit.distance < s.draft.width / 2 + 12) {
+            ghost = { kind: s.placeKind, at: hit.p, dir: frameAt(g.rc, hit.at).dir }
+          } else ghost = null
+        } else ghost = { kind: s.placeKind, at: q, dir: { x: 1, z: 0 } }
       }
       needsDraw = true
     }
@@ -128,7 +317,26 @@ export function Overlay() {
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
       if (panning) {
         panning = false
-        canvas.style.cursor = ''
+        setCursor()
+        return
+      }
+      if (dragging) {
+        dragging = null
+        endGesture()
+        setCursor()
+        return
+      }
+      if (sectionAnchor !== null) {
+        const s = useEditor.getState()
+        const sel = s.selection
+        if (sel?.kind === 'section') {
+          const g = roadGeometry(s.draft.points, s.draft.width)
+          // A click without a drag picks 40 m either side of it.
+          if (metresBetween(g.rc, sel.from, sel.to) < 8) {
+            useEditor.setState({ selection: { kind: 'section', from: advanceAt(g.rc, sel.from, -40), to: advanceAt(g.rc, sel.from, 40) } })
+          }
+        }
+        sectionAnchor = null
         return
       }
       if (!drawing) return
@@ -139,14 +347,28 @@ export function Overlay() {
       if (done.length < 4) return
       applyStroke(done, view.mpp)
     }
+    function onDouble(e: PointerEvent) {
+      const s = useEditor.getState()
+      if (s.tool !== 'select' || s.mode !== 'edit') return
+      if (pickAt(e.clientX, e.clientY)?.kind === 'point') return
+      const g = roadGeometry(s.draft.points, s.draft.width)
+      const hit = nearestOnRoad(g.rc, screenToWorld(e.clientX, e.clientY))
+      if (hit.distance <= s.draft.width / 2 + 4) insertPointAt(hit.at)
+    }
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
       const lines = e.deltaMode === 1 ? 16 : 1
       zoomAt(e.clientX, e.clientY, Math.exp(e.deltaY * lines * 0.0015))
     }
     const onContext = (e: Event) => e.preventDefault()
+    const onLeave = () => {
+      ghost = null
+      hover = null
+      needsDraw = true
+    }
 
     // ---- keyboard ----
+    const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyV: 'select', KeyB: 'section', KeyH: 'pan' }
     const onKeyDown = (e: KeyboardEvent) => {
       if (typing(e)) return
       const mod = e.ctrlKey || e.metaKey
@@ -162,15 +384,29 @@ export function Overlay() {
         return
       }
       if (mod) return
+      if (useEditor.getState().mode === 'map') {
+        if (e.code === 'KeyF') fitToDraft()
+        held.add(e.code)
+        return
+      }
       if (e.code === 'Space') {
         spaceHeld = true
-        canvas.style.cursor = 'grab'
+        setCursor()
         e.preventDefault()
         return
       }
+      if (e.code === 'Delete' || e.code === 'Backspace') {
+        e.preventDefault()
+        deleteSelection()
+        return
+      }
+      if (toolKeys[e.code]) setTool(toolKeys[e.code])
+      const digit = /^Digit(\d)$/.exec(e.code)
+      if (digit) {
+        const tool = PLACE_TOOLS.find((t) => t.key === digit[1])
+        if (tool) setTool('place', tool.kind)
+      }
       if (e.code === 'KeyF') fitToDraft()
-      if (e.code === 'KeyP') useEditor.setState({ tool: 'pencil' })
-      if (e.code === 'KeyH') useEditor.setState({ tool: 'pan' })
       if (e.code === 'Equal' || e.code === 'NumpadAdd') zoomAt(view.width / 2, view.height / 2, 1 / 1.25)
       if (e.code === 'Minus' || e.code === 'NumpadSubtract') zoomAt(view.width / 2, view.height / 2, 1.25)
       held.add(e.code)
@@ -179,7 +415,7 @@ export function Overlay() {
       held.delete(e.code)
       if (e.code === 'Space') {
         spaceHeld = false
-        if (!panning) canvas.style.cursor = ''
+        setCursor()
       }
     }
     const onBlur = () => {
@@ -188,8 +424,12 @@ export function Overlay() {
     }
 
     // ---- the loop: held-key panning, then redraw if anything changed ----
-    const unsub = useEditor.subscribe(() => {
+    const unsub = useEditor.subscribe((s, prev) => {
       needsDraw = true
+      if (s.tool !== prev.tool) {
+        ghost = null
+        setCursor()
+      }
     })
     const loop = (t: number) => {
       const dt = Math.min(0.05, (t - lastT) / 1000)
@@ -204,16 +444,18 @@ export function Overlay() {
       if (needsDraw || drawnVersion !== view.version) {
         drawnVersion = view.version
         needsDraw = false
-        draw(ctx, stroke, hover)
+        drawMap(ctx, useEditor.getState(), { stroke, hover, ghost, hoverPick })
       }
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
+    setCursor()
 
     canvas.addEventListener('pointerdown', onDown)
     canvas.addEventListener('pointermove', onMove)
     canvas.addEventListener('pointerup', onUp)
     canvas.addEventListener('pointercancel', onUp)
+    canvas.addEventListener('pointerleave', onLeave)
     canvas.addEventListener('wheel', onWheel, { passive: false })
     canvas.addEventListener('contextmenu', onContext)
     window.addEventListener('keydown', onKeyDown)
@@ -223,10 +465,12 @@ export function Overlay() {
     return () => {
       cancelAnimationFrame(raf)
       unsub()
+      if (dragging) endGesture()
       canvas.removeEventListener('pointerdown', onDown)
       canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerup', onUp)
       canvas.removeEventListener('pointercancel', onUp)
+      canvas.removeEventListener('pointerleave', onLeave)
       canvas.removeEventListener('wheel', onWheel)
       canvas.removeEventListener('contextmenu', onContext)
       window.removeEventListener('keydown', onKeyDown)
@@ -239,365 +483,26 @@ export function Overlay() {
   return <canvas ref={canvasRef} className="sre-overlay" data-testid="editor-overlay" />
 }
 
-// ---------------------------------------------------------------- drawing
-
-/** The smooth road curve through the draft's points and its two edges, cached until the road changes. */
-let curveCache: { points: RoadPoint[] | null; width: number; curve: P[]; left: P[]; right: P[] } = { points: null, width: 0, curve: [], left: [], right: [] }
-function roadShape(points: RoadPoint[], width: number) {
-  if (curveCache.points === points && curveCache.width === width) return curveCache
-  const curve = points.length >= 3 ? catmullRomClosed(points, 6) : []
-  const left: P[] = []
-  const right: P[] = []
-  const n = curve.length
-  for (let i = 0; i < n; i++) {
-    const a = curve[(i - 1 + n) % n]
-    const b = curve[(i + 1) % n]
-    const len = Math.hypot(b.x - a.x, b.z - a.z) || 1
-    // A sideways direction across the road (90 degrees to the way it runs).
-    const nx = -(b.z - a.z) / len
-    const nz = (b.x - a.x) / len
-    const half = width / 2
-    left.push({ x: curve[i].x + nx * half, z: curve[i].z + nz * half })
-    right.push({ x: curve[i].x - nx * half, z: curve[i].z - nz * half })
-  }
-  curveCache = { points, width, curve, left, right }
-  return curveCache
+/** World position of a picked thing (what a drag moves). */
+function pickWorld(pick: Pick): P | null {
+  const d = useEditor.getState().draft
+  if (pick.kind === 'point') return d.points[pick.index] ?? null
+  if (pick.kind === 'prop') return d.props[pick.index] ?? null
+  if (pick.kind === 'core') return d.cores[pick.index] ?? null
+  const p = d.pieces[pick.index]
+  if (!p) return null
+  return pieceScreen(roadGeometry(d.points, d.width).rc, p).centre
 }
 
-function draw(ctx: CanvasRenderingContext2D, stroke: readonly P[], hover: P | null): void {
-  const s = useEditor.getState()
-  const d = s.draft
-  ctx.clearRect(0, 0, view.width, view.height)
-  const shape = roadShape(d.points, d.width)
-
-  if (shape.curve.length) {
-    // Zoomed out, the 3D road's light strips get thinner than a pixel, so the map draws its outline.
-    if (view.mpp > 0.55) drawRoadOutline(ctx, shape.left, shape.right, d.environment.palette?.edge ?? PALETTE.roadEdge)
-    drawDirectionArrows(ctx, shape.curve)
-    if (s.mode === 'edit' && view.mpp < 0.7) drawControlPoints(ctx, d.points)
-    drawBridges(ctx, d.points)
-    drawStartLine(ctx, d.points, d.startAt, d.width)
-  }
-  drawPins(ctx)
-  if (stroke.length > 1) drawStroke(ctx, stroke)
-  drawScaleBar(ctx)
-  drawCompass(ctx)
-  if (hover) drawReadout(ctx, hover)
-}
-
-function line(ctx: CanvasRenderingContext2D, pts: readonly P[], closed: boolean): void {
-  ctx.beginPath()
-  for (let i = 0; i < pts.length; i++) {
-    const { sx, sy } = worldToScreen(pts[i].x, pts[i].z)
-    if (i === 0) ctx.moveTo(sx, sy)
-    else ctx.lineTo(sx, sy)
-  }
-  if (closed) ctx.closePath()
-}
-
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: readonly P[]): void {
-  ctx.save()
-  ctx.lineJoin = 'round'
-  ctx.lineCap = 'round'
-  ctx.shadowColor = PALETTE.uiAccent
-  ctx.shadowBlur = 14
-  ctx.strokeStyle = PALETTE.uiAccent
-  ctx.lineWidth = 4
-  line(ctx, stroke, false)
-  ctx.stroke()
-  ctx.shadowBlur = 0
-  ctx.strokeStyle = PALETTE.coreHot
-  ctx.lineWidth = 1.5
-  ctx.stroke()
-  ctx.restore()
-}
-
-/** The road edges as two thin glowing lines, with the road between them darkened a little. */
-function drawRoadOutline(ctx: CanvasRenderingContext2D, left: readonly P[], right: readonly P[], edge: string): void {
-  ctx.save()
-  ctx.lineJoin = 'round'
-  // The band between the edges: two closed rings filled even-odd leaves just the road.
-  ctx.beginPath()
-  for (const ring of [left, right]) {
-    for (let i = 0; i < ring.length; i++) {
-      const { sx, sy } = worldToScreen(ring[i].x, ring[i].z)
-      if (i === 0) ctx.moveTo(sx, sy)
-      else ctx.lineTo(sx, sy)
-    }
-    ctx.closePath()
-  }
-  ctx.fillStyle = PALETTE.road
-  ctx.globalAlpha = 0.6
-  ctx.fill('evenodd')
-  ctx.globalAlpha = 1
-  ctx.strokeStyle = edge
-  ctx.shadowColor = edge
-  ctx.shadowBlur = 6
-  ctx.lineWidth = 1.5
-  line(ctx, left, true)
-  ctx.stroke()
-  line(ctx, right, true)
-  ctx.stroke()
-  ctx.restore()
-}
-
-/** Small arrowheads down the middle of the road every ~180 px, pointing the way you drive. */
-function drawDirectionArrows(ctx: CanvasRenderingContext2D, curve: readonly P[]): void {
-  const spacingPx = 180
-  ctx.save()
-  ctx.fillStyle = PALETTE.laneLine
-  ctx.globalAlpha = 0.85
-  let travelled = spacingPx / 2
-  for (let i = 0; i < curve.length; i++) {
-    const a = worldToScreen(curve[i].x, curve[i].z)
-    const b = worldToScreen(curve[(i + 1) % curve.length].x, curve[(i + 1) % curve.length].z)
-    const seg = Math.hypot(b.sx - a.sx, b.sy - a.sy)
-    travelled += seg
-    if (travelled < spacingPx || seg < 1e-3) continue
-    travelled = 0
-    if (a.sx < -20 || a.sy < -20 || a.sx > view.width + 20 || a.sy > view.height + 20) continue
-    const ux = (b.sx - a.sx) / seg
-    const uy = (b.sy - a.sy) / seg
-    ctx.beginPath()
-    ctx.moveTo(a.sx + ux * 6, a.sy + uy * 6)
-    ctx.lineTo(a.sx - ux * 4 - uy * 4.5, a.sy - uy * 4 + ux * 4.5)
-    ctx.lineTo(a.sx - ux * 1.5, a.sy - uy * 1.5)
-    ctx.lineTo(a.sx - ux * 4 + uy * 4.5, a.sy - uy * 4 - ux * 4.5)
-    ctx.closePath()
-    ctx.fill()
-  }
-  ctx.restore()
-}
-
-function drawControlPoints(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[]): void {
-  const r = view.mpp < 0.5 ? 3.5 : 2.5
-  ctx.save()
-  for (const p of points) {
-    const { sx, sy } = worldToScreen(p.x, p.z)
-    if (sx < -10 || sy < -10 || sx > view.width + 10 || sy > view.height + 10) continue
-    ctx.beginPath()
-    ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = p.lift ? PALETTE.wallRide : PALETTE.uiText
-    ctx.fill()
-    ctx.lineWidth = 1.5
-    ctx.strokeStyle = PALETTE.uiPanelSolid
-    ctx.stroke()
-  }
-  ctx.restore()
-}
-
-/** A label on a dark pill, legible over the brightest scene. */
-function pill(ctx: CanvasRenderingContext2D, text: string, sx: number, sy: number, colour: string): void {
-  ctx.save()
-  ctx.font = `600 12px ${FONTS.body}`
-  const w = ctx.measureText(text).width + 14
-  const h = 20
-  ctx.fillStyle = PALETTE.uiPanel
-  ctx.strokeStyle = colour
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.roundRect(sx - w / 2, sy - h / 2, w, h, 10)
-  ctx.fill()
-  ctx.stroke()
-  ctx.fillStyle = colour
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText(text, sx, sy + 0.5)
-  ctx.restore()
-}
-
-/** The start line: a chequered bar across the road, a label, and an arrow the way the race goes. */
-function drawStartLine(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[], startAt: number, width: number): void {
-  const n = points.length
-  const i = Math.floor(startAt) % n
-  const a = points[i]
-  const b = points[(i + 1) % n]
-  const dx = b.x - a.x
-  const dz = b.z - a.z
-  const len = Math.hypot(dx, dz) || 1
-  const tx = dx / len
-  const tz = dz / len
-  const f = startAt - Math.floor(startAt)
-  const cx = a.x + dx * f
-  const cz = a.z + dz * f
-  const half = width / 2 + 1.5
-  const p0 = worldToScreen(cx - tz * half, cz + tx * half)
-  const p1 = worldToScreen(cx + tz * half, cz - tx * half)
-  const barPx = Math.hypot(p1.sx - p0.sx, p1.sy - p0.sy)
-  ctx.save()
-  // The chequered bar (at least 18 px long so it reads when zoomed out).
-  const grow = Math.max(1, 18 / Math.max(1, barPx))
-  const mx = (p0.sx + p1.sx) / 2
-  const my = (p0.sy + p1.sy) / 2
-  const ex = ((p1.sx - p0.sx) / 2) * grow
-  const ey = ((p1.sy - p0.sy) / 2) * grow
-  const cells = 8
-  for (let k = 0; k < cells; k++) {
-    const t0 = k / cells
-    const t1 = (k + 1) / cells
-    ctx.beginPath()
-    ctx.moveTo(mx - ex + 2 * ex * t0, my - ey + 2 * ey * t0)
-    ctx.lineTo(mx - ex + 2 * ex * t1, my - ey + 2 * ey * t1)
-    ctx.lineWidth = 6
-    ctx.strokeStyle = k % 2 ? PALETTE.uiPanelSolid : PALETTE.uiText
-    ctx.stroke()
-  }
-  // The way the race goes.
-  const s = worldToScreen(cx, cz)
-  const ux = tx
-  const uy = tz
-  const tip = { x: s.sx + ux * 34, y: s.sy + uy * 34 }
-  ctx.strokeStyle = PALETTE.uiAccent
-  ctx.fillStyle = PALETTE.uiAccent
-  ctx.lineWidth = 3
-  ctx.beginPath()
-  ctx.moveTo(s.sx + ux * 8, s.sy + uy * 8)
-  ctx.lineTo(tip.x, tip.y)
-  ctx.stroke()
-  ctx.beginPath()
-  ctx.moveTo(tip.x + ux * 4, tip.y + uy * 4)
-  ctx.lineTo(tip.x - ux * 8 - uy * 7, tip.y - uy * 8 + ux * 7)
-  ctx.lineTo(tip.x - ux * 8 + uy * 7, tip.y - uy * 8 - ux * 7)
-  ctx.closePath()
-  ctx.fill()
-  ctx.restore()
-  pill(ctx, 'START', s.sx - ux * 30 - uy * 26, s.sy - uy * 30 + ux * 26, PALETTE.uiText)
-}
-
-/** Each raised stretch (a bridge) gets one label beside its highest point. */
-function drawBridges(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[]): void {
-  const n = points.length
-  const raised = (i: number) => (points[((i % n) + n) % n].lift ?? 0) >= 1
-  for (let i = 0; i < n; i++) {
-    if (!raised(i) || raised(i - 1)) continue // only at the start of a raised stretch
-    let top = i
-    let count = 0
-    while (raised(i + count) && count < n) {
-      if ((points[(i + count) % n].lift ?? 0) > (points[top % n].lift ?? 0)) top = i + count
-      count++
-    }
-    const p = points[top % n]
-    const q = points[(top + 1) % n]
-    const len = Math.hypot(q.x - p.x, q.z - p.z) || 1
-    const { sx, sy } = worldToScreen(p.x, p.z)
-    // Beside the road, not on it: 30 px off to one side.
-    const ox = (-(q.z - p.z) / len) * 30
-    const oy = ((q.x - p.x) / len) * 30
-    pill(ctx, `BRIDGE ${Math.round(p.lift ?? 0)} m`, sx + ox, sy + oy, PALETTE.wallRide)
-  }
-}
-
-/** Pins for clean-up notes and validator warnings that point at a place. */
-function drawPins(ctx: CanvasRenderingContext2D): void {
-  const s = useEditor.getState()
-  const pins: { at: P; tone: 'warn' | 'bad' | 'note' }[] = []
-  for (const issue of s.notes?.issues ?? []) {
-    if (issue.at && issue.code !== 'bridged') pins.push({ at: issue.at, tone: issue.level === 'warning' ? 'warn' : issue.level === 'error' ? 'bad' : 'note' })
-  }
-  for (const w of s.warnings) {
-    const at = issueLocation(w.path, s.draft.points)
-    if (at) pins.push({ at, tone: 'warn' })
-  }
-  for (const e of s.errors) {
-    const at = issueLocation(e.path, s.draft.points)
-    if (at) pins.push({ at, tone: 'bad' })
-  }
-  ctx.save()
-  for (const pin of pins) {
-    const { sx, sy } = worldToScreen(pin.at.x, pin.at.z)
-    const colour = pin.tone === 'bad' ? PALETTE.uiBad : pin.tone === 'warn' ? PALETTE.uiWarn : PALETTE.uiDim
-    ctx.beginPath()
-    ctx.arc(sx, sy, pin.tone === 'note' ? 5 : 9, 0, Math.PI * 2)
-    ctx.fillStyle = PALETTE.uiPanelSolid
-    ctx.fill()
-    ctx.lineWidth = 2
-    ctx.strokeStyle = colour
-    ctx.stroke()
-    if (pin.tone !== 'note') {
-      ctx.fillStyle = colour
-      ctx.font = `700 12px ${FONTS.body}`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText('!', sx, sy + 0.5)
-    }
-  }
-  ctx.restore()
-}
-
-/** Where on the map a validator message is about ("road.points[3]" -> that point). */
-export function issueLocation(path: string, points: readonly RoadPoint[]): P | null {
-  const m = /^road\.points\[(\d+)\]/.exec(path)
-  if (m) {
-    const p = points[Number(m[1])]
-    return p ? { x: p.x, z: p.z } : null
-  }
-  return null
-}
-
-function drawScaleBar(ctx: CanvasRenderingContext2D): void {
-  // Pick a round length that is 80-200 px on screen.
-  const choices = [10, 20, 50, 100, 200, 500, 1000]
-  let metres = choices[choices.length - 1]
-  for (const c of choices) {
-    if (c / view.mpp >= 80) {
-      metres = c
-      break
-    }
-  }
-  const px = metres / view.mpp
-  const x = 96
-  const y = view.height - 28
-  ctx.save()
-  ctx.strokeStyle = PALETTE.uiText
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  ctx.moveTo(x, y - 6)
-  ctx.lineTo(x, y)
-  ctx.lineTo(x + px, y)
-  ctx.lineTo(x + px, y - 6)
-  ctx.stroke()
-  ctx.font = `600 12px ${FONTS.body}`
-  ctx.fillStyle = PALETTE.uiText
-  ctx.textBaseline = 'bottom'
-  ctx.fillText(metres >= 1000 ? `${metres / 1000} km` : `${metres} m`, x + px + 8, y + 2)
-  ctx.restore()
-}
-
-function drawCompass(ctx: CanvasRenderingContext2D): void {
-  const x = view.width - 412
-  const y = 40
-  ctx.save()
-  ctx.fillStyle = PALETTE.uiPanel
-  ctx.beginPath()
-  ctx.arc(x, y, 18, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.strokeStyle = PALETTE.uiLine
-  ctx.stroke()
-  ctx.fillStyle = PALETTE.uiAccent2
-  ctx.beginPath()
-  ctx.moveTo(x, y - 13)
-  ctx.lineTo(x - 5, y)
-  ctx.lineTo(x + 5, y)
-  ctx.closePath()
-  ctx.fill()
-  ctx.fillStyle = PALETTE.uiText
-  ctx.font = `700 11px ${FONTS.body}`
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText('N', x, y + 8)
-  ctx.restore()
-}
-
-function drawReadout(ctx: CanvasRenderingContext2D, hover: P): void {
-  ctx.save()
-  ctx.font = `500 12px ${FONTS.mono}`
-  ctx.fillStyle = PALETTE.uiDim
-  ctx.textBaseline = 'bottom'
-  ctx.fillText(`x ${hover.x.toFixed(0)}  z ${hover.z.toFixed(0)}`, 96, view.height - 44)
-  ctx.restore()
+/** How far (in `at` units) a wall ride's middle sits after its start. */
+function wallrideHalfAt(rc: ReturnType<typeof roadGeometry>['rc'], at: number, length: number | undefined): number {
+  const mid = advanceAt(rc, at, (length ?? 120) / 2)
+  return wrapAt(mid - at, rc.points.length)
 }
 
 /** Tell the player how the pencil works the first time they open a fresh editor. */
 export function pencilHint(): void {
   say('Hold the left mouse button and draw a loop. Let go and it becomes a road.', 'info')
 }
+
+export { issueLocation } from './mapDraw'

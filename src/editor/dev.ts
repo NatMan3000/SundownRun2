@@ -184,6 +184,7 @@ function summary() {
     baseWorld: s.draft.baseWorld,
     dirty: s.dirty,
     savedId: s.savedId,
+    tool: s.tool,
     undoSteps: s.past.length,
     redoSteps: s.future.length,
     preview: s.preview,
@@ -195,6 +196,8 @@ function summary() {
 
 registerDev('editor', editorCommand as (...args: never[]) => unknown, "road editor: __dev.editor('help')")
 registerInspector('editor', summary)
+registerInspector('editorSel', () => useEditor.getState().selection)
+registerInspector('editorMsg', () => useEditor.getState().message?.text ?? null)
 
 // ?editor=1 opens the editor once the game has booted.
 if (typeof window !== 'undefined' && urlParam('editor') === '1') {

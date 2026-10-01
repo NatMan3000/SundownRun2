@@ -12,13 +12,21 @@
 //  How the pieces fit:
 //    cleanup.ts     turns a pencil line into a drivable road (pure maths)
 //    geom.ts        the 2D helpers it is built from
-//    draft.ts       the track being edited, undo / redo, save, test drive
+//    road.ts        "where on the road is this?" (at, offset), keeping
+//                   pieces in place when points are added or removed
+//    pieces.ts      the things you can place, and their rules
+//    draft.ts       the track being edited, undo / redo, every edit action,
+//                   save, test drive
 //    draftFile.ts   the draft as a real track file, and the base worlds
 //    view.ts        where the map is looking (pan and zoom)
-//    Overlay.tsx    pencil input and the map markings
-//    EditorUi.tsx   toolbar, panel, library
+//    Overlay.tsx    mouse and keyboard on the map, per tool
+//    mapDraw.ts     everything drawn on the map
+//    EditorUi.tsx   tool rail, piece palette, status line
+//    Panel.tsx      this track, the selected thing, checks, map key
+//    Library.tsx    open, new, copy, import, export
+//    fields.tsx     the panel's sliders and boxes; icons.tsx its icons
 //    dev.ts         __dev.editor(...) for checkers, ?editor=1
-//    selfTest.ts    proves the clean-up works (bun src/editor/selfTest.ts)
+//    selfTest.ts    proves the maths works (bun src/editor/selfTest.ts)
 // ============================================================
 
 import { useEffect } from 'react'
