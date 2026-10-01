@@ -590,7 +590,7 @@
 
 /* ---------------------------------------------------------------- settings */
 
-.screen--settings, .screen--garage, .screen--pause { display: flex; align-items: center; padding: 6vh 0 9vh 5vw; }
+.screen--settings, .screen--garage, .screen--pause, .screen--results { display: flex; align-items: center; padding: 6vh 0 9vh 5vw; }
 .screen--settings { padding-top: 11vh; }
 
 .settings-panel {
@@ -854,7 +854,7 @@
 
 /* ---------------------------------------------------------------- results */
 
-.screen--results { display: grid; place-items: center; }
+/* Left, like every menu over the game: the results camera frames the car in the open area to the right. */
 .results-panel {
   width: min(42em, 90vw);
   max-height: 86vh;
@@ -901,7 +901,7 @@
   font-size: 0.95em;
   text-shadow: var(--legible);
 }
-.screen--settings .hintbar, .screen--garage .hintbar, .screen--pause .hintbar { left: 5vw; bottom: 2.6vh; }
+.screen--settings .hintbar, .screen--garage .hintbar, .screen--pause .hintbar, .screen--results .hintbar { left: 5vw; bottom: 2.6vh; }
 .screen--track .hintbar { left: 50%; transform: translateX(-50%); bottom: 3.2vh; }
 .hint { display: inline-flex; align-items: center; gap: 0.55em; }
 .hint__label { font-family: var(--font-display); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: color-mix(in srgb, var(--text) 85%, transparent); }

@@ -69,9 +69,41 @@ const SHOWROOM_OFFSET = 0.39
  */
 const SHOWROOM_SUN_BIAS = -0.35 // rad (negative moves the sun left on screen)
 const SHOWROOM_SWAY = 0.12 // rad
+/** The title showroom's distance and height from the car, metres. */
+const SHOWROOM_R = 7.8
+const SHOWROOM_H = 1.7
+/**
+ * Garage framing (ui): the car is the hero. The camera circles it slowly on its own,
+ * lingering on the front three-quarter view (nose pointing into the open screen beside
+ * the panel) and moving quicker round the back, so you see the front, the side and the
+ * back without touching anything. It never dips below the car's roofline.
+ */
+const GARAGE = {
+  radius: 6.4,
+  height: 1.9,
+  lookHeight: 0.62,
+  /** The hero view: this far round from the nose, on the car's left (rad, 40 deg). */
+  hero: 0.7,
+  /** Orbit speed at the hero view and straight opposite it, rad/s (a lap takes about 40 s). */
+  slow: 0.07,
+  fast: 0.3,
+  /** tan(23 deg): aim this far left of the car per metre, so it sits in the open area right of the panel. */
+  offset: 0.42,
+  /** Seconds to ease between the title shot and the garage shot. */
+  blendS: 0.9,
+}
+/** Spring time of the showroom orbit angle: the camera swings round the car, never through it. */
+const SHOWROOM_YAW_SMOOTH = 0.8
+/**
+ * Results: the panel sits left like every other menu over the game, so the car is framed
+ * in the open area to its right. The orbit is wider and higher than the showroom's.
+ */
+const RESULTS_R = 9.5
+const RESULTS_H = 3.2
+const RESULTS_OFFSET = 0.4
 
-// spring velocities: [0..2] position, [3..5] look, [6..8] up, [9] fov
-const springVel = new Float64Array(10)
+// spring velocities: [0..2] position, [3..5] look, [6..8] up, [9] fov, [10] showroom orbit angle
+const springVel = new Float64Array(11)
 
 /** Live camera state (inspector: window.__game.get('camera')). */
 export const cameraState = {
@@ -98,6 +130,13 @@ function smoothDamp(current: number, target: number, i: number, smoothTime: numb
   const temp = (springVel[i] + omega * change) * dt
   springVel[i] = (springVel[i] - omega * temp) * exp
   return target + (change + temp) * exp
+}
+
+/** Move the look target `metres` to the camera's left (on the ground plane), so the car sits right of centre. */
+function aimLeftOfCar(metres: number): void {
+  _dir.subVectors(_targetLook, _targetPos).setY(0).normalize()
+  _vel.crossVectors(_dir, WORLD_UP).normalize() // camera right
+  _targetLook.addScaledVector(_vel, -metres)
 }
 
 function smoothstep01(t: number): number {
@@ -149,6 +188,12 @@ export function CameraRig() {
     resetTick: -1,
     cycleSeen: controlSignals.cameraCycle,
     orbitAngle: 0,
+    /** The showroom camera's angle round the car (world yaw, rad), eased toward the shot's. */
+    showYaw: 0,
+    /** Garage orbit: the angle from the car's nose, rad. */
+    garageAngle: 0,
+    /** 0 = title shot, 1 = garage shot (eased over GARAGE.blendS). */
+    garageBlend: 0,
     /** How far a wall or the road shortens the camera arm right now, metres (0 = clear). */
     clipPull: 0,
     /** Last frame's arm length after the clip, metres (Infinity = nothing to ease from). */
@@ -227,28 +272,58 @@ export function CameraRig() {
     _fwd.copy(telemetry.carForward)
 
     if (g.phase === 'title' || g.phase === 'results' || g.phase === 'loading') {
-      // Showroom: a slow orbit with the sun behind the car. Results: a full slow orbit.
-      const showroom = g.phase !== 'results'
-      cameraState.shot = showroom ? 'showroom' : 'results'
-      const sun = environment.sunDirection
-      const sunYaw = Math.atan2(-sun.x, -sun.z) // camera opposite the sun: car in front of the sunset
-      s.orbitAngle += dt * (showroom ? 0.16 : 0.12)
-      const yaw = showroom ? sunYaw + SHOWROOM_SUN_BIAS + Math.sin(s.orbitAngle) * SHOWROOM_SWAY : s.orbitAngle
-      const r = showroom ? 7.8 : 9.5
-      const hgt = showroom ? 1.7 : 3.2
       const c = telemetry.carPosition
-      _targetPos.set(c.x + Math.sin(yaw) * r, c.y + hgt, c.z + Math.cos(yaw) * r)
-      _targetLook.set(c.x, c.y + 0.55, c.z)
-      if (showroom) {
-        // The menus fill the left half of the screen: aim LEFT of the car so it sits whole in
-        // the right half, ~70% across (21 deg right of centre at this lens).
-        _dir.subVectors(_targetLook, _targetPos).setY(0).normalize()
-        _vel.crossVectors(_dir, WORLD_UP).normalize() // camera right
-        _targetLook.addScaledVector(_vel, -SHOWROOM_OFFSET * r)
+      if (g.phase === 'results') {
+        // Results: a full slow orbit, the car in the open area right of the panel.
+        cameraState.shot = 'results'
+        s.orbitAngle += dt * 0.12
+        _targetPos.set(c.x + Math.sin(s.orbitAngle) * RESULTS_R, c.y + RESULTS_H, c.z + Math.cos(s.orbitAngle) * RESULTS_R)
+        _targetLook.set(c.x, c.y + 0.55, c.z)
+        aimLeftOfCar(RESULTS_OFFSET * RESULTS_R)
+        posSmooth = 0.6
+        lookSmooth = 0.35
+        // The car can still be rolling when the results come up: lead the targets by its
+        // velocity so the springs keep it in the frame instead of trailing behind it.
+        _targetPos.addScaledVector(telemetry.carVelocity, posSmooth)
+        _targetLook.addScaledVector(telemetry.carVelocity, lookSmooth)
+      } else {
+        // Title showroom (the sun is the hero, the car in front of the sunset) or the
+        // Garage (the car is the hero: a slow orbit that lingers on its front three-quarter).
+        const garage = g.phase === 'title' && g.garageOpen
+        // Arriving from another shot (quit to title, a bookmark): the orbit starts from where the camera is.
+        const arriving = cameraState.shot !== 'showroom'
+        cameraState.shot = 'showroom'
+        const sun = environment.sunDirection
+        const sunYaw = Math.atan2(-sun.x, -sun.z) // camera opposite the sun: car in front of the sunset
+        s.orbitAngle += dt * 0.16
+        let wantYaw = sunYaw + SHOWROOM_SUN_BIAS + Math.sin(s.orbitAngle) * SHOWROOM_SWAY
+        if (garage) {
+          if (s.garageBlend === 0) s.garageAngle = GARAGE.hero // every visit opens on the hero view
+          // Slowest at the hero view, quickest straight opposite it.
+          const away = 0.5 - 0.5 * Math.cos(s.garageAngle - GARAGE.hero)
+          s.garageAngle = (s.garageAngle + dt * lerp(GARAGE.slow, GARAGE.fast, away)) % (Math.PI * 2)
+          wantYaw = Math.atan2(telemetry.carForward.x, telemetry.carForward.z) + s.garageAngle
+        }
+        s.garageBlend = Math.min(1, Math.max(0, s.garageBlend + (garage ? dt : -dt) / GARAGE.blendS))
+        const b = smoothstep01(s.garageBlend)
+        // The orbit angle eases the short way round, so moving between the two shots the
+        // camera swings round the car instead of cutting straight through it.
+        if (!s.ready) s.showYaw = wantYaw
+        else if (arriving) s.showYaw = Math.atan2(_camPos.x - c.x, _camPos.z - c.z)
+        if (!s.ready || arriving) springVel[10] = 0 // no swing left over from the last visit
+        const turn = Math.atan2(Math.sin(wantYaw - s.showYaw), Math.cos(wantYaw - s.showYaw))
+        s.showYaw = smoothDamp(s.showYaw, s.showYaw + turn, 10, SHOWROOM_YAW_SMOOTH, dt)
+        const r = lerp(SHOWROOM_R, GARAGE.radius, b)
+        _targetPos.set(c.x + Math.sin(s.showYaw) * r, c.y + lerp(SHOWROOM_H, GARAGE.height, b), c.z + Math.cos(s.showYaw) * r)
+        _targetLook.set(c.x, c.y + lerp(0.55, GARAGE.lookHeight, b), c.z)
+        // The menus fill the left of the screen: aim LEFT of the car so it sits whole in the
+        // open area to the right (about 70% across).
+        aimLeftOfCar(lerp(SHOWROOM_OFFSET, GARAGE.offset, b) * r)
+        // The orbit angle is already eased, so the position only needs a light spring.
+        posSmooth = 0.12
+        lookSmooth = 0.2
       }
       _targetUp.copy(WORLD_UP)
-      posSmooth = 0.6
-      lookSmooth = 0.35
       fovOffset = -4
     } else {
       cameraState.shot = 'drive'

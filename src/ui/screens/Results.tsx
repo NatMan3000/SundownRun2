@@ -192,7 +192,7 @@ export function ResultsScreen() {
   return (
     <NavScreen id="results" initial="again">
       <div className="screen screen--results screen--over-game">
-        <div className="scrim scrim--full" aria-hidden="true" />
+        <div className="scrim scrim--left" aria-hidden="true" />
         <section className="panel results-panel" aria-label="Results">
           <div className="screen-head">
             <span className="eyebrow">{trackName}</span>

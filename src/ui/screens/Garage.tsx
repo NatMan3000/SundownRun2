@@ -1,16 +1,19 @@
 // ============================================================
 //  GARAGE - pick a car body and paint it
 // ------------------------------------------------------------
-//  The real car is sitting on the grid behind this panel with the
-//  showroom camera orbiting it, so every change shows up on the
-//  actual car straight away. There is no separate model viewer:
+//  The real car is sitting on the grid beside this panel, and while
+//  the Garage is open (store.garageOpen) the camera circles it as the
+//  hero, lingering on its front three-quarter view, so every change
+//  shows up on the actual car straight away. There is no separate model viewer:
 //  body, paint, underglow and trail are just settings (carBody,
 //  paint, glow, trail) that the vehicle and look systems read live.
 //
 //  The car list comes from the vehicle system (vehicle.bodies()).
 // ============================================================
 
+import { useEffect } from 'react'
 import { getDefaults, useSettings } from '../../core/settings'
+import { useGame } from '../../core/store'
 import { audio, vehicle } from '../../core/api'
 import type { CarBodyInfo } from '../../core/api'
 import { NavScreen, useNavItem } from '../nav'
@@ -95,6 +98,11 @@ function CarPicker(props: { bodies: readonly CarBodyInfo[] }) {
 }
 
 export function GarageScreen() {
+  // While this screen is up the camera frames the car as the hero; leaving it by any route clears the flag.
+  useEffect(() => {
+    useGame.setState({ garageOpen: true })
+    return () => useGame.setState({ garageOpen: false })
+  }, [])
   const bodies = vehicle.bodies()
   // One selector per value: a selector that builds a new object every time
   // would make zustand re-render forever.
