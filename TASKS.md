@@ -22,17 +22,17 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 ## Phase 1 - systems (workers)
 
 ### track [track]
-- ⬜ validateTrack: errors, warnings, defaults
-- ⬜ buildTrack: centreline spline, 1 m samples, frames, auto-bank + overrides, widths, heights (terrain-follow + lift + absolute y)
-- ⬜ Loops (corkscrew offset, magnetic surface) and wall rides (quarter/half pipe)
+- ⚠️ validateTrack: errors, warnings, defaults (worker + orchestrator tracks:check runs; checker pending)
+- ⚠️ buildTrack: centreline spline, 1 m samples, frames, auto-bank + overrides, widths, heights (terrain-follow + lift + absolute y)
+- ⚠️ Loops (teardrop corkscrew, magnetic surface) and wall rides (quarter/half pipe); in-game loop ride depends on vehicle mag grip
 - ⬜ Ramps, boost zones, speed traps, props, cores, roadside placement
 - ⬜ Terrain recipe: hills, flat, features (hill, bowl, mesa, bigAir), road flattening, ridge/wall edge
 - ⬜ Derived: checkpoints, racing line + target speeds, grid slots, minimap, hash/key
-- ⬜ Colliders: road slab trimesh, magnetic surfaces tagged, barriers, ramps, terrain heightfield (index order probed), catch floor, boundary, auto-reset hook
-- ⬜ Live param rebuild (bankDeg) without moving the car, fast enough for a slider
-- ⬜ tracks/afterglow.json (fun track), tracks/hyperdrome.json
-- ⬜ tracks/README.md documents the format completely
-- ⬜ bun run tracks:check validates every file in tracks/
+- ⚠️ Colliders: road slab trimesh, magnetic surfaces tagged, barriers, ramps, terrain heightfield (index order probed), catch floor, boundary, auto-reset hook
+- ⚠️ Live param rebuild (bankDeg) without moving the car: 17-50 ms (worker), slider in pause menu (ui)
+- ⚠️ tracks/afterglow.json (redesign by designer: figure-eight, 11 m bridge), tracks/hyperdrome.json; bigAir reshape pending
+- ⚠️ tracks/README.md written; 13 findings from the one-file proof being fixed
+- ✅ bun run tracks:check validates every file in tracks/ (orchestrator ran it: Afterglow and Neon Pocket exit 0)
 
 ### vehicle [vehicle]
 - ⬜ Input: keyboard + Gamepad API, hot-swap, smoothing, menu bus, contexts, pad gesture unlock hook
@@ -120,7 +120,7 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 ## Found along the way
 
 (Defects caught by checks and playtests, with owner and status.)
-- ⬜ [track] Hyperdrome bank flips sign across the s=0 seam (-27.5 deg at s=2269 to +22 deg at s=10); grid slot 0 sits on an 18 deg roll and a parked car rolls backwards (vehicle, live probe). Fix the seam wrap and put the line/grid on the flat straight.
+- ✅ [track] Hyperdrome bank flips sign across the s=0 seam (-27.5 deg at s=2269 to +22 deg at s=10); grid slot 0 sits on an 18 deg roll and a parked car rolls backwards (vehicle, live probe). Fix the seam wrap and put the line/grid on the flat straight.
 - ⬜ [world] Art: near grid as bright as the road edges; ridge reads as a red-lit wall; sun stripes hairline (orchestrator frame /tmp/sr2/main/a1.png).
 - ⬜ [look] Art: thick lavender centre stripe behind the car (trail or lane line?) reads as a road marking.
 - ✅ [all] Two rapier copies: top-level 0.12 from @types/three vs @react-three/rapier's nested 0.19.2. Rule: never import @dimforge/rapier3d-compat directly (CLAUDE.md gotcha).
@@ -128,8 +128,8 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ✅ [look] Ruling: Neutral tone mapping (ACES washed the sun gradient; world's A/B screenshots).
 - ✅ [audio] Ruling: audio owns the countdown beeps (from race.countdown).
 - ✅ [track] Road and skirt triangles wound clockwise (ribbon.ts quad() normal = e2 x e1): road top culled from above, skirt underside shows (look). Also explains editor's "terrain covers road" from top-down.
-- ⬜ [track] Afterglow loop entrance is a solid wall at s 3216: cars stop dead; five Ai + demo piled up 4+ min (play). Needs a drive-through physics test.
-- ⬜ [track] Afterglow redesign (orchestrator, game director): rounded rectangle with long straights and an empty middle; wants a flowing layout through the world, 40-60 m elevation, big-air hill by the road, loop toward the sun, wall ride on a sweeper, a crossover bridge.
+- ⚠️ [track] Afterglow loop entrance is a solid wall (track: fixed with teardrop + drive-through gate; Ai still stalled there in designer's race, possibly older build) at s 3216: cars stop dead; five Ai + demo piled up 4+ min (play). Needs a drive-through physics test.
+- ⚠️ [designer] Afterglow redesign (orchestrator, game director): rounded rectangle with long straights and an empty middle; wants a flowing layout through the world, 40-60 m elevation, big-air hill by the road, loop toward the sun, wall ride on a sweeper, a crossover bridge.
 - ⬜ [vehicle] First d-pad press after a pad connects fires the menu action twice (ui).
 - ⬜ [look] Live switch to Neutral tone mapping renders black (world).
 - ⬜ [vehicle] Car art: faceted low-poly look and dull red-magenta paint; wants smooth normals + clearcoat. Showroom camera must frame the car in the right half (menus cover the left).
