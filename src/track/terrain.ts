@@ -38,8 +38,12 @@ export interface NaturalTerrain {
   ridgeFootMin: number
   /** Ridge only: rounded-square radius of the crest at a compass angle (radians, atan2(z, x)). */
   ridgeCrestAt: (theta: number) => number
-  /** Ridge only: how tall the mountains are above the base height. */
+  /** Ridge only: how tall the mountains are above the base height (away from the sunset notch). */
   ridgeRise: number
+  /** Ridge only: the crest height above the base at a compass bearing (degrees), notch included. */
+  ridgeRiseAtBearing: (bearingDeg: number) => number
+  /** Ridge only: the sunset notch (where the ridge drops so the sun stays visible). */
+  notch: { azimuthDeg: number; halfWidthDeg: number; fadeDeg: number; riseFactor: number }
   /** Wall only: radius of the stadium's outer wall circle. */
   wallRadius: number
 }
@@ -141,7 +145,26 @@ export function makeNaturalTerrain(env: Env): NaturalTerrain {
   const span = clamp(size * 0.15, 170, 300) //   foothills + face, metres
   const crestBase = half - 30 //                 leave a plateau strip before the grid ends
   const footBase = crestBase - span
-  const rise = clamp(span * 0.62, 110, 175)
+  // Tall enough to read as the end of the world, low enough not to hide the sky (art direction:
+  // nothing over ~110 m).
+  const rise = clamp(span * 0.62, 90, 110)
+  // THE SUNSET NOTCH. Toward the sun the ridge drops to NOTCH_RISE of its height so the
+  // sun and the megacity on the horizon are visible from the whole valley. It stays a
+  // containing face by getting steeper, not taller: there the slope is squeezed into
+  // NOTCH_SPAN of the usual width.
+  const NOTCH_RISE = 0.4
+  const NOTCH_SPAN = 0.35
+  const NOTCH_HALF_DEG = 40
+  const NOTCH_FADE_DEG = 65
+  const sunAz = env.sky?.sunAzimuthDeg ?? 0
+  /** 1 inside the notch, fading to 0 by NOTCH_FADE_DEG either side of the sun. theta is atan2(z, x). */
+  const notchAt = (theta: number): number => {
+    // Compass bearing of this direction (0 = north = -z, 90 = east = +x).
+    const bearing = (Math.atan2(Math.cos(theta), -Math.sin(theta)) * 180) / Math.PI
+    let d = Math.abs(bearing - sunAz) % 360
+    if (d > 180) d = 360 - d
+    return 1 - smoothstep(NOTCH_HALF_DEG, NOTCH_FADE_DEG, d)
+  }
   const BEARINGS = 256
   const footTable = new Float32Array(BEARINGS)
   const crestTable = new Float32Array(BEARINGS)
@@ -169,17 +192,19 @@ export function makeNaturalTerrain(env: Env): NaturalTerrain {
     const r = roundedRadius(x, z)
     if (r < footMin) return 0
     const th = Math.atan2(z, x)
-    const foot = tableAt(footTable, th)
     const crest = tableAt(crestTable, th)
+    const notch = notchAt(th)
+    const riseHere = rise * (1 - (1 - NOTCH_RISE) * notch)
+    const foot = crest - (crest - tableAt(footTable, th)) * (1 - (1 - NOTCH_SPAN) * notch)
     if (r <= foot) return 0
     if (r >= crest) {
       // Plateau behind the crest, with a little roll so the skyline is not a ruler line.
-      return rise + fbm(ridgeNoise, x * 0.006 + 3.1, z * 0.006 - 8.4, 2) * 8 * smoothstep(0, 40, r - crest)
+      return riseHere + fbm(ridgeNoise, x * 0.006 + 3.1, z * 0.006 - 8.4, 2) * 8 * (1 - 0.6 * notch) * smoothstep(0, 40, r - crest)
     }
     const tt = (r - foot) / (crest - foot)
     // Gullies and buttresses that fade out at both the foot and the crest.
-    const gully = fbm(ridgeNoise, x * 0.012 + 50.2, z * 0.012 - 12.7, 3) * 22 * Math.sin(Math.PI * tt)
-    return rise * ridgeShape(tt) + gully
+    const gully = fbm(ridgeNoise, x * 0.012 + 50.2, z * 0.012 - 12.7, 3) * 22 * (1 - 0.6 * notch) * Math.sin(Math.PI * tt)
+    return riseHere * ridgeShape(tt) + gully
   }
 
   const height = (x: number, z: number): number => {
@@ -204,6 +229,13 @@ export function makeNaturalTerrain(env: Env): NaturalTerrain {
     ridgeFootMin: edge === 'ridge' ? footMin : Infinity,
     ridgeCrestAt: (theta: number) => tableAt(crestTable, theta),
     ridgeRise: edge === 'ridge' ? rise : 0,
+    ridgeRiseAtBearing: (bearingDeg: number) => {
+      if (edge !== 'ridge') return 0
+      const b = (bearingDeg * Math.PI) / 180
+      // Compass bearing -> theta = atan2(z, x) with x = sin b, z = -cos b.
+      return rise * (1 - (1 - NOTCH_RISE) * notchAt(Math.atan2(-Math.cos(b), Math.sin(b))))
+    },
+    notch: { azimuthDeg: sunAz, halfWidthDeg: NOTCH_HALF_DEG, fadeDeg: NOTCH_FADE_DEG, riseFactor: NOTCH_RISE },
     wallRadius: half - 25,
   }
 }
@@ -249,8 +281,20 @@ export function sampleNaturalGrid(nat: NaturalTerrain): NaturalGrid {
 
 // Under a grounded road the ground hides this far below the surface...
 const HIDE_DEPTH = 0.6
-// ...rising to this far below at the very edge, so it meets the slab's side just under the lip.
-const EDGE_DEPTH = 0.3
+// ...rising to this far below for the last EDGE_BAND metres before the edge, so the
+// ground beside the road is nearly flush with it: driving back on from the grass is
+// smooth, with no kerb to bump over.
+const EDGE_DEPTH = 0.05
+const EDGE_BAND = 2.5
+
+/**
+ * How far below the road surface the ground must stay at `lateral` metres from the
+ * centre: 0.15 m across the middle, easing to 0.03 m near the edge (where the ground
+ * meets the road nearly flush). The safety pass and the checks use this one rule.
+ */
+export function requiredClearance(lateral: number, halfWidth: number): number {
+  return 0.15 + (0.03 - 0.15) * smoothstep(halfWidth - EDGE_BAND - 2, halfWidth - EDGE_BAND, Math.abs(lateral))
+}
 /** How far (horizontal metres, more than one grid cell) the bank plane runs on past the road edge. */
 const BANK_RUNOUT = 4.5
 const SHOULDER_MIN = 12
@@ -347,7 +391,7 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
       const beyond = Math.abs(lat) - hw
       if (beyond <= 0) {
         // Under the road: hidden, rising to just under the lip over the last metre.
-        h = surfY - HIDE_DEPTH + (HIDE_DEPTH - EDGE_DEPTH) * smoothstep(-1, 0, beyond)
+        h = surfY - EDGE_DEPTH - (HIDE_DEPTH - EDGE_DEPTH) * (1 - smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond))
       } else {
         const target = surfY - EDGE_DEPTH
         // Deep cuts and tall fills get a wider shoulder, so the slope stays a slope.
@@ -379,40 +423,48 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
   return out
 }
 
-/** Every point of a grounded road keeps at least this much ground clearance below it. */
-const MIN_CLEARANCE = 0.15
-
 /**
  * Safety pass: walk across the road at every sample and, wherever the ground
- * (as interpolated on the grid's triangles) comes within MIN_CLEARANCE of the
- * surface, lower that cell's corners until it doesn't. Steep banks on tight
+ * (as interpolated on the grid's triangles) comes closer to the surface than
+ * requiredClearance(), lower that cell's corners until it doesn't. Steep banks on tight
  * curves can otherwise leave a grid triangle poking up at the low edge.
  */
 function keepUnderRoad(grid: NaturalGrid, h: Float32Array, S: TrackSamples): void {
   const { n, half, cellSize } = grid
   const g = { n, half, cellSize, heights: h }
   const inv = 1 / cellSize
-  for (let pass = 0; pass < 3; pass++) {
+  for (let pass = 0; pass < 6; pass++) {
     let fixed = 0
     for (let i = 0; i < S.count; i++) {
       if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1) continue
-      const hw = S.halfWidth[i] + 0.5
+      const hw = S.halfWidth[i]
       const steps = Math.ceil((hw * 2) / 0.75)
       for (let k = 0; k <= steps; k++) {
         const l = -hw + (2 * hw * k) / steps
         const x = S.px[i] + S.rx[i] * l
         const y = S.py[i] + S.ry[i] * l
         const z = S.pz[i] + S.rz[i] * l
-        const excess = gridHeight(g, x, z) - (y - MIN_CLEARANCE)
+        const excess = gridHeight(g, x, z) - (y - requiredClearance(l, hw))
         if (excess <= 0) continue
         const ix = Math.min(n - 1, Math.max(0, Math.floor((x + half) * inv)))
         const iz = Math.min(n - 1, Math.max(0, Math.floor((z + half) * inv)))
         const a = iz * (n + 1) + ix
-        const drop = excess + 0.05
-        h[a] -= drop
-        h[a + 1] -= drop
-        h[a + n + 1] -= drop
-        h[a + n + 2] -= drop
+        const drop = excess + 0.02
+        // Lower the corners that lie under the road; the ones outside the edge stay put
+        // (lowering them would dig a step beside the road). If none is under it, lower all.
+        const corners = [a, a + 1, a + n + 1, a + n + 2]
+        let lowered = 0
+        for (const v of corners) {
+          const vx = -half + (v % (n + 1)) * cellSize - S.px[i]
+          const vz = -half + Math.floor(v / (n + 1)) * cellSize - S.pz[i]
+          const rh2 = S.rx[i] * S.rx[i] + S.rz[i] * S.rz[i]
+          const lat = rh2 > 1e-4 ? (vx * S.rx[i] + vz * S.rz[i]) / rh2 : 0
+          if (Math.abs(lat) <= hw) {
+            h[v] -= drop
+            lowered++
+          }
+        }
+        if (lowered === 0) for (const v of corners) h[v] -= drop
         fixed++
       }
     }

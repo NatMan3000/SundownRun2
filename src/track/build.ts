@@ -78,7 +78,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const env = file.environment
 
   // ---- natural ground (reused from `previous` when the environment is unchanged) ----
-  const envKey = JSON.stringify([env.seed, env.size, env.terrain])
+  const envKey = JSON.stringify([env.seed, env.size, env.terrain, env.sky.sunAzimuthDeg])
   const prev = previous ? internals.get(previous) : undefined
   let nat: NaturalTerrain
   let natGrid: NaturalGrid

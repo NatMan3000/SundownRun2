@@ -106,7 +106,7 @@ That's a ~1.4 km loop through rolling hills, with a boost pad and a jump. Everyt
 | `width` | metres | `road.width` | This point's width. Widths blend smoothly between points. |
 | `bank` | degrees, -60 to 85 | auto | A bank override, in degrees **into the corner**: 0 is flat, negative is off-camber. On a straight, positive lifts the left edge. Overrides blend smoothly toward neighbouring points and win over auto-banking. |
 
-How a point's height is decided: its `y` if given; otherwise the natural ground averaged over about 12 m around it, plus `lift`. Between points the spline makes the road smooth, and the terrain is cut and filled to meet it. Where the road ends up more than 6 m above the natural ground it becomes a **bridge**: the ground under it stays natural (cut down to keep 5 m of clearance under the road) instead of being filled up to it.
+How a point's height is decided: its `y` if given; otherwise the natural ground averaged over about 12 m around it, plus `lift`. Between points the spline makes the road smooth, and the terrain is cut and filled to meet it. Beside a road on the ground, the terrain meets the edge nearly flush (about 5 cm below the lip), so driving back on from the grass is smooth. Where the road ends up more than 6 m above the natural ground it becomes a **bridge**: the ground under it stays natural (cut down to keep 5 m of clearance under the road) instead of being filled up to it.
 
 **banking**
 
@@ -114,7 +114,7 @@ How a point's height is decided: its `y` if given; otherwise the natural ground 
 |---|---|---|---|
 | `auto` | boolean | true | Bank corners automatically from how tight they are |
 | `maxDeg` | degrees, 0-75 | 10 | Auto-banking never goes steeper than this |
-| `designSpeedKmh` | km/h | 120 | Corners are banked for this speed: bank = atan(v^2 / (g x radius)), capped at `maxDeg`. Faster design speed or a tighter corner means a steeper bank. Corners gentler than a 3 km radius count as straight. |
+| `designSpeedKmh` | km/h | 120 | Corners are banked for this speed: bank = atan(v^2 / (g x radius)), capped at `maxDeg`. Faster design speed or a tighter corner means a steeper bank. Only real corners bank: a bend must turn at least 4 degrees over 80 m to get any bank (12 degrees for full bank), and curves gentler than a 3 km radius count as straight. |
 | `adjustable` | `{ label, min, max }` | none | Turns `maxDeg` into a live slider (the Hyperdrome's "Bank angle"). The game rebuilds the road in place when the slider moves, without moving the car. |
 
 The bank rolls in and out smoothly over about 40 m, so corners never twist suddenly.
@@ -126,7 +126,7 @@ Every piece has a `type` and an `at`.
 | type | Fields (defaults) | What it is |
 |---|---|---|
 | `boost` | `offset` 0 (metres right of the centre, minus = left), `length` 10, `width` 5, `strength` 1 | A glowing pad that kicks you forward. Centred on `at`. |
-| `ramp` | `offset` 0, `width` 8, `length` 12, `height` 2.4 | A curved kicker ramp. It grows out of the road with no bump and gets steeper toward the lip, which faces the driving direction. Its sides slope so clipping the edge rolls you off rather than flicking you. Centred on `at`. |
+| `ramp` | `offset` 0, `width` 8, `length` 12, `height` 2.4 | A curved kicker ramp. It grows out of the road with no bump and gets steeper toward the lip, which faces the driving direction. Its sides slope gently (about 18 degrees where the road has room) so clipping the edge rolls you up and off rather than flicking you. Centred on `at`. |
 | `loop` | `radius` 12 (the loop is 2 x radius tall) | A corkscrew loop with magnetic grip. The road slides sideways over 80 m before it, goes up and over a teardrop loop (gentle at the bottom, tight at the top) while drifting across by the road width plus 1 m, then slides back over 80 m. The way in and the way out run side by side. The loop adds about 5 x radius metres of road. |
 | `wallride` | `side` (required: `"left"`, `"right"` or `"both"`), `length` 120, `height` 9 (the wall's curve radius) | A curved quarter-pipe wall along the edge, rising from the road through vertical to about 100 degrees, with magnetic grip. It runs `length` metres forward from `at` and ramps in and out over 15 m at each end. `both` makes a half-pipe. |
 | `speedtrap` | none | Measures and records your speed as you pass `at` |
@@ -183,7 +183,7 @@ Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corn
 | `relief` | metres, 0-120 | 14 | How tall the rolling hills are (peak to trough is roughly this). Ignored for flat. |
 | `scale` | metres | 260 | How wide the rolling hills are |
 | `features` | list | `[]` | See below |
-| `edge` | `"ridge"` or `"wall"` | ridge for hills, wall for flat | How the world edge holds you in. `ridge` is a ring of steep mountains following the world's rounded-square edge, gentle foothills first, then a face you can't climb. `wall` is a solid circular stadium wall about 25 m inside the world edge. |
+| `edge` | `"ridge"` or `"wall"` | ridge for hills, wall for flat | How the world edge holds you in. `ridge` is a ring of mountains up to 110 m tall following the world's rounded-square edge: gentle foothills first, then a face you can't climb. Toward the sun (`sky.sunAzimuthDeg`, +/-40 degrees, fading back by +/-65) the ridge drops to 40% of its height and gets steeper instead, so the sunset and the city are visible from the whole valley. `wall` is a solid circular stadium wall about 25 m inside the world edge. |
 
 **terrain features** (added to the rolling hills; the road still cuts through them)
 
@@ -201,7 +201,7 @@ Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corn
 | `timeOfDay` | 0.12 | 0 = sundown (the sun's lower half on the horizon) to 1 = full night. The player's setting can override it. |
 | `sunAzimuthDeg` | 0 | The compass direction the sun sets toward. Point the start straight at it. |
 | `planetAzimuthDeg` | sun + 40 | Where the ringed planet hangs |
-| `planetElevationDeg` | 28 | |
+| `planetElevationDeg` | 16 | Degrees above the horizon |
 
 **palette** (colours as `"#rrggbb"`; avoid pure primaries like `#ff0000`)
 
@@ -223,7 +223,7 @@ Good spots: hilltops, the top of the big-air hill, high over a jump, hidden corn
 You never write these; they come from the file:
 
 - **Checkpoints**: 8-16 sector lines spaced evenly round the lap (one every ~150-250 m), the first on the start line.
-- **The racing line**: a smooth line that cuts the apexes, staying 2 m inside the edges, and a target speed for every metre (corner grip, banking, crests, braking zones). The Ai racers and the demo drive follow it.
+- **The racing line**: a smooth outside-apex-outside line that stays 2.5 m inside the edges (3 m on tracks with walls), and a target speed for every metre, planned for 1.25 g of grip plus what banking gives (never over 1.4 g), with crests, loops (~120 km/h) and braking zones (7 m/s^2) taken into account. It lines up with each ramp's own offset. The Ai racers and the demo drive follow it.
 - **The start grid**: two abreast, rows 8 m apart, starting 7 m behind the line.
 - **The minimap**, **roadside posts** (skipped on loops, wall rides, ramps, bridges, steep shoulders and stadium tracks), **billboard spots**, and the **track key** used for records and the ghost (`id@hash`; it changes when the road or pieces change, so an old ghost never haunts a changed track).
 
@@ -236,12 +236,15 @@ You never write these; they come from the file:
 | `road` | Length, samples, tightest corner radius, steepest bank |
 | `height` | Road heights, how much is on the ground, terrain range |
 | `pieces`, `derived`, `racing`, `meshes`, `world`, `build` | What got built and how long it took |
+| `line` | The racing line is a real line: little of it pinned at the edge, never closer than the margin, never planning more grip than the car has |
+| `winding` | Every triangle faces the way its normal says (the game hides the back of a triangle, so a wrongly wound road would be invisible) |
 | `smooth` | No kinks: the sharpest turn per metre on the road and in loops |
+| `banking` | Banking leans into every corner and rolls gently (at most 1.5 degrees per metre), including across the start line |
 | `bridges` | Where the road passes over itself, the gap between the levels (needs 6.2 m) |
-| `ground` | The ground stays under the road everywhere, at every bank the slider allows |
+| `ground` | The ground stays under the road everywhere, at every bank the slider allows, and meets the edge nearly flush |
 | `warning` | It works, but check it: tight corners, a loop on a bend, a piece on the grid, a road running into the mountains, a field name with a typo |
 
-Add `--physics` to drop and fire test cars in a real physics world (the same rapier the game runs): the terrain collider matches the ground, cars rest on the road, cars fired at 60 m/s onto every kind of surface stay on top, a 12 x 12 drop grid over the whole world holds, cars fired at the edge at 90 m/s from 24 directions stay inside, and the catch floor works. Add `--bench` for build and query timings.
+Add `--physics` to drop and fire test cars in a real physics world (the same rapier the game runs): the terrain collider matches the ground, cars rest on the road, cars fired at 60 m/s onto every kind of surface stay on top, frictionless cars slid along the road into every loop, ramp, wall ride and checkpoint never hit a face, a 12 x 12 drop grid over the whole world holds, cars fired at the edge at 90 m/s from 24 directions (plus 5 straight into the sunset notch) stay inside, and the catch floor works. Add `--bench` for build and query timings.
 
 Anything marked FAIL, or an error, makes the command exit with code 1.
 
@@ -250,7 +253,7 @@ Anything marked FAIL, or an error, makes the command exit with code 1.
 - **Keep corners above a 25 m radius.** A tighter one gets a warning, and cars struggle.
 - **Spacing.** Points 60-150 m apart make flowing roads. Use closer points only where you want a tight shape (a hairpin needs 4-5 points round it).
 - **Crests that unload the car**: three points about 40-55 m apart, the middle one with `lift` 2.5-3.5. Run `bun run tracks:check`: a crest with a vertical radius of 120-140 m goes light at about 130 km/h.
-- **Bridges**: give the upper road `lift` 8 or more where it crosses. `tracks:check` measures the gap.
+- **Bridges**: give the upper road `lift` 8 or more where it crosses (the gap must be at least 6.2 m: a slab plus a car). The validator warns when the lifts at a crossing are less than 6.2 m apart, and `tracks:check` measures the real gap.
 - **Elevation**: let the terrain do it (`relief`, `hill` features). The road follows the ground through its points.
 - **Start line**: on a straight, pointing at the sun (`sunAzimuthDeg`), with at least 60 m of clear road behind it for the grid.
 - **Stay inside the world edge**: see `size` above. The validator warns when a point is too close.

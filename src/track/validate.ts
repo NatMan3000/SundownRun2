@@ -415,7 +415,7 @@ function validateEnvironment(I: Issues, e: Obj, id: string): ResolvedTrackFile['
     timeOfDay: I.num(sky, 'timeOfDay', 'environment.sky', TRACK_DEFAULTS.timeOfDay, 0, 1),
     sunAzimuthDeg: sunAz,
     planetAzimuthDeg: I.num(sky, 'planetAzimuthDeg', 'environment.sky', sunAz + 40, -360, 400),
-    planetElevationDeg: I.num(sky, 'planetElevationDeg', 'environment.sky', 28, 5, 85),
+    planetElevationDeg: I.num(sky, 'planetElevationDeg', 'environment.sky', 16, 5, 85),
   }
 
   const pal = isObj(e.palette) ? e.palette : {}
@@ -518,13 +518,12 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
   }
   if (worst < MIN_RADIUS) I.warn('road.points', `the corner near point ${worstAt.toFixed(1)} has a ${worst.toFixed(0)} m radius; keep corners above ${MIN_RADIUS} m or cars will struggle`)
 
-  // The world edge: the mountains (ridge) start rising about 0.15 x size + 30 m in from the edge.
-  // Matches terrain.ts: the ridge span is clamp(0.15 x size, 170, 300) and its crest sits 30 m in.
-  const edgeMargin = t.environment.terrain.edge === 'ridge' ? Math.min(300, Math.max(170, t.environment.size * 0.15)) + 30 + 40 : 40
+  // The world edge: keep the road clear of the edge mountains or the stadium wall.
+  const bound = roadBound(t.environment)
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i]
     const r = Math.max(Math.abs(p.x), Math.abs(p.z))
-    if (r > half - edgeMargin) I.warn(`road.points[${i}]`, `is ${(half - r).toFixed(0)} m from the world edge; the road may run into the ${t.environment.terrain.edge === 'ridge' ? 'mountains' : 'wall'}`)
+    if (r > bound.limit) I.warn(`road.points[${i}]`, `is ${(half - r).toFixed(0)} m from the world edge; the road may run into the ${t.environment.terrain.edge === 'ridge' ? 'mountains' : 'wall'}`)
   }
 
   // Self-crossings in plan view (fine for bridges; warn so the author adds height).
@@ -606,8 +605,29 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
   }
 }
 
-/** Height a crossing needs: slab (1.2 m) plus room for a car underneath. */
-const BRIDGE_MIN = 7
+/** Height a crossing needs: slab (1.2 m) plus 5 m of room for a car underneath (tracks:check measures the same). */
+const BRIDGE_MIN = 6.2
+
+/**
+ * The world-edge rule for road points, in one place (the validator and the road
+ * editor both use it). A road point is comfortably inside the world when
+ * max(|x|, |z|) <= limit. With a ridge edge the mountains start rising about
+ * 0.15 x size + 30 m in from the edge (the span is clamp(0.15 x size, 170, 300)
+ * and the crest sits 30 m in, see terrain.ts), and the road keeps 40 m more.
+ * A stadium wall sits 25 m in; the road keeps 15 m more.
+ */
+export function roadBound(environment: { size?: number; terrain?: { kind?: string; edge?: string } }): {
+  half: number
+  margin: number
+  limit: number
+} {
+  const size = environment.size ?? TRACK_DEFAULTS.worldSize
+  const half = size / 2
+  const kind = environment.terrain?.kind === 'flat' ? 'flat' : 'hills'
+  const edge = environment.terrain?.edge ?? (kind === 'flat' ? 'wall' : 'ridge')
+  const margin = edge === 'ridge' ? Math.min(300, Math.max(170, size * 0.15)) + 30 + 40 : 40
+  return { half, margin, limit: half - margin }
+}
 
 /** Lift at a control-point position, blended like the builder does; null if a point there uses absolute y. */
 function liftAt(pts: ResolvedTrackFile['road']['points'], at: number): number | null {

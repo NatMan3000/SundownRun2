@@ -75,6 +75,17 @@ export function TrackPhysics() {
 
 // ---- dev affordances (module level: registered once) ----
 registerInspector('track', () => getTrack())
+// The world edge as the world worker needs it: ridge height round the compass, and the sunset notch.
+registerInspector('trackRidge', () => {
+  const t = getTrack()
+  const x = t ? trackInternals(t) : undefined
+  if (!t || !x) return null
+  const nat = x.nat
+  const base = t.file.environment.terrain.height ?? 0
+  const skyline: { bearingDeg: number; crestY: number }[] = []
+  for (let b = 0; b < 360; b += 10) skyline.push({ bearingDeg: b, crestY: base + nat.ridgeRiseAtBearing(b) })
+  return { edge: nat.edge, riseM: nat.ridgeRise, footMinRounded: nat.ridgeFootMin, notch: nat.notch, skyline }
+})
 registerDev(
   'trackInfo',
   () => {

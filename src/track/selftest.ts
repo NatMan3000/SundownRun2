@@ -23,6 +23,7 @@
 import type { Collider, Rapier, RigidBody } from './rapierTypes'
 import type { TrackRuntime, NearestHit, TrackFrame } from './types'
 import { SURFACE_CODE } from './types'
+import { requiredClearance } from './terrain'
 import { createRoadColliders, createWorldColliders } from './colliders'
 import { createTerrainTiles } from './terrainTiles'
 import { surfaceOf } from '../core/physics'
@@ -35,7 +36,7 @@ const CAR = { hx: 0.95, hy: 0.55, hz: 2.15 }
  * Worst gap between the ground and the road surface, measured across every
  * grounded sample (negative = the ground is safely below). No physics needed.
  */
-export function groundClearance(t: TrackRuntime): { worst: number; s: number; lateral: number } {
+export function groundClearance(t: TrackRuntime): { worst: number; s: number; lateral: number; edgeStep: number } {
   const S = t.samples
   let worst = -Infinity
   let ws = 0
@@ -45,7 +46,8 @@ export function groundClearance(t: TrackRuntime): { worst: number; s: number; la
     const hw = S.halfWidth[i]
     for (let k = 0; k <= 16; k++) {
       const l = -hw + (2 * hw * k) / 16
-      const d = t.terrainHeight(S.px[i] + S.rx[i] * l, S.pz[i] + S.rz[i] * l) - (S.py[i] + S.ry[i] * l)
+      // Positive = the ground is closer to the surface than the rule allows.
+      const d = t.terrainHeight(S.px[i] + S.rx[i] * l, S.pz[i] + S.rz[i] * l) - (S.py[i] + S.ry[i] * l) + requiredClearance(l, hw)
       if (d > worst) {
         worst = d
         ws = i * S.ds
@@ -53,7 +55,18 @@ export function groundClearance(t: TrackRuntime): { worst: number; s: number; la
       }
     }
   }
-  return { worst, s: ws, lateral: wl }
+  // Edge step: how far the ground sits below the edge just outside it (median over the lap).
+  const steps: number[] = []
+  for (let i = 0; i < S.count; i += 5) {
+    if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1) continue
+    for (const side of [-1, 1]) {
+      const l = side * (S.halfWidth[i] + 0.5)
+      const ey = S.py[i] + S.ry[i] * side * S.halfWidth[i]
+      steps.push(ey - t.terrainHeight(S.px[i] + S.rx[i] * l, S.pz[i] + S.rz[i] * l))
+    }
+  }
+  steps.sort((a, b) => a - b)
+  return { worst, s: ws, lateral: wl, edgeStep: steps.length ? steps[Math.floor(steps.length / 2)] : 0 }
 }
 
 /**
@@ -663,8 +676,17 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     let escaped = 0
     const failed: string[] = []
     let worstR = 0
-    for (let k = 0; k < BEARINGS; k++) {
-      const th = (k / BEARINGS) * Math.PI * 2 + 0.05
+    // Every 15 degrees, plus extra shots straight into the low sunset notch (ridge tracks).
+    const dirs: number[] = []
+    for (let k = 0; k < BEARINGS; k++) dirs.push((k / BEARINGS) * Math.PI * 2 + 0.05)
+    if (t.world.edge === 'ridge') {
+      const sun = t.file.environment.sky.sunAzimuthDeg
+      for (const off of [-30, -15, 0, 15, 30]) {
+        const b = ((sun + off) * Math.PI) / 180
+        dirs.push(Math.atan2(-Math.cos(b), Math.sin(b)))
+      }
+    }
+    for (const th of dirs) {
       const dx = Math.cos(th)
       const dz = Math.sin(th)
       const x = dx * start
@@ -684,7 +706,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     }
     if (escaped) ok = false
     lines.push(
-      `${escaped ? 'FAIL' : 'ok  '} world edge (${t.world.edge}): ${BEARINGS - escaped}/${BEARINGS} car boxes fired outward at ${V} m/s stayed inside (furthest r ${worstR.toFixed(0)} m, play radius ${t.world.playRadius.toFixed(0)} m)`,
+      `${escaped ? 'FAIL' : 'ok  '} world edge (${t.world.edge}): ${dirs.length - escaped}/${dirs.length} car boxes fired outward at ${V} m/s stayed inside (furthest r ${worstR.toFixed(0)} m, play radius ${t.world.playRadius.toFixed(0)} m)`,
     )
     for (const f of failed) lines.push(`     escaped: ${f}`)
   }
