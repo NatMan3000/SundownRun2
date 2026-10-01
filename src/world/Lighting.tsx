@@ -31,7 +31,7 @@ import * as THREE from 'three'
 import { useFrame, useThree } from '@react-three/fiber'
 import { telemetry } from '../core/telemetry'
 import { useGame } from '../core/store'
-import { sky } from './sky'
+import { sky, skyUniforms } from './sky'
 
 const SHADOW_MAP = 2048
 /** Half-width of the shadow box around the car, metres. */
@@ -40,8 +40,14 @@ const SHADOW_RADIUS = 70
 const LIGHT_DISTANCE = 240
 const TEXEL = (SHADOW_RADIUS * 2) / SHADOW_MAP
 
-/** Fog density per metre (FogExp2). ~30% haze at 1 km, ~75% at 2 km. */
-export const FOG_DENSITY = 0.00058
+/** Fog density per metre (FogExp2) at ground level. ~18% haze at 1 km, ~54% at 2 km. */
+export const FOG_DENSITY = 0.00044
+/**
+ * The haze is a layer lying on the ground: looking down from high up you see
+ * through much less of it. Density thins with the camera's height above the
+ * world's base, down to this fraction for an aerial view.
+ */
+const HIGH_HAZE = 0.3
 
 // scratch
 const _center = new THREE.Vector3()
@@ -49,7 +55,7 @@ const _axisX = new THREE.Vector3()
 const _axisY = new THREE.Vector3()
 const _up = new THREE.Vector3(0, 1, 0)
 
-export function Lighting() {
+export function Lighting({ baseHeight }: { baseHeight: number }) {
   const lightRef = useRef<THREE.DirectionalLight>(null)
   const hemiRef = useRef<THREE.HemisphereLight>(null)
   const quality = useGame((s) => s.qualityLevel)
@@ -77,7 +83,7 @@ export function Lighting() {
     light.shadow.camera.updateProjectionMatrix()
   }, [target, shadowsOn])
 
-  useFrame(() => {
+  useFrame((state) => {
     const light = lightRef.current
     const hemi = hemiRef.current
     if (!light || !hemi) return
@@ -131,7 +137,12 @@ export function Lighting() {
     hemi.groundColor.copy(sky.hemiGround)
     hemi.intensity = sky.hemiIntensity
 
-    // ---- haze ----
+    // ---- haze: thinner the higher the camera is ----
+    const above = state.camera.position.y - baseHeight
+    const t = above <= 40 ? 0 : above >= 600 ? 1 : (above - 40) / 560
+    const density = FOG_DENSITY * (1 - (1 - HIGH_HAZE) * t * t * (3 - 2 * t))
+    fog.density = density
+    skyUniforms.uFogDensity.value = density
     fog.color.copy(sky.fogColor)
   })
 

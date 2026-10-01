@@ -72,7 +72,7 @@ export function WorldView({ track }: { track: TrackRuntime }) {
       sunElevationDeg: Number(sky.sunElevationDeg.toFixed(2)),
       keyIntensity: Number(sky.keyIntensity.toFixed(2)),
       shadow: Number(sky.shadow.toFixed(3)),
-      triangles: { terrain: worldStats.terrainTriangles, sky: worldStats.skyTriangles, planet: worldStats.planetTriangles },
+      triangles: { terrain: worldStats.terrainTriangles, outerGround: worldStats.outerGroundTriangles, sky: worldStats.skyTriangles, planet: worldStats.planetTriangles },
       stars: worldStats.stars,
       city: { towers: worldStats.cityTowers, triangles: worldStats.cityTriangles },
       terrain: { strides: worldStats.terrainStrides, chunks: worldStats.terrainChunks },
@@ -96,7 +96,7 @@ export function WorldView({ track }: { track: TrackRuntime }) {
       <Stars quality={quality} seed={track.file.environment.seed} />
       <Planet />
       <City track={track} quality={quality} />
-      <Lighting />
+      <Lighting baseHeight={track.file.environment.terrain.height ?? 0} />
       <Terrain track={track} quality={quality} />
     </>
   )

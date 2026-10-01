@@ -25,6 +25,7 @@ import { telemetry } from '../core/telemetry'
 import type { QualityLevel } from '../core/settings'
 import type { TrackRuntime } from '../track/types'
 import { LEVEL_DISTANCE, buildTerrain } from './terrainGeometry'
+import { buildOuterGround } from './outerGround'
 import { makeTerrainMaterial } from './terrainMaterial'
 import { makeNoiseTexture } from './textures'
 import { sky } from './sky'
@@ -40,10 +41,11 @@ export function Terrain({ track, quality }: { track: TrackRuntime; quality: Qual
 
   const noise = useMemo(() => makeNoiseTexture(seed ^ 0x51a7), [seed])
   const { material, uniforms } = useMemo(
-    () => makeTerrainMaterial(noise, gridHex, track.terrain.minHeight),
-    [noise, gridHex, track.terrain.minHeight],
+    () => makeTerrainMaterial(noise, gridHex, track.terrain.minHeight, track.terrain.maxHeight),
+    [noise, gridHex, track.terrain.minHeight, track.terrain.maxHeight],
   )
   const build = useMemo(() => buildTerrain(track, quality), [track, quality])
+  const outer = useMemo(() => buildOuterGround(track), [track])
 
   // One mesh per chunk, starting at the far level; useFrame picks the real one.
   const { group, meshes, level } = useMemo(() => {
@@ -58,8 +60,14 @@ export function Terrain({ track, quality }: { track: TrackRuntime; quality: Qual
       g.add(m)
       list.push(m)
     }
+    // The land beyond the world's edge, in the same material (one more draw).
+    const apron = new THREE.Mesh(outer, material)
+    apron.name = 'outer-ground'
+    apron.receiveShadow = false
+    apron.matrixAutoUpdate = false
+    g.add(apron)
     return { group: g, meshes: list, level: new Int8Array(build.chunks.length).fill(2) }
-  }, [build, material])
+  }, [build, material, outer])
 
   useEffect(() => {
     worldStats.terrainChunks = build.chunks.length
@@ -68,6 +76,10 @@ export function Terrain({ track, quality }: { track: TrackRuntime; quality: Qual
       for (const c of build.chunks) for (const g of c.levels) g.dispose()
     }
   }, [build])
+  useEffect(() => {
+    worldStats.outerGroundTriangles = (outer.index?.count ?? 0) / 3
+    return () => outer.dispose()
+  }, [outer])
   useEffect(() => () => material.dispose(), [material])
   useEffect(() => () => noise.dispose(), [noise])
 

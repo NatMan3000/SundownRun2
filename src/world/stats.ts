@@ -13,6 +13,7 @@ export const worldStats = {
   /** Grid steps of the near / mid / far detail levels, e.g. "1/2/4". */
   terrainStrides: '',
   terrainChunks: 0,
+  outerGroundTriangles: 0,
   skyTriangles: 0,
   planetTriangles: 0,
   stars: 0,

@@ -247,12 +247,10 @@ function buildChunk(
       const b = a + 1
       const c = a + w
       const d = c + 1
-      // Split each quad along the diagonal that follows the surface better.
-      if (Math.abs(position[a * 3 + 1] - position[d * 3 + 1]) <= Math.abs(position[b * 3 + 1] - position[c * 3 + 1])) {
-        index.push(a, c, d, a, d, b)
-      } else {
-        index.push(a, c, b, b, c, d)
-      }
+      // The same diagonal as the physics ground (track/terrainTiles.ts: from
+      // (ix + 1, iz) to (ix, iz + 1)), so on the near level the drawn ground
+      // is exactly the ground the wheels touch.
+      index.push(a, c, b, b, c, d)
     }
   }
 

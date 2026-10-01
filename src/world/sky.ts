@@ -99,6 +99,8 @@ export const skyUniforms = {
   uCloudDark: { value: new THREE.Color() },
   /** 1 while the sun disc is above the horizon, fading as the last of it sinks. */
   uSunVisible: { value: 1 },
+  /** Haze density per metre for the world's own shaders (Lighting sets it from the camera height). */
+  uFogDensity: { value: 0.00044 },
   /** Seconds since the world mounted (animation). */
   uTime: { value: 0 },
 }
@@ -175,32 +177,33 @@ export function configureSky(track: TrackRuntime): void {
 }
 
 /**
- * The skyline's height toward an azimuth: the steepest angle up to the
- * terrain, looked at from eye height in the middle of the world. Averaged
- * over the width of the sun so one spiky peak does not decide it.
+ * How high the skyline stands toward one compass direction, degrees: the
+ * steepest angle up to the terrain, seen from eye height in the middle of
+ * the world. Build-time only (it walks the terrain).
  */
-function skylineElevationDeg(track: TrackRuntime, azimuth: number): number {
+export function skylineAt(track: TrackRuntime, azimuth: number): number {
   const half = track.terrain.half
   const step = Math.max(2, track.terrain.cellSize)
   const eye = track.terrainHeight(0, 0) + 3
-  let total = 0
-  const offsets = [-8, -4, 0, 4, 8]
-  for (const o of offsets) {
-    const az = azimuth + o * DEG
-    const sx = Math.sin(az)
-    const sz = -Math.cos(az)
-    let best = 0
-    for (let d = 40; d < half * 1.42; d += step) {
-      const x = sx * d
-      const z = sz * d
-      if (Math.abs(x) > half || Math.abs(z) > half) break
-      const el = Math.atan2(track.terrainHeight(x, z) - eye, d)
-      if (el > best) best = el
-    }
-    total += best
+  const sx = Math.sin(azimuth)
+  const sz = -Math.cos(azimuth)
+  let best = 0
+  for (let d = 40; d < half * 1.42; d += step) {
+    const x = sx * d
+    const z = sz * d
+    if (Math.abs(x) > half || Math.abs(z) > half) break
+    const el = Math.atan2(track.terrainHeight(x, z) - eye, d)
+    if (el > best) best = el
   }
-  const deg = total / offsets.length / DEG
-  return Math.min(16, Math.max(0, deg))
+  return Math.min(16, Math.max(0, best / DEG))
+}
+
+/** The skyline under the sun: averaged over the sun's width, so one spiky peak does not decide it. */
+function skylineElevationDeg(track: TrackRuntime, azimuth: number): number {
+  const offsets = [-8, -4, 0, 4, 8]
+  let total = 0
+  for (const o of offsets) total += skylineAt(track, azimuth + o * DEG)
+  return total / offsets.length
 }
 
 // scratch (module-level: no allocation per frame)
@@ -255,7 +258,7 @@ export function updateSky(elapsed: number): void {
   // ---- the city's glow lifting the night horizon ----
   u.uCityDir.value.set(Math.sin(sky.cityAzimuth), -Math.cos(sky.cityAzimuth))
   u.uCityCos.value = Math.cos(Math.min(Math.PI * 0.95, sky.cityArc * 0.5 + 10 * DEG))
-  u.uCityGlow.value.copy(C.horizonDusk).lerp(C.windowWarm, 0.25).multiplyScalar(sky.hasCity ? sky.windows * 0.07 : 0)
+  u.uCityGlow.value.copy(C.horizonDusk).lerp(C.haze, 0.45).lerp(C.windowWarm, 0.12).multiplyScalar(sky.hasCity ? sky.windows * 0.09 : 0)
 
   // ---- cloud streaks: backlit pink-orange while the sun is up, dusky after ----
   u.uCloudLit.value.copy(C.horizonDusk).lerp(C.sunGlow, 0.45).multiplyScalar(0.03 + 0.97 * sky.afterglow * sky.afterglow)

@@ -25,7 +25,6 @@ import * as THREE from 'three'
 import { GLOW, PALETTE } from '../core/palette'
 import { SKY_GLSL } from './skyGlsl'
 import { skyUniforms } from './sky'
-import { FOG_DENSITY } from './Lighting'
 
 export interface TerrainUniforms {
   uCarPos: { value: THREE.Vector3 }
@@ -34,7 +33,7 @@ export interface TerrainUniforms {
   uNight: { value: number }
   uSheen: { value: THREE.Color }
   uHazeBase: { value: number }
-  uFogDensity: { value: number }
+  uHazeTop: { value: number }
 }
 
 const VERTEX_PARS = /* glsl */ `
@@ -56,6 +55,7 @@ uniform sampler2D uNoise;
 uniform float uNight;
 uniform vec3 uSheen;
 uniform float uHazeBase;
+uniform float uHazeTop;
 uniform float uFogDensity;
 
 // Pristine grid (Ben Golus): uv in cells, lineWidth as a fraction of a cell.
@@ -85,7 +85,7 @@ diffuseColor.rgb = mix( diffuseColor.rgb, uSheen, smoothstep( 0.35, 0.85, tVar )
 
 // After roughnessmap_fragment: glossy, but not one mirror.
 const ROUGHNESS_MOD = /* glsl */ `
-roughnessFactor = clamp( roughnessFactor * mix( 0.7, 1.45, tNoiseMid.g * 0.7 + tNoiseFine.b * 0.3 ) + ( tPlate - 0.4 ) * 0.08, 0.08, 0.9 );
+roughnessFactor = clamp( roughnessFactor * mix( 0.86, 1.2, tNoiseMid.g * 0.75 + tNoiseFine.b * 0.25 ) + ( tPlate - 0.4 ) * 0.05, 0.1, 0.9 );
 `
 
 // After emissivemap_fragment (the view-space normal exists now): grid + sheen.
@@ -96,9 +96,10 @@ const EMISSIVE_MOD = /* glsl */ `
 
   float minor = pristineGrid( vTerrainWorld.xz / 10.0, 0.022 );
   float major = pristineGrid( vTerrainWorld.xz / 50.0, 0.0085 );
-  // Minor lines are gone well before the major ones.
+  // Minor lines are gone well before the major ones, which run on toward the
+  // horizon (the classic synthwave floor) until the haze takes them.
   minor *= 1.0 - smoothstep( 160.0, 420.0, camDist );
-  major *= 1.0 - smoothstep( 500.0, 1300.0, camDist );
+  major *= 1.0 - smoothstep( 1200.0, 2600.0, camDist );
   float lines = max( minor * 0.7, major );
 
   // T1 close to the car, T0 by 60 m (constitution: the grid is dim).
@@ -125,13 +126,18 @@ const HAZE_MOD = /* glsl */ `
   float fogF = 1.0 - exp( - uFogDensity * uFogDensity * tDist * tDist );
   // Valley haze: thick near the ground's base height, thinning upward.
   float lowHaze = exp( - max( vTerrainWorld.y - uHazeBase, 0.0 ) / 9.0 ) * ( 1.0 - exp( - tDist / 380.0 ) );
-  float hazeAmt = clamp( fogF + lowHaze * 0.22, 0.0, 1.0 );
-  outgoingLight = mix( outgoingLight, skyHazeColor( tDir ), hazeAmt );
+  // Far high ground (the ridge at the world's edge) melts into the sky behind
+  // its crest, so the skyline never has a hard top edge.
+  float crest = smoothstep( mix( uHazeBase, uHazeTop, 0.3 ), uHazeTop, vTerrainWorld.y ) * smoothstep( 250.0, 900.0, tDist );
+  float hazeAmt = clamp( fogF + lowHaze * 0.22 + crest * 0.5, 0.0, 1.0 );
+  // The colour of the sky right behind this point (just above the horizon at most).
+  vec3 hazeDir = normalize( vec3( tDir.x, max( tDir.y, -0.02 ), tDir.z ) );
+  outgoingLight = mix( outgoingLight, skyColor( hazeDir ), hazeAmt );
 }
 `
 
 /** Make the terrain material. Dispose it (and its noise texture) when done. */
-export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeBase: number): {
+export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeBase: number, hazeTop: number): {
   material: THREE.MeshPhysicalMaterial
   uniforms: TerrainUniforms
 } {
@@ -142,7 +148,7 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
     uNight: { value: 0 },
     uSheen: { value: new THREE.Color(PALETTE.groundSheen) },
     uHazeBase: { value: hazeBase },
-    uFogDensity: { value: FOG_DENSITY },
+    uHazeTop: { value: Math.max(hazeTop, hazeBase + 1) },
   }
 
   // Physical (not Standard) only for specularIntensity: dark glass reflects,
@@ -150,7 +156,7 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
   // whole ground to bronze. No clearcoat or transmission: they cost too much.
   const material = new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(PALETTE.ground),
-    roughness: 0.38,
+    roughness: 0.42,
     metalness: 0.0,
     specularIntensity: 0.38,
     envMapIntensity: 0.8,
@@ -171,7 +177,7 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
       .replace('#include <opaque_fragment>', `${HAZE_MOD}\n#include <opaque_fragment>`)
   }
   // One program for every terrain chunk, and a stable cache key.
-  material.customProgramCacheKey = () => 'sr2-terrain-v1'
+  material.customProgramCacheKey = () => 'sr2-terrain-v2'
 
   return { material, uniforms }
 }
