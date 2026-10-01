@@ -43,7 +43,7 @@ import { cameraState } from './camera/CameraRig'
 import { GhostCar } from './GhostCar'
 import { links } from './links'
 import { PlayerCar } from './PlayerCar'
-import { trickState } from './tricks'
+import { trickState, wipeoutLog } from './tricks'
 import { frameAt, quatFromFrame, RIDE_HEIGHT } from './trackNav'
 
 export { CameraRig } from './camera/CameraRig'
@@ -166,6 +166,7 @@ export function VehicleLayer() {
         }) as never,
         'trackJumps(): watch every car; returns the biggest trackS jump (m) per 100 ms sample so far (level-jump check)',
       ),
+      registerDev('wipeouts', (() => wipeoutLog.slice()) as never, 'wipeouts(): the last 20 trick wipeouts and why each fired (dev)'),
       registerDev(
         'resetCar',
         ((kind: 'road' | 'start' = 'road') => {
@@ -192,6 +193,8 @@ export function VehicleLayer() {
             slip: +s.wheelSlip[i].toFixed(2),
           })),
           surface: s.surface,
+          chassis: { touching: s.chassisTouching, supportUp: +s.chassisSupportUp.toFixed(2) },
+          holding: s.holding,
           onRoad: s.onRoad,
           forces: { suspSum: Math.round(s.debugSuspSum), wheelY: Math.round(s.debugWheelForceY), weight: Math.round(s.speed >= 0 ? 9.81 * 1200 * s.tuning.mass : 0) },
           mag: { grip: s.magGrip, strength: +s.magStrength.toFixed(2), guide: Array.from(s.debugGuide).map((v) => +v.toFixed(2)) },

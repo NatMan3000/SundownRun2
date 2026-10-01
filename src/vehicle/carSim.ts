@@ -45,6 +45,7 @@ import {
   DT,
   GEAR_TOP_KMH,
   GRAVITY,
+  HOLD,
   MAG,
   RAY_LENGTH,
   RPM,
@@ -76,6 +77,27 @@ const _rv = { x: 0, y: 0, z: 0 }
 const _rp = { x: 0, y: 0, z: 0 }
 const _rq = { x: 0, y: 0, z: 0, w: 1 }
 const WORLD_UP = new THREE.Vector3(0, 1, 0)
+
+/**
+ * A chassis contact point counts as touching only within this gap, metres. Soft CCD
+ * widens rapier's contact prediction to metres, so a manifold can hold points for a
+ * body still flying well clear of the road: counting those read a car sailing over a
+ * crest as "lying on its body" (false wipeouts) and a hard landing as a crash.
+ */
+const TOUCH_GAP = 0.03
+
+interface Manifold {
+  numContacts(): number
+  contactDist(i: number): number
+  contactImpulse(i: number): number
+  normal(): { x: number; y: number; z: number }
+}
+/** Really touching: a point inside the gap, or one the last solve pushed on (a hit that bounced apart). */
+function manifoldTouches(m: Manifold): boolean {
+  const n = m.numContacts()
+  for (let i = 0; i < n; i++) if (m.contactDist(i) <= TOUCH_GAP || m.contactImpulse(i) > 0) return true
+  return false
+}
 
 const WHEELS = 4
 /** Mount points, chassis-local: FL, FR, RL, RR (+X is the car's left). */
@@ -222,6 +244,13 @@ export class CarSim {
   brakeLight = 0
   /** No wheel down but the chassis is touching the world (on its roof or side): not flying. */
   chassisTouching = false
+  /**
+   * While chassisTouching: the car's up . the surface normal at the body contact. ~1 = beached
+   * on its belly (upright), ~0 = on its side, ~-1 = on its roof.
+   */
+  chassisSupportUp = 1
+  /** "Up" of the surface under the car: the wheels' ground normal, or in the air the road's own up (bank included) when over the road. */
+  readonly surfaceUp = new THREE.Vector3(0, 1, 0)
   /** Dev: world-vertical sum of this step's wheel forces (suspension + tyre), N. */
   debugWheelForceY = 0
   debugSuspSum = 0
@@ -272,6 +301,8 @@ export class CarSim {
   private readonly compression = new Float64Array(WHEELS)
   private readonly suspForce = new Float64Array(WHEELS)
   private readonly rayToi = new Float64Array(WHEELS)
+  /** Last step's ray length per wheel (-1 = it had no ground), for the damper's compression rate. */
+  private readonly prevToi = new Float64Array(WHEELS).fill(-1)
   private readonly wheelOmega = new Float64Array(WHEELS)
   private readonly longClip = new Float64Array(WHEELS)
   private readonly driveShare = new Float64Array(WHEELS)
@@ -293,6 +324,8 @@ export class CarSim {
   private boostPower = 0
   private boostCooldown: Float64Array = new Float64Array(0)
   private crashCooldown = 0
+  /** Auto-hold is gripping the car (stopped, no pedal): see HOLD in tuning.ts. */
+  holding = false
   private nanReported = false
   private pendingReset: ResetKind | null = null
   private pendingReason = ''
@@ -568,6 +601,7 @@ export class CarSim {
         this.compression[i] = 0
         this.suspForce[i] = 0
         this.rayToi[i] = RAY_LENGTH
+        this.prevToi[i] = -1
         continue
       }
       const toi = hit.timeOfImpact
@@ -592,10 +626,15 @@ export class CarSim {
       // Velocity of the chassis at the contact patch: v + w x r.
       _arm.set(this.contactPts[i].x - comX, this.contactPts[i].y - comY, this.contactPts[i].z - comZ)
       _pointVel.crossVectors(angvel, _arm).add(linvel)
-      // Compression rate = how fast the mount approaches the GROUND, measured along the ray.
-      // (Using v . carUp instead leaked forward speed into the damper whenever the car
-      // pitched against the road - 7 kN of phantom lift under throttle at 120 km/h.)
-      const suspVel = _pointVel.dot(n) / Math.max(up.dot(n), 0.5) // + extending, - compressing
+      // Compression rate (+ extending, - compressing) = how fast the ray got longer since last
+      // step. Not v . n: the road is a triangle mesh, and where it twists (a bank coming in) the
+      // two triangles of each strip tilt fore and aft, so v . n at 200 km/h flips by +-5 m/s from
+      // one triangle to the next - 15-26 kN damper kicks that threw the car off the road at every
+      // banked curve entry. (v . carUp, before that, leaked forward speed whenever the car pitched.)
+      // The first step on the ground has no history: that one uses the approach along the normal.
+      const prev = this.prevToi[i]
+      const suspVel = prev >= 0 ? (toi - prev) / DT : _pointVel.dot(n) / Math.max(up.dot(n), 0.5)
+      this.prevToi[i] = toi
       let f = k * this.compression[i] - (suspVel < 0 ? dC : dR) * suspVel
       let cap = fMax
       const bump = this.compression[i] - SUSPENSION.bumpStart
@@ -751,6 +790,29 @@ export class CarSim {
     const rearAlpha = rearAlphaN > 0 ? rearAlphaSum / rearAlphaN : 0
     this.latAccel = _tyreSum.dot(right) / mass
     this.longAccel = _tyreSum.dot(fwd) / mass
+
+    // ---- auto-hold: stopped with no pedal down, the car stays where it is ----
+    // On a sloped or banked grid gravity rolled an idle car away (backwards, or down the bank).
+    // Like a real car's hill-hold: below HOLD.engageSpeed with no throttle and no brake/reverse
+    // the tyres cancel gravity's pull along the ground and soak up what drift is left, up to
+    // HOLD.mu of grip (a shove from another car still moves it). Any pedal lets go at once.
+    // Off while frozen (the countdown has its own hold), on magnetic surfaces and in the air.
+    const pedal = throttle > 0.02 || brake > 0.02
+    if (this.frozen || pedal || grounded < 3 || this.magGrip) this.holding = false
+    else if (speed < HOLD.engageSpeed) this.holding = true
+    else if (speed > HOLD.releaseSpeed) this.holding = false
+    if (this.holding) {
+      const n = this.groundNormal
+      // Gravity along the ground, plus the car's own drift along it.
+      _tmp.set(0, -GRAVITY, 0).addScaledVector(n, GRAVITY * n.y)
+      _tmp.multiplyScalar(-mass)
+      _force.copy(linvel).addScaledVector(n, -linvel.dot(n)).multiplyScalar(-mass / HOLD.settleSeconds)
+      _tmp.add(_force)
+      const cap = HOLD.mu * mass * GRAVITY * Math.max(n.y, 0)
+      const f = _tmp.length()
+      if (f > cap && f > 1e-6) _tmp.multiplyScalar(cap / f)
+      this.addForce(body, _tmp.x, _tmp.y, _tmp.z)
+    }
 
     // ---- aero ----
     if (speed > 0.1) {
@@ -1025,6 +1087,8 @@ export class CarSim {
     this.airTime = 0
     this.steerAngle = 0
     for (let i = 0; i < WHEELS; i++) this.wheelOmega[i] = 0
+    this.prevToi.fill(-1)
+    this.holding = false
     if (s >= 0) {
       this.trackS = s
       this.hasTrackS = true
@@ -1170,12 +1234,20 @@ export class CarSim {
       this.hasTrackS = true
     }
     this.lateral = Number.isFinite(hit.lateral) ? hit.lateral : 0
+    // The surface's up: the wheels know it on the ground; in the air over the road it is the
+    // road's own up at this point (a 60 deg bank is "level" for a car flying over it).
+    const hw = track.samples.halfWidth[hit.index] ?? 7
+    if (grounded > 0) this.surfaceUp.copy(this.groundNormal)
+    else if (this.hasTrackS && Math.abs(this.lateral) <= hw + 2) {
+      const f = track.frameAt(this.trackS, this.frame)
+      if (finiteV(f.up) && f.up.lengthSq() > 0.5) this.surfaceUp.copy(f.up).normalize()
+      else this.surfaceUp.copy(WORLD_UP)
+    } else this.surfaceUp.copy(WORLD_UP)
     if (grounded > 0) {
       // Wheels first: they know exactly what they stand on.
       this.onRoad = onRoadWheels > 0
     } else {
       // Flying over the road counts as on it, however high (jumps must not dirty a lap).
-      const hw = track.samples.halfWidth[hit.index] ?? 7
       this.onRoad = Math.abs(this.lateral) <= hw + 0.6
     }
   }
@@ -1212,21 +1284,31 @@ export class CarSim {
   private probeWorld: RapierWorld | null = null
   private probeChassis: RapierCollider | null = null
   private probeHit = false
-  private readonly onManifold = (m: { numContacts(): number }) => {
-    if (m.numContacts() > 0) this.probeHit = true
+  private probeSupport = -2
+  private readonly onManifold = (m: Manifold, flipped: boolean) => {
+    if (!manifoldTouches(m)) return
+    this.probeHit = true
+    // The manifold normal points from the first collider (the chassis) to the ground; flipped
+    // swaps them. Turned to point from the ground toward the car, it is the surface's "up".
+    const n = m.normal()
+    const sgn = flipped ? 1 : -1
+    const d = sgn * (n.x * this.up.x + n.y * this.up.y + n.z * this.up.z)
+    if (Number.isFinite(d) && d > this.probeSupport) this.probeSupport = d
   }
   private readonly onPair = (other: RapierCollider) => {
-    if (this.probeHit || !this.probeWorld || !this.probeChassis) return
+    if (!this.probeWorld || !this.probeChassis) return
     if (ownerOf(other.handle)) return // other cars and props are not "the ground"
     this.probeWorld.contactPair(this.probeChassis, other, this.onManifold)
   }
 
-  /** True if the chassis box is in contact with a world collider right now. */
+  /** True if the chassis box is in contact with a world collider right now (sets chassisSupportUp). */
   private touchingWorld(world: RapierWorld, chassis: RapierCollider): boolean {
     this.probeWorld = world
     this.probeChassis = chassis
     this.probeHit = false
+    this.probeSupport = -2
     world.contactPairsWith(chassis, this.onPair)
+    this.chassisSupportUp = this.probeHit ? this.probeSupport : 1
     return this.probeHit
   }
 
@@ -1238,7 +1320,7 @@ export class CarSim {
     world.contactPairsWith(chassis, (other) => {
       let touching = false
       world.contactPair(chassis, other, (m) => {
-        if (m.numContacts() > 0) touching = true
+        if (manifoldTouches(m)) touching = true
       })
       if (!touching) return
       const owner = ownerOf(other.handle)

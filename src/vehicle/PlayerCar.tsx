@@ -155,6 +155,8 @@ export function PlayerCar() {
       trackS: 0,
       hasTrackS: false,
       chassisTouching: false,
+      chassisSupportUp: 1,
+      surfaceUp: sim.surfaceUp,
     }),
     [sim],
   )
@@ -280,6 +282,7 @@ export function PlayerCar() {
     trickIn.trackS = s.trackS
     trickIn.hasTrackS = s.hasTrackS
     trickIn.chassisTouching = s.chassisTouching
+    trickIn.chassisSupportUp = s.chassisSupportUp
     const g = getGame()
     tricks.update(trickIn, t, getSettings().tricks && g.phase === 'playing')
 

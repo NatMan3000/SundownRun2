@@ -23,6 +23,8 @@
 //  Landings are forgiving: a scruffy two-wheel touchdown gets a
 //  short recovery window (~0.35 s) to settle upright and still
 //  score. Settling wrong, or landing on the roof, is a wipeout.
+//  "Upright" is judged against the surface under the car, never
+//  world up, so a 60 deg bank or a wall ride is not "on its side".
 // ============================================================
 
 import type * as THREE from 'three'
@@ -97,6 +99,9 @@ export const trickState = {
   wallSeconds: 0,
 }
 
+/** Dev: the last few wipeouts and why they fired (window.__dev.wipeouts()). Written only on a wipeout. */
+export const wipeoutLog: { why: string; trackS: number; upY: number; upDot: number; airS: number; speedKmh: number }[] = []
+
 function multi(n: number, base: string): string {
   if (n <= 1) return base
   if (n === 2) return 'DOUBLE ' + base
@@ -152,8 +157,12 @@ export interface TrickInput {
   onWall: boolean
   trackS: number
   hasTrackS: boolean
-  /** No wheel down but the body is touching the world (lying on the roof or side). */
+  /** No wheel down but the body is touching the world (lying on the roof or side, or beached). */
   chassisTouching: boolean
+  /** While chassisTouching: car up . the surface normal at the body contact (1 belly, 0 side, -1 roof). */
+  chassisSupportUp: number
+  /** Up of the surface under the car (ground normal, or the road's up when flying over it). */
+  surfaceUp: THREE.Vector3
 }
 
 export class TrickDetector {
@@ -192,7 +201,7 @@ export class TrickDetector {
    * window - counts as the wipeout it is.
    */
   cancel(): void {
-    if (this.pendingSteps > 0 || (this.active && this.lastUp < UPRIGHT_MIN)) this.wipeout()
+    if (this.pendingSteps > 0 || (this.active && this.lastUp < UPRIGHT_MIN)) this.wipeout('reset while down')
     this.settle()
     this.driftSteps = 0
     this.driftGap = 0
@@ -210,21 +219,27 @@ export class TrickDetector {
       if (this.active || this.pendingSteps > 0) this.settle()
       return
     }
-    // Car up measured against what it lands on, so a wall-ride exit still reads right.
-    const upDot = c.airborne ? c.up.y : c.up.dot(c.groundNormal)
+    // "Upright" is always judged against the SURFACE under the car (the wheels' ground normal,
+    // or in the air the road's own up), never world up: on a 60 deg bank or a wall-ride exit
+    // a car on its wheels is upright, whatever world up says.
+    const upDot = c.up.dot(c.surfaceUp)
     this.lastUp = upDot
+    // The body touching the world with the car upright on it (beached on a crest, a belly
+    // landing) is not flying and not a wipeout: it counts as down on its wheels' side.
+    const onBelly = c.airborne && c.chassisTouching && c.chassisSupportUp >= UPRIGHT_MIN
+    const airborne = c.airborne && !onBelly
 
     this.stepDrift(!c.airborne && c.drifting, c.driftAngle)
     this.stepWall(c)
     if (track) this.stepLoop(c, track)
 
-    if (!c.airborne) this.grounded = true
+    if (!airborne) this.grounded = true
     if (this.quietSteps > 0) this.quietSteps-- // see quietSession
-    // Wheels up but the body is on the ground (roof or side): a wipeout, never "air".
-    if (c.airborne && c.chassisTouching) {
+    // Wheels up and the body on the ground ON ITS ROOF OR SIDE: a wipeout, never "air".
+    if (airborne && c.chassisTouching) {
       this.restingSteps++
       if (this.restingSteps === RESTING_STEPS) {
-        if (this.active || this.pendingSteps > 0) this.wipeout()
+        if (this.active || this.pendingSteps > 0) this.wipeout('resting on the body', c)
         this.settle()
         this.grounded = false
       }
@@ -233,9 +248,9 @@ export class TrickDetector {
       this.restingSteps = 0
     }
     // After a wipeout, nothing new starts until a wheel touches down again.
-    if (c.airborne && !this.active && !this.grounded) return
+    if (airborne && !this.active && !this.grounded) return
 
-    if (c.airborne) {
+    if (airborne) {
       if (!this.active) {
         this.active = true
         // A bounce out of a scruffy landing continues the SAME session.
@@ -259,8 +274,8 @@ export class TrickDetector {
         emit('air.start', { speedKmh: Math.round(c.speedKmh) })
       }
       // A hard hit while upside down mid-air (roof first into the ground, a wall): wipeout now.
-      if (c.impact > 0.25 && c.up.y < -0.2 && airS >= MIN_AIR_S) {
-        this.wipeout()
+      if (c.impact > 0.25 && upDot < -0.2 && airS >= MIN_AIR_S) {
+        this.wipeout('hit while upside down', c)
         this.settle()
         return
       }
@@ -293,7 +308,7 @@ export class TrickDetector {
       }
       this.pendingSteps--
       if (this.pendingSteps === 0) {
-        this.wipeout()
+        this.wipeout('did not settle upright', c)
         this.settle()
       }
     }
@@ -324,7 +339,16 @@ export class TrickDetector {
     emit('trick.land', { tricks, airTimeS: Math.round(airS * 100) / 100, combo, points: total, clean })
   }
 
-  private wipeout(): void {
+  private wipeout(why: string, c?: TrickInput): void {
+    if (wipeoutLog.length >= 20) wipeoutLog.shift()
+    wipeoutLog.push({
+      why,
+      trackS: c ? Math.round(c.trackS) : -1,
+      upY: c ? Math.round(c.up.y * 100) / 100 : NaN,
+      upDot: Math.round(this.lastUp * 100) / 100,
+      airS: Math.round((this.pendingSteps > 0 ? this.pendingAir : this.airSteps * DT) * 100) / 100,
+      speedKmh: c ? Math.round(c.speedKmh) : -1,
+    })
     // What the pending session WOULD have scored is what was lost.
     const airS = this.pendingSteps > 0 ? this.pendingAir : this.airSteps * DT
     const tricks = classifyLanding(airS >= MIN_AIR_S ? airS : 0, this.yaw, this.pitch, this.roll, this.wallCarry)

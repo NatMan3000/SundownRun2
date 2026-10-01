@@ -355,6 +355,21 @@ export const BOOST = {
   cooldown: 1.0,
 }
 
+/**
+ *  AUTO-HOLD. A car sitting still with no pedal down stays put, even on a
+ *  sloped or banked grid (idle cars used to creep backwards on Neon Pocket's
+ *  start). It engages below engageSpeed (m/s) and lets go the moment the
+ *  throttle or the brake (reverse) is touched, or if a shove pushes the car
+ *  past releaseSpeed. It can hold at most mu of the car's weight sideways.
+ */
+export const HOLD = {
+  engageSpeed: 0.5,
+  releaseSpeed: 1.5,
+  /** Leftover drift is soaked up over about this long, seconds. */
+  settleSeconds: 0.15,
+  mu: 0.9,
+}
+
 export const STATE = {
   /** Speed (m/s) and rear slip above which `drifting` is true. */
   driftSpeed: 5,
