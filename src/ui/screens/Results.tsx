@@ -33,6 +33,7 @@ function RaceStandings() {
   const results = useGame((s) => s.raceResults)
   const position = useGame((s) => s.racePosition)
   const racers = useGame((s) => s.raceRacers)
+  const trap = useGame((s) => s.trapBestKmh)
   const sorted = [...results].sort((a, b) => a.position - b.position)
   const me = sorted.find((r) => r.isPlayer)
   const pos = me?.position ?? position
@@ -42,6 +43,14 @@ function RaceStandings() {
         <span className={`result-hero__big${pos === 1 ? ' is-win' : ''}`}>{ordinal(pos)}</span>
         <span className="result-hero__sub">{pos === 1 ? 'You won the race' : `of ${Math.max(racers, sorted.length)}`}</span>
       </div>
+      {trap !== null && (
+        <dl className="stats stats--wide">
+          <div>
+            <dt>Top speed</dt>
+            <dd>{formatTopSpeed(trap, recordAngle(getTrack()))}</dd>
+          </div>
+        </dl>
+      )}
       {sorted.length > 0 && (
         <table className="standings">
           <thead>
