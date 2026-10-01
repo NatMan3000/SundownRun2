@@ -22,12 +22,8 @@ import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 import { GLOW, PALETTE } from '../../core/palette'
 import { ROAD_GLSL } from './glsl'
+import { PYLON_BURY as BURY, PYLON_WIDTH as WIDTH } from './pylons'
 import type { Pylon } from './pylons'
-
-/** Column cross-section, metres (square). */
-const WIDTH = 0.55
-/** How far each pylon continues into the ground, so it never floats on a slope. */
-const BURY = 0.8
 
 const vertexPars = /* glsl */ `
 varying vec2 vFaceUv;

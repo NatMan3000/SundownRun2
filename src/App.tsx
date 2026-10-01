@@ -15,7 +15,7 @@ import { PerfProbe } from './core/perf'
 import { useTrack } from './track/current'
 import { TrackPhysics } from './track'
 import { World, WorldPhysics } from './world'
-import { RoadView, CarFx, FxSystem, PostStack } from './look'
+import { RoadView, CarFx, FxSystem, PostStack, BridgePylonColliders } from './look'
 import { VehicleLayer, CameraRig, InputSystem } from './vehicle'
 import { PlayLayer } from './play'
 import { NetLayer } from './net'
@@ -51,6 +51,7 @@ function Scene() {
         >
           <TrackPhysics />
           <WorldPhysics />
+          <BridgePylonColliders />
           <VehicleLayer />
           <PlayLayer />
           <NetLayer />

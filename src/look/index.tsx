@@ -6,8 +6,10 @@
 //    CarFx      every car's light: trails, underglow, headlights
 //    FxSystem   the reflection map + pooled shards, sparks, pulses
 //    PostStack  bloom, tone mapping, vignette, SMAA, boost lens,
-//               plus the quality manager and the F9 screenshot
-//  App.tsx mounts all four inside the Canvas.
+//               headlight beams, plus the quality manager and the
+//               F9 screenshot
+//  App.tsx mounts all four inside the Canvas, and
+//    BridgePylonColliders  the solid bridge pylons, inside <Physics>
 //
 //  Inspect it live:  window.__game.get('look')
 // ============================================================
@@ -26,6 +28,7 @@ import { HeadlightRig } from './fx/HeadlightRig'
 import { EventFx } from './fx/EventFx'
 
 export { RoadView } from './road/RoadView'
+export { BridgePylonColliders } from './road/BridgePylonColliders'
 
 export function CarFx() {
   return <CarLights />

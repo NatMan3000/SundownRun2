@@ -16,13 +16,15 @@
 //    - never where a pylon would stand on, or pass through, any
 //      other part of the road (a bridge crossing over the track)
 //
-//  Pure maths, no three.js objects: BridgePylons.tsx draws them.
-//  Pylons are scenery only (no collider); the placement keeps them
-//  off every road so a car on the track never meets one.
+//  Pure maths, no three.js objects. BridgePylons.tsx draws them and
+//  BridgePylonColliders.tsx makes them solid, both from trackPylons()
+//  so what you see is exactly what you hit. The placement keeps them
+//  off every road, so only a car that has left the road can meet one.
 // ============================================================
 
 import { SURFACE_CODE, type TrackRuntime } from '../../track/types'
 import { SLAB_THICKNESS } from '../../track/road'
+import { skirtExtras } from './skirtExtras'
 
 /** One pylon: foot on the ground, top under the deck, turned to the road. */
 export interface Pylon {
@@ -34,7 +36,16 @@ export interface Pylon {
   height: number
   /** Radians about +y, so the pylon's faces line up with the road. */
   heading: number
+  /** Distance along the road of the deck it holds up. */
+  s: number
+  /** Which side of the deck: -1 left, +1 right (of the driving direction). */
+  side: -1 | 1
 }
+
+/** Column cross-section, metres (square). The drawing and the collider both use it. */
+export const PYLON_WIDTH = 0.55
+/** How far each pylon continues into the ground, so it never floats on a slope. */
+export const PYLON_BURY = 0.8
 
 /** Metres between pylon pairs along the road. */
 const SPACING = 24
@@ -99,7 +110,7 @@ export function placePylons(track: TrackRuntime, thickness: Float32Array | null)
     const midClear = midUnderY - track.terrainHeight(S.px[i], S.pz[i])
     if (S.grounded[i] && midClear < MIN_HEIGHT) continue
     const heading = Math.atan2(S.tx[i], S.tz[i])
-    for (const side of [-1, 1]) {
+    for (const side of [-1, 1] as const) {
       const l = side * lateral
       const x = S.px[i] + S.rx[i] * l - S.ux[i] * t
       const topY = S.py[i] + S.ry[i] * l - S.uy[i] * t
@@ -108,8 +119,20 @@ export function placePylons(track: TrackRuntime, thickness: Float32Array | null)
       const height = topY - footY
       if (!Number.isFinite(height) || height < MIN_HEIGHT) continue
       if (hitsOtherRoad(track, x, z, footY, topY, s)) continue
-      out.push({ x, z, footY, height, heading })
+      out.push({ x, z, footY, height, heading, s, side })
     }
   }
   return out
+}
+
+const cache = new WeakMap<TrackRuntime, readonly Pylon[]>()
+
+/** The pylons for this runtime, worked out once and shared by the drawing and the colliders. */
+export function trackPylons(track: TrackRuntime): readonly Pylon[] {
+  let p = cache.get(track)
+  if (!p) {
+    p = placePylons(track, skirtExtras(track).thickness)
+    cache.set(track, p)
+  }
+  return p
 }

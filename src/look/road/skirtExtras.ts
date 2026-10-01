@@ -81,8 +81,28 @@ function sideLift(track: TrackRuntime, thick: Float32Array, side: -1 | 1): Float
   return out
 }
 
-/** The aSlabT and aLift arrays for the skirt mesh (one value per vertex), and the per-sample thickness. */
-export function skirtExtras(track: TrackRuntime): { slabT: Float32Array; lift: Float32Array; thickness: Float32Array } {
+export interface SkirtExtras {
+  /** Per vertex: slab thickness. */
+  slabT: Float32Array
+  /** Per vertex: 0..1 air under the slab. */
+  lift: Float32Array
+  /** Per sample: slab thickness. */
+  thickness: Float32Array
+}
+
+const cache = new WeakMap<TrackRuntime, SkirtExtras>()
+
+/** The aSlabT and aLift arrays for the skirt mesh (one value per vertex), and the per-sample thickness. Worked out once per runtime. */
+export function skirtExtras(track: TrackRuntime): SkirtExtras {
+  let e = cache.get(track)
+  if (!e) {
+    e = buildSkirtExtras(track)
+    cache.set(track, e)
+  }
+  return e
+}
+
+function buildSkirtExtras(track: TrackRuntime): SkirtExtras {
   const skirt = track.meshes.skirt
   const S = track.samples
   const n = S.count

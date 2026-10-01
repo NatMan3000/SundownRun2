@@ -30,7 +30,7 @@ import { makeSkirtMaterial } from './skirtMaterial'
 import { makeBarrierMaterial, makeRampMaterial } from './pieceMaterials'
 import { SpeedTrapSigns } from './SpeedTrapSign'
 import { skirtExtras } from './skirtExtras'
-import { placePylons } from './pylons'
+import { trackPylons } from './pylons'
 import { BridgePylons } from './BridgePylons'
 import { headlightState } from '../fx/HeadlightRig'
 
@@ -96,7 +96,7 @@ export function RoadView() {
     const extras = skirtExtras(track)
     skirt.setAttribute('aSlabT', new THREE.BufferAttribute(extras.slabT, 1))
     skirt.setAttribute('aLift', new THREE.BufferAttribute(extras.lift, 1))
-    const pylons = placePylons(track, extras.thickness)
+    const pylons = trackPylons(track)
     const roadMat = makeRoadMaterial(uniforms)
     const skirtMat = makeSkirtMaterial(uniforms)
     const ramps = track.meshes.ramps ? geometryFrom(track.meshes.ramps) : null
