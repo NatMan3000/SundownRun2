@@ -47,6 +47,7 @@ import {
   DT,
   GEAR_TOP_KMH,
   GRAVITY,
+  BARRIER,
   HOLD,
   LANDING,
   MAG,
@@ -345,6 +346,12 @@ export class CarSim {
   get debugRoadHeight(): number {
     return this.hit.height
   }
+  /** Wheel rays that met a barrier this step (they count as no ground: no support, no grip). */
+  barrierRays = 0
+  /** The body is touching a barrier this step (stepBarrierContact). */
+  barrierTouch = false
+  /** Seconds the barrier's righting stays on after the last touch (BARRIER.holdSeconds). */
+  private barrierTimer = 0
   /** Physics steps since the car (re)spawned. */
   steps = 0
   /** Seconds since the car last had no wheel down (0 while airborne). */
@@ -722,6 +729,7 @@ export class CarSim {
     let magWheels = 0
     let onRoadWheels = 0
     let floorTouch = false
+    let barrierRays = 0
     _magN.set(0, 0, 0)
     this.groundNormal.set(0, 0, 0)
     ray.dir.x = -up.x
@@ -733,7 +741,13 @@ export class CarSim {
       ray.origin.y = _anchor.y
       ray.origin.z = _anchor.z
       const hit = world.castRayAndGetNormal(ray, RAY_LENGTH, true, undefined, GROUPS.wheelRay, undefined, body)
-      if (!hit) {
+      // A barrier is never ground: a wheel whose ray meets one gets no support and no grip, and only
+      // the body touches it (scrape and slide along it, upright). Gripping the barrier's face, a car
+      // driving into the flat Hyperdrome's outer wall at full throttle rolled 90 deg onto it and rode
+      // it through a whole bend on four wheels. Wall rides are the `wall` surface, not this.
+      const surf = hit ? surfaceOf(hit.collider.handle) : 'road'
+      if (hit && surf === 'barrier') barrierRays++
+      if (!hit || surf === 'barrier') {
         this.wheelContact[i] = false
         this.compression[i] = 0
         this.suspForce[i] = 0
@@ -743,7 +757,6 @@ export class CarSim {
         continue
       }
       const toi = hit.timeOfImpact
-      const surf = surfaceOf(hit.collider.handle)
       this.wheelContact[i] = true
       this.wheelSurface[i] = surf
       grounded++
@@ -787,6 +800,7 @@ export class CarSim {
     if (grounded > 0 && this.groundNormal.lengthSq() > 1e-8) this.groundNormal.normalize()
     else this.groundNormal.copy(grounded > 0 ? up : WORLD_UP)
     this.wheelsDown = grounded
+    this.barrierRays = barrierRays
     // Wheels up: is the body itself resting on something? (Only checked while no wheel is down.)
     this.chassisTouching = grounded === 0 && chassis !== null && this.touchingWorld(world, chassis)
     // Dev: the body scraping the world with wheels down too (a trace channel; off by default).
@@ -1141,6 +1155,10 @@ export class CarSim {
       )
     }
 
+    // ---- against a barrier: slide along it upright ----
+    if (chassis && track) this.stepBarrierContact(body, world, chassis, track, grounded, inertiaScale, mass)
+    else this.barrierTouch = false
+
     // =========================================================
     //  STATE
     // =========================================================
@@ -1328,6 +1346,38 @@ export class CarSim {
   }
 
   /**
+   * A barrier is something you scrape along, upright (see BARRIER in tuning.ts). Its push lands
+   * above the centre of mass, so a car pressed into it (a flat bend taken too fast) rolled until
+   * its underside faced the wall and slid along on its side. While the body touches a barrier a
+   * righting torque holds the car to the road's up; and a car left perched on a barrier with no
+   * wheel on the ground is eased back toward the road instead of sliding off the far side.
+   */
+  private stepBarrierContact(body: RapierRigidBody, world: RapierWorld, chassis: RapierCollider, track: TrackRuntime, grounded: number, inertiaScale: number, mass: number): void {
+    this.barrierTouch = this.touchingBarrier(world, chassis)
+    if (this.barrierTouch) this.barrierTimer = BARRIER.holdSeconds
+    else if (this.barrierTimer > 0) this.barrierTimer -= DT
+    if (this.barrierTimer <= 0 || !this.hasTrackS) return
+    const f = track.frameAt(this.trackS, this.frame)
+    if (!finiteV(f.up) || !finiteV(f.right)) return
+    const up = this.up
+    // Never right a car that is on its roof: that is a wipeout, and the tricks say so.
+    if (up.dot(f.up) < BARRIER.minUp) return
+    // Spring toward the road's up, damper on any roll / pitch rate (yaw is left alone).
+    _tmp.crossVectors(up, f.up).multiplyScalar(BARRIER.rightK * inertiaScale)
+    _w.copy(this.angvel).addScaledVector(up, -this.angvel.dot(up)).multiplyScalar(-BARRIER.rightD * inertiaScale)
+    _tmp.add(_w)
+    this.addTorque(body, _tmp.x, _tmp.y, _tmp.z)
+    // Perched on it (no wheel on the ground, at or past the road's edge): back toward the road.
+    if (this.barrierTouch && grounded === 0) {
+      const hw = f.halfWidth
+      if (Math.abs(this.lateral) > hw - BARRIER.shedInside) {
+        const a = -Math.sign(this.lateral) * BARRIER.shedAccel * mass
+        this.addForce(body, f.right.x * a, f.right.y * a, f.right.z * a)
+      }
+    }
+  }
+
+  /**
    * Mass, centre of mass and inertia come from here, not from the collider (it
    * has density 0), so they are explicit and tunable per body. Re-applied when
    * the garage swaps the body.
@@ -1481,6 +1531,7 @@ export class CarSim {
     this.wallOn = false
     this.wallGuard = 0
     this.wallLevelTimer = 0
+    this.barrierTimer = 0
     this.uprightTimer = 0
     this.buriedTimer = 0
     this.settleSteps = 6
@@ -1965,7 +2016,29 @@ export class CarSim {
   private readonly onPair = (other: RapierCollider) => {
     if (!this.probeWorld || !this.probeChassis) return
     if (ownerOf(other.handle)) return // other cars and props are not "the ground"
+    // Nor is a barrier: an upright car scraping one side-on, wheels up for a moment, read as
+    // "lying on its side" and scored a wipeout (5 in 72 glancing hits, all upright).
+    if (surfaceOf(other.handle) === 'barrier') return
     this.probeWorld.contactPair(this.probeChassis, other, this.onManifold)
+  }
+
+  private barrierHit = false
+  private readonly onBarrierManifold = (m: Manifold) => {
+    if (manifoldTouches(m)) this.barrierHit = true
+  }
+  private readonly onBarrierPair = (other: RapierCollider) => {
+    if (this.barrierHit || !this.probeWorld || !this.probeChassis) return
+    if (ownerOf(other.handle) || surfaceOf(other.handle) !== 'barrier') return
+    this.probeWorld.contactPair(this.probeChassis, other, this.onBarrierManifold)
+  }
+
+  /** True if the chassis box is touching a barrier right now. */
+  private touchingBarrier(world: RapierWorld, chassis: RapierCollider): boolean {
+    this.probeWorld = world
+    this.probeChassis = chassis
+    this.barrierHit = false
+    world.contactPairsWith(chassis, this.onBarrierPair)
+    return this.barrierHit
   }
 
   /** True if the chassis box is in contact with a world collider right now (sets chassisSupportUp). */

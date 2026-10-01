@@ -438,6 +438,25 @@ export const MAG = {
   wallLevelMax: 25,
 }
 
+/**
+ *  BARRIERS are scraped along, upright. Wheels never stand on one (carSim: a wheel ray that meets
+ *  a `barrier` gets no support and no grip; wall rides are the `wall` surface). The body still hits
+ *  it, but that push lands above the centre of mass, so a car pressed into the wall through a bend
+ *  taken too fast rolled until its underside faced the wall and slid along on its side. While the
+ *  body touches a barrier (and holdSeconds after) a righting torque holds the car to the road's up.
+ */
+export const BARRIER = {
+  /** Righting spring, Nm per rad of tilt from the road's up, and damper on roll / pitch rate, Nm per rad/s. */
+  rightK: 20000,
+  rightD: 5000,
+  holdSeconds: 0.3,
+  /** Car up . road up below this = on its roof: left alone (a wipeout, not a scrape). */
+  minUp: -0.2,
+  /** Perched on it with no wheel down and beyond halfWidth - shedInside (m) from the centre line: pushed back toward the road (m/s^2). */
+  shedInside: 0.5,
+  shedAccel: 4,
+}
+
 export const BOOST = {
   /** Instant forward kick, m/s (x pad strength x boostStrength setting). */
   kick: 7,
