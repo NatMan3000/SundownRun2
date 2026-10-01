@@ -1,0 +1,79 @@
+{
+  "format": "sundown-run-track",
+  "version": 1,
+  "id": "neon-pocket",
+  "name": "Neon Pocket",
+  "author": "Sundown Run Two",
+  "description": "A twisty little neon circuit tucked into a pocket of hills: boost into the loop on the sunrise straight, ride the wall round the east sweeper, jump the south straight and wriggle through the S-bends home.",
+  "laps": 3,
+  "road": {
+    "points": [
+      { "x": -200, "z": -240 },
+      { "x": -100, "z": -240 },
+      { "x": 0, "z": -240 },
+      { "x": 100, "z": -240 },
+      { "x": 190, "z": -240 },
+      { "x": 250, "z": -195 },
+      { "x": 255, "z": -110 },
+      { "x": 230, "z": -40 },
+      { "x": 233, "z": 0, "lift": 3 },
+      { "x": 240, "z": 40 },
+      { "x": 255, "z": 120 },
+      { "x": 240, "z": 210 },
+      { "x": 160, "z": 250 },
+      { "x": 60, "z": 250 },
+      { "x": -40, "z": 250 },
+      { "x": -125, "z": 232 },
+      { "x": -160, "z": 165 },
+      { "x": -110, "z": 100 },
+      { "x": -90, "z": 30 },
+      { "x": -150, "z": -25 },
+      { "x": -215, "z": -35 },
+      { "x": -255, "z": -95 },
+      { "x": -258, "z": -165 },
+      { "x": -240, "z": -222 }
+    ],
+    "width": 14,
+    "banking": { "auto": true, "maxDeg": 12, "designSpeedKmh": 110 }
+  },
+  "pieces": [
+    { "type": "boost", "at": 0.75 },
+    { "type": "loop", "at": 2.0, "radius": 13 },
+    { "type": "wallride", "at": 9.5, "side": "left", "length": 150 },
+    { "type": "speedtrap", "at": 12.5 },
+    { "type": "ramp", "at": 13.3 },
+    { "type": "boost", "at": 20.5 }
+  ],
+  "props": [
+    { "x": 255, "z": -150, "kind": "crates", "size": "medium" },
+    { "x": -120, "z": 95, "kind": "cubes", "size": "small" },
+    { "x": 100, "z": 120, "kind": "tower", "size": "large" }
+  ],
+  "cores": [
+    { "x": 100, "z": 0, "y": 3 },
+    { "x": 0, "z": 250, "y": 7 },
+    { "x": 330, "z": 330 },
+    { "x": -330, "z": 300 },
+    { "x": -130, "z": 165 },
+    { "x": 240, "z": -20 },
+    { "x": -200, "z": -90 },
+    { "x": -300, "z": -300 }
+  ],
+  "hunt": { "count": 8 },
+  "start": { "at": 0.3 },
+  "environment": {
+    "size": 1000,
+    "terrain": {
+      "kind": "hills",
+      "relief": 10,
+      "edge": "ridge",
+      "features": [
+        { "type": "hill", "x": 100, "z": 0, "radius": 90, "height": 16 }
+      ]
+    },
+    "sky": { "timeOfDay": 0.3, "sunAzimuthDeg": 90 },
+    "palette": { "edge": "#39ff8a" },
+    "roadside": { "billboards": 6 },
+    "music": { "mood": "race" }
+  }
+}
