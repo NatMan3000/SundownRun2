@@ -530,14 +530,17 @@ function PostField({ track }: { track: TrackRuntime }) {
 
 const _tp = new THREE.Vector3()
 const _tq = new THREE.Quaternion()
-const _tm = new THREE.Matrix4()
+const _yAxis = new THREE.Vector3(0, 1, 0)
 
-/** Dev helper: teleport the player `metres` away from a point, facing it. */
+/**
+ * Dev helper: teleport the player `metres` short of a point, facing it,
+ * approaching along the road direction nearest the point. The car is set
+ * down on whatever is under the start spot (road surface or terrain).
+ */
 export function aimAt(track: TrackRuntime, x: number, y: number, z: number, metres: number): string {
   const player = cars.find((c) => c.id === 'player')
   if (!player?.api) return 'no player car'
   if (getGame().phase !== 'playing') return 'not playing'
-  // approach along the road direction nearest the target
   const hit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: true }
   track.nearest(x, y, z, hit)
   const i = hit.index
@@ -546,12 +549,14 @@ export function aimAt(track: TrackRuntime, x: number, y: number, z: number, metr
   const tl = Math.hypot(tx, tz) || 1
   const sx = x - (tx / tl) * metres
   const sz = z - (tz / tl) * metres
-  const ground = Math.max(track.terrainHeight(sx, sz), y)
-  _tp.set(sx, ground + 1.2, sz)
-  _tm.lookAt(_tp, new THREE.Vector3(x, ground + 1.2, z), new THREE.Vector3(0, 1, 0))
-  _tq.setFromRotationMatrix(_tm)
-  // Matrix4.lookAt points -z at the target; cars drive along +z, so turn half a circle.
-  _tq.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI))
+  // the start spot's ground: the road if we are on it, else the terrain
+  const startHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: true }
+  track.nearest(sx, track.terrainHeight(sx, sz), sz, startHit)
+  let ground = track.terrainHeight(sx, sz)
+  if (Math.abs(startHit.lateral) < track.samples.halfWidth[startHit.index] + 0.5) ground = Math.max(ground, track.samples.py[startHit.index])
+  _tp.set(sx, ground + 0.9, sz)
+  const heading = Math.atan2(x - sx, z - sz) // +z forward: yaw that points the nose at the target
+  _tq.setFromAxisAngle(_yAxis, heading)
   player.api.teleport(_tp, _tq)
   return `player ${metres} m from (${x.toFixed(1)}, ${z.toFixed(1)}), facing it`
 }

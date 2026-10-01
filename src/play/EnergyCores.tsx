@@ -78,17 +78,17 @@ function CoreField({ track }: { track: TrackRuntime }) {
   const st = useMemo<HuntState>(() => ({ round: -1, picks: [], alive: [], popT: [], time: 0 }), [])
 
   const res = useMemo(() => {
-    const shellGeo = new THREE.IcosahedronGeometry(0.75, 0)
-    const hotGeo = new THREE.OctahedronGeometry(0.34, 0)
-    const ringGeo = new THREE.TorusGeometry(1.15, 0.045, 6, 40)
+    const shellGeo = new THREE.IcosahedronGeometry(1.0, 0)
+    const hotGeo = new THREE.OctahedronGeometry(0.46, 0)
+    const ringGeo = new THREE.TorusGeometry(1.55, 0.055, 6, 48)
     // The beam: an open tube fading to nothing as it rises (vertex alpha, no texture).
-    const beamGeo = new THREE.CylinderGeometry(0.22, 0.22, BEAM_H, 8, 6, true)
+    const beamGeo = new THREE.CylinderGeometry(0.12, 0.16, BEAM_H, 8, 6, true)
     beamGeo.translate(0, BEAM_H / 2, 0)
     const pos = beamGeo.getAttribute('position')
     const colors = new Float32Array(pos.count * 3)
     const beamCol = new THREE.Color(PALETTE.core)
     for (let i = 0; i < pos.count; i++) {
-      const fade = Math.pow(1 - pos.getY(i) / BEAM_H, 1.6) * 0.55 // additive: brightness IS the alpha
+      const fade = Math.pow(1 - pos.getY(i) / BEAM_H, 1.6) * 0.32 // additive: brightness IS the alpha; kept well under the road edges
       colors[i * 3] = beamCol.r * fade
       colors[i * 3 + 1] = beamCol.g * fade
       colors[i * 3 + 2] = beamCol.b * fade

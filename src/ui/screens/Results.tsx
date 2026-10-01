@@ -16,9 +16,11 @@ import { getCar } from '../../core/telemetry'
 import { NavScreen } from '../nav'
 import { MenuButton } from '../widgets'
 import { HintBar } from '../hints'
-import { openScreen, useUi } from '../uiStore'
+import { openScreen, showNotice, useUi } from '../uiStore'
+import { audio } from '../../core/api'
 import { quitToTitle, restartSession } from '../flow'
 import { formatLap, formatScore } from '../format'
+import { startMultiplayerRound } from '../../net'
 
 function ordinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd']
@@ -79,14 +81,14 @@ function ScoreVsBest(props: { label: string; value: string; best: string; isBest
 }
 
 /**
- * Tag: net reuses raceResults with `ms` = SECONDS spent as "it" (least wins).
+ * Tag: net reuses raceResults with `ms` = milliseconds spent as "it" (least wins).
  * Falls back to the live tagSeconds if no results were written.
  */
 function TagStandings() {
   const results = useGame((s) => s.raceResults)
   const secs = useGame((s) => s.tagSeconds)
   const rows: { id: string; name: string; s: number | null; me: boolean }[] = results.length
-    ? results.map((r) => ({ id: r.carId, name: r.isPlayer ? 'You' : r.name, s: r.ms, me: r.isPlayer }))
+    ? results.map((r) => ({ id: r.carId, name: r.isPlayer ? 'You' : r.name, s: r.ms === null ? null : r.ms / 1000, me: r.isPlayer }))
     : Object.entries(secs).map(([id, v]) => ({ id, name: id === 'player' ? 'You' : getCar(id)?.name ?? id, s: v, me: id === 'player' }))
   rows.sort((a, b) => (a.s ?? Infinity) - (b.s ?? Infinity))
   const winner = rows[0]
@@ -174,7 +176,16 @@ function ResultBody() {
   return <RunSummary />
 }
 
+/** Multiplayer "Again": a new synced round for everyone, the same as pressing G / X. */
+function againMultiplayer(): void {
+  if (!startMultiplayerRound()) {
+    audio.ui('error')
+    showNotice("Can't start a round right now: not connected to the host, or a round is still running.", 'error')
+  }
+}
+
 export function ResultsScreen() {
+  const mp = useGame((s) => s.multiplayer)
   const trackName = useGame((s) => s.trackName)
   const mode = useGame((s) => s.mode)
   return (
@@ -188,7 +199,13 @@ export function ResultsScreen() {
           </div>
           <ResultBody />
           <nav className="results-actions" aria-label="What next">
-            <MenuButton id="again" label="Again" help="Same track, same mode, from the start." onAccept={restartSession} acceptSound="start" />
+            <MenuButton
+              id="again"
+              label="Again"
+              help={mp ? 'Start another round for everyone (same as G / X).' : 'Same track, same mode, from the start.'}
+              onAccept={mp ? againMultiplayer : restartSession}
+              acceptSound="start"
+            />
             <MenuButton
               id="tracks"
               label="Track select"
