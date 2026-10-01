@@ -51,7 +51,11 @@ import { raceBook, racerById } from './raceBook'
 
 /** Steering: how hard to turn toward the aim point (per radian of angle) and how much to damp it. */
 const STEER_GAIN = 1.9
-const STEER_DAMP = 0.12
+const STEER_DAMP = 0.25
+/** Rejoining the lane: aim at least this many metres ahead per metre off it. */
+const REJOIN_RATIO = 5
+/** No overtaking when the road ahead bends tighter than this (1/m): passing is for straights. */
+const PASS_MAX_CURVATURE = 0.006
 /** Aim point distance: base metres + metres per (m/s) of speed. */
 const LOOK_BASE = 7
 const LOOK_PER_MS = 0.38
@@ -278,7 +282,12 @@ export class AiDriver implements Driver {
 
     // ---- aim point ----
     const speed = Math.max(0, v)
-    const look = clamp((LOOK_BASE + LOOK_PER_MS * speed) * this.personality.lookahead, LOOK_MIN, LOOK_MAX)
+    let look = clamp((LOOK_BASE + LOOK_PER_MS * speed) * this.personality.lookahead, LOOK_MIN, LOOK_MAX)
+    // Far off our lane (after a pass, a slide, a reset): aim further up the road so
+    // we rejoin at a shallow angle (about 11 degrees at most) instead of swinging
+    // across the road and overshooting the other edge.
+    const offLane = Math.abs(this.hit.lateral - this.laneNow)
+    if (offLane * REJOIN_RATIO > look) look = Math.min(LOOK_MAX * 1.5, offLane * REJOIN_RATIO)
     const aimS = this.s + look
     track.frameAt(aimS, _frame)
     const lineOff = sampleAt(track, track.racingLine.offset, aimS)
@@ -513,6 +522,17 @@ export class AiDriver implements Driver {
       shove += (gap >= 0 ? 1 : -1) * (SIDE_GAP - ag) * 0.9
     }
     this.sideShove = shove
+
+    // passing is for straights: in a bend, follow instead of pulling out
+    let bendy = false
+    for (let j = 0; j <= 80 && !bendy; j += 8) {
+      const idx = Math.floor(track.wrapS(this.s + j) / track.samples.ds) % track.samples.count
+      if (Math.abs(track.samples.curvature[idx]) > PASS_MAX_CURVATURE) bendy = true
+    }
+    if (blocker >= 0 && bendy && this.passTimer <= 0) {
+      if (blockerDs < 9) cap = Math.max(0, list[blocker].speed - 0.5)
+      blocker = -1
+    }
 
     if (blocker >= 0) {
       const o = list[blocker]

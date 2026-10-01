@@ -38,7 +38,75 @@ import { aimAt } from './Smashables'
 /** Pick up when any part of the car comes within this many metres. */
 const PICKUP_R = 3
 const POP_S = 0.35
-const BEAM_H = 46
+// The light pillar over each core (metres).
+const BEAM_H = 60
+const BEAM_BASE_R = 1.6
+const BEAM_TOP_R = 0.7
+/** The pillar is invisible within NEAR_FADE metres of the camera and full strength past FAR_FADE. */
+const NEAR_FADE = 25
+const FAR_FADE = 110
+
+/**
+ * The pillar's look. A light pillar is light, not a surface, so it is an
+ * unlit additive shader (CONSTITUTION: MeshBasic-style unlit is wrong only
+ * on surfaces that should be lit). Peak brightness sits at T1 (a soft halo),
+ * well under the road's T2, and it fades:
+ *   - across its width (a fresnel-style falloff: solid-looking, soft edges)
+ *   - up its height (gone by the top, never a hard end)
+ *   - near the camera (it never blocks the view as you drive in)
+ *   - with a slow upward shimmer, so it reads as light, not a pole
+ */
+function beamMaterial(): THREE.ShaderMaterial {
+  const c = new THREE.Color(PALETTE.core)
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Vector3(c.r, c.g, c.b) },
+      uPeak: { value: GLOW.T1 * 0.6 },
+      uTime: { value: 0 },
+      uHeight: { value: BEAM_H },
+      uNear: { value: NEAR_FADE },
+      uFar: { value: FAR_FADE },
+    },
+    vertexShader: /* glsl */ `
+      uniform float uHeight;
+      uniform float uNear;
+      uniform float uFar;
+      varying float vUp;
+      varying float vEdge;
+      varying float vNear;
+      void main() {
+        vec4 world = modelMatrix * instanceMatrix * vec4(position, 1.0);
+        vec3 base = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        vec3 n = normalize(mat3(modelMatrix * instanceMatrix) * normal);
+        vec3 toCam = normalize(cameraPosition - world.xyz);
+        vEdge = abs(dot(n, toCam));
+        vUp = position.y / uHeight;
+        vNear = smoothstep(uNear, uFar, distance(cameraPosition, base));
+        gl_Position = projectionMatrix * viewMatrix * world;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor;
+      uniform float uPeak;
+      uniform float uTime;
+      varying float vUp;
+      varying float vEdge;
+      varying float vNear;
+      void main() {
+        float body = pow(vEdge, 2.2);
+        float rise = pow(1.0 - clamp(vUp, 0.0, 1.0), 1.8) * smoothstep(0.0, 0.04, vUp);
+        float shimmer = 0.82 + 0.18 * sin(vUp * 26.0 - uTime * 1.7);
+        float a = body * rise * shimmer * vNear;
+        gl_FragColor = vec4(uColor * uPeak * a, 1.0);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  })
+}
 const CAR_HALF_H = 0.7
 
 const _obj = new THREE.Object3D()
@@ -81,19 +149,12 @@ function CoreField({ track }: { track: TrackRuntime }) {
     const shellGeo = new THREE.IcosahedronGeometry(1.0, 0)
     const hotGeo = new THREE.OctahedronGeometry(0.46, 0)
     const ringGeo = new THREE.TorusGeometry(1.55, 0.055, 6, 48)
-    // The beam: an open tube fading to nothing as it rises (vertex alpha, no texture).
-    const beamGeo = new THREE.CylinderGeometry(0.12, 0.16, BEAM_H, 8, 6, true)
+    // The light pillar: a soft, tapering column of violet light above each core,
+    // so Josh can spot cores from across the valley. Open-ended, drawn with a
+    // small shader (beamMaterial below): bright down the middle and fading to
+    // nothing at its edges, its top and when you get close.
+    const beamGeo = new THREE.CylinderGeometry(BEAM_TOP_R, BEAM_BASE_R, BEAM_H, 20, 8, true)
     beamGeo.translate(0, BEAM_H / 2, 0)
-    const pos = beamGeo.getAttribute('position')
-    const colors = new Float32Array(pos.count * 3)
-    const beamCol = new THREE.Color(PALETTE.core)
-    for (let i = 0; i < pos.count; i++) {
-      const fade = Math.pow(1 - pos.getY(i) / BEAM_H, 1.6) * 0.32 // additive: brightness IS the alpha; kept well under the road edges
-      colors[i * 3] = beamCol.r * fade
-      colors[i * 3 + 1] = beamCol.g * fade
-      colors[i * 3 + 2] = beamCol.b * fade
-    }
-    beamGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
 
     // Crystal shell: violet, glossy, lit, glowing from within (T2 at its brightest point).
     const shellMat = new THREE.MeshStandardMaterial({
@@ -120,14 +181,7 @@ function CoreField({ track }: { track: TrackRuntime }) {
       emissiveIntensity: GLOW.T1,
       roughness: 0.3,
     })
-    // A light beam is light, not a surface, so an unlit additive material is right here (T0: no bloom).
-    const beamMat = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    })
+    const beamMat = beamMaterial()
     return { shellGeo, hotGeo, ringGeo, beamGeo, shellMat, hotMat, ringMat, beamMat }
   }, [])
 
@@ -196,6 +250,7 @@ function CoreField({ track }: { track: TrackRuntime }) {
 
     const dt = Math.min(delta, 0.05)
     st.time += dt
+    res.beamMat.uniforms.uTime.value = st.time
     const time = st.time
 
     // pickup test: the core's distance to the player's car box (only while driving)
