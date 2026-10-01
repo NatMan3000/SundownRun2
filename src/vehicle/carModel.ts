@@ -25,6 +25,7 @@
 
 import * as THREE from 'three'
 import { GLOW, PALETTE } from '../core/palette'
+import { environment } from '../core/telemetry'
 import type { CarAnchors } from '../core/telemetry'
 import { bodyEntry } from './bodies/catalog'
 import type { BodyId } from './bodies/catalog'
@@ -104,6 +105,96 @@ function makeWheelMaterial(): { mat: THREE.MeshStandardMaterial; uniforms: NonNu
   return { mat, uniforms }
 }
 
+// ---------------------------------------------------------------- paint: warm sun side
+
+/**
+ * The paint is dark and glossy, so on its own it mostly mirrors the sky.
+ * At sundown that left the side of the car facing the sun violet whenever
+ * the sun was behind you. This adds the sunset's warmth back to the paint,
+ * worked out from the light's direction in the shader (no extra lights,
+ * draws or reflection lookups):
+ *
+ *   wash   panels turned toward the sun glow warm, softly wrapping round
+ *          the edges, tinted halfway to the paint's own hue so a navy car
+ *          and a plum car stay different. Strongest on dark paints, which
+ *          barely catch the key light themselves; bright paints already
+ *          do, so they get little and keep their own colour.
+ *   sheen  the clear coat catching the low sun: a broad warm highlight
+ *          wherever a panel reflects toward the sun (the colour of the
+ *          light, on every paint)
+ *   rim    a thin warm edge on the sun side of the car's outline
+ *
+ * It follows the warm key light out (gone by timeOfDay 0.5, the same
+ * window the world's sun light fades over) so night is unchanged.
+ * All three share two uniforms, ticked once a frame by whichever car
+ * draws first (onBeforeRender).
+ */
+const paintSun = {
+  /** Warm colour x how much sun is left (black at night). */
+  uSunWarm: { value: new THREE.Color() },
+  /** World-space unit vector toward the key light (environment.keyLightDirection). */
+  uSunDir: { value: new THREE.Vector3(0, 0.3, -1) },
+}
+/** The sunset's warmth: the sun's glow leaning to its pink bottom band (palette tokens). */
+const SUN_WARM = new THREE.Color(PALETTE.skySunGlow).lerp(new THREE.Color(PALETTE.sunBottom), 0.35)
+let paintSunFrame = -1
+
+function tickPaintSun(renderer: THREE.WebGLRenderer): void {
+  const frame = renderer.info.render.frame
+  if (frame === paintSunFrame) return
+  paintSunFrame = frame
+  const sun = 1 - THREE.MathUtils.smoothstep(environment.timeOfDay, 0.22, 0.5)
+  paintSun.uSunWarm.value.copy(SUN_WARM).multiplyScalar(sun)
+  const d = environment.keyLightDirection
+  if (Number.isFinite(d.x + d.y + d.z) && d.lengthSq() > 1e-6) paintSun.uSunDir.value.copy(d).normalize()
+}
+
+const paintSunPars = /* glsl */ `
+uniform vec3 uSunWarm;
+uniform vec3 uSunDir;
+`
+const paintSunFragment = /* glsl */ `
+#include <emissivemap_fragment>
+if (uSunWarm.r + uSunWarm.g + uSunWarm.b > 0.001) {
+  vec3 sunV = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz); // toward the sun, view space
+  vec3 eyeV = normalize(vViewPosition);                          // toward the camera
+  float ndl = dot(normal, sunV);
+  float wrap = clamp((ndl + 0.45) / 1.45, 0.0, 1.0);
+  float ndv = clamp(dot(normal, eyeV), 0.0, 1.0);
+  float paintLuma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+  float dark = 1.0 - smoothstep(0.04, 0.45, paintLuma);
+  float wash = wrap * wrap * (0.015 + 0.12 * dark);
+  // the wash takes on the paint's own hue (navy warms to violet-red, plum to
+  // magenta), so dark paints stay told apart; sheen and rim are the light's colour
+  vec3 hue = diffuseColor.rgb / max(max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b)), 1e-4);
+  vec3 washTint = mix(vec3(1.0), hue, 0.55);
+  float sheen = pow(clamp(dot(reflect(-eyeV, normal), sunV), 0.0, 1.0), 4.0) * (0.12 + 0.5 * pow(1.0 - ndv, 3.0));
+  float rim = pow(1.0 - ndv, 3.0) * smoothstep(0.0, 0.6, ndl) * 0.35;
+  totalEmissiveRadiance += uSunWarm * (washTint * wash + sheen + rim);
+}
+`
+
+/** The car paint: dark metal flake under a clear coat, plus the warm sun side (above). */
+function makePaintMaterial(paint: string): THREE.MeshPhysicalMaterial {
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: paint,
+    metalness: 0.5,
+    roughness: 0.18,
+    clearcoat: 1,
+    clearcoatRoughness: 0.03,
+    envMapIntensity: 1.4,
+  })
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uSunWarm = paintSun.uSunWarm
+    shader.uniforms.uSunDir = paintSun.uSunDir
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\n${paintSunPars}`)
+      .replace('#include <emissivemap_fragment>', paintSunFragment)
+  }
+  mat.customProgramCacheKey = () => 'sr2-car-paint-sun-v1'
+  return mat
+}
+
 /** One shared see-through material per ghost model. */
 function makeGhostMaterial(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
@@ -152,15 +243,9 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     paintMat = null
     glassMat = trimMat = lightMat = wheelMat = m
   } else {
-    // Dark glossy paint: metal flake under a clear coat, so it mirrors the neon world.
-    paintMat = new THREE.MeshPhysicalMaterial({
-      color: paint,
-      metalness: 0.5,
-      roughness: 0.18,
-      clearcoat: 1,
-      clearcoatRoughness: 0.03,
-      envMapIntensity: 1.4,
-    })
+    // Dark glossy paint: metal flake under a clear coat, so it mirrors the neon world,
+    // with the sunset's warmth on the side facing the sun.
+    paintMat = makePaintMaterial(paint)
     glassMat = new THREE.MeshPhysicalMaterial({ color: PALETTE.road, metalness: 0.9, roughness: 0.06, clearcoat: 1, envMapIntensity: 1.5 })
     trimMat = new THREE.MeshStandardMaterial({ color: PALETTE.citySilhouette, metalness: 0.3, roughness: 0.62 })
     const lm = makeLightMaterial()
@@ -175,6 +260,7 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
   const paintMesh = new THREE.Mesh(g.paint, paintMat ?? glassMat)
   paintMesh.castShadow = !!opts.shadows
   paintMesh.receiveShadow = !opts.ghost
+  if (paintMat) paintMesh.onBeforeRender = tickPaintSun
   const glassMesh = new THREE.Mesh(g.glass, glassMat)
   const trimMesh = new THREE.Mesh(g.trim, trimMat)
   const lightMesh = new THREE.Mesh(g.lights, lightMat)
