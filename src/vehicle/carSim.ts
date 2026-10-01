@@ -107,11 +107,11 @@ function finiteV(v: THREE.Vector3): boolean {
  * DOWN to the axle's slide plateau. The per-axle plateaus decide whether a
  * slide straightens or spins - see TYRE in tuning.ts.
  */
-function tyreCurve(slipAngle: number, slideFrac: number): number {
+function tyreCurve(slipAngle: number, slideFrac: number, peakSlip: number): number {
   const a = slipAngle < 0 ? -slipAngle : slipAngle
-  if (a <= TYRE.peakSlip) return a / TYRE.peakSlip
+  if (a <= peakSlip) return a / peakSlip
   if (a >= TYRE.tailSlip) return slideFrac
-  const t = (a - TYRE.peakSlip) / (TYRE.tailSlip - TYRE.peakSlip)
+  const t = (a - peakSlip) / (TYRE.tailSlip - peakSlip)
   return 1 + (slideFrac - 1) * (t * t * (3 - 2 * t))
 }
 
@@ -227,6 +227,8 @@ export class CarSim {
   debugSuspSum = 0
   /** Dev: loop guidance this step [lateral m, lateral speed m/s, commanded accel m/s^2, heading error rad]. */
   readonly debugGuide = new Float32Array(4)
+  /** Dev: per wheel (FL, FR, RL, RR) x [slip angle rad, lateral force N, longitudinal force N, load N]. */
+  readonly debugTyre = new Float32Array(16)
   /** Physics steps since the car (re)spawned. */
   steps = 0
 
@@ -536,6 +538,8 @@ export class CarSim {
     const brakeRearWheel = (brakeTotal * (1 - DRIVE.brakeFrontBias)) / 2
     const quarterMass = mass / 4
     const grip = h.grip * this.tuning.grip
+    // The tyres stiffen with speed (TYRE.peakSlipFast): the slip curve peaks sooner.
+    const peakSlip = TYRE.peakSlip + (TYRE.peakSlipFast - TYRE.peakSlip) * smoothstep(TYRE.stiffLo, TYRE.stiffHi, speed)
 
     // =========================================================
     //  PASS A - raycast + spring / damper
@@ -641,6 +645,8 @@ export class CarSim {
     const cosS = Math.cos(this.steerAngle)
     const sinS = Math.sin(this.steerAngle)
     let nanForce = false
+    let rearAlphaSum = 0
+    let rearAlphaN = 0
     for (let i = 0; i < WHEELS; i++) {
       const isFront = i < 2
       const wf = this.wheelFwd[i]
@@ -655,6 +661,7 @@ export class CarSim {
       if (!this.wheelContact[i]) {
         this.wheelSlip[i] = 0
         this.longClip[i] = 0
+        this.debugTyre.fill(0, i * 4, i * 4 + 4)
         continue
       }
       const load = sf[i]
@@ -670,9 +677,9 @@ export class CarSim {
       let mu = (isFront ? TYRE.muFront : TYRE.muRear) * grip
       if (!isFront && handbrake) mu *= TYRE.handbrakeGrip
       const maxF = mu * load
-      let fLat = -Math.sign(vLat) * maxF * tyreCurve(alpha, isFront ? TYRE.slideFrontFrac : TYRE.slideRearFrac)
+      let fLat = -Math.sign(vLat) * maxF * tyreCurve(alpha, isFront ? TYRE.slideFrontFrac : TYRE.slideRearFrac, peakSlip)
       if (speed < 2) fLat -= vLat * load * ASSIST.lowSpeedLateral
-      this.wheelSlip[i] = clamp((alpha - TYRE.peakSlip) / (TYRE.tailSlip - TYRE.peakSlip), 0, 1)
+      this.wheelSlip[i] = clamp((alpha - peakSlip) / (TYRE.tailSlip - peakSlip), 0, 1)
 
       // ---- longitudinal: drive + brakes + rolling resistance ----
       const driveHere = isFront ? 0 : engineTotal * this.driveShare[i]
@@ -693,7 +700,11 @@ export class CarSim {
           // proportionally stole the rears' cornering grip exactly when load
           // transfer had already halved it. Street-car rule: the rears keep their
           // LATERAL grip first and braking gets what is left. Fronts stay
-          // proportional (a washed-out front is understeer - safe).
+          // proportional (a washed-out front is understeer - safe). That split is
+          // already an ideal ABS: a front tyre never locks, so full brake plus full
+          // lock from 185 km/h still turns at 1.2 g while stopping at 1 g. Giving
+          // the fronts lateral-first too only added 0.1 g of turn and halved the
+          // braking in a corner (measured 2026-10-01).
           if (Math.abs(fLat) > maxF) fLat = Math.sign(fLat) * maxF
           const room = Math.sqrt(Math.max(0, maxF * maxF - fLat * fLat))
           if (Math.abs(fLong) > room) fLong = Math.sign(fLong) * room
@@ -705,6 +716,15 @@ export class CarSim {
       }
       const availableLong = Math.sqrt(Math.max(0, maxF * maxF - fLat * fLat))
       this.longClip[i] = clamp((requestedLong - availableLong) / Math.max(availableLong, 500), 0, 1)
+      if (!isFront) {
+        rearAlphaSum += alpha
+        rearAlphaN++
+      }
+      const dbg = i * 4
+      this.debugTyre[dbg] = vLat > 0 ? alpha : -alpha
+      this.debugTyre[dbg + 1] = fLat
+      this.debugTyre[dbg + 2] = fLong
+      this.debugTyre[dbg + 3] = load
 
       // ---- apply: suspension along up, tyre forces in the ground plane ----
       _force.copy(up).multiplyScalar(load).addScaledVector(wf, fLong).addScaledVector(wr, fLat)
@@ -728,6 +748,7 @@ export class CarSim {
       this.reportNaN('wheel force')
       this.requestReset('auto', 'nan')
     }
+    const rearAlpha = rearAlphaN > 0 ? rearAlphaSum / rearAlphaN : 0
     this.latAccel = _tyreSum.dot(right) / mass
     this.longAccel = _tyreSum.dot(fwd) / mass
 
@@ -780,6 +801,23 @@ export class CarSim {
       if (!handbrake && brakeCmd > 0.05) yawK += ASSIST.brakeYawDamp * stab * brakeCmd
       const yt = -yawRate * yawK * inertiaScale
       this.addTorque(body, up.x * yt, up.y * yt, up.z * yt)
+
+      // ---- turn-in: at speed the car yaws as fast as the steering asks ----
+      // See ASSIST.turnInK. The yaw rate the front wheels ask for (the rack angle's
+      // no-slip turn, capped at what the tyres can hold) is the target; the torque
+      // closes the gap. Never while asking for a slide, never on a loop or wall.
+      const tiSpeed = smoothstep(ASSIST.turnInLo, ASSIST.turnInHi, speed)
+      if (tiSpeed > 0 && ASSIST.turnInK > 0 && !handbrake && !counterSteer && !reversing && !this.magGrip && vLongCar > 1) {
+        const capR = (ASSIST.turnInMaxG * grip * GRAVITY) / speed
+        const rRef = clamp((vLongCar * Math.tan(this.steerAngle)) / STEERING.wheelbase, -capR, capR)
+        let err = rRef - yawRate
+        // Adding rotation is only allowed while the rear tyres still grip: it never feeds a slide.
+        if (err * rRef > 0) err *= 1 - smoothstep(ASSIST.turnInSlipLo * peakSlip, ASSIST.turnInSlipHi * peakSlip, rearAlpha)
+        // It is a cornering aid: in a real slide (a big drift angle) it bows out to the slide assists.
+        const grippy = 1 - smoothstep(ASSIST.turnInBetaLo, ASSIST.turnInBetaHi, Math.abs(beta))
+        const tq = clamp(err * ASSIST.turnInK, -ASSIST.turnInMax, ASSIST.turnInMax) * tiSpeed * grippy * inertiaScale
+        this.addTorque(body, up.x * tq, up.y * tq, up.z * tq)
+      }
 
       // ---- drift recovery: the missing spring that pulls the nose back onto the path ----
       if (!reversing && assistGain > 0.01 && speed > ASSIST.assistSpeedLo) {

@@ -95,6 +95,19 @@ export const TYRE = {
   peakSlip: 0.13,
   tailSlip: 0.6,
   /**
+   *  STIFFER AT SPEED. How long a car takes to build cornering force after
+   *  the wheel turns grows with speed and with how much slip angle the tyre
+   *  needs (lag ~ mass x speed / tyre stiffness). With the 7.4 deg peak, full
+   *  lock at 220 km/h took ~1 s to bite, and a boost pad (more speed) made it
+   *  worse. Between stiffLo and stiffHi (m/s) the peak moves to peakSlipFast,
+   *  so the same grip arrives at a smaller angle and the car turns in on cue
+   *  (see ASSIST.turnInK for the other half). Below stiffLo (90 km/h: drifts,
+   *  handbrake turns) it is the slow-speed curve, untouched.
+   */
+  peakSlipFast: 0.07,
+  stiffLo: 25,
+  stiffHi: 55,
+  /**
    *  THE PLATEAUS ARE NOT EQUAL - THAT IS THE WHOLE STABILITY STORY (v1 defect D1).
    *  Below ~20 deg the front out-grips the rear, so the car rotates into a slide
    *  (fun). Above ~20 deg the rear out-grips the front, so it straightens on its
@@ -207,6 +220,30 @@ export const ASSIST = {
   hsYawDamp: 3000,
   /** How much of the high-speed assist a full steering input switches off (cornering is not sliding). */
   hsSteerRelief: 0.75,
+  /**
+   *  TURN-IN. At speed the rack angle is tiny (about 1 deg at 200 km/h), so the
+   *  tyres only grip once the whole body has rotated into the corner. The car
+   *  also likes to rotate (front grip > rear), so after that slow start it kept
+   *  rotating into a 13 deg slide. Between turnInLo and turnInHi (m/s) a torque
+   *  drives the yaw rate toward the turn the front wheels ask for (the rack's
+   *  no-slip turn, capped at turnInMaxG x the grip setting): quick to turn in,
+   *  then held there. Adding rotation fades out as the rear tyres' slip angle
+   *  passes turnInSlipLo..Hi x the tyre's peak slip, so it never feeds a slide;
+   *  slowing an over-rotation is always allowed. Measured with TYRE.peakSlipFast,
+   *  full lock at 220 km/h: 63% of the cornering force in 0.35 s on a pad
+   *  (was 0.75 s), 0.48 s on keys (was 0.95 s); body slip 5 deg (was 13).
+   *  The full-lock grip itself is unchanged (src/core/gripTable.ts).
+   */
+  turnInLo: 25,
+  turnInHi: 50,
+  turnInK: 20000, //   Nm per rad/s of yaw-rate error
+  turnInMax: 8000, //  Nm cap
+  turnInMaxG: 1.45, // the yaw target never asks for more cornering than this (g)
+  turnInSlipLo: 0.9,
+  turnInSlipHi: 1.6,
+  /** Drift angle (rad) across which it hands over to the slide assists (8.6 .. 17 deg). */
+  turnInBetaLo: 0.15,
+  turnInBetaHi: 0.3,
   /** The assist ramps in across this speed band (m/s). */
   assistSpeedLo: 2.5,
   assistSpeedHi: 8,

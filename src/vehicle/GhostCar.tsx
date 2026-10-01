@@ -8,9 +8,12 @@
 //  beside you.
 //
 //  Shown in time trial, and in free roam when the Ghost setting is
-//  on, only while a lap is being timed. It appears in the `cars`
-//  registry as kind 'ghost' (so the look worker can give it a faint
-//  trail and the minimap can draw it).
+//  on, only while a lap is being timed. Never in multiplayer: there
+//  the other cars are real people, and a solo best lap among them is
+//  just confusing. While it shows it is in the `cars` registry as
+//  kind 'ghost' (so the look worker can give it a faint trail and the
+//  minimap can draw it); while hidden it is taken out, so nothing
+//  draws a ghost that isn't there.
 // ============================================================
 
 import { useEffect, useMemo } from 'react'
@@ -53,17 +56,28 @@ export function GhostCar() {
     car.object = model
     car.anchors = model.userData.anchors
     model.visible = false
-    addCar(car)
     return () => removeCar(car.id)
   }, [model, trace, car])
+
+  /** Show or hide the ghost; it joins the `cars` registry only while it shows. */
+  const setShown = (shown: boolean) => {
+    if (!model || model.visible === shown) return
+    model.visible = shown
+    if (shown) addCar(car)
+    else {
+      removeCar(car.id)
+      car.velocity.set(0, 0, 0)
+      car.speedKmh = 0
+    }
+  }
 
   useFrame((_, dt) => {
     if (!model || !trace) return
     const lap = links.playerLap
     const g = getGame()
-    const wanted = g.mode === 'timetrial' || (g.mode === 'free' && getSettings().ghost)
+    const wanted = !g.multiplayer && (g.mode === 'timetrial' || (g.mode === 'free' && getSettings().ghost))
     if (!lap || !lap.timing || !wanted || g.phase === 'title') {
-      model.visible = false
+      setShown(false)
       return
     }
     // The player's car renders one interpolated step behind physics; match it.
@@ -71,10 +85,12 @@ export function GhostCar() {
     const t = (lap.stepsThisLap - 1 + alpha) * DT
     _prev.copy(model.position)
     if (!sampleGhost(trace, t, model.position, model.quaternion, _qa, _qb)) {
-      model.visible = false // the ghost has finished its lap
+      setShown(false) // the ghost has finished its lap
       return
     }
-    model.visible = true
+    const appearing = !model.visible
+    setShown(true)
+    if (appearing) _prev.copy(model.position) // no speed spike from wherever it last stood
     car.position.copy(model.position)
     car.quaternion.copy(model.quaternion)
     if (dt > 0) car.velocity.subVectors(model.position, _prev).divideScalar(Math.max(dt, 1e-3))

@@ -10,14 +10,18 @@
 //
 //  Channels: t (s), kmh, drift (deg), yaw (deg/s), steer, throttle,
 //  brake, hb, air, wheels, latG, up (car up . world up), rpm, mag,
-//  x, y, z, s, lat, slip, drifting, hbBody (signed forward km/h). Buffers are preallocated: recording costs a few
-//  array writes per step and nothing at all when idle.
+//  x, y, z, s, lat, slip, drifting, hbBody (signed forward km/h),
+//  boost (envelope 0..1), rack (road-wheel angle, deg), aF / aR (front /
+//  rear slip angle, deg, axle average), fyF / fyR (axle sideways force, kN)
+//  and fxF / fxR (axle forward force, kN; braking is negative).
+//  Buffers are preallocated: recording costs a few array writes per step
+//  and nothing at all when idle.
 // ============================================================
 
 import type { CarSim } from '../vehicle/carSim'
 import { DT, GRAVITY } from '../vehicle/tuning'
 
-const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody'] as const
+const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody', 'boost', 'rack', 'aF', 'aR', 'fyF', 'fyR', 'fxF', 'fxR'] as const
 const MAX_STEPS = 60 * 60
 const RAD2DEG = 180 / Math.PI
 
@@ -64,6 +68,15 @@ export const feelTrace = {
     buf[o + 19] = s.slip
     buf[o + 20] = s.drifting ? 1 : 0
     buf[o + 21] = s.forwardSpeed * 3.6
+    const ty = s.debugTyre
+    buf[o + 22] = s.boost
+    buf[o + 23] = s.steerAngle * RAD2DEG
+    buf[o + 24] = ((ty[0] + ty[4]) / 2) * RAD2DEG
+    buf[o + 25] = ((ty[8] + ty[12]) / 2) * RAD2DEG
+    buf[o + 26] = (ty[1] + ty[5]) / 1000
+    buf[o + 27] = (ty[9] + ty[13]) / 1000
+    buf[o + 28] = (ty[2] + ty[6]) / 1000
+    buf[o + 29] = (ty[10] + ty[14]) / 1000
     count++
   },
 
