@@ -19,6 +19,10 @@
 //      by age, so fading costs the CPU nothing.
 //    - The newest tenth of a second is extra bright: at speed that
 //      stretches into a tail-light streak.
+//
+//  pose() lays a whole trail in one go, as if the car were driving
+//  straight ahead: the Garage uses it so a parked car still shows
+//  its trail colour.
 // ============================================================
 
 import * as THREE from 'three'
@@ -238,18 +242,7 @@ export class LightTrails {
     }
     const N = TRAIL_MAX_POINTS
     const base = index * N * 2 // first vertex of this trail
-
-    if (s.colorHex !== colorHex) {
-      s.colorHex = colorHex
-      this.tmpColor.set(colorHex)
-      for (let v = 0; v < N * 2; v++) {
-        const k = (base + v) * 3
-        this.color[k] = this.tmpColor.r
-        this.color[k + 1] = this.tmpColor.g
-        this.color[k + 2] = this.tmpColor.b
-      }
-      this.colorDirty = true
-    }
+    this.setColor(index, colorHex)
 
     // A jump of more than a few metres in one frame is a teleport: start a new trail.
     if (s.live) {
@@ -278,6 +271,76 @@ export class LightTrails {
     this.writePoint(base, x, y, z, this.time, strength)
     this.updateDir(base, 0)
     this.updateDir(base, 1)
+  }
+
+  /**
+   * Lay a whole trail at once, as if its car were driving along (dirX, dirY,
+   * dirZ) at `speed` m/s: point p sits p / TRAIL_RATE seconds back along the
+   * path and is exactly that old, so it fades the same way a real trail does.
+   * `wave` (metres, along sideX/Y/Z) ripples it gently, growing toward the
+   * tail, so it reads as streaming light rather than a stick. `curve` bends
+   * the path sideways (metres of offset per metre back, squared), as if the
+   * car had just come out of a slide. Call it every
+   * frame instead of feed() while you want the pose (the Garage); clear()
+   * the slot afterwards.
+   */
+  pose(
+    index: number,
+    x: number,
+    y: number,
+    z: number,
+    dirX: number,
+    dirY: number,
+    dirZ: number,
+    sideX: number,
+    sideY: number,
+    sideZ: number,
+    speed: number,
+    wave: number,
+    curve: number,
+    strength: number,
+    colorHex: string,
+  ): void {
+    const s = this.slots[index]
+    if (!Number.isFinite(x + y + z + dirX + dirY + dirZ + sideX + sideY + sideZ + speed + wave + curve + strength)) {
+      s.live = false
+      return
+    }
+    this.setColor(index, colorHex)
+    const N = TRAIL_MAX_POINTS
+    const base = index * N * 2
+    const n = this.pointsPerTrail
+    const life = n / TRAIL_RATE
+    for (let p = 0; p < n; p++) {
+      const age = p / TRAIL_RATE
+      const back = speed * age
+      const w = wave * Math.sin(this.time * 2.2 - p * 0.12) * (age / life) + curve * back * back
+      this.writePoint(base + p * 2, x - dirX * back + sideX * w, y - dirY * back + sideY * w, z - dirZ * back + sideZ * w, this.time - age, strength)
+    }
+    for (let p = 0; p < n - 1; p++) this.updateDir(base, p)
+    if (n < N) this.birth.fill(-1e6, base + n * 2, base + N * 2)
+    s.live = true
+    s.accum = 0
+    s.lastX = x
+    s.lastY = y
+    s.lastZ = z
+  }
+
+  /** Paint a whole trail one colour (only when it changes). */
+  private setColor(index: number, colorHex: string): void {
+    const s = this.slots[index]
+    if (s.colorHex === colorHex) return
+    s.colorHex = colorHex
+    this.tmpColor.set(colorHex)
+    const N = TRAIL_MAX_POINTS
+    const base = index * N * 2
+    for (let v = 0; v < N * 2; v++) {
+      const k = (base + v) * 3
+      this.color[k] = this.tmpColor.r
+      this.color[k + 1] = this.tmpColor.g
+      this.color[k + 2] = this.tmpColor.b
+    }
+    this.colorDirty = true
   }
 
   private writePoint(v: number, x: number, y: number, z: number, birth: number, strength: number): void {

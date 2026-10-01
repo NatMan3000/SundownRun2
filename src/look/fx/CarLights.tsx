@@ -3,7 +3,10 @@
 // ------------------------------------------------------------
 //  For each car in `cars` (core/telemetry.ts):
 //    - light trails from both tail lights (LightTrails.ts), stronger
-//      while sliding or boosting; ghosts get a faint one only
+//      while sliding or boosting; ghosts get a faint one only. In the
+//      Garage the parked player car shows its trail as if it were
+//      driving, so a new trail colour shows the moment you pick it
+//      (same mesh: no extra draw)
 //    - underglow: a glowing strip along each side of the belly, plus
 //      a soft pool of coloured light on the road under the car
 //    - headlight beams at night: this hands each lamp's position and
@@ -25,7 +28,7 @@ import { useFrame } from '@react-three/fiber'
 import { GLOW, PALETTE } from '../../core/palette'
 import { cars, environment } from '../../core/telemetry'
 import type { CarState } from '../../core/telemetry'
-import { useGame } from '../../core/store'
+import { getGame, useGame } from '../../core/store'
 import { QUALITY_PRESETS } from '../quality'
 import { lookState } from '../lookState'
 import { LightTrails } from './LightTrails'
@@ -154,6 +157,8 @@ interface FxCar {
   /** Smoothed trail strength. */
   trail: number
   seen: boolean
+  /** The trail is posed for the Garage preview (cleared when the Garage closes). */
+  posed: boolean
   /** The car's glow colour, parsed once (re-parsed only when it changes). */
   glowHex: string
   glow: THREE.Color
@@ -162,7 +167,7 @@ interface FxCar {
 /** Fixed table of per-car fx state (a plain array: no per-frame iterators). */
 const fxCars: FxCar[] = []
 for (let i = 0; i < MAX_FX_CARS; i++) {
-  fxCars.push({ id: '', trailL: -1, trailR: -1, pool: 0, trail: 0, seen: false, glowHex: '', glow: new THREE.Color() })
+  fxCars.push({ id: '', trailL: -1, trailR: -1, pool: 0, trail: 0, seen: false, posed: false, glowHex: '', glow: new THREE.Color() })
 }
 
 function fxFor(id: string): FxCar | null {
@@ -191,6 +196,16 @@ const _s = new THREE.Vector3()
 const _v = new THREE.Vector3()
 const _m = new THREE.Matrix4()
 const _tag = new THREE.Color(PALETTE.tagIt)
+const _fwd = new THREE.Vector3()
+const _left = new THREE.Vector3()
+
+/**
+ * The Garage trail preview: how fast the parked car "drives" (sets the trail's
+ * length), its strength and ripple, and a gentle bend toward the car's left,
+ * the side the Garage camera opens on, so the trail sweeps out from behind
+ * the car into view instead of hiding behind it.
+ */
+const GARAGE_TRAIL = { speed: 9, strength: 0.85, wave: 0.14, curve: 0.02 }
 
 function anchorToWorld(car: CarState, local: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
   return out.copy(local).applyQuaternion(car.quaternion).add(car.position)
@@ -241,6 +256,8 @@ export function CarLights() {
     const dt = Math.min(rawDt, 0.05)
     const time = state.clock.elapsedTime
     const head = environment.headlights
+    const g = getGame()
+    const garage = g.garageOpen && g.phase === 'title'
 
     for (let i = 0; i < MAX_FX_CARS; i++) fxCars[i].seen = false
 
@@ -266,6 +283,7 @@ export function CarLights() {
         f.trailR = fx.trails.slotFor(`${car.id}:R`)
         f.pool = 0
         f.trail = 0
+        f.posed = false
         f.glowHex = ''
       }
       if (f.glowHex !== car.glow) {
@@ -281,13 +299,33 @@ export function CarLights() {
       const target = ghost ? 0.22 * moving : (0.42 + 0.58 * Math.max(car.slip, car.boost)) * moving
       f.trail += (target - f.trail) * (1 - Math.exp(-8 * dt))
       const tl = anchors.tailLights
-      if (tl.length > 0 && f.trailL >= 0) {
-        anchorToWorld(car, tl[0], _v)
-        fx.trails.feed(f.trailL, _v.x, _v.y, _v.z, f.trail, car.trail, dt)
-      }
-      if (tl.length > 1 && f.trailR >= 0) {
-        anchorToWorld(car, tl[1], _v)
-        fx.trails.feed(f.trailR, _v.x, _v.y, _v.z, f.trail, car.trail, dt)
+      if (garage && car.kind === 'player') {
+        // Garage preview: lay both trails out behind the parked car as if it were driving.
+        _fwd.set(0, 0, 1).applyQuaternion(car.quaternion)
+        // the car's left is +x in its own space (nose +z, up +y; the front-left wheel sits at +x)
+        _left.set(1, 0, 0).applyQuaternion(car.quaternion)
+        for (let k = 0; k < 2 && k < tl.length; k++) {
+          const slot = k === 0 ? f.trailL : f.trailR
+          if (slot < 0) continue
+          anchorToWorld(car, tl[k], _v)
+          fx.trails.pose(slot, _v.x, _v.y, _v.z, _fwd.x, _fwd.y, _fwd.z, _left.x, _left.y, _left.z, GARAGE_TRAIL.speed, GARAGE_TRAIL.wave, GARAGE_TRAIL.curve, GARAGE_TRAIL.strength, car.trail)
+        }
+        f.posed = true
+      } else {
+        if (f.posed) {
+          // The Garage closed: the preview goes at once (the parked car is not really moving).
+          if (f.trailL >= 0) fx.trails.clear(f.trailL)
+          if (f.trailR >= 0) fx.trails.clear(f.trailR)
+          f.posed = false
+        }
+        if (tl.length > 0 && f.trailL >= 0) {
+          anchorToWorld(car, tl[0], _v)
+          fx.trails.feed(f.trailL, _v.x, _v.y, _v.z, f.trail, car.trail, dt)
+        }
+        if (tl.length > 1 && f.trailR >= 0) {
+          anchorToWorld(car, tl[1], _v)
+          fx.trails.feed(f.trailR, _v.x, _v.y, _v.z, f.trail, car.trail, dt)
+        }
       }
       if (ghost) continue // ghosts get a faint trail only
 
