@@ -16,7 +16,8 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ✅ Contracts frozen: config, settings, store, telemetry + car registry, events, controls, palette, physics groups, perf, dev handles, records, api, track schema, track runtime types, registry, current track, session flow
 - ✅ App mount points + stub modules, boot, probe script (headless GPU Chrome verified: ANGLE Metal, M5 Max, GPU timer supported)
 - ✅ Ports 5201 / 5202 added to ~/Dev/.claude/rules/reserved-ports.md
-- ⬜ Dev server kept running on 5201 for Nathan and Josh
+- ✅ Dev server running on 5201 (`vite --host`, LAN-reachable) for Nathan and Josh
+- ✅ Nine workers spawned 2026-10-01 ~17:30 AEST: track, vehicle, world, look, audio, ui, play, editor, net
 
 ## Phase 1 - systems (workers)
 
@@ -92,7 +93,7 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 
 ## Phase 2 - Josh's door and Windows [orchestrator + a worker]
 
-- ⬜ Sundown Run Two.bat, Sundown Run Two Multiplayer.bat, Sundown Run Two Update.bat (CRLF pinned)
+- ⚠️ Sundown Run Two.bat, Sundown Run Two Multiplayer.bat, Sundown Run Two Update.bat written and committed, CRLF pinned (index LF, attr eol=crlf); needs the Windows human test
 - ⬜ README: play, multiplayer, editor, Windows setup, GPU fix (High performance) and how to check the GPU
 - ⬜ Learn To Code.html (bun run learn), missions anchored to real file:line
 - ⬜ CLAUDE.md for future sessions
