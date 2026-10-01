@@ -45,8 +45,8 @@ const FIRST_STEP_MS = 550
 /** Steps closer together than this are one movement (same window as the menu's hold streak). */
 const SAME_MOVE_MS = 260
 
-/** The newest change waiting to be built: which track, which param, what value. */
-let waiting: { trackId: string; param: string; value: number } | null = null
+/** The newest change waiting to be built: which track, which param, what value (null = the track's default). */
+let waiting: { trackId: string; param: string; value: number | null } | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let lastChangeAt = -Infinity
 /** True from a rebuild until the new road has been drawn, so two never overlap. */
@@ -89,7 +89,8 @@ export function flushTrackParams(): void {
 
 /**
  * "Reset all" wiped the saved track params: if the road you are on was built
- * at a changed value, rebuild it at the track's default so it matches the menu.
+ * at a changed value, rebuild it at the track's default so it matches the menu
+ * (without saving the default, so a later change to the track file still wins).
  */
 export function rebuildLiveTrackAfterReset(): void {
   const file = getCurrentTrackFile()
@@ -97,20 +98,26 @@ export function rebuildLiveTrackAfterReset(): void {
   if (!file || !live) return
   for (const p of trackParamsFor(file)) {
     if (live.params[p.id] !== p.value) {
-      waiting = { trackId: file.id, param: p.id, value: p.value }
+      waiting = { trackId: file.id, param: p.id, value: null }
       flushTrackParams()
       return
     }
   }
 }
 
-/** A slider moved: save and show the value now; rebuild the road once it settles. */
-function changeParam(file: TrackFile, param: string, value: number): void {
+/**
+ * A slider moved: save and show the value now; rebuild the road once it settles.
+ * Back on the track's own default (the row's reset, or slid back onto it) the
+ * saved value is forgotten rather than saved, like every other setting, so if
+ * the track file's default changes later, the new default wins.
+ */
+function changeParam(file: TrackFile, p: TrackParamInfo, value: number): void {
+  const v = value === p.default ? null : value
   // Saving it is what moves the number on screen (and what the next build of this track reads).
-  useSettings.getState().setTrackParam(file.id, param, value)
+  useSettings.getState().setTrackParam(file.id, p.id, v)
   // Not the track you are on: saved for next time, nothing to rebuild.
   if (getCurrentTrackFile()?.id !== file.id) return
-  waiting = { trackId: file.id, param, value }
+  waiting = { trackId: file.id, param: p.id, value: v }
   const now = performance.now()
   const wait = now - lastChangeAt < SAME_MOVE_MS ? SETTLE_MS : FIRST_STEP_MS
   lastChangeAt = now
@@ -147,7 +154,7 @@ function ParamRow(props: { id: string; file: TrackFile; p: TrackParamInfo; live:
       step={paramStep(p.min, p.max)}
       format={paramFormat(p.id)}
       defaultValue={p.default}
-      onChange={(v) => changeParam(file, p.id, v)}
+      onChange={(v) => changeParam(file, p, v)}
       help={props.live ? `${file.name}: changes the road live, while you watch.` : `${file.name}: saved now, used the next time you drive it.`}
     />
   )
