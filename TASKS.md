@@ -158,3 +158,7 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ⬜ [designer] Afterglow boost pads 110-165 m before the loop with a corner in between: everyone arrives 40-90 km/h too fast and misses the loop mouth (play).
 - ✅ [designer] Afterglow final layout committed (648dfa8): 4.27 km figure-eight, 45 m relief, 13.4 m bridge clearance, boost straight into the loop toward the sun, 100 m wall-ride arc, big-air hill by the road; tracks:check clean, no warnings. 4 of 5 Ai finished lap 1 in the designer's race.
 - ⬜ [track, next worker] Loop exit: a car going straight after the loop hits the loop's own entry leg (the corkscrew's ~7.5 m lateral shift); Ai VECTOR jammed 20 m past the loop centre. Make the exit shift longer/gentler and give the loop legs a deflecting, not blunt, face.
+- ✅ [world] Sun is the hero again on both tracks at t 0-0.2 (skyline cuts its lower part); jagged dark edge ridge; stadium lights <= 0.6 T1. World worker stopped (87% context, handoff /tmp/sr2/reports/world-handoff.md). Ruling: Hyperdrome stands stay 63 m off the road (barriers + solid stand front contain the car).
+- ✅ [audio] Audio worker stopped (all stages done, checker 11/13 with both fails fixed).
+- ⬜ [track2] Hyperdrome sky.timeOfDay 0.35 -> 0.12 so it loads with the sun up.
+- ⬜ [perf] Frame times vary 3.1-6.4 ms on the Hyperdrome across runs while other agents share the GPU: run the perf checker on a quiet machine.
