@@ -26,7 +26,7 @@ import { BASE_WORLDS, DEFAULT_BASE_WORLD, cloneJson, draftFile, roadBound } from
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import type { P } from './geom'
 import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
-import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, reanchor, roadCurve, sectionRedraw, wrapAt } from './road'
+import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, reanchor, roadCurve, sectionRedraw, wrapAt, LOOP_RUN_IN } from './road'
 
 export interface Draft {
   id: string
@@ -527,11 +527,24 @@ export function placeAt(q: P): boolean {
     }
     const piece = makeRoadPiece(kind, hit, d.width / 2)
     if (!piece) return false
+    let note = `${tool.label} placed.`
+    if (piece.type === 'loop') {
+      // A loop needs a straight, level run-in either side or cars hit it instead of riding it.
+      const spot = loopSpot(hit.at)
+      if (spot === null) {
+        say(`A loop needs a straight, flat stretch about ${LOOP_RUN_IN * 2} m long, and this road hasn't got one. Draw a longer straight first.`, 'warn')
+        audio.ui('error')
+        return false
+      }
+      const moved = Math.min(metresBetween(rc, hit.at, spot), metresBetween(rc, spot, hit.at))
+      if (moved > 3) note = `Loops need a straight, flat run-in, so it went on the nearest straight, ${Math.round(moved)} m away.`
+      piece.at = Math.round(spot * 100) / 100
+    }
     commit((x) => {
       x.pieces.push(piece)
     })
     useEditor.setState({ selection: { kind: 'piece', index: useEditor.getState().draft.pieces.length - 1 } })
-    say(`${tool.label} placed.`, 'good')
+    say(note, 'good')
     audio.ui('select')
     return true
   }
@@ -702,4 +715,33 @@ export function copyEnvironmentFrom(file: TrackFile): void {
 /** How far the road (and anything dragged) may reach from the centre in this draft's world, metres. */
 export function roadBoundFor(): number {
   return roadBound(useEditor.getState().draft.environment) - 10
+}
+
+/**
+ * Where a loop near `at` can go: the nearest spot with a straight run-in
+ * either side (no bend tighter than a 500 m radius within 70 m, measured
+ * finely so kinks show) on level road (under 2 m of rise or fall either
+ * side, read from the built preview when it is this draft).
+ */
+export function loopSpot(at: number): number | null {
+  const s = useEditor.getState()
+  const rc = roadCurve(s.draft.points)
+  const t = getTrack()
+  const built = t && t.id === (s.savedId ?? draftId(s.draft)) ? t : null
+  const level = (a: number) => {
+    if (!built) return true
+    const p = frameAt(rc, a).p
+    const hit = built.nearest(p.x, 0, p.z, { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false })
+    const S = built.samples
+    const i0 = hit.index
+    const step = Math.round(LOOP_RUN_IN / S.ds)
+    const y = (k: number) => S.py[(((i0 + k) % S.count) + S.count) % S.count]
+    return Math.abs(y(-step) - y(0)) < 2 && Math.abs(y(step) - y(0)) < 2
+  }
+  return nearestLoopSpot(rc, at, level)
+}
+
+/** Where piece `index` was when the current drag began (to put it back). */
+export function gestureStartAt(index: number): number | null {
+  return gestureStart?.pieces[index]?.at ?? null
 }

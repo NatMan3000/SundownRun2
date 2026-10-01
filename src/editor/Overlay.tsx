@@ -35,6 +35,8 @@ import {
   endGesture,
   insertPointAt,
   liveChange,
+  loopSpot,
+  gestureStartAt,
   placeAt,
   redo,
   roadBoundFor,
@@ -322,7 +324,24 @@ export function Overlay() {
         return
       }
       if (dragging) {
+        const was = dragging
         dragging = null
+        // A dragged loop settles on the nearest straight, level stretch (or goes back if there is none).
+        if (was.kind === 'piece') {
+          const piece = useEditor.getState().draft.pieces[was.index]
+          if (piece?.type === 'loop') {
+            const spot = loopSpot(piece.at)
+            if (spot === null) {
+              say('A loop needs a straight, flat stretch about 140 m long. It went back where it was.', 'warn')
+              liveChange((d) => {
+                d.pieces[was.index].at = gestureStartAt(was.index) ?? piece.at
+              })
+            } else
+              liveChange((d) => {
+                d.pieces[was.index].at = Math.round(spot * 100) / 100
+              })
+          }
+        }
         endGesture()
         setCursor()
         return

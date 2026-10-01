@@ -213,3 +213,47 @@ function sampleBetween(rc: RoadCurve, from: number, to: number): P[] {
   return out
 }
 
+
+// ---------------------------------------------------------------- loops need a straight
+
+/** How far either side of a loop the road must be straight, metres. */
+export const LOOP_RUN_IN = 70
+/** "Straight" means no bend tighter than this radius anywhere in the run-in, metres. */
+export const LOOP_MIN_RADIUS = 500
+
+/**
+ * Tightest bend (as 1 / radius) within `reach` metres either side of `at`,
+ * measured every metre over short 12 m chords, so a sharp kink can't hide
+ * between long samples.
+ */
+export function maxBendNear(rc: RoadCurve, at: number, reach = LOOP_RUN_IN): number {
+  let worst = 0
+  for (let d = -reach; d <= reach; d += 1) {
+    const c = advanceAt(rc, at, d)
+    const a = frameAt(rc, advanceAt(rc, c, -6)).p
+    const b = frameAt(rc, c).p
+    const e = frameAt(rc, advanceAt(rc, c, 6)).p
+    const cross = Math.abs((b.x - a.x) * (e.z - a.z) - (b.z - a.z) * (e.x - a.x))
+    if (cross < 1e-9) continue
+    const r = (dist(a, b) * dist(b, e) * dist(a, e)) / (2 * cross)
+    worst = Math.max(worst, 1 / r)
+  }
+  return worst
+}
+
+/**
+ * The nearest `at` (searching both ways along the road from `at`) where a
+ * loop has a straight run-in either side, and `ok(at)` agrees (e.g. level
+ * ground). Null if the whole road has nowhere straight enough.
+ */
+export function nearestLoopSpot(rc: RoadCurve, at: number, ok: (at: number) => boolean = () => true): number | null {
+  const total = roadLength(rc)
+  const fits = (a: number) => maxBendNear(rc, a) <= 1 / LOOP_MIN_RADIUS && ok(a)
+  for (let m = 0; m <= total / 2; m += 5) {
+    for (const sign of m === 0 ? [1] : [1, -1]) {
+      const a = advanceAt(rc, at, sign * m)
+      if (fits(a)) return a
+    }
+  }
+  return null
+}

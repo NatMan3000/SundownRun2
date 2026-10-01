@@ -690,8 +690,9 @@ function pickStart(pts: readonly P[], crossings: readonly Crossing[], drawnStart
   const n = pts.length
   const length = polylineLength(pts, true)
   const h = length / n
-  const back = Math.ceil(70 / h)
-  const ahead = Math.ceil(30 / h)
+  // The grid sits from 50 m behind the line to 10 m after it (tracks:check's start gate); keep a margin.
+  const back = Math.ceil(60 / h)
+  const ahead = Math.ceil(15 / h)
   const k = Math.max(1, Math.round(5 / h))
   const curv = new Float64Array(n)
   for (let i = 0; i < n; i++) curv[i] = 1 / circumradiusAt(pts, i, k)
@@ -709,7 +710,8 @@ function pickStart(pts: readonly P[], crossings: readonly Crossing[], drawnStart
       bestAnyCurv = worst
       bestAny = i
     }
-    if (worst <= 1 / 180) {
+    // Straight enough that auto-banking stays near flat (the start gate dislikes a banked grid).
+    if (worst <= 1 / 600) {
       const dd = dist(pts[i], drawnStart)
       if (dd < bestStraightDist) {
         bestStraightDist = dd
