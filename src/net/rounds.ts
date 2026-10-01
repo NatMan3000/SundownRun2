@@ -48,11 +48,16 @@ import { getTrack } from '../track/current'
 import { urlParam } from '../core/devHandles'
 import { playerName } from './identity'
 import { onMessage, previousId, send, statsExtra, weAreDriving } from './client'
-import { carIdFor, getNet, peerLive, relayIdOf, remoteCrossings, useNet } from './netStore'
-import type { FinishMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
+import { carIdFor, getNet, peerLive, relayIdOf, useNet } from './netStore'
+import type { FinishMsg, PlacesMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
 
-/** Two cars closer than this along the road count as level (grid order decides), metres. */
-const TIE_M = 1.5
+/**
+ * The order authority only swaps two cars once the one behind is this far
+ * ahead (metres), so wheel-to-wheel racing doesn't flicker P1 / P2.
+ */
+const SWAP_M = 1.0
+/** The authority re-sends the order at least this often (ms), for anyone who missed one. */
+const ORDER_RESEND_MS = 500
 
 /** Countdown length, ms (3, 2, 1, GO). */
 export const COUNTDOWN_MS = 3000
@@ -102,6 +107,10 @@ interface Round {
   offlineSince: number
   /** Tag: performance.now() the "it" player went missing (0 = here). */
   itMissingSince: number
+  /** Race: the order everyone shows (relay ids, 1st first), from the order authority. */
+  order: number[]
+  /** Race: when we (as the authority) last sent the order. */
+  orderSentAt: number
 }
 
 /** "It" must be gone this long before it passes on (a quick reconnect keeps it). */
@@ -231,10 +240,10 @@ function applyStart(msg: StartMsg, agoMs: number): void {
     syncedAt: 0,
     offlineSince: 0,
     itMissingSince: 0,
+    order: msg.grid.slice(),
+    orderSentAt: 0,
   }
   round = r
-  // Everyone is back behind the line: race progress counts from here.
-  remoteCrossings.clear()
 
   // A fresh shared deal of the crash props, for everyone.
   propsSignal.shared = true
@@ -293,34 +302,84 @@ function sendFinish(r: Round): void {
   send(msg)
 }
 
-/** Places: finishers by race time, then everyone else by how far round they got. */
-function racePlaces(r: Round): number[] {
-  // The same progress the HUD's gap reads: the vehicle's lap tracker for our
-  // car, crossings counted in RemoteCars for everyone else (both slightly
-  // negative on the grid behind the line).
-  const progress = (id: number): number => {
-    if (id === myId()) {
-      const me = getCar('player')
-      if (me) return me.progress
-      const track = getTrack()
-      return raceLapsDone(r) + (track ? telemetry.trackS / track.length : 0)
-    }
-    return getCar(carIdFor(id))?.progress ?? -1
-  }
-  return r.grid.slice().sort((a, b) => {
+/** A racer's progress: the number their own lap tracker reports (ours live, theirs with every pose). */
+function progressOf(id: number): number {
+  if (id === myId()) return getCar('player')?.progress ?? -1
+  return getCar(carIdFor(id))?.progress ?? -1
+}
+
+/**
+ * The race order. Every screen must show the SAME order, and each screen only
+ * knows the others a moment late, so ONE player decides it: the lowest relay
+ * id still on the grid (every screen picks the same one). It ranks finishers
+ * by time, then everyone by their own reported progress, swapping two cars only
+ * once one is SWAP_M clear, and sends the result to everyone (`places`).
+ */
+function orderAuthority(r: Round): number {
+  let best = 0
+  for (const id of r.grid) if ((id === myId() || getNet().peers[id]) && (best === 0 || id < best)) best = id
+  return best
+}
+
+function computeOrder(r: Round): number[] {
+  const present = new Set(r.grid.filter((id) => id === myId() || !!getNet().peers[id]))
+  // Start from the order everyone already shows; newcomers to it go last.
+  const order = r.order.filter((id) => r.grid.includes(id))
+  for (const id of r.grid) if (!order.includes(id)) order.push(id)
+  const L = getTrack()?.length ?? 1
+  const swapBy = SWAP_M / L
+  const ahead = (a: number, b: number): boolean => {
+    // Should `b` (currently behind) go ahead of `a`?
     const fa = r.finishes.get(a)
     const fb = r.finishes.get(b)
-    if (fa && fb) return fa.ms - fb.ms
-    if (fa) return -1
-    if (fb) return 1
-    const d = progress(b) - progress(a)
-    // Side by side (within TIE_M, on the grid or wheel to wheel): keep grid
-    // order, so every screen shows the same order instead of each car's own
-    // guess. Beyond that, whoever is further round is ahead.
-    const track = getTrack()
-    if (track && Math.abs(d) * track.length < TIE_M) return r.grid.indexOf(a) - r.grid.indexOf(b)
-    return d
-  })
+    if (fa && fb) return fb.ms < fa.ms
+    if (fb) return true
+    if (fa) return false
+    if (present.has(b) && !present.has(a)) return true
+    if (!present.has(b)) return false
+    return progressOf(b) - progressOf(a) > swapBy
+  }
+  // A few bubble passes: positions only ever change between neighbours.
+  for (let pass = 0; pass < order.length; pass++) {
+    let swapped = false
+    for (let i = 0; i + 1 < order.length; i++) {
+      if (ahead(order[i], order[i + 1])) {
+        const t = order[i]
+        order[i] = order[i + 1]
+        order[i + 1] = t
+        swapped = true
+      }
+    }
+    if (!swapped) break
+  }
+  return order
+}
+
+/** Show an order (ours or the authority's): store.racePosition and the race.position event. */
+function applyOrder(r: Round, order: number[]): void {
+  r.order = order.slice()
+  if (!r.inGrid) return
+  const pos = r.order.indexOf(myId()) + 1
+  const prev = getGame().racePosition
+  if (pos > 0 && pos !== prev) {
+    useGame.setState({ racePosition: pos })
+    emit('race.position', { from: prev, to: pos, of: r.grid.length })
+  }
+}
+
+/** For ui (HUD gap): the agreed order as car ids, 1st first. Empty when no multiplayer race is on. */
+export function getRaceOrder(): string[] {
+  const r = round
+  if (!r || r.kind !== 'race' || r.ended || !r.inGrid) return []
+  return r.order.map(carIdOn)
+}
+
+/** Final places: finishers by time, then everyone else in the agreed order. */
+function racePlaces(r: Round): number[] {
+  const rest = r.order.filter((id) => !r.finishes.has(id))
+  for (const id of r.grid) if (!r.finishes.has(id) && !rest.includes(id)) rest.push(id)
+  const done = r.grid.filter((id) => r.finishes.has(id)).sort((a, b) => r.finishes.get(a)!.ms - r.finishes.get(b)!.ms)
+  return [...done, ...rest]
 }
 
 function endRace(r: Round): void {
@@ -433,6 +492,7 @@ function remap(r: Round, oldId: number, newId: number): void {
     r.seconds.set(newId, secs)
   }
   if (r.itId === oldId) r.itId = newId
+  r.order = r.order.map((id) => (id === oldId ? newId : id))
   if (r.inGrid && r.kind === 'tag') useGame.setState({ tagItId: carIdOn(r.itId), tagSeconds: secondsRecord(r) })
 }
 
@@ -515,15 +575,16 @@ function tickRace(r: Round, now: number): void {
       else emit('race.lap', { lap: laps, laps: r.laps, position: getGame().racePosition })
     }
   }
-  // Positions for the HUD, a few times a second.
-  if (r.inGrid && now - r.syncedAt > 250) {
-    r.syncedAt = now
-    const pos = racePlaces(r).indexOf(myId()) + 1
-    const prev = getGame().racePosition
-    if (pos > 0 && pos !== prev) {
-      useGame.setState({ racePosition: pos })
-      emit('race.position', { from: prev, to: pos, of: r.grid.length })
+  // The order: the authority works it out and tells everyone (see computeOrder).
+  if (orderAuthority(r) === myId()) {
+    const order = computeOrder(r)
+    const changed = order.join() !== r.order.join()
+    if (changed || now - r.orderSentAt > ORDER_RESEND_MS) {
+      r.orderSentAt = now
+      const msg: PlacesMsg = { t: 'places', raceId: r.raceId, order }
+      send(msg)
     }
+    if (changed) applyOrder(r, order)
   }
   // Done when every racer still here has finished, or the grace time after the first finish ran out.
   const present = r.grid.filter((id) => id === myId() || !!getNet().peers[id])
@@ -625,6 +686,9 @@ export function startRounds(): void {
       if (!r.firstFinishAt) r.firstFinishAt = performance.now()
     }),
     onMessage('tag', (m) => applyTag(m, m.from)),
+    onMessage('places', (m) => {
+      if (round && round.kind === 'race' && round.raceId === m.raceId && !round.ended) applyOrder(round, m.order)
+    }),
     // Someone says they touched us while we're "it": we decide, as always.
     onMessage('tagTouch', (m) => {
       if (m.to !== myId() || !round || round.raceId !== m.raceId) return

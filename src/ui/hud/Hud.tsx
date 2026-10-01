@@ -31,6 +31,7 @@ import { getTrack } from '../../track/current'
 import { formatClock, formatLap, formatScore } from '../format'
 import { installFeed } from './feed'
 import { gpuInfo } from '../gpu'
+import * as netModule from '../../net'
 import { SoundHint } from '../SoundHint'
 import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
@@ -315,7 +316,7 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
         if (refs.stuntClock) refs.stuntClock.textContent = formatClock(g.stuntEndsAt > 0 ? (g.stuntEndsAt - now) / 1000 : 0)
         if (refs.tagClock) refs.tagClock.textContent = formatClock(g.tagEndsAt > 0 ? (g.tagEndsAt - now) / 1000 : 0)
         if (refs.tagMine) refs.tagMine.textContent = `${(g.tagSeconds.player ?? 0).toFixed(1)} s`
-        if (refs.raceGap) refs.raceGap.textContent = raceGapText()
+        if (refs.raceGap) refs.raceGap.textContent = raceGapText(g.raceState)
         if (refs.raceLap) refs.raceLap.textContent = raceLapText(g.raceLaps, g.raceState)
       }
 
@@ -343,23 +344,50 @@ function raceLapText(laps: number, state: string): string {
   return `Lap ${lap} of ${laps}`
 }
 
-/** "+1.4 s to Nova" (the car ahead), or the lead over the car behind. */
-function raceGapText(): string {
+/**
+ * Net's finishing order for a multiplayer race: car ids, 1st first ('player' =
+ * you), [] when there's no multiplayer race. Read through the module namespace
+ * so the HUD keeps working on a build where net doesn't export it yet.
+ */
+function raceOrder(): readonly string[] {
+  const fn = (netModule as unknown as { getRaceOrder?: () => readonly string[] }).getRaceOrder
+  return fn ? fn() : []
+}
+
+/** Seconds between two cars at the player's speed (never negative). */
+function gapSeconds(front: CarState, back: CarState, length: number, speed: number): string {
+  return (Math.max(0, (front.progress - back.progress) * length) / speed).toFixed(1)
+}
+
+/**
+ * "+1.4 s to Nova" (the car ahead), or the lead over the car behind. Nothing
+ * during the countdown. In a multiplayer race, ahead / behind come from net's
+ * order, so the gap can never contradict the P1 / P2 shown beside it.
+ */
+function raceGapText(state: string): string {
+  if (state === 'countdown') return '-'
   const me = getCar('player')
   const track = getTrack()
   if (!me || !track) return '\u00a0'
+  const speed = Math.max(8, me.speedKmh / 3.6)
   let ahead: CarState | null = null
   let behind: CarState | null = null
-  for (let i = 0; i < cars.length; i++) {
-    const c = cars[i]
-    if (c === me || c.kind === 'ghost') continue
-    if (c.progress > me.progress) {
-      if (!ahead || c.progress < ahead.progress) ahead = c
-    } else if (!behind || c.progress > behind.progress) behind = c
+  const order = raceOrder()
+  const i = order.length ? order.indexOf('player') : -1
+  if (i >= 0) {
+    ahead = i > 0 ? getCar(order[i - 1]) ?? null : null
+    behind = i + 1 < order.length ? getCar(order[i + 1]) ?? null : null
+  } else {
+    for (let k = 0; k < cars.length; k++) {
+      const c = cars[k]
+      if (c === me || c.kind === 'ghost') continue
+      if (c.progress > me.progress) {
+        if (!ahead || c.progress < ahead.progress) ahead = c
+      } else if (!behind || c.progress > behind.progress) behind = c
+    }
   }
-  const speed = Math.max(8, me.speedKmh / 3.6)
-  if (ahead) return `+${(((ahead.progress - me.progress) * track.length) / speed).toFixed(1)} s to ${ahead.name}`
-  if (behind) return `Leading by ${(((me.progress - behind.progress) * track.length) / speed).toFixed(1)} s`
+  if (ahead) return `+${gapSeconds(ahead, me, track.length, speed)} s to ${ahead.name}`
+  if (behind) return `Leading by ${gapSeconds(me, behind, track.length, speed)} s`
   return '\u00a0'
 }
 

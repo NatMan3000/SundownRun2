@@ -6,9 +6,11 @@
 //  car would appear on the same spot and they'd land in each other
 //  (a checker once saw the host sit on the joiner's roof for 23 s).
 //
-//  So in multiplayer, each player moves their OWN car to their own
-//  grid slot: their place in the sorted list of everyone connected
-//  (relay ids). Every computer works that list out the same way, so
+//  So in multiplayer, each player gets their own grid slot: their
+//  place in the sorted list of everyone connected (relay ids). Net
+//  writes it to store.playerGridSlot and the vehicle spawns and
+//  restarts the car there directly; net also moves the car itself
+//  (teleport) if it ever finds it somewhere else. Every computer works that list out the same way, so
 //  nobody shares a slot, with no messages needed. It happens:
 //    - when a drive starts (session.start)
 //    - when the track changes (the host picked another one)
@@ -16,6 +18,9 @@
 //    - after Shift+R (restart at the line)
 //  but never in the middle of a synced race or tag round (rounds.ts
 //  lines everyone up itself).
+//
+//  Until our car is on its slot, NetLayer sends no poses, so no other
+//  screen ever draws it inside someone else's car.
 //
 //  Belt and braces: for SPAWN_GRACE_MS after we spawn, other cars are
 //  see-through (RemoteCars reads spawnGraceActive()), so even a car
@@ -53,6 +58,18 @@ export function mySlot(): number {
   return rank
 }
 
+/** True while our car may still be sitting on someone else's slot (poses are held back). */
+export function spawnPending(): boolean {
+  return pending
+}
+
+/** Keep store.playerGridSlot = our slot, so the vehicle spawns and restarts us there directly. */
+function publishSlot(): void {
+  if (!getGame().multiplayer) return
+  const slot = getNet().myId ? mySlot() : 0
+  if (getGame().playerGridSlot !== slot) useGame.setState({ playerGridSlot: slot })
+}
+
 /** Ask for our car to be moved to our slot as soon as it exists. */
 export function requestSpawn(): void {
   if (!getGame().multiplayer) return
@@ -79,7 +96,9 @@ export function spawnTick(): void {
   if (!track || !player?.api) return
   const slot = mySlot()
   track.gridSlot(slot, _pos, _quat)
-  player.api.teleport(_pos, _quat)
+  // The vehicle spawns us on store.playerGridSlot already; only move the car
+  // if it isn't there (joined while driving, or an older vehicle build).
+  if (player.position.distanceToSquared(_pos) > 1) player.api.teleport(_pos, _quat)
   pending = false
   graceUntil = performance.now() + SPAWN_GRACE_MS
   spawnStats.spawns++
@@ -106,6 +125,7 @@ export function startSpawns(): void {
     // reconnect: everyone's copy of our car is already where we are.)
     useNet.subscribe((s, prev) => {
       if (s.myId && s.myId !== prev.myId && previousId() === 0) requestSpawn()
+      if (s.myId !== prev.myId || s.peers !== prev.peers) publishSlot()
     }),
   )
 }

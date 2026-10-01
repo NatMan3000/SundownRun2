@@ -41,7 +41,7 @@ import { POSE_FLAG } from './protocol'
 import { sendTrackIfHost, startTrackSync } from './trackSync'
 import { RemoteCars } from './RemoteCars'
 import { BumpApplier, startBumps, stats as bumpStats } from './bump'
-import { mySlot, spawnStats, spawnTick, startSpawns } from './spawn'
+import { mySlot, spawnPending, spawnStats, spawnTick, startSpawns } from './spawn'
 import { canTag, currentRound, requestStart, roundsTick, startRounds } from './rounds'
 
 export { useNet } from './netStore'
@@ -52,6 +52,12 @@ export { useNet } from './netStore'
  * or tag with fewer than two players).
  */
 export { requestStart as startMultiplayerRound } from './rounds'
+/**
+ * For ui: the race order every screen agrees on, as car ids, 1st first
+ * ('player' = you, 'net-<id>' = the others). Empty when no multiplayer race is
+ * on. Published by one player for everyone, so it never shows two P1s.
+ */
+export { getRaceOrder } from './rounds'
 export type { NetState, NetStatus, PeerInfo } from './netStore'
 
 // ?color= goes onto our own car before anything builds it (this module loads
@@ -70,10 +76,14 @@ function PoseSender() {
     if (now < nextSend.current) return
     // Keep a steady 60 a second at any refresh rate (165 Hz, 144 Hz, 60 Hz).
     nextSend.current = Math.max(nextSend.current + SEND_MS, now - SEND_MS)
-    if (!weAreDriving() || !getCar('player')) return
+    const me = getCar('player')
+    if (!weAreDriving() || !me) return
+    // Not yet on our own slot (just spawned on the pole): say nothing, so no
+    // other screen ever sees us inside the car that's really there.
+    if (spawnPending()) return
     const p = telemetry.carPosition
     const q = telemetry.carQuaternion
-    sendPose(p.x, p.y, p.z, q.x, q.y, q.z, q.w, telemetry.speedKmh, telemetry.boost, telemetry.slip, telemetry.airborne ? POSE_FLAG.airborne : 0)
+    sendPose(p.x, p.y, p.z, q.x, q.y, q.z, q.w, telemetry.speedKmh, telemetry.boost, telemetry.slip, telemetry.airborne ? POSE_FLAG.airborne : 0, me.progress)
   })
   return null
 }

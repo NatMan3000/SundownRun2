@@ -23,7 +23,7 @@
 import type { TrackFile } from '../track/schema'
 
 /** Bump when the wire format changes, so old and new tabs refuse each other politely. */
-export const PROTOCOL_VERSION = 2
+export const PROTOCOL_VERSION = 3
 
 /** The relay's port. A page can point somewhere else with ?relay=<port> (tests, checker previews). */
 export const RELAY_PORT = 5202
@@ -47,9 +47,15 @@ export const POSE = {
   slip: 9,
   /** Bit flags, see POSE_FLAG. Stored as a float, read back with `| 0`. */
   flags: 10,
+  /**
+   * Race progress from the sender's OWN lap tracker (laps + fraction, slightly
+   * negative on the grid behind the line). Everyone ranks racers by these same
+   * numbers, never by their own guess from the drawn car.
+   */
+  progress: 11,
 } as const
 
-export const POSE_FLOATS = 11
+export const POSE_FLOATS = 12
 export const POSE_BYTES = POSE_FLOATS * 4
 /** relay -> client: uint32 sender id + the pose. */
 export const TAGGED_POSE_BYTES = 4 + POSE_BYTES
@@ -197,7 +203,19 @@ export interface TagTouchMsg {
   to: number
 }
 
-export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg
+/**
+ * Race order, published by ONE player (the lowest relay id still on the grid),
+ * so every screen shows the same P1, P2... even when two cars are wheel to
+ * wheel. Sent when the order changes and twice a second anyway.
+ */
+export interface PlacesMsg {
+  t: 'places'
+  raceId: number
+  /** Relay ids, 1st first. */
+  order: number[]
+}
+
+export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg | PlacesMsg
 
 // ---------------------------------------------------------------- relay -> client
 
@@ -255,6 +273,7 @@ export function encodePose(
   boost: number,
   slip: number,
   flags: number,
+  progress: number,
 ): Float32Array {
   out[POSE.px] = px
   out[POSE.py] = py
@@ -267,6 +286,7 @@ export function encodePose(
   out[POSE.boost] = boost
   out[POSE.slip] = slip
   out[POSE.flags] = flags
+  out[POSE.progress] = progress
   return out
 }
 

@@ -43,10 +43,10 @@ import { apiInstalled, vehicle } from '../core/api'
 import { getSettings } from '../core/settings'
 import { getTrack } from '../track/current'
 import type { NearestHit } from '../track/types'
-import { liveFor, remoteCrossings, useNet } from './netStore'
+import { liveFor, useNet } from './netStore'
 import type { PeerInfo } from './netStore'
 import { INTERP_MS, JUMP_M, STALE_MS, peerPoses } from './poses'
-import { POSE_FLAG } from './protocol'
+import { POSE, POSE_FLAG } from './protocol'
 import { canTag, tagged, touchedIt } from './rounds'
 import { BUMP_GHOST_MS, maybeBump } from './bump'
 import { spawnGraceActive } from './spawn'
@@ -391,8 +391,6 @@ function RemoteCar({ peer }: { peer: PeerInfo }) {
   // ---- render frame: pose the visual, fade, keep `cars` up to date ----
   const alpha = useRef(0)
   const registered = useRef(false)
-  /** We have a previous trackS for this car (so a line crossing can be seen). */
-  const hadTrackS = useRef(false)
   const lastPos = useRef(new THREE.Vector3())
   useEffect(
     () => () => {
@@ -424,14 +422,10 @@ function RemoteCar({ peer }: { peer: PeerInfo }) {
       removeCar(car.id)
       registered.current = false
     }
-    if (!show || !buf) {
-      hadTrackS.current = false
-      return
-    }
+    if (!show || !buf) return
 
     // Velocity from motion (skip on a teleport-sized jump).
-    const jumped = lastPos.current.distanceToSquared(_vpos) >= TELEPORT_JUMP_M * TELEPORT_JUMP_M
-    if (dt > 0 && registered.current && !jumped) {
+    if (dt > 0 && registered.current && lastPos.current.distanceToSquared(_vpos) < TELEPORT_JUMP_M * TELEPORT_JUMP_M) {
       _vel.subVectors(_vpos, lastPos.current).divideScalar(dt)
       car.velocity.lerp(_vel, Math.min(1, dt * 12))
     } else {
@@ -448,31 +442,16 @@ function RemoteCar({ peer }: { peer: PeerInfo }) {
     car.slip = buf.slip
     car.airborne = (buf.flags & POSE_FLAG.airborne) !== 0
 
-    // Race progress, the same way the vehicle counts it for our own car:
-    // laps + fraction, and slightly NEGATIVE on the grid behind the line
-    // until the first crossing. Crossings are counted from the car as drawn
-    // here, so the HUD's gap and positions match the picture.
+    // Race progress: the number their OWN lap tracker sends with every pose
+    // (laps + fraction, slightly negative on the grid behind the line). It is
+    // exactly what they see for themselves, never our guess from the drawn car.
     const track = getTrack()
     if (track) {
-      const prevS = car.trackS
-      track.nearest(_vpos.x, _vpos.y, _vpos.z, _hit, prevS)
-      const L = track.length
-      let crossings = remoteCrossings.get(peer.id) ?? 0
-      // (A teleport, e.g. onto the race grid, is not a line crossing.)
-      if (hadTrackS.current && !jumped) {
-        if (prevS > 0.75 * L && _hit.s < 0.25 * L) crossings++
-        else if (prevS < 0.25 * L && _hit.s > 0.75 * L) crossings--
-        remoteCrossings.set(peer.id, crossings)
-      }
-      hadTrackS.current = true
+      track.nearest(_vpos.x, _vpos.y, _vpos.z, _hit, car.trackS)
       car.trackS = _hit.s
-      const f = _hit.s / L
-      car.lap = Math.max(0, crossings - 1)
-      // We DRAW them INTERP_MS in the past, but rank them where they are NOW:
-      // add the distance they cover in that time. Otherwise two cars side by
-      // side each see the other ~2 m behind, and both screens say "P1".
-      const lead = ((Math.max(0, buf.speedKmh) / 3.6) * (INTERP_MS / 1000)) / L
-      car.progress = (crossings >= 1 ? crossings - 1 + f : f > 0.5 ? f - 1 : f) + lead
+      const progress = buf.latest(POSE.progress)
+      car.progress = progress
+      car.lap = Math.max(0, Math.floor(progress))
     }
 
     // Name tag: above the roof, upright in world space, bigger with distance

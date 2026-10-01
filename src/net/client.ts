@@ -374,9 +374,10 @@ export function sendPose(
   boost: number,
   slip: number,
   flags: number,
+  progress: number,
 ): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return
-  encodePose(_poseOut, px, py, pz, qx, qy, qz, qw, speedKmh, boost, slip, flags)
+  encodePose(_poseOut, px, py, pz, qx, qy, qz, qw, speedKmh, boost, slip, flags, progress)
   // Never send a broken pose: everyone else would just drop it anyway.
   if (!poseIsSane(_poseOut)) return
   ws.send(_poseOut)
