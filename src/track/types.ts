@@ -284,4 +284,6 @@ export interface TrackParamInfo {
   min: number
   max: number
   value: number
+  /** The track file's own value (what "reset to default" goes back to). */
+  default: number
 }

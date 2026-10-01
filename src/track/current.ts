@@ -51,7 +51,7 @@ export function trackParamsFor(file: TrackFile): TrackParamInfo[] {
     const saved = getSettings().trackParams[file.id]?.bankDeg
     const def = file.road.banking?.maxDeg ?? 10
     const value = typeof saved === 'number' ? Math.min(adj.max, Math.max(adj.min, saved)) : def
-    out.push({ id: 'bankDeg', label: adj.label, min: adj.min, max: adj.max, value })
+    out.push({ id: 'bankDeg', label: adj.label, min: adj.min, max: adj.max, value, default: def })
   }
   return out
 }
