@@ -77,6 +77,37 @@ export interface VehicleApi {
   disposeModel: (model: THREE.Group) => void
 }
 
+// ---------------------------------------------------------------- simulated cars (owner: vehicle)
+//
+// The player's car and every Ai racer run the SAME raycast-car physics.
+// src/vehicle/index.tsx exports `SimCar` (props below). The play worker
+// mounts one <SimCar> per Ai racer inside <Physics> and drives it with a
+// Driver. The vehicle worker owns the sim; play owns the driving brain.
+
+/** Writes a car's controls once per physics step. */
+export interface Driver {
+  throttle: number //  0..1
+  brake: number //     0..1 (reverse when stopped)
+  steer: number //     -1..1, left negative
+  handbrake: boolean
+  /** Engine power multiplier this step (Ai difficulty and catch-up). Treat undefined as 1. */
+  powerScale?: number
+  /** Called at the start of every physics step, before forces. Read the car, write the controls. */
+  update: (car: import('./telemetry').CarState, dt: number) => void
+}
+
+export interface SimCarProps {
+  id: string //       'ai-1' ...
+  name: string
+  body: string
+  paint: string
+  glow: string
+  trail: string
+  /** Start grid slot (track.gridSlot) - the car spawns there. */
+  gridSlot: number
+  driver: Driver
+}
+
 // ---------------------------------------------------------------- play (owner: play)
 
 export interface PlayApi {

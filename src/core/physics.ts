@@ -85,6 +85,29 @@ export function surfaceOf(colliderHandle: number): SurfaceKind {
   return surfaceByHandle.get(colliderHandle) ?? 'terrain'
 }
 
+/** What a non-world collider belongs to, so a crash knows what it hit. */
+export interface ColliderOwner {
+  kind: 'car' | 'remote' | 'prop' | 'smashable' | 'billboard'
+  /** Car id, prop cluster id, smashable index... */
+  id: string
+}
+
+const ownerByHandle = new Map<number, ColliderOwner>()
+
+/** Owners call this when they create a collider (cars, props, smashables, billboards). */
+export function tagCollider(colliderHandle: number, owner: ColliderOwner): void {
+  ownerByHandle.set(colliderHandle, owner)
+}
+
+export function untagCollider(colliderHandle: number): void {
+  ownerByHandle.delete(colliderHandle)
+}
+
+/** Who owns this collider? undefined for world colliders (use surfaceOf for those). */
+export function ownerOf(colliderHandle: number): ColliderOwner | undefined {
+  return ownerByHandle.get(colliderHandle)
+}
+
 /** NaN firewall helper: true if every number is finite. */
 export function finite3(x: number, y: number, z: number): boolean {
   return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)
