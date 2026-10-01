@@ -1273,7 +1273,11 @@ export class CarSim {
     if (active && !wasGrip) this.news.magOn = this.magSurface
     if (!active && wasGrip) {
       this.news.magOff = this.magSurface
-      this.news.magFell = strength <= 0 || airborne || this.up.y < 0.2
+      // Fell = the grip ran out with the car still on the loop or wall (too slow for it), or it
+      // came off into the air or upside down. Rolling off the end onto the road is a plain
+      // release (judged by `strength <= 0`, every exit read as a fall: the rate-limited level is
+      // 0 the step the wheels leave the surface).
+      this.news.magFell = onSurface || airborne || this.up.y < 0.2
     }
   }
 
