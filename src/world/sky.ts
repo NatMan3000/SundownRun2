@@ -221,7 +221,9 @@ export function updateSky(elapsed: number): void {
 
   // ---- the sun: centre on the skyline at 0, the whole disc gone by SUN_GONE_AT ----
   const sinkDeg = SUN_RADIUS_DEG + sky.skylineDeg + 1.5
-  sky.sunElevationDeg = sky.skylineDeg - (t / SUN_GONE_AT) * sinkDeg
+  // Eases in: it lingers on the skyline early in the evening (the default 0.12
+  // still shows most of the disc), then sinks steadily, gone by SUN_GONE_AT.
+  sky.sunElevationDeg = sky.skylineDeg - Math.pow(t / SUN_GONE_AT, 1.6) * sinkDeg
   sky.sunVisible = 1 - smoothstep(SUN_GONE_AT - 0.04, SUN_GONE_AT, t)
   sky.afterglow = 1 - smoothstep(0.3, 0.7, t)
   dirFromAzEl(sky.sunAzimuth, sky.sunElevationDeg * DEG, sky.sunDir)

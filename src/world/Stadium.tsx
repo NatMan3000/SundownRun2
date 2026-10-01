@@ -279,7 +279,8 @@ vGlowS = 0.0;
   float fw = fwidth( tierCoord );
   float line = 1.0 - smoothstep( fw * 0.6, fw * 1.6, abs( fract( tierCoord ) - 0.5 ) );
   float middle = 1.0 - smoothstep( fw * 0.6, fw * 1.6, abs( vV * ${(TIERS / 5).toFixed(1)} - ${(TIERS / 10).toFixed(1)} ) );
-  totalEmissiveRadiance += seats * ( line * uTierLine + middle * uAccent * 0.8 );
+  // Stadium light stays well below the road's edge tubes (T2): at most ~0.6 x T1.
+  totalEmissiveRadiance += seats * ( line * uTierLine + middle * uAccent * 0.45 );
   // Every row of seats, very faint: texture when you are close, nothing far away.
   float rowCoord = vV * ${TIERS.toFixed(1)};
   float rfw = fwidth( rowCoord );
@@ -291,12 +292,12 @@ vGlowS = 0.0;
   float seamCoord = vU / 8.0;
   float sfw = fwidth( seamCoord );
   float seam = ( 1.0 - smoothstep( sfw * 0.6, sfw * 1.6, abs( fract( seamCoord ) - 0.5 ) ) ) * ( 1.0 - smoothstep( 0.15, 0.4, sfw ) );
-  totalEmissiveRadiance += front * ( stripe * uAccent * 0.9 + seam * uTierLine * 0.6 );
+  totalEmissiveRadiance += front * ( stripe * uAccent * 0.5 + seam * uTierLine * 0.6 );
   // The rim of the stands and the canopy's front edge are rings of light.
   float rim = 1.0 - step( 0.5, abs( vKind - 4.0 ) );
   float bar = 1.0 - step( 0.5, abs( vKind - 3.0 ) );
-  totalEmissiveRadiance += uLightBar * bar + uAccent * rim;
-  totalEmissiveRadiance += uLightBar * vGlowS;
+  totalEmissiveRadiance += uLightBar * bar * 0.55 + uAccent * rim * 0.55;
+  totalEmissiveRadiance += uLightBar * vGlowS * 0.6;
 }`,
       )
   }

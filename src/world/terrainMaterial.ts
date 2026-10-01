@@ -85,7 +85,7 @@ diffuseColor.rgb = mix( diffuseColor.rgb, uSheen, smoothstep( 0.35, 0.85, tVar )
 
 // After roughnessmap_fragment: glossy, but not one mirror.
 const ROUGHNESS_MOD = /* glsl */ `
-roughnessFactor = clamp( roughnessFactor * mix( 0.86, 1.2, tNoiseMid.g * 0.75 + tNoiseFine.b * 0.25 ) + ( tPlate - 0.4 ) * 0.05, 0.1, 0.9 );
+roughnessFactor = clamp( roughnessFactor * mix( 0.93, 1.1, tNoiseMid.g ), 0.1, 0.9 );
 `
 
 // After emissivemap_fragment (the view-space normal exists now): grid + sheen.
@@ -101,6 +101,10 @@ const EMISSIVE_MOD = /* glsl */ `
   // horizon (the classic synthwave floor) until the haze takes them.
   minor *= 1.0 - smoothstep( 160.0, 420.0, camDist );
   major *= 1.0 - smoothstep( 1200.0, 2600.0, camDist );
+  // On steep far faces (the edge ridge) the grid goes early: mountains, not a wire curtain.
+  float steepFar = ( 1.0 - smoothstep( 0.55, 0.85, normalize( vTerrainNormal ).y ) ) * smoothstep( 300.0, 650.0, camDist );
+  minor *= 1.0 - steepFar;
+  major *= 1.0 - steepFar * 0.9;
   float lines = max( minor * 0.7, major );
 
   // T1 close to the car, T0 by 60 m (constitution: the grid is dim).
@@ -109,7 +113,12 @@ const EMISSIVE_MOD = /* glsl */ `
   float pulse = 0.88 + 0.12 * sin( uTime * 0.6 - carDist * 0.035 );
   // A little less grid on steep faces, where xz lines would stretch.
   float flatness = smoothstep( 0.55, 0.85, normalize( vTerrainNormal ).y );
-  totalEmissiveRadiance += uGridColor * lines * tier * pulse * mix( 0.45, 1.0, flatness );
+  totalEmissiveRadiance += uGridColor * lines * tier * pulse * mix( 0.3, 1.0, flatness );
+  // Warm rim light on far slopes that face the sun, only while the sun is up or glowing.
+  vec2 tSunH = normalize( uSunDir.xz + vec2( 1e-5 ) );
+  vec3 tN = normalize( vTerrainNormal );
+  float sunFacing = max( dot( normalize( tN.xz + vec2( 1e-5 ) ), tSunH ), 0.0 ) * ( 1.0 - tN.y );
+  totalEmissiveRadiance += uSkySunGlow * pow( sunFacing, 1.5 ) * smoothstep( 200.0, 700.0, camDist ) * 0.35;
 
   // Sheen: a violet rim at glancing angles. Stronger at night, when it carries the form.
   vec3 tViewDir = normalize( vViewPosition );
@@ -129,11 +138,18 @@ const HAZE_MOD = /* glsl */ `
   float lowHaze = exp( - max( vTerrainWorld.y - uHazeBase, 0.0 ) / 9.0 ) * ( 1.0 - exp( - tDist / 380.0 ) );
   // Far high ground (the ridge at the world's edge) melts into the sky behind
   // its crest, so the skyline never has a hard top edge.
-  float crest = smoothstep( mix( uHazeBase, uHazeTop, 0.3 ), uHazeTop, vTerrainWorld.y ) * smoothstep( 250.0, 900.0, tDist );
-  float hazeAmt = clamp( fogF + lowHaze * 0.22 + crest * 0.5, 0.0, 1.0 );
+  // Only where the crest is seen against the sky (looking out, not down on it).
+  float againstSky = smoothstep( -0.12, -0.02, tDir.y );
+  float crest = smoothstep( mix( uHazeBase, uHazeTop, 0.3 ), uHazeTop, vTerrainWorld.y ) * smoothstep( 250.0, 900.0, tDist ) * againstSky;
+  // Dark glass keeps more of its own darkness than open air would: lighter fog,
+  // and only the crest dissolves into the sky (no flat haze fill on the faces).
+  float hazeAmt = clamp( fogF * 0.6 + lowHaze * 0.22 + crest * 0.4, 0.0, 1.0 );
   // The colour of the sky right behind this point (just above the horizon at most).
   vec3 hazeDir = normalize( vec3( tDir.x, max( tDir.y, -0.02 ), tDir.z ) );
-  outgoingLight = mix( outgoingLight, skyColor( hazeDir ), hazeAmt );
+  // Looking down through the haze onto dark ground, far less light scatters in:
+  // the haze darkens the steeper you look down (no pink "bathtub" from above).
+  vec3 hazeCol = skyColor( hazeDir ) * mix( 0.4, 1.0, againstSky );
+  outgoingLight = mix( outgoingLight, hazeCol, hazeAmt );
 }
 `
 
@@ -157,9 +173,10 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
   // whole ground to bronze. No clearcoat or transmission: they cost too much.
   const material = new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(PALETTE.ground),
-    roughness: 0.42,
+    // Broad enough that the low sun paints one soft streak across the glass, not foil.
+    roughness: 0.55,
     metalness: 0.0,
-    specularIntensity: 0.38,
+    specularIntensity: 0.3,
     envMapIntensity: 0.8,
     // Our own haze replaces three's fog (it melts into the sky instead of a flat colour).
     fog: false,
@@ -178,7 +195,7 @@ export function makeTerrainMaterial(noise: THREE.Texture, gridHex: string, hazeB
       .replace('#include <opaque_fragment>', `${HAZE_MOD}\n#include <opaque_fragment>`)
   }
   // One program for every terrain chunk, and a stable cache key.
-  material.customProgramCacheKey = () => 'sr2-terrain-v2'
+  material.customProgramCacheKey = () => 'sr2-terrain-v4'
 
   return { material, uniforms }
 }

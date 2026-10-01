@@ -124,7 +124,9 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
   for (let k = 0; k < drawn.length; k++) {
     let h = heights[k]
     const d = edge[k]
-    if (d < TUCK_FADE) h -= TUCK * (1 - smoothstep(0, TUCK_FADE, d))
+    // Only UNDER the road: at the edge the ground already meets the slab's lip,
+    // so tucking past it would leave a visible trough beside the road.
+    if (d < 0) h -= TUCK * smoothstep(0, TUCK_FADE, -d)
     drawn[k] = h
   }
 

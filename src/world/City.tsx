@@ -259,12 +259,15 @@ function buildCity(
       let toSun = Math.abs(az - sunAz) % (Math.PI * 2)
       if (toSun > Math.PI) toSun = Math.PI * 2 - toSun
       // Wide enough to still frame the sun from anywhere on the track (the city has parallax, the sun does not).
-      const sunValley = 1 - 0.6 * Math.exp(-((toSun / (17 * DEG)) ** 2))
+      const sunValley = 1 - 0.86 * Math.exp(-((toSun / (20 * DEG)) ** 2))
       const profile = Math.pow(Math.cos(Math.min(1, edge) * Math.PI * 0.5), 1.1) * sunValley
       const tall = rand() < 0.08 ? 1.25 : 0.25 + rand() * 0.75
       // Rise this many degrees above the skyline in front, seen from the middle of the world.
       const above = 0.6 + VISIBLE_DEG * profile * tall * row.scale
-      const topDeg = Math.min(MAX_TOP_DEG * (0.55 + 0.45 * profile), skylineFor(u) + above)
+      // In front of the sun the skyline stays low: it may cut across the lower third
+      // of the visible disc, never more (the sun is the hero).
+      const nearSun = toSun < 20 * DEG ? 2.2 : 99
+      const topDeg = Math.min(MAX_TOP_DEG * (0.55 + 0.45 * profile), skylineFor(u) + Math.min(above, nearSun))
       const topY = eye + Math.tan(topDeg * DEG) * (dist + row.offset)
       const h = Math.max(SINK + 30, topY - baseY)
       const w = 38 + rand() * 70

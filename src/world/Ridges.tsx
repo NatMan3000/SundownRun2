@@ -3,7 +3,10 @@
 // ------------------------------------------------------------
 //  Two rings of mountains well outside the play area, for depth:
 //  you see them over the edge ridge from high places, above the
-//  Hyperdrome's stands, and either side of the city.
+//  Hyperdrome's stands, and either side of the city. On ridge-edged
+//  tracks a third ring of jagged, dark peaks stands right behind the
+//  edge ridge's crest and breaks its smooth top into peaks and
+//  saddles (only their top quarter dissolves; no grid on them).
 //
 //  The v1 lesson, kept: fogging far mountains to one flat colour
 //  makes a cardboard slab with a hard top edge. These dissolve by
@@ -20,7 +23,7 @@
 //  the skyline. They stay put in the world (no camera following),
 //  so they slide against the nearer ground as you drive.
 //
-//  One mesh, one draw call, about 7k triangles.
+//  One mesh, one draw call, about 13k triangles with the crest.
 // ============================================================
 
 import { useEffect, useMemo } from 'react'
@@ -45,19 +48,22 @@ const RINGS = [
 
 const vertexShader = /* glsl */ `
 attribute float aAlpha;
-attribute float aRing;
+attribute float aHaze;
+attribute float aGrid;
 attribute vec2 aGridUv;
 varying vec3 vWorld;
 varying vec3 vNormalW;
 varying float vAlpha;
-varying float vRing;
+varying float vHaze;
+varying float vGrid;
 varying vec2 vGridUv;
 void main() {
   vec4 w = modelMatrix * vec4( position, 1.0 );
   vWorld = w.xyz;
   vNormalW = normalize( mat3( modelMatrix ) * normal );
   vAlpha = aAlpha;
-  vRing = aRing;
+  vHaze = aHaze;
+  vGrid = aGrid;
   vGridUv = aGridUv;
   gl_Position = projectionMatrix * viewMatrix * w;
 }
@@ -68,12 +74,11 @@ ${SKY_GLSL}
 uniform vec3 uBody;
 uniform vec3 uRim;
 uniform vec3 uGrid;
-uniform float uHazeNear;
-uniform float uHazeFar;
 varying vec3 vWorld;
 varying vec3 vNormalW;
 varying float vAlpha;
-varying float vRing;
+varying float vHaze;
+varying float vGrid;
 varying vec2 vGridUv;
 
 float gridLine( vec2 uv ) {
@@ -92,9 +97,9 @@ void main() {
   vec2 sunH = normalize( uSunDir.xz + vec2( 1e-5 ) );
   float facing = max( dot( normalize( n.xz + vec2( 1e-5 ) ), sunH ), 0.0 );
   col += uRim * pow( facing, 2.0 ) * ( 0.25 + 0.75 * clamp( n.y, 0.0, 1.0 ) );
-  col += uGrid * gridLine( vGridUv );
+  col += uGrid * gridLine( vGridUv ) * vGrid;
   // Haze toward the exact sky behind; the far ring more than the near one.
-  float haze = mix( uHazeNear, uHazeFar, vRing );
+  float haze = vHaze;
   col = mix( col, skyColor( normalize( vec3( dir.x, max( dir.y, -0.02 ), dir.z ) ) ), haze );
   gl_FragColor = vec4( col, vAlpha );
   #include <tonemapping_fragment>
@@ -124,6 +129,71 @@ function noise1(rand: () => number, n: number): Float32Array {
   return out
 }
 
+/** Peaks along the crest of the world's edge ridge: segments round the world. */
+const CREST_SEG = 360
+
+/**
+ * A ring of jagged peaks standing on the plateau just behind the edge ridge's
+ * crest (scenery only: the containment ring on the crest keeps cars out). They
+ * break the ridge's smooth top into peaks and saddles, stay dark (silhouettes),
+ * and only their top quarter dissolves into the sky. Through the sunset notch
+ * they stay low, so the sun and the city keep their window.
+ */
+function addCrest(
+  track: TrackRuntime,
+  rand: () => number,
+  start: number,
+  position: Float32Array,
+  alpha: Float32Array,
+  haze: Float32Array,
+  gridAmt: Float32Array,
+  grid: Float32Array,
+  index: number[],
+): void {
+  const half = track.world.half
+  const sunAz = (track.file.environment.sky.sunAzimuthDeg ?? 0) * DEG
+  const shape = noise1(rand, CREST_SEG)
+  const detail = noise1(rand, CREST_SEG)
+  let v = start
+  for (let i = 0; i < CREST_SEG; i++) {
+    const az = (i / CREST_SEG) * Math.PI * 2
+    const sx = Math.sin(az)
+    const sz = -Math.cos(az)
+    // On the world's rounded-square edge (|x|^8 + |z|^8 = r^8), a little inside the grid border.
+    const k = Math.pow(Math.abs(sx) ** 8 + Math.abs(sz) ** 8, 1 / 8)
+    const R = (half - 12) / k
+    const groundY = track.terrainHeight(sx * R, sz * R)
+    // Peaks and saddles: a broad shape, sharpened, plus a jagged detail.
+    const peak = Math.pow(shape[i], 2.2) * 0.75 + Math.pow(detail[i], 3) * 0.45
+    let toSun = Math.abs(az - sunAz) % (Math.PI * 2)
+    if (toSun > Math.PI) toSun = Math.PI * 2 - toSun
+    const notch = 0.3 + 0.7 * Math.min(1, Math.max(0, (toSun - 40 * DEG) / (25 * DEG)))
+    const height = (10 + 58 * peak) * notch
+    const bottom = groundY - 8
+    for (let l = 0; l <= LAYERS; l++) {
+      const f = l / LAYERS
+      position[v * 3] = sx * (R + f * f * 6)
+      position[v * 3 + 1] = bottom + (height + 8) * f
+      position[v * 3 + 2] = sz * (R + f * f * 6)
+      // Solid silhouettes; only the top quarter melts into the sky.
+      alpha[v] = Math.min(1, (1 - f) / 0.25)
+      haze[v] = 0.16
+      gridAmt[v] = 0
+      grid[v * 2] = 0
+      grid[v * 2 + 1] = 0
+      v++
+    }
+  }
+  for (let i = 0; i < CREST_SEG; i++) {
+    const j = (i + 1) % CREST_SEG
+    for (let l = 0; l < LAYERS; l++) {
+      const a = start + i * (LAYERS + 1) + l
+      const b = start + j * (LAYERS + 1) + l
+      index.push(a, b, b + 1, a, b + 1, a + 1)
+    }
+  }
+}
+
 function buildRidges(track: TrackRuntime): THREE.BufferGeometry {
   const env = track.file.environment
   const half = track.world.half
@@ -135,10 +205,13 @@ function buildRidges(track: TrackRuntime): THREE.BufferGeometry {
   const cityHalfArc = city ? ((city.arcDeg ?? 120) * DEG) / 2 + 8 * DEG : 0
 
   const verts = RINGS.length * SEG * (LAYERS + 1)
-  const position = new Float32Array(verts * 3)
-  const alpha = new Float32Array(verts)
-  const ring = new Float32Array(verts)
-  const grid = new Float32Array(verts * 2)
+  const crestVerts = track.world.edge === 'ridge' ? CREST_SEG * (LAYERS + 1) : 0
+  const total = verts + crestVerts
+  const position2 = new Float32Array(total * 3)
+  const alpha2 = new Float32Array(total)
+  const haze = new Float32Array(total)
+  const gridAmt = new Float32Array(total)
+  const grid = new Float32Array(total * 2)
   const index: number[] = []
 
   // Far ring first: within the one draw, the near ring blends over it.
@@ -170,12 +243,13 @@ function buildRidges(track: TrackRuntime): THREE.BufferGeometry {
         const y = bottom + (top - bottom) * Math.pow(f, 0.8)
         // Mountains lean back as they rise, so they have a slope to light.
         const rr = R + f * f * (top - bottom) * 0.9
-        position[v * 3] = sx * rr
-        position[v * 3 + 1] = y
-        position[v * 3 + 2] = sz * rr
+        position2[v * 3] = sx * rr
+        position2[v * 3 + 1] = y
+        position2[v * 3 + 2] = sz * rr
         // Zero alpha at the summit: the silhouette IS the sky.
-        alpha[v] = Math.pow(Math.min(1, (1 - f) / spec.fade), 0.7)
-        ring[v] = r
+        alpha2[v] = Math.pow(Math.min(1, (1 - f) / spec.fade), 0.7)
+        haze[v] = spec.haze
+        gridAmt[v] = 1
         grid[v * 2] = (th * R0) / 70
         grid[v * 2 + 1] = y / 45
         v++
@@ -190,10 +264,14 @@ function buildRidges(track: TrackRuntime): THREE.BufferGeometry {
       }
     }
   }
+  if (crestVerts > 0) addCrest(track, rand, v, position2, alpha2, haze, gridAmt, grid, index)
+
+  const position = position2
   const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(position, 3))
-  g.setAttribute('aAlpha', new THREE.BufferAttribute(alpha, 1))
-  g.setAttribute('aRing', new THREE.BufferAttribute(ring, 1))
+  g.setAttribute('position', new THREE.BufferAttribute(position2, 3))
+  g.setAttribute('aAlpha', new THREE.BufferAttribute(alpha2, 1))
+  g.setAttribute('aHaze', new THREE.BufferAttribute(haze, 1))
+  g.setAttribute('aGrid', new THREE.BufferAttribute(gridAmt, 1))
   g.setAttribute('aGridUv', new THREE.BufferAttribute(grid, 2))
   g.setIndex(index)
   g.computeVertexNormals()
@@ -220,8 +298,6 @@ export function Ridges({ track }: { track: TrackRuntime }) {
           uBody: { value: new THREE.Color(PALETTE.citySilhouette).lerp(new THREE.Color(PALETTE.groundSheen), 0.45) },
           uRim: { value: new THREE.Color() },
           uGrid: { value: new THREE.Color(PALETTE.grid).multiplyScalar(GLOW.T0 * 0.35) },
-          uHazeNear: { value: RINGS[0].haze },
-          uHazeFar: { value: RINGS[1].haze },
         },
         vertexShader,
         fragmentShader,
