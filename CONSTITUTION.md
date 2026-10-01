@@ -124,7 +124,7 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 | Kid knobs (defaults) | `src/core/config.ts` |
 | Persisted settings | `src/core/settings.ts` |
 | Game store (low-frequency state) | `src/core/store.ts` |
-| Per-frame telemetry and car registry | `src/core/telemetry.ts` |
+| Per-frame telemetry, car registry, world light (`environment`) | `src/core/telemetry.ts` |
 | Game-event feed | `src/core/events.ts` |
 | Controls (input to game, menu bus) | `src/core/controls.ts` |
 | Palette and glow tiers | `src/core/palette.ts` |
@@ -133,7 +133,11 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 | Records (best laps, scores) | `src/core/records.ts` |
 | Track file schema | `src/track/schema.ts`, `tracks/README.md` |
 | Track runtime and road ribbon API | `src/track/types.ts` |
-| Cross-module APIs (fx, audio, vehicle, play) | `src/core/api.ts` |
+| Cross-module APIs (fx, audio, vehicle catalog, SimCar + Driver, play) | `src/core/api.ts` |
+| Session flow (start, pause, results, editor) | `src/core/session.ts` |
+| Multiplayer crash-prop seam | `src/core/propsSignal.ts` |
+| Track registry and current track | `src/track/registry.ts`, `src/track/current.ts` |
+| App mount points and boot | `src/App.tsx`, `src/boot.ts`, `src/main.tsx` |
 
 ## 7. Amendments
 
