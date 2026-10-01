@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Windows launchers must keep CRLF or cmd.exe chokes on labels and gotos
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary

@@ -1,0 +1,75 @@
+// ============================================================
+//  APP - the scene graph, one mount point per system
+// ------------------------------------------------------------
+//  Orchestrator-owned glue. Each system lives in its own folder and
+//  is mounted exactly once here; systems talk through the contracts
+//  in src/core (store, telemetry, events, controls, api), never by
+//  reaching into each other's files.
+// ============================================================
+
+import { Suspense } from 'react'
+import { Canvas } from '@react-three/fiber'
+import { Physics } from '@react-three/rapier'
+import { useGame } from './core/store'
+import { PerfProbe } from './core/perf'
+import { useTrack } from './track/current'
+import { TrackPhysics } from './track'
+import { World } from './world'
+import { RoadView, CarFx, FxSystem, PostStack } from './look'
+import { VehicleLayer, CameraRig, InputSystem } from './vehicle'
+import { PlayLayer } from './play'
+import { NetLayer } from './net'
+import { AudioSystem } from './audio'
+import { UiRoot } from './ui'
+import { EditorScene, EditorUi } from './editor'
+
+function Scene() {
+  const phase = useGame((s) => s.phase)
+  const multiplayer = useGame((s) => s.multiplayer)
+  const trackVersion = useGame((s) => s.trackVersion)
+  const track = useTrack()
+  const editing = phase === 'editor'
+  const paused = !multiplayer && phase === 'paused'
+
+  return (
+    <>
+      <PerfProbe />
+      <InputSystem />
+      {track && <World />}
+      {track && <RoadView />}
+      {track && !editing && (
+        <Physics key={`${track.id}:${trackVersion}`} timeStep={1 / 60} interpolate paused={paused} colliders={false}>
+          <TrackPhysics />
+          <VehicleLayer />
+          <PlayLayer />
+          <NetLayer />
+        </Physics>
+      )}
+      {track && !editing && <CarFx />}
+      <FxSystem />
+      {editing ? <EditorScene /> : <CameraRig />}
+      <PostStack />
+      <AudioSystem />
+    </>
+  )
+}
+
+export function App() {
+  const phase = useGame((s) => s.phase)
+  return (
+    <>
+      <Canvas
+        camera={{ fov: 62, near: 0.1, far: 6000, position: [0, 30, 60] }}
+        gl={{ antialias: false, powerPreference: 'high-performance', stencil: false }}
+        dpr={1}
+        shadows
+      >
+        <Suspense fallback={null}>
+          <Scene />
+        </Suspense>
+      </Canvas>
+      <UiRoot />
+      {phase === 'editor' && <EditorUi />}
+    </>
+  )
+}
