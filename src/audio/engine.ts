@@ -419,7 +419,7 @@ export class EngineVoice {
     // ---------- turbine whine: rises with speed, sings on boost ----------
     const whineHz = 260 + speed * 5.6
     k.whineHz.to(whineHz, t)
-    k.whine.to(0.012 + 0.04 * smoothstep(0.02, 1, speedN) * (0.6 + 0.4 * throttle), t)
+    k.whine.to(0.009 + 0.028 * smoothstep(0.02, 1, speedN) * (0.6 + 0.4 * throttle), t)
     k.whineOct.to(0.035 * e.boost, t)
 
     // ---------- boost jet ----------

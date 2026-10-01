@@ -449,6 +449,8 @@ export class AudioRig {
             musicDuck: round3(g.mix.musicDuck.gain.value),
             sfx: round3(g.mix.sfxVol.gain.value),
             engine: round3(g.mix.engineVol.gain.value),
+            musicLowpassHz: Math.round(g.mix.musicTone.frequency.value),
+            musicCarveDb: round3(g.mix.musicCarve.gain.value),
           }
         : null,
     }

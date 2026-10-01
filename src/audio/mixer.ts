@@ -199,6 +199,7 @@ export function updateMix(mix: Mix, m: MixTargets, t: number): void {
 export function duck(mix: Mix, depth: number, holdS: number, t: number): void {
   const p = mix.musicDuck.gain
   const floor = Math.max(SILENT, 1 - clamp01(depth))
+  if (p.value < floor - 0.02) return // a deeper duck is already happening: let it finish
   holdParam(p, t)
   p.setTargetAtTime(floor, t, 0.012)
   p.setTargetAtTime(1, t + 0.04 + holdS, 0.38)
