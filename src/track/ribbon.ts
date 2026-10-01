@@ -344,26 +344,109 @@ function addWall(
   }
 }
 
-/** A stadium barrier along one edge: inner face, top, outer face down to the slab bottom. */
+/**
+ * The barrier's solid (its physics box) reaches this far out from the road edge, and
+ * this far below the bottom of the road's slab: far bigger than the visible wall, so it
+ * can't be tunnelled, and big enough that every ground triangle reaching from under the
+ * road to behind the barrier lies inside something solid (terrain.ts leaves those out
+ * of the physics ground). Behind and under a wall nobody drives.
+ */
+export const BARRIER_DEPTH = 5
+export const BARRIER_BELOW = 2
+/** The barrier on a bank's LOW edge leans back toward upright, but never closer to the road than this (degrees). */
+export const BARRIER_MIN_ROAD_ANGLE_DEG = 60
+
+/** Which way a barrier stands at one sample: up along its face, and out away from the road. */
+export interface BarrierAxes {
+  /** Up the barrier's face (unit). */
+  dx: number
+  dy: number
+  dz: number
+  /** Out from the road, square to the face (unit). */
+  ox: number
+  oy: number
+  oz: number
+}
+
+/**
+ * The way a stadium barrier stands at sample i on one side (-1 left, +1 right).
+ *
+ * On the HIGH edge of a bank the barrier stands square to the road (along its up): a
+ * car sliding up the bank meets it face on. On the LOW edge it leans back from square
+ * toward upright: square to a 60 degree bank, a barrier would lean out over the infield
+ * at 30 degrees, a ramp a car simply drives up and over (hyper-1 D3). It stands fully
+ * upright on banks up to 30 degrees; steeper than that it stops at
+ * BARRIER_MIN_ROAD_ANGLE_DEG to the road, because a truly upright wall on a 60 degree
+ * bank meets the road at only 30 degrees and overhangs the bottom two metres of it: a
+ * car parked there leaned its body on the wall and couldn't pull away (measured). At 60
+ * degrees it is then a 60 degree face (too steep for tyres to climb) meeting the road at
+ * 60. A flat road's barriers are unchanged. Both the visible wall (ribbon.ts) and its
+ * physics box (colliders.ts) use this, so the two always agree.
+ */
+export function barrierAxes(S: TrackSamples, i: number, side: -1 | 1, out: BarrierAxes): BarrierAxes {
+  const tx = S.tx[i]
+  const ty = S.ty[i]
+  const tz = S.tz[i]
+  // World up, made square to the road's direction (it stays in the road's cross-section).
+  let vx = -tx * ty
+  let vy = 1 - ty * ty
+  let vz = -tz * ty
+  const vl = Math.hypot(vx, vy, vz) || 1
+  vx /= vl
+  vy /= vl
+  vz /= vl
+  // How far this side's edge drops (the sine of the bank, + on the low side): lean the
+  // barrier back from square by that bank, up to (90 - BARRIER_MIN_ROAD_ANGLE_DEG) degrees.
+  const drop = -side * S.ry[i]
+  const lean = Math.min(Math.asin(Math.max(0, Math.min(1, drop))), ((90 - BARRIER_MIN_ROAD_ANGLE_DEG) * Math.PI) / 180)
+  // Rotating the road's up toward world up (made square to the road's direction) by the
+  // full bank would give upright; by `lean` it stops part way. (slerp between the two)
+  const full = Math.acos(Math.max(-1, Math.min(1, S.ux[i] * vx + S.uy[i] * vy + S.uz[i] * vz)))
+  const w = full > 1e-6 ? Math.sin(Math.min(lean, full)) / Math.sin(full) : 0
+  const w0 = full > 1e-6 ? Math.sin(full - Math.min(lean, full)) / Math.sin(full) : 1
+  let dx = S.ux[i] * w0 + vx * w
+  let dy = S.uy[i] * w0 + vy * w
+  let dz = S.uz[i] * w0 + vz * w
+  const dl = Math.hypot(dx, dy, dz) || 1
+  dx /= dl
+  dy /= dl
+  dz /= dl
+  // Out: the road's own outward direction on this side, made square to the face.
+  let ox = S.rx[i] * side
+  let oy = S.ry[i] * side
+  let oz = S.rz[i] * side
+  const od = ox * dx + oy * dy + oz * dz
+  ox -= dx * od
+  oy -= dy * od
+  oz -= dz * od
+  const ol = Math.hypot(ox, oy, oz) || 1
+  out.dx = dx
+  out.dy = dy
+  out.dz = dz
+  out.ox = ox / ol
+  out.oy = oy / ol
+  out.oz = oz / ol
+  return out
+}
+
+/** A stadium barrier along one edge: inner face, top, outer face down past the slab. */
 function addBarrier(bm: MeshBuilder, S: TrackSamples, c: Centerline, side: -1 | 1, H: number): void {
   const count = S.count
   const rows = count + 1
   const rowStart: number[] = []
   const ex = { aLateral: 0, aHalfWidth: 0 }
+  const ax: BarrierAxes = { dx: 0, dy: 0, dz: 0, ox: 0, oy: 0, oz: 0 }
   for (let r = 0; r < rows; r++) {
     const i = r % count
     const s = r * S.ds
     const hw = S.halfWidth[i]
     const t = c.thickness[i]
-    const ox = S.rx[i] * side
-    const oy = S.ry[i] * side
-    const oz = S.rz[i] * side
-    const Ux = S.ux[i]
-    const Uy = S.uy[i]
-    const Uz = S.uz[i]
-    const Ex = S.px[i] + ox * hw
-    const Ey = S.py[i] + oy * hw
-    const Ez = S.pz[i] + oz * hw
+    barrierAxes(S, i, side, ax)
+    const { ox, oy, oz, dx: Ux, dy: Uy, dz: Uz } = ax
+    // The edge itself sits on the road's own outward line.
+    const Ex = S.px[i] + S.rx[i] * side * hw
+    const Ey = S.py[i] + S.ry[i] * side * hw
+    const Ez = S.pz[i] + S.rz[i] * side * hw
     const Tk = BARRIER_THICKNESS
     ex.aHalfWidth = hw
     ex.aLateral = side * hw

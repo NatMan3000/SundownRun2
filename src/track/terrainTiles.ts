@@ -15,11 +15,18 @@
 //  Triangulation: every grid cell is split along the diagonal from
 //  (ix + 1, iz) to (ix, iz + 1). terrain.ts gridHeight() interpolates
 //  the same way, so terrainHeight() is exactly what the car touches.
+//
+//  Holes: a triangle whose three corners are all inside something solid
+//  of the road (under a grounded road's deck, or inside a stadium
+//  barrier's box: groundCovered in build.ts) is left out. No car can
+//  reach it, and ground hidden a few centimetres under the deck only
+//  gave a car's body something to catch on through the road.
 // ============================================================
 
 import { untagSurface } from '../core/physics'
 import type { TrackRuntime } from './types'
 import { add, type ColliderSet } from './colliders'
+import { trackInternals } from './build'
 
 import type { Rapier, RigidBody, World } from './rapierTypes'
 
@@ -40,12 +47,41 @@ export interface TerrainTiles {
   handles: Float64Array
   /** The heights the tiles were built from (to spot changed tiles on a rebuild). */
   heights: Float32Array
+  /** Which grid vertices were covered by the road (holes) when the tiles were built. */
+  covered: Uint8Array
   half: number
   cellSize: number
 }
 
+/** Which grid vertices the road covers (all 0 when unknown). */
+function coveredOf(t: TrackRuntime): Uint8Array {
+  return trackInternals(t)?.groundCovered ?? new Uint8Array((t.terrain.n + 1) * (t.terrain.n + 1))
+}
+
+/**
+ * Is the physics ground at (x, z) left out (its triangle's three corners all covered by
+ * the road)? Same triangles as tileMesh and gridHeight. Checks and tests use this to
+ * know where a ray should find no ground.
+ */
+export function groundHoleAt(t: TrackRuntime, x: number, z: number): boolean {
+  const cov = trackInternals(t)?.groundCovered
+  if (!cov) return false
+  const { n, half, cellSize } = t.terrain
+  const fx = (x + half) / cellSize
+  const fz = (z + half) / cellSize
+  const ix = Math.min(n - 1, Math.max(0, Math.floor(fx)))
+  const iz = Math.min(n - 1, Math.max(0, Math.floor(fz)))
+  const a = iz * (n + 1) + ix
+  const b = a + 1
+  const c = a + n + 1
+  const d = c + 1
+  // Split along b-c: the (a, c, b) half has u + w <= 1.
+  return fx - ix + (fz - iz) <= 1 ? !!(cov[a] && cov[b] && cov[c]) : !!(cov[b] && cov[c] && cov[d])
+}
+
 function tileMesh(t: TrackRuntime, tx: number, tz: number): { vertices: Float32Array; indices: Uint32Array } {
   const { n, half, cellSize, heights } = t.terrain
+  const cov = coveredOf(t)
   const x0 = tx * TILE
   const z0 = tz * TILE
   const x1 = Math.min(n, x0 + TILE)
@@ -69,16 +105,26 @@ function tileMesh(t: TrackRuntime, tx: number, tz: number): { vertices: Float32A
       const b = a + 1 //         (ix + 1, iz)
       const c = a + w //         (ix, iz + 1)
       const d = c + 1 //         (ix + 1, iz + 1)
-      // Counter-clockwise seen from above (+y), split along b-c.
-      indices[q++] = a
-      indices[q++] = c
-      indices[q++] = b
-      indices[q++] = b
-      indices[q++] = c
-      indices[q++] = d
+      // The same corners in the whole grid (for the covered flags).
+      const ga = (z0 + iz) * (n + 1) + x0 + ix
+      const gb = ga + 1
+      const gc = ga + n + 1
+      const gd = gc + 1
+      // Counter-clockwise seen from above (+y), split along b-c; a triangle with all
+      // three corners covered by the road is a hole.
+      if (!(cov[ga] && cov[gc] && cov[gb])) {
+        indices[q++] = a
+        indices[q++] = c
+        indices[q++] = b
+      }
+      if (!(cov[gb] && cov[gc] && cov[gd])) {
+        indices[q++] = b
+        indices[q++] = c
+        indices[q++] = d
+      }
     }
   }
-  return { vertices, indices }
+  return { vertices, indices: indices.slice(0, q) }
 }
 
 function buildTile(world: World, R: Rapier, tiles: TerrainTiles, t: TrackRuntime, tx: number, tz: number): void {
@@ -90,6 +136,9 @@ function buildTile(world: World, R: Rapier, tiles: TerrainTiles, t: TrackRuntime
     if (c) world.removeCollider(c, false)
   }
   const m = tileMesh(t, tx, tz)
+  tiles.handles[k] = -1
+  // A tile wholly under the road has nothing left to collide with.
+  if (m.indices.length === 0) return
   const set: ColliderSet = { body: tiles.body, handles: [] }
   add(world, R, set, R.ColliderDesc.trimesh(m.vertices, m.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'terrain')
   tiles.handles[k] = set.handles[0] ?? -1
@@ -105,6 +154,7 @@ export function createTerrainTiles(world: World, R: Rapier, t: TrackRuntime): Te
     n,
     handles: new Float64Array(tn * tn).fill(-1),
     heights: new Float32Array(t.terrain.heights),
+    covered: new Uint8Array(coveredOf(t)),
     half: t.terrain.half,
     cellSize: t.terrain.cellSize,
   }
@@ -122,9 +172,11 @@ export function updateTerrainTiles(world: World, R: Rapier, tiles: TerrainTiles,
   if (g.n !== tiles.n || g.half !== tiles.half || g.cellSize !== tiles.cellSize) {
     for (let tz = 0; tz < tiles.tn; tz++) for (let tx = 0; tx < tiles.tn; tx++) buildTile(world, R, tiles, t, tx, tz)
     tiles.heights = new Float32Array(g.heights)
+    tiles.covered = new Uint8Array(coveredOf(t))
     return tiles.tn * tiles.tn
   }
   const n = g.n
+  const cov = coveredOf(t)
   let rebuilt = 0
   for (let tz = 0; tz < tiles.tn; tz++) {
     for (let tx = 0; tx < tiles.tn; tx++) {
@@ -136,7 +188,7 @@ export function updateTerrainTiles(world: World, R: Rapier, tiles: TerrainTiles,
       for (let iz = z0; iz <= z1 && !changed; iz++) {
         const row = iz * (n + 1)
         for (let ix = x0; ix <= x1; ix++) {
-          if (g.heights[row + ix] !== tiles.heights[row + ix]) {
+          if (g.heights[row + ix] !== tiles.heights[row + ix] || cov[row + ix] !== tiles.covered[row + ix]) {
             changed = true
             break
           }
@@ -149,6 +201,7 @@ export function updateTerrainTiles(world: World, R: Rapier, tiles: TerrainTiles,
     }
   }
   tiles.heights.set(g.heights)
+  tiles.covered.set(cov)
   return rebuilt
 }
 

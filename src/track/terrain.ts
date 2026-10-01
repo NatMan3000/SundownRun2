@@ -25,6 +25,7 @@
 import type { ResolvedTrackFile, TerrainFeature } from './schema'
 import { SURFACE_CODE, type TerrainGrid, type TrackSamples } from './types'
 import { clamp, fbm, makeNoise2D, smoothstep } from './noise'
+import { BARRIER_BELOW, BARRIER_DEPTH, barrierAxes, type BarrierAxes } from './ribbon'
 
 type Env = ResolvedTrackFile['environment']
 
@@ -420,13 +421,47 @@ const SHOULDER_MIN = 12
 const SHOULDER_MAX = 36
 /** A bridge keeps at least this much air between its underside and the ground. */
 export const BRIDGE_CLEARANCE = 5
+/**
+ * ...growing to that over this many metres from where the road leaves the ground, so the
+ * embankment tapers in under the bridge's first metres rather than ending in a sheer
+ * drop just under the road (a wall of ground right under the deck at the join).
+ */
+const BRIDGE_TAPER = 10
 
 /** Per-sample road info the flattener needs beyond TrackSamples. */
 export interface FlattenInput {
   samples: TrackSamples
   /** Slab thickness under each sample (to find a bridge's underside). */
   thickness: Float32Array
+  /** Stadium barriers along both edges (road.barriers = 'walls'), this tall. 0 = none. */
+  barrierHeight: number
 }
+
+/** The cut-and-filled ground, plus where the physics ground isn't needed. */
+export interface FlattenResult {
+  heights: Float32Array
+  /**
+   * Per grid vertex, 1 where it sits inside something solid of the road: under a
+   * grounded road's deck, or inside a stadium barrier's box. A ground triangle whose
+   * three corners are all covered can't be reached by a car, so the physics leaves it
+   * out (terrainTiles.ts): the closed road slab and the barrier boxes contain the car
+   * there, and ground a few centimetres under the deck only gives the car's body
+   * something to catch on through the road (hyper-1 D4: soft CCD contacts with tilted
+   * ground facets under a 60 degree bank).
+   */
+  covered: Uint8Array
+}
+
+/** On a road with barriers, how far (across, flat metres) from an edge the ground under the road comes up to meet it. */
+const EDGE_REACH = 4.5
+/**
+ * Under a road with barriers the ground hides this far below the deck (vertical metres,
+ * along the road's up), right to both edges: nobody drives back on from the grass past
+ * a barrier, so the ground needn't rise to meet the lip from below.
+ */
+const WALLED_HIDE = 1.5
+/** A vertex this close (metres) to the edge of the deck or of a barrier box doesn't count as covered (curves, rounding). */
+const COVER_MARGIN = 0.25
 
 /**
  * Cut and fill the natural grid to meet the road. Returns the final heights.
@@ -434,11 +469,14 @@ export interface FlattenInput {
  * claims the ones it is closest to; then every claimed vertex is shaped by its
  * closest sample's cross-section.
  */
-export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Array {
+export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenResult {
   const { n, half, cellSize } = grid
   const nat = grid.heights
   const out = new Float32Array(nat)
   const S = input.samples
+  const walls = input.barrierHeight > 0
+  const cover = new Uint8Array((n + 1) * (n + 1))
+  const ax: BarrierAxes = { dx: 0, dy: 0, dz: 0, ox: 0, oy: 0, oz: 0 }
   const count = S.count
   const vcount = (n + 1) * (n + 1)
 
@@ -446,6 +484,17 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
   const bestGd = new Float32Array(vcount).fill(Infinity)
   const bestB = new Int32Array(vcount).fill(-1)
   const bestBd = new Float32Array(vcount).fill(Infinity)
+
+  // For each raised (not grounded) road sample: metres along the road to the nearest grounded one.
+  const toGround = new Float32Array(count).fill(Infinity)
+  for (let pass = 0; pass < 2; pass++) {
+    for (let k = 0; k < 2 * count; k++) {
+      const i = pass === 0 ? k % count : (2 * count - 1 - k) % count
+      const prev = pass === 0 ? (i - 1 + count) % count : (i + 1) % count
+      if (S.grounded[i] === 1 && S.surface[i] === SURFACE_CODE.road) toGround[i] = 0
+      else toGround[i] = Math.min(toGround[i], toGround[prev] + S.ds)
+    }
+  }
 
   const inv = 1 / cellSize
   for (let i = 0; i < count; i++) {
@@ -489,6 +538,8 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
     const x = -half + ix * cellSize
     const z = -half + iz * cellSize
     let h = nat[v]
+    // Under a grounded road's deck (nothing can pass under it, so a bridge's clearance cut must not dig here).
+    let underDeck = false
 
     if (ig >= 0) {
       // Lateral position across the (possibly banked) road surface.
@@ -504,24 +555,71 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
       // edge is lower than the edge too (a flat shoulder there would rise above the
       // road once a grid triangle straddles the edge).
       // (BANK_RUNOUT is a horizontal distance; on a steep bank that is more metres along the slope.)
-      const runout = BANK_RUNOUT / Math.sqrt(Math.max(0.09, rh2))
+      // A road with barriers doesn't: there the runout dug a ditch behind the low
+      // barrier (1-2 m deep at 60 degrees, hyper-1 D3). Instead the ground near the low
+      // edge, under the road and beyond it, stays level with that edge (below).
+      const runout = walls ? 0 : BANK_RUNOUT / Math.sqrt(Math.max(0.09, rh2))
       const latC = clamp(lat, -hw - runout, hw + runout)
       const surfY = S.py[ig] + S.ry[ig] * latC
       const beyond = Math.abs(lat) - hw
       if (beyond <= 0) {
-        // Under the road: hidden, rising to just under the lip over the last metre.
-        h = surfY - EDGE_DEPTH - (HIDE_DEPTH - EDGE_DEPTH) * (1 - smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond))
+        underDeck = Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds
+        if (walls) {
+          // Under a road with barriers: well hidden (along the road's up, so a steep
+          // bank's deck isn't skimmed by the ground under it)...
+          h = surfY - WALLED_HIDE / Math.max(0.3, S.uy[ig])
+          // ...except within EDGE_REACH of an edge, where it sits just under the lower of
+          // that edge and the deck above it. By the LOW edge of a bank (the deck rises
+          // away from it) that is a level floor at the edge's own height, which the
+          // ground beyond the edge carries on: no ditch behind the barrier, and no grid
+          // triangle reaching from under the deck to beyond the edge can poke up through
+          // the road. By the HIGH edge it hugs the deck, which the barrier's face leans over.
+          for (const side of [-1, 1]) {
+            const fromEdge = (hw - side * lat) * Math.sqrt(rh2)
+            if (fromEdge >= EDGE_REACH) continue
+            const edgeY = S.py[ig] + S.ry[ig] * side * hw
+            h = Math.min(edgeY, S.py[ig] + S.ry[ig] * lat) - EDGE_DEPTH
+          }
+        } else {
+          // Under the road: hidden, rising to just under the lip over the last metre
+          // (so driving back on from the grass is smooth).
+          h = surfY - EDGE_DEPTH - (HIDE_DEPTH - EDGE_DEPTH) * (1 - smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond))
+        }
+        // Under the deck. (Right to the edge on a road with barriers: their boxes cover beyond it.)
+        if (Math.abs(lat) <= hw - (walls ? 0 : COVER_MARGIN) && Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds) cover[v] = 1
       } else {
         const target = surfY - EDGE_DEPTH
         // Deep cuts and tall fills get a wider shoulder, so the slope stays a slope.
+        // (On a road with barriers it is measured flat, so a steep bank's cut slope is no
+        // steeper than a flat road's, and starts EDGE_REACH metres out: the ground stays level
+        // with the edge under the barrier's foot, inside its box.)
         const shoulder = clamp(SHOULDER_MIN + 0.6 * Math.abs(h - target), SHOULDER_MIN, SHOULDER_MAX)
-        const w = smoothstep(0, shoulder, beyond)
+        const w = smoothstep(0, shoulder, walls ? Math.max(0, beyond * Math.sqrt(rh2) - EDGE_REACH) : beyond)
         h = target + (h - target) * w
+      }
+      if (walls && beyond > 0 && cover[v] === 0) {
+        // Inside this side's barrier box? (Same box as colliders.ts builds.)
+        const side = lat < 0 ? -1 : 1
+        barrierAxes(S, ig, side, ax)
+        const ex = x - (S.px[ig] + S.rx[ig] * side * hw)
+        const ey = h - (S.py[ig] + S.ry[ig] * side * hw)
+        const ez = z - (S.pz[ig] + S.rz[ig] * side * hw)
+        const out = ex * ax.ox + ey * ax.oy + ez * ax.oz
+        const up = ex * ax.dx + ey * ax.dy + ez * ax.dz
+        const along = Math.abs(ex * S.tx[ig] + ey * S.ty[ig] + ez * S.tz[ig])
+        // (The box is convex, so a triangle whose corners are all inside it is inside it too; a
+        // small margin at its top face is enough, and lets the ground under a leaning low barrier count.)
+        if (out <= BARRIER_DEPTH - COVER_MARGIN && up >= -input.thickness[ig] - BARRIER_BELOW + COVER_MARGIN && up <= input.barrierHeight - 0.1 && along <= S.ds) cover[v] = 1
       }
     }
 
-    if (ib >= 0) {
-      // A bridge overhead: keep clear air under its underside.
+    if (ib >= 0 && !underDeck) {
+      // A bridge overhead: keep clear air under its underside. Only under (or just
+      // beside) the bridge itself: not under a grounded road's own deck, and not
+      // beside the grounded road just before a bridge starts. (Measured only across the
+      // road, this cut used to carve a 6 m cliff off the edge of the grounded road
+      // where it rises into a bridge, and dig a pit under its deck, whose walls then
+      // sat steeply tilted just under the road's edge.)
       const dx = x - S.px[ib]
       const dz = z - S.pz[ib]
       const rxh = S.rx[ib]
@@ -529,17 +627,18 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
       const rh2 = rxh * rxh + rzh * rzh
       const lat = rh2 > 1e-4 ? (dx * rxh + dz * rzh) / rh2 : 0
       const hw = S.halfWidth[ib]
-      if (Math.abs(lat) <= hw + 3) {
+      const along = Math.abs(dx * S.tx[ib] + dz * S.tz[ib])
+      if (Math.abs(lat) <= hw + 3 && along <= S.ds) {
         const latC = clamp(lat, -hw, hw)
         const under = S.py[ib] + S.ry[ib] * latC - input.thickness[ib]
-        const clip = under - BRIDGE_CLEARANCE
+        const clip = under - BRIDGE_CLEARANCE * smoothstep(0, BRIDGE_TAPER, toGround[ib])
         if (h > clip) h = clip
       }
     }
     out[v] = h
   }
   keepUnderRoad(grid, out, S)
-  return out
+  return { heights: out, covered: cover }
 }
 
 /**

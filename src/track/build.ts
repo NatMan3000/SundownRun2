@@ -53,8 +53,11 @@ import { hashString } from './noise'
  *   4: billboards closer to the road (14-30 m) and kept out of every place cars fly or crowd.
  *   5: a loop's roll is spread evenly from mouth to landing instead of all over the top, so
  *      its road surface (and its edges) turn about the centre line; the centre line is unchanged.
+ *   6: stadium barriers stand upright on a bank's low edge, with level ground behind them
+ *      (no ditch); a bridge's clearance cut no longer digs beside or under the grounded road
+ *      where it rises into the bridge, and tapers in over the bridge's first 10 m.
  */
-export const BUILDER_VERSION = 5
+export const BUILDER_VERSION = 6
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
@@ -81,6 +84,12 @@ export interface TrackInternals {
   overrideWeight: Float32Array
   /** Each loop as built (where it sits, which way it drifts, how far it was bent to land). */
   loops: LoopInfo[]
+  /**
+   * Per terrain grid vertex, 1 where it is inside the road's slab or a barrier box
+   * (see flattenToRoad). The physics ground leaves out every triangle whose three
+   * corners are covered (terrainTiles.ts).
+   */
+  groundCovered: Uint8Array
 }
 
 const internals = new WeakMap<TrackRuntime, TrackInternals>()
@@ -120,7 +129,8 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const L = c.length
 
   // ---- the ground, cut and filled to the road ----
-  const heights = flattenToRoad(natGrid, { samples: S, thickness: c.thickness })
+  const flat = flattenToRoad(natGrid, { samples: S, thickness: c.thickness, barrierHeight: file.road.barriers === 'walls' ? file.road.barrierHeight : 0 })
+  const heights = flat.heights
   const terrain = makeTerrainGrid(natGrid, heights)
   const terrainHeight = (x: number, z: number) => gridHeight(terrain, x, z)
   const terrainNormal = (x: number, z: number, out: THREE.Vector3): THREE.Vector3 => {
@@ -405,6 +415,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     atOfS: c.atOfS,
     overrideWeight: c.overrideWeight,
     loops: c.loops,
+    groundCovered: flat.covered,
   })
   return runtime
 }

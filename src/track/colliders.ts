@@ -39,7 +39,7 @@
 
 import { GROUPS, tagSurface, untagSurface, type SurfaceKind } from '../core/physics'
 import { SURFACE_CODE, type TrackRuntime } from './types'
-import { buildDriveSurface, driveSurfacePart, splitBy, type DriveSurface } from './ribbon'
+import { BARRIER_BELOW, BARRIER_DEPTH, barrierAxes, buildDriveSurface, driveSurfacePart, splitBy, type BarrierAxes, type DriveSurface } from './ribbon'
 import { trackInternals } from './build'
 import { roundedToEuclid } from './terrain'
 
@@ -114,41 +114,38 @@ export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): C
   return set
 }
 
-/** Stadium edge barriers as a chain of thick boxes following the road edge. */
+/** Stadium edge barriers as a chain of thick boxes following the road edge (standing as barrierAxes says). */
 function addBarrierBoxes(world: World, R: Rapier, set: ColliderSet, t: TrackRuntime): void {
   const S = t.samples
   const H = t.file.road.barrierHeight
   const thick = trackInternals(t)?.thickness
   const step = Math.max(1, Math.round(8 / S.ds))
-  const DEPTH = 3 // metres of box beyond the edge: far thicker than the visible 0.7 m wall
-  for (const side of [-1, 1]) {
+  const ax: BarrierAxes = { dx: 0, dy: 0, dz: 0, ox: 0, oy: 0, oz: 0 }
+  for (const side of [-1, 1] as const) {
     for (let i0 = 0; i0 < S.count; i0 += step) {
       const i1 = Math.min(S.count, i0 + step)
       const im = Math.floor((i0 + i1) / 2) % S.count
       if (S.surface[i0 % S.count] !== SURFACE_CODE.road || S.surface[i1 % S.count] !== SURFACE_CODE.road) continue
       const hw = S.halfWidth[im]
       const t0 = thick ? thick[im] : 1.2
-      // Basis: x along the road, y up, z outward on this side.
+      // Basis: x along the road, y up the barrier's face, z outward on this side.
       const tx = S.tx[im]
       const ty = S.ty[im]
       const tz = S.tz[im]
-      const ux = S.ux[im]
-      const uy = S.uy[im]
-      const uz = S.uz[im]
-      const ox = S.rx[im] * side
-      const oy = S.ry[im] * side
-      const oz = S.rz[im] * side
+      barrierAxes(S, im, side, ax)
       // Edge point at the segment middle, then the box centre.
-      const ex = S.px[im] + ox * hw
-      const ey = S.py[im] + oy * hw
-      const ez = S.pz[im] + oz * hw
-      const hy = (H + t0) / 2
-      const cx = ex + ox * (DEPTH / 2) + ux * (hy - t0)
-      const cy = ey + oy * (DEPTH / 2) + uy * (hy - t0)
-      const cz = ez + oz * (DEPTH / 2) + uz * (hy - t0)
+      const ex = S.px[im] + S.rx[im] * side * hw
+      const ey = S.py[im] + S.ry[im] * side * hw
+      const ez = S.pz[im] + S.rz[im] * side * hw
+      // From BARRIER_BELOW under the slab's bottom up to the barrier's top.
+      const below = t0 + BARRIER_BELOW
+      const hy = (H + below) / 2
+      const cx = ex + ax.ox * (BARRIER_DEPTH / 2) + ax.dx * (hy - below)
+      const cy = ey + ax.oy * (BARRIER_DEPTH / 2) + ax.dy * (hy - below)
+      const cz = ez + ax.oz * (BARRIER_DEPTH / 2) + ax.dz * (hy - below)
       const halfLen = ((i1 - i0) * S.ds) / 2 + 0.4
-      const q = quatFromBasis(tx, ty, tz, ux, uy, uz)
-      const desc = R.ColliderDesc.cuboid(halfLen, hy, DEPTH / 2).setTranslation(cx, cy, cz).setRotation(q)
+      const q = quatFromBasis(tx, ty, tz, ax.dx, ax.dy, ax.dz)
+      const desc = R.ColliderDesc.cuboid(halfLen, hy, BARRIER_DEPTH / 2).setTranslation(cx, cy, cz).setRotation(q)
       add(world, R, set, desc, 'barrier')
     }
   }

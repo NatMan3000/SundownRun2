@@ -38,7 +38,7 @@ import type { TrackRuntime, NearestHit, TrackFrame } from './types'
 import { SURFACE_CODE } from './types'
 import { BIGAIR_LAYOUT } from './terrain'
 import { createRoadColliders, createWorldColliders } from './colliders'
-import { createTerrainTiles, removeTerrainTiles, updateTerrainTiles } from './terrainTiles'
+import { createTerrainTiles, groundHoleAt, removeTerrainTiles, updateTerrainTiles } from './terrainTiles'
 import { buildTrack } from './build'
 import { SIDE_RUN } from './ramps'
 import { LOOP_RUN_IN, loopShape } from './road'
@@ -116,6 +116,8 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     const onlyTerrain = (c: Collider) => surfaceOf(c.handle) === 'terrain'
     let maxErr = 0
     let n = 0
+    let holes = 0
+    let wrong = 0
     const { half } = t.terrain
     for (let a = -0.93; a <= 0.93; a += 0.0731) {
       for (let b = -0.93; b <= 0.93; b += 0.0687) {
@@ -123,15 +125,25 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         const z = b * half
         ray.origin = { x, y: t.terrain.maxHeight + 50, z }
         const h = world.castRay(ray, 10000, true, undefined, undefined, undefined, undefined, onlyTerrain)
-        if (!h) continue
+        // Under the road's slab (and inside barrier boxes) the physics ground is left out
+        // on purpose (terrainTiles.ts): a ray there must find nothing, anywhere else the ground.
+        if (groundHoleAt(t, x, z)) {
+          holes++
+          if (h) wrong++
+          continue
+        }
+        if (!h) {
+          wrong++
+          continue
+        }
         const y = t.terrain.maxHeight + 50 - h.timeOfImpact
         maxErr = Math.max(maxErr, Math.abs(y - t.terrainHeight(x, z)))
         n++
       }
     }
-    const pass = n > 500 && maxErr < 0.01
+    const pass = n > 500 && maxErr < 0.01 && wrong === 0
     if (!pass) ok = false
-    lines.push(`${pass ? 'ok  ' : 'FAIL'} ground collider vs terrainHeight(): ${n} raycasts, max difference ${(maxErr * 100).toFixed(2)} cm`)
+    lines.push(`${pass ? 'ok  ' : 'FAIL'} ground collider vs terrainHeight(): ${n} raycasts, max difference ${(maxErr * 100).toFixed(2)} cm; ${holes} fell where the ground is left out under the road, ${wrong} found ground where there should be none or none where there should be some`)
   }
 
   // ---- helpers ----
@@ -686,7 +698,15 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
           const z = S.pz[i] + S.rz[i] * l
           ray.origin = { x, y: top, z }
           const h = w2.castRay(ray, 10000, true, undefined, undefined, undefined, undefined, onlyTerrain)
-          if (!h) continue
+          // Ground left out under the rebuilt road must be gone, and nowhere else.
+          const hole = groundHoleAt(tb, x, z)
+          if (hole || !h) {
+            if (hole !== !h && (worst < 1 || !worstAt.includes('hole'))) {
+              worst = Math.max(worst, 1)
+              worstAt = `bank ${b} deg, ${where(tb, i * S.ds)}, lateral ${l.toFixed(0)} (${hole ? 'ground where the rebuilt road leaves a hole' : 'a hole where the rebuilt road has ground'})`
+            }
+            continue
+          }
           const err = Math.abs(top - h.timeOfImpact - tb.terrainHeight(x, z))
           if (err > worst) {
             worst = err
@@ -705,6 +725,90 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     )
   }
 
+
+  // ---- 9. steep banks with barriers: the low edge holds a car (hyper-1 D3) ----
+  // At every bank the slider allows (and two between), on the steepest bit of each end:
+  // a car parked a metre from the LOW edge, one driven along that edge, and one thrown
+  // at the low barrier must all stay on the road: never on top of the barrier, never past
+  // it, never sunk into it. (Square to a 60 degree bank, the old barrier was a 30 degree
+  // ramp: cars drove up it into a ditch behind.)
+  if (adj && t.file.road.barriers === 'walls') {
+    const banks = [...new Set([adj.min, Math.round((adj.min + adj.max) / 2), t.file.road.banking.maxDeg, Math.round(adj.min + (adj.max - adj.min) * 0.75), adj.max])].sort((a, b) => a - b)
+    const results: string[] = []
+    let fails = 0
+    let runs = 0
+    let worstTxt = ''
+    for (const b of banks) {
+      const tb = buildTrack(t.file, { ...t.params, bankDeg: b }, t)
+      const S = tb.samples
+      const w3 = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+      createWorldColliders(w3, RAPIER, tb)
+      createRoadColliders(w3, RAPIER, tb)
+      createTerrainTiles(w3, RAPIER, tb)
+      w3.step()
+      // The steepest sample of each banked end (two ends, far apart), or two flat spots on a flat road.
+      const spots: number[] = []
+      for (let k = 0; k < 2; k++) {
+        let best = -1
+        for (let i = 0; i < S.count; i++) {
+          if (S.surface[i] !== SURFACE_CODE.road) continue
+          if (spots.some((j) => Math.abs(tb.deltaS(i * S.ds, j * S.ds)) < tb.length / 4)) continue
+          if (best < 0 || Math.abs(S.bank[i]) > Math.abs(S.bank[best]) + 1e-4) best = i
+        }
+        if (best >= 0) spots.push(best)
+      }
+      const hitB: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+      const fr: TrackFrame = { ...frame, position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3() }
+      for (const i of spots) {
+        const sAt = i * S.ds
+        tb.frameAt(sAt, fr)
+        const hw = fr.halfWidth
+        // The low edge's side (-1 left, +1 right); either on a flat road.
+        const low = S.ry[i] > 0 ? -1 : 1
+        negRight.copy(fr.right).negate()
+        basis.makeBasis(negRight, fr.up, fr.tangent)
+        quat.setFromRotationMatrix(basis)
+        const cases: { what: string; lat: number; v: THREE.Vector3; secs: number }[] = [
+          { what: 'parked 1 m from the low edge', lat: low * (hw - 1), v: new THREE.Vector3(), secs: 4 },
+          { what: 'driven along the low edge at 15 m/s', lat: low * (hw - 1.5), v: fr.tangent.clone().multiplyScalar(15), secs: 3 },
+          { what: 'thrown at the low barrier at 25 m/s', lat: low * (hw - 4), v: fr.right.clone().multiplyScalar(low * 25).addScaledVector(fr.tangent, 20), secs: 2 },
+        ]
+        for (const c of cases) {
+          runs++
+          const p = fr.position.clone().addScaledVector(fr.right, c.lat).addScaledVector(fr.up, CAR.hy + 0.3)
+          const bd = RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z).setRotation({ x: quat.x, y: quat.y, z: quat.z, w: quat.w }).setLinvel(c.v.x, c.v.y, c.v.z).setSoftCcdPrediction(SOFT_CCD)
+          const body = w3.createRigidBody(bd)
+          const cd = RAPIER.ColliderDesc.cuboid(CAR.hx, CAR.hy, CAR.hz).setDensity(1200 / (8 * CAR.hx * CAR.hy * CAR.hz)).setFriction(0.8)
+          cd.setCollisionGroups(((1 << 1) << 16) | (1 << 0))
+          w3.createCollider(cd, body)
+          let bad = ''
+          let sh = sAt
+          for (let k = 0; k < Math.round(c.secs * 60) && !bad; k++) {
+            w3.step()
+            const q = body.translation()
+            tb.nearest(q.x, q.y, q.z, hitB, sh)
+            sh = hitB.s
+            const past = Math.abs(hitB.lateral) - tb.samples.halfWidth[hitB.index]
+            // Its centre may lean out over the edge a little (a tilted box), never past the barrier's face.
+            if (past > 0.6) bad = `went ${past.toFixed(1)} m past the edge`
+            else if (hitB.height > 2.4) bad = `climbed ${hitB.height.toFixed(1)} m off the road (onto the barrier)`
+            else if (hitB.height < -0.3) bad = `sank ${(-hitB.height).toFixed(1)} m into the road`
+          }
+          if (bad) {
+            fails++
+            if (!worstTxt) worstTxt = `bank ${b} deg, ${where(tb, sAt)}: ${c.what} ${bad}`
+          }
+          w3.removeRigidBody(body)
+        }
+      }
+      results.push(`${b}`)
+      w3.free()
+    }
+    if (fails) ok = false
+    lines.push(
+      `${fails ? 'FAIL' : 'ok  '} low edge on a steep bank, at bank ${results.join(' / ')} deg: ${runs - fails}/${runs} car boxes parked, driven along or thrown at the low barrier stayed on the road${fails ? ` (first: ${worstTxt}; a builder bug, not your file)` : ''}`,
+    )
+  }
   world.free()
   return { ok, lines }
 }

@@ -12,6 +12,10 @@
 //    loops     nothing in a car's way on or around a loop
 //    surface   the road faces the way its frames say, and the physics
 //              triangles follow it (no sawtooth where the road twists)
+//    under     no physics ground close under the road at an angle (a
+//              car's body catches on it through the road)
+//    barriers  stadium barriers stand up as walls on a bank's low edge,
+//              with no ditch behind them
 //    tracking  "where am I on the road?" never jumps by mistake
 //    ground    the ground stays under the road
 //    + warnings (start grid on a bend, fewer billboards than asked)
@@ -31,6 +35,8 @@ import { SURFACE_CODE } from './types'
 import { requiredClearance } from './terrain'
 import { buildTrack, trackInternals } from './build'
 import { colliderDriveSurface } from './colliders'
+import { groundHoleAt } from './terrainTiles'
+import { barrierAxes, type BarrierAxes } from './ribbon'
 import { brakeOnSlope, carFullLockG, LINE_MAX_LAT_G } from './derived'
 
 /** One gate row. `level` 'warn' never fails a track; 'fail' does (and then ok is false). */
@@ -684,6 +690,151 @@ export function surfaceFit(t: TrackRuntime): {
   return { middleDeg: middle, middleAt, rightOutDeg: rightOut, fitDeg: fit, fitAt, loops: loopRuns, roadLeanDeg: roadLean, roadLeanAt, triangles: tris }
 }
 
+/** Ground the physics keeps under the deck closer than this (metres, along the road's up)... */
+const UNDER_GAP = 0.5
+/** An open road's outer band (metres) where the ground rises to meet the lip (terrain.ts EDGE_BAND + 2). */
+const EDGE_BAND_JUDGE = 4.5
+/** ...must face the road's own way within this (degrees). */
+const UNDER_TILT_DEG = 15
+/**
+ * On a bank this steep (degrees) or more, the low barrier's face must rise at least
+ * BARRIER_FACE_MIN_DEG from flat (else it's a ramp a car drives up) and meet the road at
+ * least BARRIER_V_MIN_DEG (else it overhangs the road's low edge and wedges a car).
+ */
+const UPRIGHT_FROM_DEG = 15
+const BARRIER_FACE_MIN_DEG = 55
+const BARRIER_V_MIN_DEG = 55
+/** Behind a low barrier the ground may sit at most this far (metres) below the road's edge. */
+const DITCH_MAX = 0.5
+
+/**
+ * The physics ground under the road (see terrainTiles.ts: under the road's closed slab
+ * it is mostly left out). Where some is kept close under the deck it must face the way
+ * the road does, or a car's body touching it through the road gets shoved sideways
+ * (hyper-1 D4: ground facets 0.1 m under a 60 degree deck, tilted 29 degrees, kicked
+ * the car). Open roads keep ground just under their edges on purpose (flush, for
+ * driving back on from the grass), so they are judged up to a metre from each edge;
+ * walled roads up to half a metre. Measured on every grounded sample.
+ */
+export function underDeck(t: TrackRuntime): {
+  clearPct: number
+  /** Worst where it is judged: the whole width on a road with barriers, the middle of an open road. */
+  worstTilt: number
+  worstGap: number
+  at: number
+  lateral: number
+  /** Worst in an open road's edge band, where the ground rises to meet the lip on purpose (reported, not judged). */
+  bandTilt: number
+  bandAt: number
+} {
+  const S = t.samples
+  const walls = t.file.road.barriers === 'walls'
+  let pts = 0
+  let clear = 0
+  let worstTilt = 0
+  let worstGap = Infinity
+  let at = 0
+  let lateral = 0
+  let bandTilt = 0
+  let bandAt = 0
+  const e = 0.3
+  for (let i = 0; i < S.count; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1) continue
+    const hw = S.halfWidth[i]
+    // An open road's ground rises to meet the lip over its outer EDGE_BAND_JUDGE metres
+    // (terrain.ts), so close ground there is by design.
+    const middle = walls ? hw - 0.5 : hw - EDGE_BAND_JUDGE
+    for (let l = -hw + 0.5; l <= hw - 0.5 + 1e-6; l += 0.5) {
+      pts++
+      const x = S.px[i] + S.rx[i] * l
+      const y = S.py[i] + S.ry[i] * l
+      const z = S.pz[i] + S.rz[i] * l
+      if (groundHoleAt(t, x, z)) {
+        clear++
+        continue
+      }
+      const gap = (y - t.terrainHeight(x, z)) * S.uy[i]
+      if (gap >= UNDER_GAP) {
+        clear++
+        continue
+      }
+      const hx = t.terrainHeight(x + e, z) - t.terrainHeight(x - e, z)
+      const hz = t.terrainHeight(x, z + e) - t.terrainHeight(x, z - e)
+      const nl = Math.hypot(hx, 2 * e, hz)
+      const tilt = (Math.acos(Math.min(1, (-hx * S.ux[i] + 2 * e * S.uy[i] - hz * S.uz[i]) / nl)) * 180) / Math.PI
+      if (Math.abs(l) <= middle) {
+        if (tilt > worstTilt) {
+          worstTilt = tilt
+          worstGap = gap
+          at = i * S.ds
+          lateral = l
+        }
+      } else if (tilt > bandTilt) {
+        bandTilt = tilt
+        bandAt = i * S.ds
+      }
+    }
+  }
+  return { clearPct: pts ? (clear / pts) * 100 : 100, worstTilt, worstGap, at, lateral, bandTilt, bandAt }
+}
+
+/**
+ * Stadium barriers on a bank. On the LOW edge of a steep bank the barrier must be a
+ * wall: square to a 60 degree road it leans out at 30 degrees, a ramp cars drive up and
+ * over (hyper-1 D3); fully upright it meets the road at only 30 degrees and wedges a car
+ * parked by it. So its face must rise steeply AND meet the road at a wide angle. And the
+ * ground behind it must not dip below the road's edge (that ditch is where those cars got
+ * stuck). Returns the shallowest face and the narrowest angle with the road where the bank
+ * is UPRIGHT_FROM_DEG or more, and the deepest ground 1-20 m behind a low edge.
+ */
+export function barrierStance(t: TrackRuntime): { face: number; faceAt: number; vAngle: number; vAt: number; ditch: number; ditchAt: number } {
+  const S = t.samples
+  const ax: BarrierAxes = { dx: 0, dy: 0, dz: 0, ox: 0, oy: 0, oz: 0 }
+  let face = 90
+  let faceAt = 0
+  let vAngle = 180
+  let vAt = 0
+  let ditch = 0
+  let ditchAt = 0
+  const minDrop = Math.sin((UPRIGHT_FROM_DEG * Math.PI) / 180)
+  for (let i = 0; i < S.count; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    for (const side of [-1, 1] as const) {
+      const drop = -side * S.ry[i]
+      if (drop < -0.02) continue // the high edge: the ground rightly falls away behind it
+      if (drop >= minDrop) {
+        barrierAxes(S, i, side, ax)
+        const deg = 180 / Math.PI
+        // How steeply the face rises from flat, and its angle with the road running in from the edge.
+        const f = Math.asin(Math.max(-1, Math.min(1, ax.dy))) * deg
+        const v = Math.acos(Math.max(-1, Math.min(1, -side * (S.rx[i] * ax.dx + S.ry[i] * ax.dy + S.rz[i] * ax.dz)))) * deg
+        if (f < face) {
+          face = f
+          faceAt = i * S.ds
+        }
+        if (v < vAngle) {
+          vAngle = v
+          vAt = i * S.ds
+        }
+      }
+      if (i % 2) continue
+      const hw = S.halfWidth[i]
+      const rl = Math.hypot(S.rx[i], S.rz[i]) || 1
+      const ex = S.px[i] + S.rx[i] * side * hw
+      const ey = S.py[i] + S.ry[i] * side * hw
+      const ez = S.pz[i] + S.rz[i] * side * hw
+      for (let d = 1; d <= 20; d += 1) {
+        const below = ey - t.terrainHeight(ex + (S.rx[i] / rl) * side * d, ez + (S.rz[i] / rl) * side * d)
+        if (below > ditch) {
+          ditch = below
+          ditchAt = i * S.ds
+        }
+      }
+    }
+  }
+  return { face, faceAt, vAngle, vAt, ditch, ditchAt }
+}
+
 /**
  * Run every non-physics gate on a built track. `t.file` is the resolved track the
  * runtime was built from; tracks with an adjustable bank are rebuilt at the slider's
@@ -815,6 +966,38 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
         ? 'a loop rolls further, over less road, the tighter it is and the wider the road is there. Give the loop a bigger `radius` (the row above says about how big), or make the road narrower at the loop with a `width` on the points either side of it.'
         : 'this is a builder bug, not your file: report it.',
     )
+  }
+  // Under the road: no physics ground close under the deck at an angle (every bank a slider allows).
+  for (const b of adj ? [...new Set([curBank, adj.min, adj.max])] : [null]) {
+    const u = underDeck(atBank(b))
+    const bank = b === null ? '' : `bank ${b} deg: `
+    gate(
+      'under',
+      u.worstTilt <= UNDER_TILT_DEG,
+      u.worstTilt <= UNDER_TILT_DEG
+        ? `${bank}no physics ground closer than ${UNDER_GAP} m under the road at an angle (${u.clearPct.toFixed(0)}% of the road has none that close; the rest lies the road's way within ${u.worstTilt.toFixed(0)} deg, limit ${UNDER_TILT_DEG})${u.bandTilt > UNDER_TILT_DEG ? `; in the outer ${EDGE_BAND_JUDGE} m of an open road, where the ground rises to meet the edge on purpose, up to ${u.bandTilt.toFixed(0)} deg (at ${at(u.bandAt)}; not judged)` : ''}`
+        : `${bank}physics ground ${u.worstGap.toFixed(2)} m under the road at ${at(u.at)}, lateral ${u.lateral.toFixed(1)}, faces ${u.worstTilt.toFixed(0)} deg away from the road (limit ${UNDER_TILT_DEG} within ${UNDER_GAP} m): a car's body can catch on it through the road`,
+      'this is a builder bug, not your file: report it.',
+    )
+  }
+  // Stadium barriers stand up as walls on a bank's low edge, with no ditch behind them.
+  if (file.road.barriers === 'walls') {
+    for (const b of adj ? [...new Set([curBank, adj.min, adj.max])] : [null]) {
+      const st = barrierStance(atBank(b))
+      const bank = b === null ? '' : `bank ${b} deg: `
+      const bad: string[] = []
+      if (st.face < BARRIER_FACE_MIN_DEG) bad.push(`the barrier on the low edge rises only ${st.face.toFixed(0)} deg from flat at ${at(st.faceAt)} (at least ${BARRIER_FACE_MIN_DEG} on banks of ${UPRIGHT_FROM_DEG} deg or more): it's a ramp a car can drive up`)
+      if (st.vAngle < BARRIER_V_MIN_DEG) bad.push(`the barrier on the low edge meets the road at only ${st.vAngle.toFixed(0)} deg at ${at(st.vAt)} (at least ${BARRIER_V_MIN_DEG}): it leans over the road's edge and wedges a car parked there`)
+      if (st.ditch > DITCH_MAX) bad.push(`the ground behind the low barrier dips ${st.ditch.toFixed(2)} m below the road's edge at ${at(st.ditchAt)} (limit ${DITCH_MAX}): a ditch a car can get stuck in`)
+      gate(
+        'barriers',
+        bad.length === 0,
+        bad.length
+          ? bank + bad.join('; ')
+          : `${bank}the low-edge barriers are walls (faces rise at least ${Math.min(90, st.face).toFixed(0)} deg from flat, limit ${BARRIER_FACE_MIN_DEG}; they meet the road at ${Math.min(180, st.vAngle).toFixed(0)} deg or more, limit ${BARRIER_V_MIN_DEG}) and the ground behind them dips at most ${st.ditch.toFixed(2)} m below the edge (limit ${DITCH_MAX})`,
+        'this is a builder bug, not your file: report it.',
+      )
+    }
   }
   // Road tracking: nearest() with a hint never jumps to another bit of road by mistake,
   // and a car that dropped off a bridge is found on the road below.
