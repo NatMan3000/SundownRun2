@@ -10,10 +10,12 @@
 //  a sharp one, and the reflection always matches the sky you see.
 //
 //  The look system owns WHEN that happens and how big the map is:
-//    - built once per quality level (256 px cube on high, 128 below)
-//    - re-captured only when the sun has actually moved (the sky
-//      moves slowly, so this is a fraction of a millisecond a few
-//      times a minute, not every frame)
+//    - a 128 px cube (see QUALITY_PRESETS.envSize for why)
+//    - re-captured only when the sky has moved by 0.015 of the
+//      sundown-to-night range: about every 8 s at the default
+//      sunset speed, never while time stands still. A capture costs
+//      about 4 ms of GPU on the baseline laptop, inside one frame's
+//      headroom, so it never drops a frame there
 //    - forced on a new track (new sky settings)
 // ============================================================
 
@@ -25,6 +27,9 @@ import { registerDev } from '../core/devHandles'
 import { SkyEnvironment } from '../world/skyEnv'
 import { QUALITY_PRESETS } from './quality'
 import { lookState } from './lookState'
+
+/** Re-capture after the time of day has moved this much (0..1 scale). */
+const MIN_STEP = 0.015
 
 const state = { forced: true, trackVersion: -1 }
 
@@ -66,7 +71,7 @@ export function EnvironmentMap(): null {
       state.forced = true
     }
     const t0 = performance.now()
-    if (!sky.update(state.forced)) return
+    if (!sky.update(state.forced, MIN_STEP)) return
     state.forced = false
     lookState.env.builds++
     lookState.env.timeOfDay = environment.timeOfDay

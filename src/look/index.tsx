@@ -18,11 +18,12 @@ import { lookState } from './lookState'
 import { EnvironmentMap } from './EnvironmentMap'
 import { QualityManager } from './QualityManager'
 import { Screenshot } from './Screenshot'
+import { DevPick } from './DevPick'
 import { PostStack as Post } from './post/PostStack'
-import { LOOKDEV, LookDev } from './lookdev'
 import { FxPools } from './fx/FxPools'
 import { CarLights } from './fx/CarLights'
 import { HeadlightRig } from './fx/HeadlightRig'
+import { EventFx } from './fx/EventFx'
 
 export { RoadView } from './road/RoadView'
 
@@ -36,7 +37,7 @@ export function FxSystem() {
       <EnvironmentMap />
       <HeadlightRig />
       <FxPools />
-      {LOOKDEV && <LookDev />}
+      <EventFx />
     </>
   )
 }
@@ -47,6 +48,7 @@ export function PostStack() {
     <>
       <QualityManager />
       <Screenshot />
+      <DevPick />
       <Post />
     </>
   )

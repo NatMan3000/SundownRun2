@@ -29,6 +29,9 @@ import { lookState } from './lookState'
 const urlChoice = urlParam('quality')
 const URL_QUALITY: QualityChoice | null = isQualityChoice(urlChoice) ? urlChoice : null
 
+/** The step-down threshold in use (a checker can lower it to test the step: __dev.lookAuto). */
+const autoTune = { p95Ms: AUTO_QUALITY.p95Ms as number }
+
 /** Session state for auto (module-level: survives remounts, resets on reload). */
 const auto = {
   /** The level auto has stepped down to (starts high). */
@@ -90,6 +93,19 @@ export function QualityManager(): null {
     [],
   )
 
+  useEffect(
+    () =>
+      registerDev(
+        'lookAuto',
+        ((opts?: { p95Ms?: number }) => {
+          if (opts && typeof opts.p95Ms === 'number' && opts.p95Ms > 0) autoTune.p95Ms = opts.p95Ms
+          return { p95Ms: autoTune.p95Ms, level: auto.level, lastStep: lookState.quality.lastStep, windowSeconds: auto.driving }
+        }) as (...args: never[]) => unknown,
+        'lookAuto({ p95Ms }) - auto quality state; pass p95Ms to change the step-down threshold for this session (test the step)',
+      ),
+    [],
+  )
+
   useFrame((_, rawDt) => {
     if (choice !== 'auto') return
     const dt = Math.min(rawDt, 0.1)
@@ -121,7 +137,7 @@ export function QualityManager(): null {
 
     const p95 = rollingCostP95()
     lookState.quality.lastP95 = p95
-    if (p95 <= AUTO_QUALITY.p95Ms) return
+    if (p95 <= autoTune.p95Ms) return
 
     const i = QUALITY_ORDER.indexOf(auto.level)
     if (i < 0 || i >= QUALITY_ORDER.length - 1) return // already on low

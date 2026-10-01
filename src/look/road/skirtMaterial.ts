@@ -31,6 +31,10 @@ vLipDist = uv.x;
 const fragmentEmissive = /* glsl */ `
 #include <emissivemap_fragment>
 {
+  // A soft rim of the edge colour where the slab turns away from you, so its
+  // silhouette (a loop's underside, a bridge) never reads as a black hole. T0.
+  float facing = abs(dot(normalize(normal), normalize(vViewPosition)));
+  totalEmissiveRadiance += uEdgeColor * pow(1.0 - facing, 3.5) * 0.22;
   float w = max(fwidth(vLipDist), 1e-4);
   float hwPx = max(0.035, w * 0.5);
   float cov = (1.0 - smoothstep(hwPx - w * 0.5, hwPx + w * 0.5, abs(vLipDist - 0.06))) * (0.035 / hwPx);
@@ -54,6 +58,6 @@ export function makeSkirtMaterial(uniforms: RoadUniforms): THREE.MeshStandardMat
       .replace('#include <common>', `#include <common>\n${fragmentPars}`)
       .replace('#include <emissivemap_fragment>', fragmentEmissive)
   }
-  mat.customProgramCacheKey = () => 'sr2-skirt-v1'
+  mat.customProgramCacheKey = () => 'sr2-skirt-v2'
   return mat
 }

@@ -29,6 +29,9 @@ import { QUALITY_PRESETS } from '../quality'
 import { lookState } from '../lookState'
 import { LightTrails } from './LightTrails'
 
+/** Live handles for dev inspection (the fx meshes of the mounted CarLights). */
+export const carLightsDebug: { trails: LightTrails | null; pools: THREE.InstancedMesh | null } = { trails: null, pools: null }
+
 /** Most cars that get light at once (player + 5 Ai + ghost + remote players). */
 export const MAX_FX_CARS = 12
 
@@ -77,8 +80,9 @@ varying vec2 vLocal;
 varying float vDist;
 void main() {
   float r = length(vLocal);
-  float pool = 1.0 - smoothstep(0.0, 1.0, r);
-  pool *= pool;
+  // wide and soft: most of the light lands around the car, not hidden under it
+  float pool = 1.0 - smoothstep(0.1, 1.0, r);
+  pool *= 0.55 + 0.45 * pool;
   float a = pool * vGlow * (1.0 - smoothstep(180.0, 320.0, vDist));
   if (a < 0.002) discard;
   gl_FragColor = vec4(vColor * a, 1.0);
@@ -247,6 +251,8 @@ export function CarLights() {
     const auraGeo = new THREE.SphereGeometry(1, 20, 14)
     const auras = instanced(auraGeo, auraVertex, auraFragment, MAX_FX_CARS, true, 'fx-tag-aura')
 
+    carLightsDebug.trails = trails
+    carLightsDebug.pools = pools.mesh
     return { trails, bars, pools, cones, auras }
   }, [])
 
@@ -343,7 +349,7 @@ export function CarLights() {
         _m.compose(_p, car.quaternion, _s)
         fx.pools.mesh.setMatrixAt(pools, _m)
         fx.pools.mesh.setColorAt(pools, f.glow)
-        fx.pools.glow[pools] = GLOW.T0 * 0.75 * f.pool
+        fx.pools.glow[pools] = GLOW.T0 * (0.6 + 0.5 * environment.night) * f.pool
         pools++
       }
 

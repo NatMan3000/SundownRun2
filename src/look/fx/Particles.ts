@@ -293,6 +293,7 @@ export class SparkPool {
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide, // camera-facing streaks: winding depends on the view
       fog: false,
     })
     this.mesh = new THREE.Mesh(g, mat)
@@ -312,14 +313,14 @@ export class SparkPool {
     for (let c = 0; c < n; c++) {
       const i = this.cursor
       this.cursor = (this.cursor + 1) % this.cap
-      const sp = (5 + 14 * k) * (0.4 + 0.8 * rand())
+      const sp = (3 + 8 * k) * (0.4 + 0.8 * rand())
       const j = i * 3
       this.pos[j] = x
       this.pos[j + 1] = y
       this.pos[j + 2] = z
       // spray along the normal, widely scattered
       this.vel[j] = (nx + (rand() - 0.5) * 1.6) * sp
-      this.vel[j + 1] = (Math.abs(ny) * 0.6 + 0.35 + rand() * 0.6) * sp * 0.6
+      this.vel[j + 1] = (Math.abs(ny) * 0.5 + 0.2 + rand() * 0.5) * sp * 0.5
       this.vel[j + 2] = (nz + (rand() - 0.5) * 1.6) * sp
       this.age[i] = 0
       this.life[i] = 0.25 + rand() * 0.45
@@ -403,8 +404,8 @@ varying vec2 vLocal;
 void main() {
   // a bright thin rim with a faint wash inside
   float r = length(vLocal);
-  float rim = smoothstep(0.80, 0.97, r) * (1.0 - smoothstep(0.97, 1.0, r));
-  float wash = (1.0 - smoothstep(0.0, 0.97, r)) * 0.12;
+  float rim = smoothstep(0.88, 0.975, r) * (1.0 - smoothstep(0.975, 1.0, r));
+  float wash = smoothstep(0.3, 0.95, r) * (1.0 - smoothstep(0.95, 1.0, r)) * 0.06;
   float a = (rim + wash) * vGlow;
   if (a < 0.003) discard;
   gl_FragColor = vec4(vColor * a, 1.0);

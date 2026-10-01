@@ -162,12 +162,15 @@ export class LightTrails {
       fragmentShader,
       uniforms: {
         ...this.uniforms,
-        uWidth: { value: 0.085 },
+        uWidth: { value: 0.075 },
         uIntensity: { value: GLOW.T2 },
       },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      // The ribbon is turned to face the camera in the shader, so which way its
+      // triangles wind depends on the view: draw both sides.
+      side: THREE.DoubleSide,
       fog: false,
     })
     this.mesh = new THREE.Mesh(g, material)

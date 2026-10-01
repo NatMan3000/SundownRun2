@@ -55,7 +55,7 @@ export class BoostLensEffect extends Effect {
       attributes: EffectAttribute.CONVOLUTION,
       uniforms: new Map<string, THREE.Uniform>([
         ['uAmount', new THREE.Uniform(0)],
-        ['uMaxOffset', new THREE.Uniform(0.028)],
+        ['uMaxOffset', new THREE.Uniform(0.016)],
       ]),
     })
   }
@@ -122,7 +122,7 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   vec2 d = (uv - 0.5) * vec2(aspect, 1.0);
   float r = length(d);
   // Only toward the edges: the middle of the screen is where you look.
-  float edge = smoothstep(0.32, 0.78, r);
+  float edge = smoothstep(0.38, 0.85, r);
   if (edge <= 0.0) return;
 
   const float SPOKES = 160.0;
@@ -135,18 +135,18 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   float speed = 1.6 + 1.4 * h;
   float t = uTime * speed + h * 7.0;
   float cycle = floor(t);
-  float alive = step(0.55, sr2Hash(cell * 1.7 + cycle * 13.1));
+  float alive = step(0.68, sr2Hash(cell * 1.7 + cycle * 13.1));
   float head = 0.3 + fract(t) * 0.75;           // where the streak's head is (radius)
   float len = 0.12 + 0.18 * sr2Hash(cell + cycle * 3.3);
   float along = smoothstep(head - len, head, r) * (1.0 - smoothstep(head, head + 0.02, r));
 
   // Thin line, anti-aliased by its own screen-space footprint.
   float w = fwidth(across) * 1.2;
-  float thick = 0.12 + 0.18 * h;
+  float thick = 0.08 + 0.12 * h;
   float line = 1.0 - smoothstep(thick - w, thick + w, across);
 
   float streak = line * along * alive * edge * uAmount;
-  outputColor = vec4(inputColor.rgb + uColor * streak * 0.55, inputColor.a);
+  outputColor = vec4(inputColor.rgb + uColor * streak * 0.42, inputColor.a);
 }
 `
 

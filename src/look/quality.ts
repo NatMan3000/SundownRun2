@@ -37,7 +37,11 @@ export interface QualityPreset {
   sparkCap: number
   /** Most pulse rings alive at once. */
   pulseCap: number
-  /** Size of the environment (reflection) cube map. */
+  /**
+   * Size of the environment (reflection) cube map. Measured on the baseline
+   * GPU: a rebuild costs about 4 ms at 128 and 10 ms at 256, and the sky is
+   * smooth gradients, so 128 everywhere.
+   */
   envSize: number
 }
 
@@ -52,7 +56,7 @@ export const QUALITY_PRESETS: Record<QualityLevel, QualityPreset> = {
     shardCap: 480,
     sparkCap: 360,
     pulseCap: 12,
-    envSize: 256,
+    envSize: 128,
   },
   medium: {
     dpr: 1,

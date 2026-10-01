@@ -23,6 +23,8 @@ import { lookState } from '../lookState'
 import { dashPeriodFor, lanesFor, makeRoadMaterial, makeRoadUniforms } from './roadMaterial'
 import type { RoadLook, RoadUniforms } from './roadMaterial'
 import { makeSkirtMaterial } from './skirtMaterial'
+import { makeBarrierMaterial, makeRampMaterial } from './pieceMaterials'
+import { SpeedTrapSigns } from './SpeedTrapSign'
 
 /** Wrap the runtime's arrays in a BufferGeometry (no copies: the arrays are shared). */
 export function geometryFrom(buf: MeshBuffers): THREE.BufferGeometry {
@@ -39,19 +41,23 @@ export function geometryFrom(buf: MeshBuffers): THREE.BufferGeometry {
   return g
 }
 
-export function roadLookFor(track: Pick<TrackRuntime, 'file' | 'length'>): RoadLook {
+export function roadLookFor(track: Pick<TrackRuntime, 'file' | 'length' | 'boostZones' | 'speedTraps'>): RoadLook {
   return {
     edge: track.file.environment.palette?.edge ?? PALETTE.roadEdge,
     lanes: lanesFor(track.file.road.width),
     dashPeriod: dashPeriodFor(track.length),
+    length: track.length,
+    boosts: track.boostZones.map((z) => ({ s0: z.s0, s1: z.s1, lat0: z.lat0, lat1: z.lat1 })),
+    traps: track.speedTraps.map((t) => t.s),
   }
 }
 
 /** Per-frame uniforms shared by every road material instance. */
 export function tickRoadUniforms(u: RoadUniforms, elapsed: number): void {
-  // Wrapped so the shader's float time stays precise in long sessions (pulse cycles fit 600 s exactly).
+  // Wrapped so the shader's float time stays precise in long sessions (every animation cycle divides 600 s).
   u.uTime.value = elapsed % 600
   u.uNight.value = environment.night
+  u.uDirectSpec.value = 0.35 + 0.65 * environment.night
 }
 
 function triCount(g: THREE.BufferGeometry): number {
@@ -69,11 +75,23 @@ export function RoadView() {
     const skirt = geometryFrom(track.meshes.skirt)
     const roadMat = makeRoadMaterial(uniforms)
     const skirtMat = makeSkirtMaterial(uniforms)
-    lookState.road.triangles = triCount(road) + triCount(skirt)
+    const ramps = track.meshes.ramps ? geometryFrom(track.meshes.ramps) : null
+    const rampMat = ramps ? makeRampMaterial(uniforms.uTime) : null
+    const barriers = track.meshes.barriers ? geometryFrom(track.meshes.barriers) : null
+    const pal = track.file.environment.palette
+    const barrierMat = barriers
+      ? makeBarrierMaterial(uniforms.uTime, {
+          rail: pal?.edge ?? PALETTE.roadEdge,
+          band: pal?.edgeAlt ?? PALETTE.roadEdgeAlt,
+          height: track.file.road.barrierHeight,
+        })
+      : null
+    lookState.road.triangles =
+      triCount(road) + triCount(skirt) + (ramps ? triCount(ramps) : 0) + (barriers ? triCount(barriers) : 0)
     lookState.road.lanes = look.lanes
     lookState.road.edgeColor = look.edge
     lookState.road.rebuilds++
-    return { uniforms, road, skirt, roadMat, skirtMat }
+    return { uniforms, road, skirt, roadMat, skirtMat, ramps, rampMat, barriers, barrierMat }
   }, [track])
 
   useEffect(
@@ -83,6 +101,10 @@ export function RoadView() {
       built.skirt.dispose()
       built.roadMat.dispose()
       built.skirtMat.dispose()
+      built.ramps?.dispose()
+      built.rampMat?.dispose()
+      built.barriers?.dispose()
+      built.barrierMat?.dispose()
     },
     [built],
   )
@@ -94,8 +116,13 @@ export function RoadView() {
   if (!built) return null
   return (
     <group name="road">
-      <mesh geometry={built.road} material={built.roadMat} receiveShadow />
-      <mesh geometry={built.skirt} material={built.skirtMat} receiveShadow />
+      <mesh name="road-surface" geometry={built.road} material={built.roadMat} receiveShadow />
+      <mesh name="road-skirt" geometry={built.skirt} material={built.skirtMat} receiveShadow />
+      {built.ramps && built.rampMat && <mesh name="road-ramps" geometry={built.ramps} material={built.rampMat} castShadow receiveShadow />}
+      {built.barriers && built.barrierMat && (
+        <mesh name="road-barriers" geometry={built.barriers} material={built.barrierMat} receiveShadow />
+      )}
+      {track && track.speedTraps.length > 0 && <SpeedTrapSigns track={track} time={built.uniforms.uTime} />}
     </group>
   )
 }
