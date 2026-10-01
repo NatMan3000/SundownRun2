@@ -193,3 +193,24 @@ export function getCar(id: string): CarState | undefined {
   for (let i = 0; i < cars.length; i++) if (cars[i].id === id) return cars[i]
   return undefined
 }
+
+/**
+ * The world's light, per frame. Writer: world (its time-of-day clock).
+ * Readers: look (headlights, road reflections, env map), audio (night mood),
+ * ui. timeOfDay runs 0 (sundown) -> 1 (full night).
+ */
+export const environment = {
+  timeOfDay: 0.12,
+  /** 0..1 how "night" it is (stars, windows, headlights follow this). */
+  night: 0,
+  /** 0..1 headlight strength: 0 before timeOfDay 0.35, 1 by 0.6. */
+  headlights: 0,
+  /** Unit vector toward the sun (may be below the horizon at night). */
+  sunDirection: new THREE.Vector3(0, 0.1, -1),
+  /** Unit vector toward the main light actually lighting the scene (sun, then moon/planet glow). */
+  keyLightDirection: new THREE.Vector3(0, 0.3, -1),
+  /** Current horizon colour (fog / haze), linear-space r,g,b 0..1. */
+  horizon: new THREE.Color('#ff3d7f'),
+  /** Current zenith colour. */
+  zenith: new THREE.Color('#1b0b3a'),
+}
