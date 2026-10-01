@@ -2,8 +2,11 @@
 //  RIBBON MESHES - the road as triangles
 // ------------------------------------------------------------
 //  Builds the MeshBuffers in TrackRuntime.meshes from the sampled
-//  centreline. The same triangles feed the look worker's shaders AND
-//  the physics colliders, so what you see is exactly what you drive on.
+//  centreline. Every vertex sits on a sample's frame (position + right
+//  x lateral), so the look worker's shaders and the physics colliders
+//  describe the same surface: what you see is what you drive on.
+//  The colliders use buildDriveSurface (below): the same surface with
+//  fewer triangles, more of them only where the road twists.
 //
 //    road      the drivable top: 13 vertices across every sample, plus
 //              the curved walls of wall rides. Carries the shader
@@ -388,6 +391,153 @@ function addBarrier(bm: MeshBuilder, S: TrackSamples, c: Centerline, side: -1 | 
     bm.quad(A + 2, A + 3, B + 3, B + 2)
     bm.quad(A + 4, A + 5, B + 5, B + 4)
   }
+}
+
+/**
+ * How far (degrees) a physics triangle may face away from the real road under it. A
+ * stretch of road that twists (rolls about its own direction: a loop rolling over, a
+ * bank rolling in, a banked bend on a hill) isn't flat between two samples, and a
+ * triangle across it faces the way the road does at its own corners, not in between.
+ */
+export const DRIVE_TILT_TOL_DEG = 1
+/** Strips across the drive surface it may use: each divides ACROSS - 1, so its vertices are look-mesh vertices. */
+const DRIVE_STRIPS = [1, 2, 3, 4, 6, 12] as const
+
+/** The drivable top as the physics sees it (see buildDriveSurface). */
+export interface DriveSurface {
+  positions: Float32Array
+  indices: Uint32Array
+  /** Per triangle: the sample i of the stretch (sample i to i + 1) it covers. */
+  triQuad: Uint32Array
+  /** Per vertex: signed metres right of the centre line. */
+  lateral: Float32Array
+  /** Per quad (sample i to i + 1): how many strips across it uses. */
+  strips: Uint8Array
+}
+
+/**
+ * The drivable top (road and loops, not wall-ride walls) for the colliders: as few
+ * triangles as give the real shape.
+ *
+ * Where the road doesn't twist, the stretch between two samples is a flat four-sided
+ * piece, so two triangles across the whole width are exact. Where it twists, two big
+ * triangles would each face the way the road faces at its EDGES: on a loop rolling at
+ * 2.6 degrees a metre that is 19 degrees off, even in the middle of the road, flipping
+ * every half metre (a sawtooth the wheels feel). So each stretch gets just enough
+ * strips across that no triangle faces more than DRIVE_TILT_TOL_DEG away from the road
+ * under it: a strip w metres wide on road twisting t radians a metre is off by about
+ * w x t. Straights and steady bends stay at one strip; loops and bank roll-ins get up
+ * to 12 (the look mesh's own triangles).
+ *
+ * Neighbouring rows can have different numbers of points across. Rather than leave
+ * extra points sitting on a long edge (a "T-junction", which physics can catch on), the
+ * two rows are zipped together: walk across both, always stepping along the row whose
+ * next point comes first, so every triangle shares whole edges with its neighbours.
+ */
+export function buildDriveSurface(S: TrackSamples): DriveSurface {
+  const n = S.count
+  const tol = Math.tan((DRIVE_TILT_TOL_DEG * Math.PI) / 180)
+  // Strips per stretch, from how fast the road twists there.
+  const strips = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    const twist = Math.abs(
+      ((S.rx[j] - S.rx[i]) * (S.ux[i] + S.ux[j]) + (S.ry[j] - S.ry[i]) * (S.uy[i] + S.uy[j]) + (S.rz[j] - S.rz[i]) * (S.uz[i] + S.uz[j])) / (2 * S.ds),
+    )
+    const need = (2 * Math.max(S.halfWidth[i], S.halfWidth[j]) * twist) / tol
+    let k: number = DRIVE_STRIPS[DRIVE_STRIPS.length - 1]
+    for (const c of DRIVE_STRIPS) {
+      if (c >= need) {
+        k = c
+        break
+      }
+    }
+    strips[i] = k
+  }
+  // Points across each row: enough for both stretches it borders.
+  const rowStart = new Int32Array(n + 1)
+  const rowK = new Uint8Array(n)
+  let nv = 0
+  for (let r = 0; r < n; r++) {
+    rowK[r] = Math.max(strips[r], strips[(r - 1 + n) % n])
+    rowStart[r] = nv
+    nv += rowK[r] + 1
+  }
+  rowStart[n] = nv
+  const positions = new Float32Array(nv * 3)
+  const lateral = new Float32Array(nv)
+  for (let r = 0; r < n; r++) {
+    const hw = S.halfWidth[r]
+    const k = rowK[r]
+    for (let a = 0; a <= k; a++) {
+      const l = -hw + (2 * hw * a) / k
+      const v = rowStart[r] + a
+      positions[v * 3] = S.px[r] + S.rx[r] * l
+      positions[v * 3 + 1] = S.py[r] + S.ry[r] * l
+      positions[v * 3 + 2] = S.pz[r] + S.rz[r] * l
+      lateral[v] = l
+    }
+  }
+  const idx: number[] = []
+  const quadOf: number[] = []
+  const P = positions
+  const tri = (a: number, b: number, c: number, ux: number, uy: number, uz: number, q: number) => {
+    // Wind it to face along the road's up (counter-clockwise seen from above the road).
+    const e1x = P[b * 3] - P[a * 3]
+    const e1y = P[b * 3 + 1] - P[a * 3 + 1]
+    const e1z = P[b * 3 + 2] - P[a * 3 + 2]
+    const e2x = P[c * 3] - P[a * 3]
+    const e2y = P[c * 3 + 1] - P[a * 3 + 1]
+    const e2z = P[c * 3 + 2] - P[a * 3 + 2]
+    const g = (e1y * e2z - e1z * e2y) * ux + (e1z * e2x - e1x * e2z) * uy + (e1x * e2y - e1y * e2x) * uz
+    if (g >= 0) idx.push(a, b, c)
+    else idx.push(a, c, b)
+    quadOf.push(q)
+  }
+  for (let q = 0; q < n; q++) {
+    const r1 = (q + 1) % n
+    const A = rowStart[q]
+    const B = rowStart[r1]
+    const kA = rowK[q]
+    const kB = rowK[r1]
+    const ux = S.ux[q] + S.ux[r1]
+    const uy = S.uy[q] + S.uy[r1]
+    const uz = S.uz[q] + S.uz[r1]
+    // Zip the two rows. On a tie, step along the far row first: with equal counts that
+    // splits each quad corner-to-corner the same way the look mesh does.
+    let a = 0
+    let b = 0
+    while (a < kA || b < kB) {
+      if (b < kB && (a >= kA || (b + 1) / kB <= (a + 1) / kA)) {
+        tri(A + a, B + b + 1, B + b, ux, uy, uz, q)
+        b++
+      } else {
+        tri(A + a, A + a + 1, B + b, ux, uy, uz, q)
+        a++
+      }
+    }
+  }
+  return { positions, indices: Uint32Array.from(idx), triQuad: Uint32Array.from(quadOf), lateral, strips }
+}
+
+/** The triangles of a drive surface whose stretch passes `keep`, as a compact mesh (for one collider). */
+export function driveSurfacePart(d: DriveSurface, keep: (quad: number) => boolean): { vertices: Float32Array; indices: Uint32Array } {
+  const remap = new Int32Array(d.positions.length / 3).fill(-1)
+  const verts: number[] = []
+  const out: number[] = []
+  const P = d.positions
+  for (let t = 0; t < d.triQuad.length; t++) {
+    if (!keep(d.triQuad[t])) continue
+    for (let k = 0; k < 3; k++) {
+      const v = d.indices[t * 3 + k]
+      if (remap[v] < 0) {
+        remap[v] = verts.length / 3
+        verts.push(P[v * 3], P[v * 3 + 1], P[v * 3 + 2])
+      }
+      out.push(remap[v])
+    }
+  }
+  return { vertices: Float32Array.from(verts), indices: Uint32Array.from(out) }
 }
 
 /** Indices of only the triangles whose every vertex has aKind / predicate true. For collider splits. */

@@ -315,7 +315,7 @@ export const TRACK_DEFAULTS = {
   terrainScale: 260,
   boost: { length: 10, width: 5, strength: 1 },
   ramp: { width: 8, length: 12, height: 2.4 },
-  loopRadius: 12,
+  loopRadius: 13,
   wallride: { length: 120, height: 9 },
   coreHeight: 1.6,
   huntMax: 12,

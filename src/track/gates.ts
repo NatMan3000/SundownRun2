@@ -10,6 +10,8 @@
 //    banking   leans into corners, rolls gently
 //    bridges   a car fits under every crossing
 //    loops     nothing in a car's way on or around a loop
+//    surface   the road faces the way its frames say, and the physics
+//              triangles follow it (no sawtooth where the road twists)
 //    tracking  "where am I on the road?" never jumps by mistake
 //    ground    the ground stays under the road
 //    + warnings (start grid on a bend, fewer billboards than asked)
@@ -28,6 +30,7 @@ import type { TrackRuntime, NearestHit } from './types'
 import { SURFACE_CODE } from './types'
 import { requiredClearance } from './terrain'
 import { buildTrack, trackInternals } from './build'
+import { colliderDriveSurface } from './colliders'
 import { brakeOnSlope, carFullLockG, LINE_MAX_LAT_G } from './derived'
 
 /** One gate row. `level` 'warn' never fails a track; 'fail' does (and then ok is false). */
@@ -517,6 +520,170 @@ export function loopClearance(t: TrackRuntime): { s0: number; room: number; at: 
   return out
 }
 
+/** A loop's lanes may lean along the road at most this far (degrees) from the frame's up: cos = 0.995. */
+export const LANE_LEAN_MAX_DEG = 5.73
+/** The middle of the road must face the frame's up within this (degrees): cos = 0.995. */
+const MIDDLE_TILT_MAX_DEG = 5.73
+/** A physics triangle may face at most this far (degrees) from the real road under it. */
+const FIT_MAX_DEG = 2
+
+/**
+ * A loop radius whose lanes would lean less than LANE_LEAN_MAX_DEG, from the radius and
+ * lean it has now. The lean falls a bit faster than 1 / radius^1.7 as a loop grows
+ * (measured on a 14 m road, radius 6 to 30), so this errs a little big, plus 5% spare.
+ */
+function suggestLoopRadius(radius: number, leanDeg: number): number {
+  return Math.ceil(radius * Math.pow(leanDeg / (LANE_LEAN_MAX_DEG * 0.95), 1 / 1.7))
+}
+
+/**
+ * Does the road surface face the way its frames say, everywhere a car can be?
+ *
+ * Every car, the camera and the Ai trust a sample's frame: "up" is the way the road
+ * faces, "right" runs across it. This checks those against the triangles the physics
+ * really uses (the road colliders' own mesh, colliderDriveSurface), one triangle at a
+ * time, against the frame halfway along its stretch:
+ *
+ *  middle    triangles over the centre line face the frame's up (and right lies in
+ *            the surface). If not, the frames don't describe the road at all.
+ *  fit       every triangle faces within FIT_MAX_DEG of the real road under it (the
+ *            smooth surface the samples describe). Two big triangles across a road
+ *            that twists don't: they form a sawtooth the wheels feel.
+ *  lanes     where a car's middle can be (up to a metre from each edge). A road that
+ *            twists about its own direction leans along the road away from its middle,
+ *            by about atan(lateral x twist). On loops the builder decides how the
+ *            corkscrew's roll is spread, so a loop's lanes must stay within
+ *            LANE_LEAN_MAX_DEG. On ordinary road the lean comes from the bank rolling
+ *            in (the banking gate limits how fast), so it is reported, not judged.
+ */
+export function surfaceFit(t: TrackRuntime): {
+  middleDeg: number
+  middleAt: number
+  rightOutDeg: number
+  fitDeg: number
+  fitAt: number
+  loops: { s0: number; s1: number; radius: number; leanDeg: number; leanAt: number; rollDeg: number; length: number }[]
+  roadLeanDeg: number
+  roadLeanAt: number
+  triangles: number
+} {
+  const S = t.samples
+  const n = S.count
+  const d = colliderDriveSurface(t)
+  const P = d.positions
+  const L = d.lateral
+  const deg = 180 / Math.PI
+  const loopRuns = (trackInternals(t)?.loops ?? []).map((l) => ({ s0: l.s0, s1: l.s1, radius: l.radius, leanDeg: 0, leanAt: l.s0, rollDeg: 0, length: t.deltaS(l.s0, l.s1) }))
+  const loopOf = (q: number): number => {
+    const s = q * S.ds
+    for (let k = 0; k < loopRuns.length; k++) if (t.deltaS(loopRuns[k].s0, s) >= 0 && t.deltaS(s, loopRuns[k].s1) > 0) return k
+    return -1
+  }
+  let middle = 0
+  let middleAt = 0
+  let rightOut = 0
+  let fit = 0
+  let fitAt = 0
+  let roadLean = 0
+  let roadLeanAt = 0
+  const tris = d.triQuad.length
+  for (let k = 0; k < tris; k++) {
+    const q = d.triQuad[k]
+    const i = q
+    const j = (q + 1) % n
+    // The frame halfway along this stretch.
+    let ux = S.ux[i] + S.ux[j]
+    let uy = S.uy[i] + S.uy[j]
+    let uz = S.uz[i] + S.uz[j]
+    const ul = Math.hypot(ux, uy, uz) || 1
+    ux /= ul
+    uy /= ul
+    uz /= ul
+    let rx = S.rx[i] + S.rx[j]
+    let ry = S.ry[i] + S.ry[j]
+    let rz = S.rz[i] + S.rz[j]
+    const rl = Math.hypot(rx, ry, rz) || 1
+    rx /= rl
+    ry /= rl
+    rz /= rl
+    // The triangle's own facing (turned to the up side).
+    const a = d.indices[k * 3]
+    const b = d.indices[k * 3 + 1]
+    const c = d.indices[k * 3 + 2]
+    const e1x = P[b * 3] - P[a * 3]
+    const e1y = P[b * 3 + 1] - P[a * 3 + 1]
+    const e1z = P[b * 3 + 2] - P[a * 3 + 2]
+    const e2x = P[c * 3] - P[a * 3]
+    const e2y = P[c * 3 + 1] - P[a * 3 + 1]
+    const e2z = P[c * 3 + 2] - P[a * 3 + 2]
+    let nx = e1y * e2z - e1z * e2y
+    let ny = e1z * e2x - e1x * e2z
+    let nz = e1x * e2y - e1y * e2x
+    const nl = Math.hypot(nx, ny, nz)
+    if (nl < 1e-9) continue
+    const sg = nx * ux + ny * uy + nz * uz >= 0 ? 1 / nl : -1 / nl
+    nx *= sg
+    ny *= sg
+    nz *= sg
+    const lean = Math.acos(Math.min(1, nx * ux + ny * uy + nz * uz)) * deg
+    const la = L[a]
+    const lb = L[b]
+    const lc = L[c]
+    const lMid = (la + lb + lc) / 3
+    // The real road under it: the surface swept by the frame's right, at this lateral.
+    // Along the road it runs (P_j - P_i) + lMid (R_j - R_i); across, along right.
+    const gx = S.px[j] - S.px[i] + lMid * (S.rx[j] - S.rx[i])
+    const gy = S.py[j] - S.py[i] + lMid * (S.ry[j] - S.ry[i])
+    const gz = S.pz[j] - S.pz[i] + lMid * (S.rz[j] - S.rz[i])
+    let tx = ry * gz - rz * gy
+    let ty = rz * gx - rx * gz
+    let tz = rx * gy - ry * gx
+    const tl = Math.hypot(tx, ty, tz) || 1
+    const ts = tx * ux + ty * uy + tz * uz >= 0 ? 1 / tl : -1 / tl
+    tx *= ts
+    ty *= ts
+    tz *= ts
+    const off = Math.acos(Math.min(1, nx * tx + ny * ty + nz * tz)) * deg
+    if (off > fit) {
+      fit = off
+      fitAt = q * S.ds
+    }
+    if (Math.min(la, lb, lc) <= 0 && Math.max(la, lb, lc) >= 0) {
+      if (lean > middle) {
+        middle = lean
+        middleAt = q * S.ds
+      }
+      rightOut = Math.max(rightOut, Math.asin(Math.min(1, Math.abs(nx * rx + ny * ry + nz * rz))) * deg)
+    }
+    const hw = Math.max(S.halfWidth[i], S.halfWidth[j])
+    if (Math.abs(lMid) <= hw - 1) {
+      const li = S.surface[i] === SURFACE_CODE.loop ? loopOf(q) : -1
+      if (li >= 0) {
+        if (lean > loopRuns[li].leanDeg) {
+          loopRuns[li].leanDeg = lean
+          loopRuns[li].leanAt = q * S.ds
+        }
+      } else if (lean > roadLean) {
+        roadLean = lean
+        roadLeanAt = q * S.ds
+      }
+    }
+  }
+  // How far each loop rolls about its own direction on the way round (for the message).
+  for (const lr of loopRuns) {
+    let roll = 0
+    const i0 = Math.round(lr.s0 / S.ds)
+    const m = Math.round(lr.length / S.ds)
+    for (let k = -1; k <= m; k++) {
+      const i = (((i0 + k) % n) + n) % n
+      const j = (i + 1) % n
+      roll += ((S.rx[j] - S.rx[i]) * (S.ux[i] + S.ux[j]) + (S.ry[j] - S.ry[i]) * (S.uy[i] + S.uy[j]) + (S.rz[j] - S.rz[i]) * (S.uz[i] + S.uz[j])) / 2
+    }
+    lr.rollDeg = Math.abs(roll) * deg
+  }
+  return { middleDeg: middle, middleAt, rightOutDeg: rightOut, fitDeg: fit, fitAt, loops: loopRuns, roadLeanDeg: roadLean, roadLeanAt, triangles: tris }
+}
+
 /**
  * Run every non-physics gate on a built track. `t.file` is the resolved track the
  * runtime was built from; tracks with an adjustable bank are rebuilt at the slider's
@@ -529,6 +696,19 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
   const at = (sv: number) => where(t, sv)
   const gate = (name: string, ok: boolean, message: string, fix?: string) => gates.push({ name, ok, level: ok ? 'ok' : 'fail', message, fix: ok ? undefined : fix })
   const warn = (name: string, message: string) => gates.push({ name, ok: true, level: 'warn', message })
+  // A track with a bank slider is also checked at other bank angles. Each angle is built
+  // once and shared by the gates that need it (t itself already is its own angle).
+  const curBank = typeof t.params.bankDeg === 'number' ? t.params.bankDeg : file.road.banking.maxDeg
+  const builds = new Map<number, TrackRuntime>()
+  const atBank = (b: number | null): TrackRuntime => {
+    if (b === null || b === curBank) return t
+    let tb = builds.get(b)
+    if (!tb) {
+      tb = buildTrack(file, { ...t.params, bankDeg: b }, t)
+      builds.set(b, tb)
+    }
+    return tb
+  }
 
   // The racing line must be a real line: not glued to one edge, never closer to an edge
   // than the margin, never planning more sideways grip than the car has, never turning
@@ -571,7 +751,7 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
   // Banking leans into every corner and rolls gently, including across the start-line seam.
   const adj = file.road.banking.adjustable
   for (const b of adj ? [adj.max] : [null]) {
-    const tb = b === null ? t : buildTrack(file, { ...t.params, bankDeg: b }, t)
+    const tb = atBank(b)
     const bc = bankCheck(tb)
     const bad: string[] = []
     if (bc.maxRate > 1.5) bad.push(`roll changes ${bc.maxRate.toFixed(2)} deg/m at ${at(bc.rateAt)} > limit 1.5`)
@@ -607,6 +787,35 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
       'move the loop onto its own straight: away from where the road crosses itself, with no bend from 80 m before its at to 60 m after.',
     )
   }
+  // The road faces the way its frames say: in the middle everywhere, across a loop's
+  // lanes, and the physics triangles follow the real road (at every bank a slider allows).
+  for (const b of adj ? [...new Set([curBank, adj.max])] : [null]) {
+    const tv = atBank(b)
+    const f = surfaceFit(tv)
+    const bank = b === null ? '' : `bank ${b} deg: `
+    const lim = (v: number) => v.toFixed(1)
+    const badLoops = f.loops.filter((l) => l.leanDeg > LANE_LEAN_MAX_DEG)
+    const bad: string[] = []
+    if (f.middleDeg > MIDDLE_TILT_MAX_DEG) bad.push(`the middle of the road faces ${lim(f.middleDeg)} deg away from its frame's up at ${at(f.middleAt)} (limit ${lim(MIDDLE_TILT_MAX_DEG)})`)
+    if (f.rightOutDeg > MIDDLE_TILT_MAX_DEG) bad.push(`the frame's right points ${lim(f.rightOutDeg)} deg out of the road surface (limit ${lim(MIDDLE_TILT_MAX_DEG)})`)
+    if (f.fitDeg > FIT_MAX_DEG) bad.push(`a physics triangle faces ${lim(f.fitDeg)} deg away from the real road at ${at(f.fitAt)} (limit ${FIT_MAX_DEG})`)
+    for (const l of badLoops) {
+      bad.push(
+        `the loop at ${at(l.s0)} (radius ${l.radius} m) twists too fast: it has to roll ${l.rollDeg.toFixed(0)} deg about its own direction in ${l.length.toFixed(0)} m, so its lanes lean ${lim(l.leanDeg)} deg along the road at ${at(l.leanAt)} (limit ${lim(LANE_LEAN_MAX_DEG)}); a radius of about ${suggestLoopRadius(l.radius, l.leanDeg)} m would fix it`,
+      )
+    }
+    const loopNote = f.loops.length ? `, loop lanes lean at most ${lim(Math.max(...f.loops.map((l) => l.leanDeg)))} deg (limit ${lim(LANE_LEAN_MAX_DEG)})` : ''
+    gate(
+      'surface',
+      bad.length === 0,
+      bad.length
+        ? bank + bad.join('; ')
+        : `${bank}the road faces the way its frames say: the middle within ${lim(f.middleDeg)} deg (limit ${lim(MIDDLE_TILT_MAX_DEG)})${loopNote}, the ${f.triangles} physics triangles within ${lim(f.fitDeg)} deg of the real road (limit ${FIT_MAX_DEG}); lanes on ordinary road lean up to ${lim(f.roadLeanDeg)} deg where the bank rolls in (at ${at(f.roadLeanAt)})`,
+      badLoops.length
+        ? 'a loop rolls further, over less road, the tighter it is and the wider the road is there. Give the loop a bigger `radius` (the row above says about how big), or make the road narrower at the loop with a `width` on the points either side of it.'
+        : 'this is a builder bug, not your file: report it.',
+    )
+  }
   // Road tracking: nearest() with a hint never jumps to another bit of road by mistake,
   // and a car that dropped off a bridge is found on the road below.
   {
@@ -623,7 +832,7 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
   // The ground must stay under the road everywhere (at every bank angle a slider allows).
   const variants = adj ? [adj.min, file.road.banking.maxDeg, adj.max] : [null]
   for (const b of variants) {
-    const tv = b === null ? t : buildTrack(file, { ...t.params, bankDeg: b }, t)
+    const tv = atBank(b)
     const g = groundClearance(tv)
     // Tolerance 3 cm: right at the lip the rule asks for 3 cm, so this still means "never above the road".
     gate(

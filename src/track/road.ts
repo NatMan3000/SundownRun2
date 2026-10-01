@@ -18,6 +18,8 @@
 //      S (LOOP_EXIT_EASE metres).
 //   6. The result is re-sampled once more at an exact spacing, and each
 //      sample gets its frame: tangent, up (the surface normal) and right.
+//      Through a loop the frame's roll is spread evenly from mouth to
+//      landing (spreadLoopRoll), so the road never twists hard.
 //
 //  Wall rides do not change the centreline: they add a curved wall on
 //  the edge, recorded here as a sweep angle per sample (ribbon.ts
@@ -633,6 +635,8 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
       s0: i0 * ds,
       s1: (i1 + 1) * ds,
       radius: L.radius,
+      // The centre of the loop's own circle: straight "in" from the top (the up the loop
+      // was drawn with, before spreadLoopRoll rolls it), so it sits in the loop's plane.
       center: {
         x: S.px[mid] + S.ux[mid] * L.radius,
         y: S.py[mid] + S.uy[mid] * L.radius,
@@ -641,6 +645,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
       side: L.side,
       stretch: { ...L.stretch },
     })
+    spreadLoopRoll(S, fx, fy, fz, i0, i1)
   }
 
   // ---- wall rides: a sweep angle per sample on each edge ----
@@ -755,6 +760,118 @@ export function loopShape(radius: number): LoopShape {
   up[m] = 0
   phi[m] = Math.PI * 2
   return { fwd, up, phi, advance: fwd[m], length: L }
+}
+
+/**
+ * Metres at each end of a loop over which its roll eases in and out (see spreadLoopRoll).
+ * Short, because every metre of easing makes the roll in the middle a little faster:
+ * 6 m keeps the loop's lanes leaning less than 5.7 degrees along the road (the gate's
+ * limit) on a 14 m road with a 13 m radius loop.
+ */
+const LOOP_ROLL_EASE = 6
+
+/**
+ * Spread a loop's roll evenly from its mouth to where it lands.
+ *
+ * A corkscrew has to roll. The road goes in flat and comes down flat, but because it
+ * drifts sideways over the top, a road that never turned about its own direction
+ * would come down tipped over (by 79 degrees for a 13 m loop on a 14 m road: that is
+ * the corkscrew's "holonomy"). So the road must roll that much on the way round.
+ *
+ * Where it rolls matters. The loop is drawn with its up pointing at the centre of its
+ * own circle, which keeps the road flat until the drift starts and then makes the
+ * whole roll in the top 40 m (2.6 degrees a metre). A road that rolls that fast is
+ * twisted like a propeller blade: away from the middle, its surface leans along the
+ * road (up to 20 degrees at the lane edges), so the frame's up only matches the
+ * surface on the centre line. Spread evenly (here: about 0.8 degrees a metre), the
+ * lanes lean under 6 degrees, the camera rolls smoothly instead of snapping over the
+ * top, and the road faces much closer to where a car's own path through the corkscrew
+ * wants it to face (less sideways grip needed to follow the middle).
+ *
+ * How: carry the up from the road before the mouth along the loop without any roll
+ * (parallel transport, by the "double reflection" method), measure how far it comes
+ * out tipped against the road after the landing, and roll each sample by its share of
+ * that, easing in and out over LOOP_ROLL_EASE metres. The centre line does not move;
+ * only the way the road's cross-section turns about it.
+ *
+ * `i0`..`i1` are the loop's samples; `fx`, `fy`, `fz` the final positions (float64).
+ */
+function spreadLoopRoll(S: TrackSamples, fx: Float64Array, fy: Float64Array, fz: Float64Array, i0: number, i1: number): void {
+  const n = S.count
+  const m = i1 - i0 + 2 // steps from the sample before the mouth to the one after the landing
+  if (m < 4 || m >= n) return
+  const at = (k: number) => (((i0 - 1 + k) % n) + n) % n // k = 0: before the mouth, k = m: after the landing
+  // 1. Carry the up along without rolling it.
+  const ux = new Float64Array(m + 1)
+  const uy = new Float64Array(m + 1)
+  const uz = new Float64Array(m + 1)
+  let a = at(0)
+  ux[0] = S.ux[a]
+  uy[0] = S.uy[a]
+  uz[0] = S.uz[a]
+  for (let k = 1; k <= m; k++) {
+    const b = at(k)
+    // Reflect the up and the tangent in the plane halfway between the two samples...
+    const v1x = fx[b] - fx[a]
+    const v1y = fy[b] - fy[a]
+    const v1z = fz[b] - fz[a]
+    const c1 = v1x * v1x + v1y * v1y + v1z * v1z || 1
+    const du = (2 / c1) * (v1x * ux[k - 1] + v1y * uy[k - 1] + v1z * uz[k - 1])
+    const rux = ux[k - 1] - du * v1x
+    const ruy = uy[k - 1] - du * v1y
+    const ruz = uz[k - 1] - du * v1z
+    const dt = (2 / c1) * (v1x * S.tx[a] + v1y * S.ty[a] + v1z * S.tz[a])
+    // ...then in the plane that takes the reflected tangent onto the new tangent.
+    const v2x = S.tx[b] - (S.tx[a] - dt * v1x)
+    const v2y = S.ty[b] - (S.ty[a] - dt * v1y)
+    const v2z = S.tz[b] - (S.tz[a] - dt * v1z)
+    const c2 = v2x * v2x + v2y * v2y + v2z * v2z
+    const d2 = c2 > 1e-20 ? (2 / c2) * (v2x * rux + v2y * ruy + v2z * ruz) : 0
+    ux[k] = rux - d2 * v2x
+    uy[k] = ruy - d2 * v2y
+    uz[k] = ruz - d2 * v2z
+    a = b
+  }
+  // 2. How far it came out tipped, about the tangent after the landing (signed, radians).
+  const e = at(m)
+  const cx = uy[m] * S.uz[e] - uz[m] * S.uy[e]
+  const cy = uz[m] * S.ux[e] - ux[m] * S.uz[e]
+  const cz = ux[m] * S.uy[e] - uy[m] * S.ux[e]
+  const tipped = Math.atan2(cx * S.tx[e] + cy * S.ty[e] + cz * S.tz[e], ux[m] * S.ux[e] + uy[m] * S.uy[e] + uz[m] * S.uz[e])
+  // 3. Roll each sample by its share: an even rate, eased in and out at the ends.
+  const ease = Math.max(1, Math.round(LOOP_ROLL_EASE / S.ds))
+  const share = new Float64Array(m + 1)
+  for (let k = 1; k <= m; k++) {
+    const fromEnd = Math.min(k - 0.5, m - k + 0.5)
+    share[k] = share[k - 1] + (fromEnd >= ease ? 1 : (1 - Math.cos((Math.PI * fromEnd) / ease)) / 2)
+  }
+  for (let k = 1; k < m; k++) {
+    const i = at(k)
+    const roll = (tipped * share[k]) / share[m]
+    const tx = S.tx[i]
+    const ty = S.ty[i]
+    const tz = S.tz[i]
+    // Make the carried up square to this tangent, then turn it about the tangent by `roll`.
+    const d = ux[k] * tx + uy[k] * ty + uz[k] * tz
+    let px = ux[k] - tx * d
+    let py = uy[k] - ty * d
+    let pz = uz[k] - tz * d
+    const pl = Math.hypot(px, py, pz) || 1
+    px /= pl
+    py /= pl
+    pz /= pl
+    const c = Math.cos(roll)
+    const s = Math.sin(roll)
+    const nx = px * c + (ty * pz - tz * py) * s
+    const ny = py * c + (tz * px - tx * pz) * s
+    const nz = pz * c + (tx * py - ty * px) * s
+    S.ux[i] = nx
+    S.uy[i] = ny
+    S.uz[i] = nz
+    S.rx[i] = ty * nz - tz * ny
+    S.ry[i] = tz * nx - tx * nz
+    S.rz[i] = tx * ny - ty * nx
+  }
 }
 
 /** Flip short runs of grounded / not-grounded so the ground doesn't flicker along the road. */

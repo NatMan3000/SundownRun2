@@ -11,6 +11,8 @@
 //   angle changes; the car keeps driving):
 //     road / loop / wall   the drivable top, one trimesh per surface
 //                          kind so a wheel ray knows what it touched
+//                          (road and loop from buildDriveSurface: more
+//                          triangles across only where the road twists)
 //     skirt                the slab's sides and underside
 //     barrier              stadium edge walls (a chain of thick boxes:
 //                          a box can't be tunnelled the way a thin
@@ -37,7 +39,7 @@
 
 import { GROUPS, tagSurface, untagSurface, type SurfaceKind } from '../core/physics'
 import { SURFACE_CODE, type TrackRuntime } from './types'
-import { splitBy } from './ribbon'
+import { buildDriveSurface, driveSurfacePart, splitBy, type DriveSurface } from './ribbon'
 import { trackInternals } from './build'
 import { roundedToEuclid } from './terrain'
 
@@ -71,18 +73,28 @@ export function add(world: World, R: Rapier, set: ColliderSet, desc: ColliderDes
   set.handles.push(c.handle)
 }
 
+/**
+ * The drivable top (road and loops) exactly as the road colliders are built from it.
+ * The surface gate (gates.ts) checks this same mesh, so the two can't drift apart.
+ */
+export function colliderDriveSurface(t: TrackRuntime): DriveSurface {
+  return buildDriveSurface(t.samples)
+}
+
 /** The road set: drivable surfaces, skirt, barriers and ramps. */
 export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): ColliderSet {
   const set: ColliderSet = { body: world.createRigidBody(R.RigidBodyDesc.fixed()), handles: [] }
-  // The drivable top is flat across every sample (a banked plane), so the collider
-  // needs only the two edges per sample: 2 triangles a metre instead of the look
-  // mesh's 24. Same surface, a tenth of the build time on a live rebuild.
+  // The drivable top: two triangles a metre where the road is flat across and doesn't
+  // twist (most of it), more across where it twists so no triangle faces away from the
+  // real road (buildDriveSurface). Far fewer triangles than the look mesh's 24 a metre,
+  // so a live rebuild stays quick, but the same shape to within a degree.
   const S = t.samples
+  const drive = colliderDriveSurface(t)
   for (const [kind, code] of [
     ['road', SURFACE_CODE.road],
     ['loop', SURFACE_CODE.loop],
   ] as const) {
-    const part = edgeStrip(t, (i) => S.surface[i] === code)
+    const part = driveSurfacePart(drive, (i) => S.surface[i] === code)
     if (part.indices.length) add(world, R, set, R.ColliderDesc.trimesh(part.vertices, part.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), kind)
   }
   // Wall-ride walls are curved: use the look mesh's own wall triangles.
@@ -100,34 +112,6 @@ export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): C
   for (const r of extras?.rampSolids ?? []) add(world, R, set, R.ColliderDesc.trimesh(r.vertices, r.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'ramp')
 
   return set
-}
-
-/** The road top as one strip between its two edges, for samples where `keep(i)` (and the next sample). */
-function edgeStrip(t: TrackRuntime, keep: (i: number) => boolean): { vertices: Float32Array; indices: Uint32Array } {
-  const S = t.samples
-  const n = S.count
-  const verts = new Float32Array(n * 6)
-  for (let i = 0; i < n; i++) {
-    const hw = S.halfWidth[i]
-    verts[i * 6] = S.px[i] - S.rx[i] * hw
-    verts[i * 6 + 1] = S.py[i] - S.ry[i] * hw
-    verts[i * 6 + 2] = S.pz[i] - S.rz[i] * hw
-    verts[i * 6 + 3] = S.px[i] + S.rx[i] * hw
-    verts[i * 6 + 4] = S.py[i] + S.ry[i] * hw
-    verts[i * 6 + 5] = S.pz[i] + S.rz[i] * hw
-  }
-  const idx: number[] = []
-  for (let i = 0; i < n; i++) {
-    if (!keep(i)) continue
-    const j = (i + 1) % n
-    const a = i * 2 //     left, this sample
-    const b = i * 2 + 1 // right, this sample
-    const c = j * 2 + 1 // right, next sample
-    const d = j * 2 //     left, next sample
-    // Counter-clockwise seen from above the road, so the face points along its up.
-    idx.push(a, b, d, b, c, d)
-  }
-  return { vertices: verts, indices: Uint32Array.from(idx) }
 }
 
 /** Stadium edge barriers as a chain of thick boxes following the road edge. */

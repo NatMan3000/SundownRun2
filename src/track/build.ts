@@ -51,8 +51,10 @@ import { hashString } from './noise'
  *   2: loops run straight into the mouth and ease back over 180 m after (track2, round 1).
  *   3: the bank flattens over a loop's run-in and landing; a loop on a curve drifts to its inside.
  *   4: billboards closer to the road (14-30 m) and kept out of every place cars fly or crowd.
+ *   5: a loop's roll is spread evenly from mouth to landing instead of all over the top, so
+ *      its road surface (and its edges) turn about the centre line; the centre line is unchanged.
  */
-export const BUILDER_VERSION = 4
+export const BUILDER_VERSION = 5
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
