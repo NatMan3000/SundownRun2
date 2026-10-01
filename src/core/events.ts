@@ -79,7 +79,7 @@ export interface GameEventMap {
   /** R (road) or Shift+R (start line). */
   reset: { kind: 'road' | 'start' | 'auto'; reason?: string }
 
-  /** Race flow. */
+  /** Race flow. race.countdown is emitted ONCE when a countdown starts (seconds = whole seconds to GO; store.raceGoAt has the exact time). */
   'race.countdown': { seconds: number; racers: number }
   'race.start': { racers: number; laps: number }
   /** Player's race position changed (1 = leading). */
