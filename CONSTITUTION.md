@@ -136,9 +136,11 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 | Cross-module APIs (fx, audio, vehicle catalog, SimCar + Driver, play) | `src/core/api.ts` |
 | Session flow (start, pause, results, editor) | `src/core/session.ts` |
 | Multiplayer crash-prop seam | `src/core/propsSignal.ts` |
+| Full-lock grip per speed (values owned by vehicle, read by the racing line) | `src/core/gripTable.ts` |
 | Track registry and current track | `src/track/registry.ts`, `src/track/current.ts` |
 | App mount points and boot | `src/App.tsx`, `src/boot.ts`, `src/main.tsx` |
 
 ## 7. Amendments
 
 - 2026-10-01: written before the first line of game code.
+- 2026-10-01: contract table gains gripTable.ts. Tone mapping is Khronos Neutral (picked by A/B against ACES: Neutral keeps the sun gradient). One driving brain: the demo autopilot uses the Ai Driver.
