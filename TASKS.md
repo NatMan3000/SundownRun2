@@ -143,3 +143,6 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ✅ [play] Hyperdrome race proof (worker-run): 5 Ai + demo player finished all 5 laps, 3 Ai resets, finishes 218-235 s.
 - ✅ [net] Stage B (worker-run, two clients): synced 5-lap race with identical results, shared prop rounds, tag agreement within 16 ms, CrashProps track-change repro 20/20 clean.
 - ⬜ [look] Loop reads as a dark curling wave, not "rings of light": edge tubes round the whole loop, full hoops, no flat magenta outer face.
+- ✅ [ruling] One driving brain: the ?demo=1 autopilot drives the player's car with play's Ai Driver (difficulty 1, no catch-up) through driveOverride; play owns the brain's tuning, vehicle owns the demo harness.
+- ⬜ [vehicle/play] Demo autopilot leaves the new Afterglow at s 1028 (downhill right-hander), s 2323 (loop), s 2500-2640 (loop exit to hairpin, airborne), s 3185 (bridge east approach), then re-matches to the lower branch (designer, current tree).
+- ⬜ [vehicle] Ai trackS jumps levels at the crossover (VECTOR 1250 -> 3568).
