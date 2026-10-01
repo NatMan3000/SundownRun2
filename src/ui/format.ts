@@ -5,6 +5,8 @@
 //  same in the HUD, the results and the track select.
 // ============================================================
 
+import type { TrackRuntime } from '../track/types'
+
 /** m:ss.ttt - the only lap-time format in the game. */
 export function formatLap(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return '-:--.---'
@@ -54,4 +56,21 @@ export function formatClock(seconds: number): string {
 /** Race position as "P2". */
 export function formatPosition(p: number): string {
   return `P${p}`
+}
+
+/**
+ * The bank angle a track's records belong to, as "30°", or null when the
+ * track has no bank slider. Records key on the road's shape, and on the
+ * Hyperdrome a steeper bank is a different road, so each angle keeps its own
+ * top speed. Showing the angle next to a best tells the player which one.
+ */
+export function recordAngle(track: TrackRuntime | null | undefined): string | null {
+  if (!track || !track.file.road.banking.adjustable) return null
+  const b = track.params.bankDeg
+  return typeof b === 'number' && Number.isFinite(b) ? `${Math.round(b)}°` : null
+}
+
+/** A top speed, with the bank angle it was set at when that matters: "224 km/h at 30°". */
+export function formatTopSpeed(kmh: number, angle: string | null): string {
+  return angle ? `${Math.round(kmh)} km/h at ${angle}` : `${Math.round(kmh)} km/h`
 }

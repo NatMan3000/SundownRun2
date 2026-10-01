@@ -19,7 +19,8 @@ import { HintBar } from '../hints'
 import { openScreen, showNotice, useUi } from '../uiStore'
 import { audio } from '../../core/api'
 import { quitToTitle, restartSession } from '../flow'
-import { formatLap, formatScore } from '../format'
+import { formatLap, formatScore, formatTopSpeed, recordAngle } from '../format'
+import { getTrack } from '../../track/current'
 import { startMultiplayerRound } from '../../net'
 
 function ordinal(n: number): string {
@@ -141,7 +142,7 @@ function RunSummary() {
   if (tricks > 0) rows.push(['Trick points', formatScore(tricks)])
   if (props > 0) rows.push(['Prop points', formatScore(props)])
   if (total > 0) rows.push(['Energy cores', `${found} / ${total}`])
-  if (trap !== null) rows.push(['Top speed', `${Math.round(trap)} km/h`])
+  if (trap !== null) rows.push(['Top speed', formatTopSpeed(trap, recordAngle(getTrack()))])
   return (
     <>
       <div className="result-hero">

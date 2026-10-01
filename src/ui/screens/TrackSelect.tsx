@@ -6,8 +6,11 @@
 //  and a multiplayer host's shared track. Each card leads with a
 //  map drawn from the file itself, then the name, author, where it
 //  came from, the description, length, features and your records
-//  (for the track you last drove). The panel sizes itself to the
-//  cards, so two tracks never sit in a sea of empty glass.
+//  (for the track you last drove). On a track with a bank slider
+//  each angle keeps its own records, so the top speed names its
+//  angle and the banking chip shows the angle you'll drive at.
+//  The panel sizes itself to the cards, so two tracks never sit
+//  in a sea of empty glass.
 //
 //  Multiplayer: only the host picks. Everyone else sees the
 //  host's track and a Drive button.
@@ -19,7 +22,7 @@ import type { GameMode } from '../../core/store'
 import { getRecords } from '../../core/records'
 import { listTracks } from '../../track/registry'
 import type { TrackListing, TrackSource } from '../../track/registry'
-import { getTrack } from '../../track/current'
+import { getTrack, trackParamsFor } from '../../track/current'
 import { useNet } from '../../net'
 import { NavScreen, useNavItem } from '../nav'
 import { MenuButton } from '../widgets'
@@ -27,7 +30,7 @@ import { HintBar } from '../hints'
 import { closeScreen, useUi } from '../uiStore'
 import { TrackThumb, approxTrackLength } from '../TrackThumb'
 import { beginSession } from '../flow'
-import { formatLap, formatScore } from '../format'
+import { formatLap, formatScore, formatTopSpeed, recordAngle } from '../format'
 
 const SOURCE_LABEL: Record<TrackSource, string> = {
   builtin: 'Built-in',
@@ -51,6 +54,12 @@ function countPieces(t: TrackListing) {
   return c
 }
 
+/** "adjustable banking 45°": the angle you'll drive at (saved from the Track settings or the pause menu). */
+function bankChip(t: TrackListing): string {
+  const bank = trackParamsFor(t.file).find((p) => p.id === 'bankDeg')
+  return bank ? `adjustable banking ${Math.round(bank.value)}°` : 'adjustable banking'
+}
+
 function featuresOf(t: TrackListing): string[] {
   const pieces = countPieces(t)
   return [
@@ -59,7 +68,7 @@ function featuresOf(t: TrackListing): string[] {
     pieces.boost && `${pieces.boost} boost pad${pieces.boost > 1 ? 's' : ''}`,
     pieces.ramp && `${pieces.ramp} ramp${pieces.ramp > 1 ? 's' : ''}`,
     pieces.speedtrap && 'speed trap',
-    t.file.road?.banking?.adjustable && 'adjustable banking',
+    t.file.road?.banking?.adjustable && bankChip(t),
   ].filter(Boolean) as string[]
 }
 
@@ -131,7 +140,7 @@ function TrackCard(props: { t: TrackListing; current: boolean; disabled: boolean
         {rec?.trapBestKmh !== undefined && (
           <div>
             <dt>Top speed</dt>
-            <dd>{Math.round(rec.trapBestKmh)} km/h</dd>
+            <dd>{formatTopSpeed(rec.trapBestKmh, recordAngle(live))}</dd>
           </div>
         )}
       </dl>

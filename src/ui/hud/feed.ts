@@ -18,7 +18,8 @@ import type { AnyGameEvent } from '../../core/events'
 import { getCar } from '../../core/telemetry'
 import { getGame } from '../../core/store'
 import { getSettings } from '../../core/settings'
-import { formatLap, formatScore } from '../format'
+import { getTrack } from '../../track/current'
+import { formatLap, formatScore, recordAngle } from '../format'
 
 export type ToastKind = 'info' | 'gold' | 'warn' | 'it'
 
@@ -44,6 +45,8 @@ export interface TrapReadout {
   kmh: number
   best: boolean
   bestKmh: number | null
+  /** The bank angle this best belongs to ("30°"), or null on a track without a bank slider. */
+  angle: string | null
 }
 
 interface FeedState {
@@ -77,7 +80,7 @@ function pushPop(p: Omit<TrickPop, 'id'>): void {
 }
 
 function showTrap(kmh: number, best: boolean, previous: number | null): void {
-  const r: TrapReadout = { id: ++seq, kmh, best, bestKmh: best ? kmh : previous }
+  const r: TrapReadout = { id: ++seq, kmh, best, bestKmh: best ? kmh : previous, angle: recordAngle(getTrack()) }
   useFeed.setState({ trap: r })
   setTimeout(() => {
     if (useFeed.getState().trap?.id === r.id) useFeed.setState({ trap: null })

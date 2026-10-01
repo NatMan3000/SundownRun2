@@ -643,6 +643,33 @@
   padding: 0.2em 0.3em;
   animation: rows-in 200ms var(--ease) both;
 }
+/* Track tab: one group per track with live settings, headed by the track's name. */
+.param-group { display: flex; flex-direction: column; gap: 0.15em; }
+.param-group + .param-group { margin-top: 0.5em; padding-top: 0.5em; border-top: 1px solid var(--line); }
+.param-group__head {
+  display: flex;
+  align-items: baseline;
+  gap: 1em;
+  padding: 0.35em 0.9em 0.1em;
+}
+.param-group__name {
+  font-family: var(--font-display);
+  font-size: 1.05em;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text);
+  text-shadow: var(--legible);
+}
+.param-group__tag {
+  font-family: var(--font-display);
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.param-group.is-live .param-group__tag { color: var(--accent); }
 @keyframes rows-in {
   from { opacity: 0; transform: translateY(0.4em); }
   to { opacity: 1; transform: none; }

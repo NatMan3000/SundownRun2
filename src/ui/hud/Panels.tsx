@@ -24,9 +24,10 @@ import { useGame } from '../../core/store'
 import { useSettings } from '../../core/settings'
 import { getCar, telemetry } from '../../core/telemetry'
 import { useFeed } from './feed'
+import type { TrapReadout } from './feed'
 import { on } from '../../core/events'
 import { Glyph } from '../hints'
-import { formatLap, formatScore } from '../format'
+import { formatLap, formatScore, formatTopSpeed } from '../format'
 
 // ---------------------------------------------------------------- race
 
@@ -178,6 +179,13 @@ export function Toasts() {
   )
 }
 
+/** "New top speed!" or "Best 224 km/h"; on the Hyperdrome each bank angle has its own best, so the angle is named. */
+function trapBestLine(trap: TrapReadout): string {
+  if (trap.best) return trap.angle ? `New top speed at ${trap.angle}!` : 'New top speed!'
+  if (trap.bestKmh === null) return ''
+  return `Best ${formatTopSpeed(trap.bestKmh, trap.angle)}`
+}
+
 export function SpeedTrap() {
   const trap = useFeed((s) => s.trap)
   if (!trap) return null
@@ -188,7 +196,7 @@ export function SpeedTrap() {
         {Math.round(trap.kmh)}
         <i>km/h</i>
       </span>
-      <span className="hud-trap__best">{trap.best ? 'New top speed!' : trap.bestKmh !== null ? `Best ${Math.round(trap.bestKmh)} km/h` : ''}</span>
+      <span className="hud-trap__best">{trapBestLine(trap)}</span>
     </div>
   )
 }

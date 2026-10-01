@@ -56,7 +56,7 @@ export interface ColourRowSpec {
   tone: ColourTone
 }
 
-/** Rows filled in at runtime (the current track's live params, the quality in use). */
+/** Rows filled in at runtime (every track's live params, the quality in use). */
 export interface SpecialRowSpec {
   kind: 'trackParams' | 'qualityInUse' | 'gpu'
   label: string
@@ -118,7 +118,7 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
     { kind: 'toggle', key: 'catchUp', label: 'Catch-up', help: 'Ai racers ease off when far ahead and push when far behind.' },
     { kind: 'slider', key: 'raceLaps', label: 'Laps', help: 'Laps in a race. A track can set its own number.', format: (v) => String(Math.round(v)) },
   ],
-  track: [{ kind: 'trackParams', label: 'Track', help: 'Live settings of the track you are on. They change the road while you watch.' }],
+  track: [{ kind: 'trackParams', label: 'Track', help: 'Live settings for every track that has them. The track you are on changes while you watch; the others are saved for your next drive.' }],
   graphics: [
     { kind: 'choice', key: 'quality', label: 'Quality', help: 'Lower it if the game stutters. Auto starts high and steps down if it has to.' },
     { kind: 'qualityInUse', label: 'In use', help: 'The quality the game is actually running right now.' },

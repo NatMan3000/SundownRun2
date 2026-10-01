@@ -24,10 +24,9 @@ import { SETTINGS_TABS, closeScreen, useUi } from '../uiStore'
 import type { SettingsTab } from '../uiStore'
 import { CAMERA_CHOICES, QUALITY_CHOICES, SETTINGS_ROWS, TAB_LABELS } from '../settingsSchema'
 import type { RowSpec } from '../settingsSchema'
-import { TrackParamRows } from '../TrackParamRows'
+import { AllTrackParamRows, groupRowId, rebuildLiveTrackAfterReset, trackParamGroups } from '../TrackParamRows'
 import { gpuInfo } from '../gpu'
 import { frameStats } from '../../core/perf'
-import { getCurrentTrackFile, trackParamsFor } from '../../track/current'
 
 const QUALITY_WORD = { low: 'Low', medium: 'Medium', high: 'High' } as const
 
@@ -40,10 +39,9 @@ function firstRowId(tab: SettingsTab): string {
   const spec = SETTINGS_ROWS[tab][0]
   if (spec.kind === 'colour') return `set:${spec.key}:swatches`
   if (spec.kind === 'trackParams') {
-    // The first live param of the current track, or the Track tab itself when it has none.
-    const file = getCurrentTrackFile()
-    const first = file ? trackParamsFor(file)[0] : undefined
-    return first ? `settings-track:${first.id}` : 'tab:track'
+    // The first live param (the track you are on comes first), or the Track tab itself when no track has one.
+    const first = trackParamGroups()[0]
+    return first ? groupRowId('settings-track', first.file.id, first.params[0].id) : 'tab:track'
   }
   return rowId(tab, spec, 0)
 }
@@ -103,7 +101,7 @@ function SettingRow(props: { tab: SettingsTab; spec: RowSpec; index: number }) {
         />
       )
     case 'trackParams':
-      return <TrackParamRows idPrefix="settings-track" emptyText="{track} has no live settings. Tracks that do (like the Hyperdrome's bank angle) show them here." />
+      return <AllTrackParamRows idPrefix="settings-track" emptyText="No track has live settings yet. Tracks that do (like the Hyperdrome's bank angle) show them here." />
     case 'gpu':
       return <GpuRow label={spec.label} />
     case 'qualityInUse':
@@ -199,6 +197,7 @@ function ResetAll() {
         setArmed(false)
         audio.ui('select')
         useSettings.getState().resetAll()
+        rebuildLiveTrackAfterReset()
       }}
     />
   )
