@@ -25,6 +25,8 @@ import type { SettingsTab } from '../uiStore'
 import { CAMERA_CHOICES, QUALITY_CHOICES, SETTINGS_ROWS, TAB_LABELS } from '../settingsSchema'
 import type { RowSpec } from '../settingsSchema'
 import { TrackParamRows } from '../TrackParamRows'
+import { gpuInfo } from '../gpu'
+import { frameStats } from '../../core/perf'
 import { getCurrentTrackFile, trackParamsFor } from '../../track/current'
 
 const QUALITY_WORD = { low: 'Low', medium: 'Medium', high: 'High' } as const
@@ -102,6 +104,8 @@ function SettingRow(props: { tab: SettingsTab; spec: RowSpec; index: number }) {
       )
     case 'trackParams':
       return <TrackParamRows idPrefix="settings-track" emptyText="{track} has no live settings. Tracks that do (like the Hyperdrome's bank angle) show them here." />
+    case 'gpu':
+      return <GpuRow label={spec.label} />
     case 'qualityInUse':
       return (
         <div className="row row--info">
@@ -115,6 +119,35 @@ function SettingRow(props: { tab: SettingsTab; spec: RowSpec; index: number }) {
         </div>
       )
   }
+}
+
+/** Below this many frames a second, a built-in chip gets the README note. */
+const SLOW_FPS = 50
+
+/** Read-only: the graphics chip in use, with an amber note when it's a built-in chip and the game is slow. */
+function GpuRow(props: { label: string }) {
+  const [info] = useState(() => gpuInfo())
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    if (!info?.builtIn) return
+    const check = () => setSlow(frameStats.fpsEma < SLOW_FPS)
+    check()
+    const t = setInterval(check, 1000)
+    return () => clearInterval(t)
+  }, [info])
+  return (
+    <div className="row row--info row--gpu">
+      <span className="row__label">{props.label}</span>
+      <span className="gpu">
+        <span className="gpu__name" title={info?.raw}>
+          {info?.name ?? 'Unknown'}
+        </span>
+        {info?.builtIn && slow && <span className="gpu__note">Running on the built-in graphics chip. See the README: Windows, faster graphics.</span>}
+      </span>
+      <span />
+      <span className="row__reset" aria-hidden="true" />
+    </div>
+  )
 }
 
 function Tab(props: { tab: SettingsTab; active: boolean; onPick: () => void }) {

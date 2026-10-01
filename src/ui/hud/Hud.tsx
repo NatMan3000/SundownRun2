@@ -20,7 +20,7 @@
 //      sectors) come from the store and re-render normally.
 // ============================================================
 
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { useGame, getGame } from '../../core/store'
 import { useSettings } from '../../core/settings'
@@ -30,6 +30,7 @@ import { frameStats } from '../../core/perf'
 import { getTrack } from '../../track/current'
 import { formatClock, formatLap, formatScore } from '../format'
 import { installFeed } from './feed'
+import { gpuInfo } from '../gpu'
 import { SoundHint } from '../SoundHint'
 import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
@@ -155,12 +156,14 @@ function MinimapPanel() {
 }
 
 function FpsMeter() {
+  const [gpu] = useState(() => gpuInfo())
   return (
-    <div className="hud-fps" aria-hidden="true">
+    <div className="hud-fps" aria-hidden="true" title={gpu?.raw}>
       <b data-hud="fps">60</b>
       <span>fps</span>
       <b data-hud="fpsCost">0.0</b>
       <span>ms</span>
+      {gpu && <span className={`hud-fps__chip${gpu.builtIn ? ' is-builtin' : ''}`}>{gpu.name}</span>}
     </div>
   )
 }

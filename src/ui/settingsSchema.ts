@@ -58,7 +58,7 @@ export interface ColourRowSpec {
 
 /** Rows filled in at runtime (the current track's live params, the quality in use). */
 export interface SpecialRowSpec {
-  kind: 'trackParams' | 'qualityInUse'
+  kind: 'trackParams' | 'qualityInUse' | 'gpu'
   label: string
   help: string
 }
@@ -122,6 +122,7 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
   graphics: [
     { kind: 'choice', key: 'quality', label: 'Quality', help: 'Lower it if the game stutters. Auto starts high and steps down if it has to.' },
     { kind: 'qualityInUse', label: 'In use', help: 'The quality the game is actually running right now.' },
+    { kind: 'gpu', label: 'Graphics chip', help: 'The graphics chip this browser is drawing the game with. On a gaming laptop it should be the gaming one (NVIDIA or AMD RX).' },
     { kind: 'toggle', key: 'showFps', label: 'Show FPS', help: 'Frames per second in the corner of the screen.' },
   ],
   fun: [
