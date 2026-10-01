@@ -36,7 +36,7 @@ import type { SurfaceKind } from '../core/physics'
 import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
 import type { BodyTuning } from './bodies/catalog'
 import { WALL_RAMP, WALL_SWEEP_DEG } from '../track/road'
-import { roadResetPose, startPose } from './trackNav'
+import { quatFromFrame, roadResetPose, startPose } from './trackNav'
 import {
   AERO,
   ASSIST,
@@ -83,6 +83,11 @@ const _wO = new THREE.Vector3()
 const _wT = new THREE.Vector3()
 const _resetPos = new THREE.Vector3()
 const _resetQuat = new THREE.Quaternion()
+const _qOld = new THREE.Quaternion()
+const _qNew = new THREE.Quaternion()
+const _rel = new THREE.Vector3()
+const _seatPos = new THREE.Vector3()
+const _seatVel = new THREE.Vector3()
 const _rv = { x: 0, y: 0, z: 0 }
 const _rp = { x: 0, y: 0, z: 0 }
 const _rq = { x: 0, y: 0, z: 0, w: 1 }
@@ -101,6 +106,11 @@ interface Manifold {
   contactDist(i: number): number
   contactImpulse(i: number): number
   normal(): { x: number; y: number; z: number }
+  numSolverContacts(): number
+  solverContactDist(i: number): number
+  solverContactPoint(i: number): { x: number; y: number; z: number }
+  subshape1(): number
+  subshape2(): number
 }
 /** Really touching: a point inside the gap, or one the last solve pushed on (a hit that bounced apart). */
 function manifoldTouches(m: Manifold): boolean {
@@ -110,6 +120,8 @@ function manifoldTouches(m: Manifold): boolean {
 }
 
 const WHEELS = 4
+/** Numbers per CarSim.bodyLog record (dev). */
+export const BODY_LOG_FIELDS = 16
 /** Mount points, chassis-local: FL, FR, RL, RR (+X is the car's left). */
 const ANCHORS: readonly THREE.Vector3[] = [
   new THREE.Vector3(WHEEL.halfTrack, WHEEL.anchorY, WHEEL.halfBase),
@@ -119,6 +131,31 @@ const ANCHORS: readonly THREE.Vector3[] = [
 ]
 
 // ---------------------------------------------------------------- helpers
+
+/**
+ * Dev trace code for what a collider is: 1 road, 2 loop or wall, 3 ramp, 4 barrier, 5 skirt,
+ * 6 terrain (or anything untagged), 7 floor, 8 a car, prop or other owned collider.
+ */
+export function surfaceCode(handle: number): number {
+  if (ownerOf(handle)) return 8
+  switch (surfaceOf(handle)) {
+    case 'road':
+      return 1
+    case 'loop':
+    case 'wall':
+      return 2
+    case 'ramp':
+      return 3
+    case 'barrier':
+      return 4
+    case 'skirt':
+      return 5
+    case 'floor':
+      return 7
+    default:
+      return 6
+  }
+}
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v
@@ -282,6 +319,19 @@ export class CarSim {
   debugProbeChassis = false
   /** Dev: the body was touching the world this step (only measured while debugProbeChassis). */
   debugChassisContact = false
+  /**
+   * Dev (only while debugProbeChassis): the body's hardest contact this step as [what, impulse
+   * N s, nearest gap m, its normal . car up]. what = surfaceCode() of the other collider.
+   */
+  readonly debugBody = new Float32Array(4)
+  /**
+   * Dev (only while debugProbeChassis): a ring of the body's hard contacts (impulse over 300 N s),
+   * BODY_LOG_FIELDS numbers each: step, what, impulse, contact points, solver points, normal xyz
+   * (ground toward car), the deepest solver point xyz and its distance, the car's velocity xyz,
+   * and the other shape's sub-shape (triangle) index. bodyLogCount = how many were written.
+   */
+  readonly bodyLog = new Float64Array(64 * BODY_LOG_FIELDS)
+  bodyLogCount = 0
   /** Dev: height of the car's origin above the road surface at its track position, m. */
   get debugRoadHeight(): number {
     return this.hit.height
@@ -357,6 +407,10 @@ export class CarSim {
   private boostPower = 0
   private boostCooldown: Float64Array = new Float64Array(0)
   private crashCooldown = 0
+  /** The track this car last stepped on: a new runtime with the same id = the road was rebuilt live. */
+  private lastTrack: TrackRuntime | null = null
+  /** Dev: live road rebuilds this car moved with (moved) or sat out (skipped: its road did not change). */
+  readonly reseats = { moved: 0, skipped: 0 }
   /** Auto-hold is gripping the car (stopped, no pedal): see HOLD in tuning.ts. */
   holding = false
   /** On a loop: the turn it is asking for this step, v^2 / R toward its centre (m/s^2). 0 off a loop. */
@@ -461,6 +515,10 @@ export class CarSim {
       this.place(body, this.teleportPos, this.teleportQuat, this.teleportS)
       return
     }
+
+    // ---- the road was rebuilt under the car (a live track parameter, e.g. the Hyperdrome's bank) ----
+    if (track && this.lastTrack && track !== this.lastTrack && track.id === this.lastTrack.id) this.reseat(body, this.lastTrack, track)
+    this.lastTrack = track
 
     if (this.pendingSpeed >= 0) {
       const r0 = body.rotation()
@@ -707,7 +765,7 @@ export class CarSim {
     // Wheels up: is the body itself resting on something? (Only checked while no wheel is down.)
     this.chassisTouching = grounded === 0 && chassis !== null && this.touchingWorld(world, chassis)
     // Dev: the body scraping the world with wheels down too (a trace channel; off by default).
-    this.debugChassisContact = this.debugProbeChassis && chassis !== null && (this.chassisTouching || this.touchingWorld(world, chassis))
+    this.debugChassisContact = this.debugProbeChassis && chassis !== null && this.probeBodyDebug(world, chassis)
     const airborne = grounded === 0
     this.airTime = airborne ? this.airTime + DT : 0
 
@@ -1015,8 +1073,13 @@ export class CarSim {
       const yawT = -steer * ASSIST.airYaw * inertiaScale * (trick ? 0.35 : 1)
       const rollT = trick ? steer * ASSIST.airRoll * inertiaScale : 0
       const damp = ASSIST.airAngularDamp * 100 * inertiaScale
-      // Self-levelling outside trick mode: rotate car-up toward world-up (no yaw component).
-      if (!trick) _tmp.crossVectors(up, WORLD_UP).multiplyScalar(ASSIST.airLevel * inertiaScale)
+      // Self-levelling outside trick mode: rotate car-up toward the up of what it will land on (no
+      // yaw component). Over a banked road that is the road's own up, so a car thrown off a steep
+      // bank's crest comes down square to the bank instead of on its side (levelling to world up
+      // there put it on its roof at 300 km/h). World up anywhere else, and wherever the road's up
+      // leans past ~70 deg (a loop or a wall ride: never roll a falling car over).
+      const level = this.surfaceUp.y > 0.35 ? this.surfaceUp : WORLD_UP
+      if (!trick) _tmp.crossVectors(up, level).multiplyScalar(ASSIST.airLevel * inertiaScale)
       else _tmp.set(0, 0, 0)
       this.addTorque(
         body,
@@ -1148,6 +1211,99 @@ export class CarSim {
     _rv.z = 0
     body.setAdditionalMassProperties(want, _rv, { x: CHASSIS.inertia.x * s, y: CHASSIS.inertia.y * s, z: CHASSIS.inertia.z * s }, _rq, true)
     this.appliedMass = want
+  }
+
+  /**
+   * The road under the car was rebuilt in place (setTrackParam: the Hyperdrome's bank slider).
+   * The physics and the frames now describe the NEW road, but the car is still where the old
+   * one was: on a bank that just steepened it would be inside the new slab and fall through, or
+   * be thrown out of it. So the car moves WITH its piece of road: same distance along it, same
+   * distance right of the centre line, same height above the surface, the same attitude to the
+   * road and the same velocity relative to it (a car doing 200 km/h along the bank still does
+   * 200 km/h along the new bank). Off the road but resting near the ground, it follows the ground
+   * up or down instead. Cars on a stretch that did not change are not touched at all.
+   */
+  private reseat(body: RapierRigidBody, old: TrackRuntime, track: TrackRuntime): void {
+    if (this.pendingTeleport || this.pendingReset) return // a placement is coming anyway
+    const t = body.translation()
+    const r = body.rotation()
+    const lv = body.linvel()
+    const av = body.angvel()
+    _seatPos.set(t.x, t.y, t.z)
+    if (!finiteV(_seatPos) || !Number.isFinite(r.w)) return
+    const hit = old.nearest(t.x, t.y, t.z, this.hit, this.hasTrackS ? this.trackS : undefined)
+    if (!Number.isFinite(hit.s)) return
+    // Same s on the new road (scaled, in case the rebuild changed the length a little).
+    const s = old.length > 0 ? track.wrapS((hit.s / old.length) * track.length) : hit.s
+    const fo = old.frameAt(hit.s, this.frameA)
+    const fn = track.frameAt(s, this.frameB)
+    const hw = old.samples.halfWidth[hit.index] ?? 7
+    _rel.subVectors(_seatPos, fo.position)
+    const along = _rel.dot(fo.tangent)
+    const lat = _rel.dot(fo.right)
+    const up = _rel.dot(fo.up)
+    let moved = false
+    if (Math.abs(lat) <= hw + 1.5 && up > -3 && up < 8) {
+      // Over the road: did this piece of road move?
+      if (fn.position.distanceToSquared(fo.position) < 1e-4 && fn.up.dot(fo.up) > 0.99996 && fn.tangent.dot(fo.tangent) > 0.99996) {
+        this.reseats.skipped++
+        return
+      }
+      // The road's rotation, old frame -> new frame, carries the car's pose and motion with it.
+      quatFromFrame(fo.tangent, fo.up, _qOld)
+      quatFromFrame(fn.tangent, fn.up, _qNew)
+      _qNew.multiply(_qOld.invert())
+      _seatPos.copy(fn.position).addScaledVector(fn.tangent, along).addScaledVector(fn.right, lat).addScaledVector(fn.up, up)
+      _resetQuat.set(r.x, r.y, r.z, r.w).premultiply(_qNew).normalize()
+      _seatVel.set(lv.x, lv.y, lv.z).applyQuaternion(_qNew)
+      _rel.set(av.x, av.y, av.z).applyQuaternion(_qNew)
+      moved = true
+    } else {
+      // Off the road: a car resting on (or just above) the ground follows the ground's new height.
+      const g0 = old.terrainHeight(t.x, t.z)
+      const g1 = track.terrainHeight(t.x, t.z)
+      const dy = g1 - g0
+      if (!Number.isFinite(dy) || Math.abs(dy) < 0.01 || t.y - g0 > 3) {
+        this.reseats.skipped++
+        return
+      }
+      _seatPos.y += dy
+      _resetQuat.set(r.x, r.y, r.z, r.w)
+      _seatVel.set(lv.x, lv.y, lv.z)
+      _rel.set(av.x, av.y, av.z)
+      moved = true
+    }
+    if (!moved || !finiteV(_seatPos) || !finiteV(_seatVel) || !finiteV(_rel) || !Number.isFinite(_resetQuat.w)) return
+    _rp.x = _seatPos.x
+    _rp.y = _seatPos.y
+    _rp.z = _seatPos.z
+    body.setTranslation(_rp, true)
+    _rq.x = _resetQuat.x
+    _rq.y = _resetQuat.y
+    _rq.z = _resetQuat.z
+    _rq.w = _resetQuat.w
+    body.setRotation(_rq, true)
+    _rq.x = 0
+    _rq.y = 0
+    _rq.z = 0
+    _rq.w = 1
+    _rv.x = _seatVel.x
+    _rv.y = _seatVel.y
+    _rv.z = _seatVel.z
+    body.setLinvel(_rv, true)
+    _rv.x = _rel.x
+    _rv.y = _rel.y
+    _rv.z = _rel.z
+    body.setAngvel(_rv, true)
+    // Nothing that compares this step with the last may read the move as motion: no crash, no
+    // damper kick from a "suddenly longer" ray, no impact.
+    this.prevLinvel.copy(_seatVel)
+    this.prevLinvelForDebug.copy(_seatVel)
+    this.prevToi.fill(-1)
+    this.settleSteps = Math.max(this.settleSteps, 2)
+    this.trackS = s
+    this.hasTrackS = true
+    this.reseats.moved++
   }
 
   /** Snap the body to a pose with zero velocity, and forget anything in flight. */
@@ -1686,6 +1842,70 @@ export class CarSim {
     world.contactPairsWith(chassis, this.onPair)
     this.chassisSupportUp = this.probeHit ? this.probeSupport : 1
     return this.probeHit
+  }
+
+  // Preallocated callbacks for probeBodyDebug (dev only).
+  private dbgOther = 0
+  private readonly onDbgManifold = (m: Manifold, flipped: boolean) => {
+    const n = m.numContacts()
+    let imp = 0
+    let gap = 1e9
+    for (let i = 0; i < n; i++) {
+      imp += m.contactImpulse(i)
+      gap = Math.min(gap, m.contactDist(i))
+    }
+    if (!(gap <= TOUCH_GAP || imp > 0)) return
+    if (imp > 300) {
+      const L = this.bodyLog
+      const o = (this.bodyLogCount % 64) * BODY_LOG_FIELDS
+      this.bodyLogCount++
+      const nn = m.normal()
+      const sg = flipped ? 1 : -1
+      const ns = m.numSolverContacts()
+      let best = 0
+      for (let i = 1; i < ns; i++) if (m.solverContactDist(i) < m.solverContactDist(best)) best = i
+      L[o] = this.steps
+      L[o + 1] = this.dbgOther
+      L[o + 2] = imp
+      L[o + 3] = n
+      L[o + 4] = ns
+      L[o + 5] = sg * nn.x
+      L[o + 6] = sg * nn.y
+      L[o + 7] = sg * nn.z
+      if (ns > 0) {
+        const sp = m.solverContactPoint(best)
+        L[o + 8] = sp.x
+        L[o + 9] = sp.y
+        L[o + 10] = sp.z
+        L[o + 11] = m.solverContactDist(best)
+      } else L[o + 8] = L[o + 9] = L[o + 10] = L[o + 11] = NaN
+      L[o + 12] = this.linvel.x
+      L[o + 13] = this.linvel.y
+      L[o + 14] = this.linvel.z
+      L[o + 15] = flipped ? m.subshape1() : m.subshape2()
+    }
+    const b = this.debugBody
+    if (b[0] !== 0 && imp <= b[1]) return
+    const nn = m.normal()
+    const sgn = flipped ? 1 : -1
+    b[0] = this.dbgOther
+    b[1] = imp
+    b[2] = gap
+    b[3] = sgn * (nn.x * this.up.x + nn.y * this.up.y + nn.z * this.up.z)
+  }
+  private readonly onDbgPair = (other: RapierCollider) => {
+    if (!this.probeWorld || !this.probeChassis) return
+    this.dbgOther = surfaceCode(other.handle)
+    this.probeWorld.contactPair(this.probeChassis, other, this.onDbgManifold)
+  }
+
+  /** Dev: record the body's hardest contact this step in debugBody. True if it touches anything. */
+  private probeBodyDebug(world: RapierWorld, chassis: RapierCollider): boolean {
+    this.probeWorld = world
+    this.probeChassis = chassis
+    this.debugBody.fill(0)
+    world.contactPairsWith(chassis, this.onDbgPair)
+    return this.debugBody[0] !== 0
   }
 
   /** A hard hit: find what the chassis is touching, rank it, and report it. */

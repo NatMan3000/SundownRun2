@@ -44,6 +44,7 @@ import { cameraState } from './camera/CameraRig'
 import { GhostCar } from './GhostCar'
 import { links } from './links'
 import { PlayerCar } from './PlayerCar'
+import { BODY_LOG_FIELDS } from './carSim'
 import { trickState, wipeoutLog } from './tricks'
 import { frameAt, quatFromFrame, RIDE_HEIGHT } from './trackNav'
 
@@ -167,6 +168,35 @@ export function VehicleLayer() {
         }) as never,
         'trackJumps(): watch every car; returns the biggest trackS jump (m) per 100 ms sample so far (level-jump check)',
       ),
+      registerDev(
+        'bodyLog',
+        (() => {
+          // Dev: the player's hard body contacts recorded during trace(s, true), oldest first.
+          const sim = links.playerSim
+          const t = getTrack()
+          if (!sim) return 'no car'
+          const L = sim.bodyLog
+          const n = Math.min(sim.bodyLogCount, 64)
+          const out = []
+          for (let k = sim.bodyLogCount - n; k < sim.bodyLogCount; k++) {
+            const o = (k % 64) * BODY_LOG_FIELDS
+            const r = (i: number, d = 3) => +L[o + i].toFixed(d)
+            const row: Record<string, unknown> = { step: L[o], what: L[o + 1], imp: r(2, 0), pts: L[o + 3], solver: L[o + 4], n: [r(5), r(6), r(7)], p: [r(8, 2), r(9, 2), r(10, 2)], dist: r(11), v: [r(12, 1), r(13, 1), r(14, 1)], tri: L[o + 15] }
+            if (t && Number.isFinite(L[o + 8])) {
+              // Where the contact point sits against the road: s, lateral and height above its surface.
+              const h = t.nearest(L[o + 8], L[o + 9], L[o + 10], { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }, sim.trackS)
+              row.road = { s: +h.s.toFixed(1), lat: +h.lateral.toFixed(2), above: +h.height.toFixed(3) }
+              const f = frameAt(t, h.s)
+              const vx = L[o + 12], vy = L[o + 13], vz = L[o + 14], nx = L[o + 5], ny = L[o + 6], nz = L[o + 7]
+              row.nVsRoadUp = +(nx * f.up.x + ny * f.up.y + nz * f.up.z).toFixed(3)
+              row.vIntoN = +-(vx * nx + vy * ny + vz * nz).toFixed(2)
+            }
+            out.push(row)
+          }
+          return out
+        }) as never,
+        'bodyLog(): the player body hard contacts (over 300 N s) recorded during trace(s, true), with where each sits against the road',
+      ),
       registerDev('wipeouts', (() => wipeoutLog.slice()) as never, 'wipeouts(): the last 20 trick wipeouts and why each fired (dev)'),
       registerDev(
         'resetCar',
@@ -196,6 +226,7 @@ export function VehicleLayer() {
           surface: s.surface,
           chassis: { touching: s.chassisTouching, supportUp: +s.chassisSupportUp.toFixed(2) },
           holding: s.holding,
+          reseats: { ...s.reseats },
           onRoad: s.onRoad,
           forces: { suspSum: Math.round(s.debugSuspSum), wheelY: Math.round(s.debugWheelForceY), weight: Math.round(s.speed >= 0 ? 9.81 * 1200 * s.tuning.mass : 0) },
           mag: { grip: s.magGrip, strength: +s.magStrength.toFixed(2), guide: Array.from(s.debugGuide).map((v) => +v.toFixed(2)) },

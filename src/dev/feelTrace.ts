@@ -23,6 +23,16 @@
 //  touching the world (only with trace(s, true)); imp = impact 0..1; and the
 //  loop's force budget along the ground normal, m/s^2 (Lsup support, Lspr
 //  springs, Lmag magnet, Lgrav gravity, Lacc measured, Lk curvature 1/m).
+//  With trace(s, true) also the body's hardest contact each step: bWhat
+//  (what it touched: 1 road, 2 loop/wall, 3 ramp, 4 barrier, 5 skirt, 6
+//  terrain or untagged, 7 floor, 8 car/prop), bImp (impulse, N s), bGap
+//  (m, negative = overlapping) and bNUp (contact normal . car up). Always:
+//  ws = what each wheel stands on as four digits FL FR RL RR (same codes,
+//  0 = no ground) and crash = the crash code this step (0 = none).
+//  On a wall ride: Wphi (deg round the wall's curve, 90 = vertical), Wlip
+//  (the lip's angle there), Wpress (the curve's push into the wall, m/s^2),
+//  Wguard (the lip guard's push back down, m/s^2), Wclear (m round the curve
+//  to the lip) and Warc (speed up the wall, m/s).
 //  Buffers are preallocated: recording costs a few array writes per step
 //  and nothing at all when idle.
 // ============================================================
@@ -30,7 +40,9 @@
 import type { CarSim } from '../vehicle/carSim'
 import { DT, GRAVITY } from '../vehicle/tuning'
 
-const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody', 'boost', 'rack', 'aF', 'aR', 'fyF', 'fyR', 'fxF', 'fxR', 'nFL', 'nFR', 'nRL', 'nRR', 'loopG', 'gLatV', 'gAcc', 'gHead', 'hgt', 'suspG', 'body', 'imp', 'Lsup', 'Lspr', 'Lmag', 'Lgrav', 'Lacc', 'Lk'] as const
+const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody', 'boost', 'rack', 'aF', 'aR', 'fyF', 'fyR', 'fxF', 'fxR', 'nFL', 'nFR', 'nRL', 'nRR', 'loopG', 'gLatV', 'gAcc', 'gHead', 'hgt', 'suspG', 'body', 'imp', 'Lsup', 'Lspr', 'Lmag', 'Lgrav', 'Lacc', 'Lk', 'bWhat', 'bImp', 'bGap', 'bNUp', 'ws', 'crash', 'Wphi', 'Wlip', 'Wpress', 'Wguard', 'Wclear', 'Warc'] as const
+const KIND_CODE: Record<string, number> = { road: 1, loop: 2, wall: 2, ramp: 3, barrier: 4, skirt: 5, terrain: 6, floor: 7 }
+const CRASH_CODE: Record<string, number> = { barrier: 4, wall: 5, terrain: 6, car: 8, prop: 8, smashable: 8 }
 const MAX_STEPS = 60 * 60
 const RAD2DEG = 180 / Math.PI
 
@@ -41,7 +53,10 @@ let remaining = 0
 export const feelTrace = {
   /** Start recording for `seconds` (max 60). `body` = 1 also probes the chassis for contact every step. */
   start(seconds: number, sim?: CarSim | null, probeBody = false): void {
-    if (sim) sim.debugProbeChassis = probeBody
+    if (sim) {
+      sim.debugProbeChassis = probeBody
+      sim.bodyLogCount = 0
+    }
     count = 0
     remaining = Math.min(MAX_STEPS, Math.max(1, Math.round(seconds / DT)))
   },
@@ -100,6 +115,12 @@ export const feelTrace = {
     buf[o + 40] = s.debugChassisContact ? 1 : 0
     buf[o + 41] = s.impact
     for (let k = 0; k < 6; k++) buf[o + 42 + k] = s.debugLoop[k]
+    for (let k = 0; k < 4; k++) buf[o + 48 + k] = s.debugBody[k]
+    let ws = 0
+    for (let i = 0; i < 4; i++) ws = ws * 10 + (s.wheelContact[i] ? (KIND_CODE[s.wheelSurface[i]] ?? 9) : 0)
+    buf[o + 52] = ws
+    buf[o + 53] = s.news.crash > 0 ? (CRASH_CODE[s.news.crashWhat] ?? 9) : 0
+    for (let k = 0; k < 6; k++) buf[o + 54 + k] = s.debugWall[k]
     count++
   },
 

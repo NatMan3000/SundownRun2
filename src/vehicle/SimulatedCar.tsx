@@ -211,7 +211,11 @@ export function SimulatedCar(props: SimulatedCarProps) {
       colliders={false}
       canSleep={false}
       // Soft CCD, not hard CCD: on rapier 0.19 hard CCD halves the travel of a body sliding on a
-      // trimesh (every surface here is one). Soft prediction still stops a 150 m/s drop.
+      // trimesh (every surface here is one). Soft prediction still stops a 150 m/s drop. It stays
+      // on with the wheels down too (rapier caps it at one step's travel): cutting it on the ground
+      // let a 320 km/h car pass straight through a parked one. The look-ahead's catch is that it
+      // treats nearby triangles as endless planes, so nothing solid may sit just under a road
+      // (the 2026-10-02 bank-60 rollover): the track keeps its ground well clear of the deck.
       softCcdPrediction={2}
       linearDamping={0}
       angularDamping={CHASSIS.angularDamping}
