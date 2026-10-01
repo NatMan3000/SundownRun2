@@ -31,10 +31,6 @@ import { formatLap, formatScore } from '../format'
 export function RacePanel() {
   const pos = useGame((s) => s.racePosition)
   const racers = useGame((s) => s.raceRacers)
-  const laps = useGame((s) => s.raceLaps)
-  const lapCount = useGame((s) => s.lapCount)
-  const state = useGame((s) => s.raceState)
-  const lap = Math.min(laps, lapCount + 1)
   return (
     <div className="hud-panel hud-race">
       <div className="hud-race__pos">
@@ -45,7 +41,9 @@ export function RacePanel() {
         <span className="hud-race__of">/ {Math.max(racers, pos)}</span>
       </div>
       <div className="hud-race__side">
-        <span className="hud-label">{state === 'finished' ? 'Finished' : `Lap ${lap} of ${laps}`}</span>
+        <span className="hud-label" data-hud="raceLap">
+          Lap 1
+        </span>
         <span className="hud-race__gap" data-hud="raceGap">
           {' '}
         </span>

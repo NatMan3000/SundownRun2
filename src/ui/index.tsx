@@ -34,7 +34,7 @@ import type { InputDevice, MenuAction } from '../core/controls'
 import { endSession, pauseGame, resumeGame, showResults, startSession } from '../core/session'
 import { audio } from '../core/api'
 import { registerDev, registerInspector } from '../core/devHandles'
-import { handleMenuAction, navTiming, useMenuBus, focusedElement } from './nav'
+import { handleMenuAction, navLog, navTiming, useMenuBus, focusedElement } from './nav'
 import { SCREEN_IDS, SETTINGS_TABS, openScreen, resetStack, useActiveScreen, useUi } from './uiStore'
 import type { ScreenId, SettingsTab } from './uiStore'
 import { FocusRing } from './FocusRing'
@@ -96,7 +96,12 @@ function rootFor(phase: Phase): ScreenId | null | undefined {
 
 function syncPhase(phase: Phase): void {
   const root = rootFor(phase)
-  if (root !== undefined) resetStack(root)
+  if (root === undefined) return
+  // A new phase starts every menu fresh: the pause menu always opens on
+  // Resume, the title on Play. (Within a phase, Back still returns you to
+  // the item you came from.)
+  useUi.setState({ focus: {} })
+  resetStack(root)
 }
 
 // ---------------------------------------------------------------- pause button
@@ -216,6 +221,7 @@ function useDevHandles(): void {
           loading: s.loading,
           notice: s.notice?.text ?? null,
           inputContext: inputState.context,
+          recentActions: navLog.slice(-8),
           screens: SCREEN_IDS,
         }
       }),

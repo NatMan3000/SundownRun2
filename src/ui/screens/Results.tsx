@@ -78,16 +78,23 @@ function ScoreVsBest(props: { label: string; value: string; best: string; isBest
   )
 }
 
+/**
+ * Tag: net reuses raceResults with `ms` = SECONDS spent as "it" (least wins).
+ * Falls back to the live tagSeconds if no results were written.
+ */
 function TagStandings() {
+  const results = useGame((s) => s.raceResults)
   const secs = useGame((s) => s.tagSeconds)
-  const rows = Object.entries(secs).sort((a, b) => a[1] - b[1])
+  const rows: { id: string; name: string; s: number | null; me: boolean }[] = results.length
+    ? results.map((r) => ({ id: r.carId, name: r.isPlayer ? 'You' : r.name, s: r.ms, me: r.isPlayer }))
+    : Object.entries(secs).map(([id, v]) => ({ id, name: id === 'player' ? 'You' : getCar(id)?.name ?? id, s: v, me: id === 'player' }))
+  rows.sort((a, b) => (a.s ?? Infinity) - (b.s ?? Infinity))
+  const winner = rows[0]
   return (
     <>
       <div className="result-hero">
         <span className="eyebrow">Tag</span>
-        <span className={`result-hero__big${rows[0]?.[0] === 'player' ? ' is-win' : ''}`}>
-          {rows[0] ? (rows[0][0] === 'player' ? 'You win' : `${getCar(rows[0][0])?.name ?? 'Someone'} wins`) : 'Round over'}
-        </span>
+        <span className={`result-hero__big${winner?.me ? ' is-win' : ''}`}>{winner ? (winner.me ? 'You win' : `${winner.name} wins`) : 'Round over'}</span>
         <span className="result-hero__sub">Least time as "it" wins</span>
       </div>
       <table className="standings">
@@ -99,11 +106,14 @@ function TagStandings() {
           </tr>
         </thead>
         <tbody>
-          {rows.map(([id, s], i) => (
-            <tr key={id} className={id === 'player' ? 'is-me' : ''}>
+          {rows.map((r, i) => (
+            <tr key={r.id} className={r.me ? 'is-me' : ''}>
               <td>{i + 1}</td>
-              <td>{id === 'player' ? 'You' : getCar(id)?.name ?? id}</td>
-              <td>{s.toFixed(1)} s</td>
+              <td>
+                <span className="standings__dot" style={{ background: getCar(r.id)?.glow }} />
+                {r.name}
+              </td>
+              <td>{r.s === null ? '-' : `${r.s.toFixed(1)} s`}</td>
             </tr>
           ))}
         </tbody>

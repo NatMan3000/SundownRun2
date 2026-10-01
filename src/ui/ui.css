@@ -120,12 +120,16 @@
 
 .scrim { position: absolute; inset: 0; pointer-events: none; }
 .scrim--left {
+  /* Dark enough under the menu column that the sun's road reflection can
+     swing behind it (the showroom camera orbits) without washing text out. */
   background: linear-gradient(90deg,
-    color-mix(in srgb, var(--ink) 80%, transparent) 0%,
-    color-mix(in srgb, var(--ink) 58%, transparent) 30%,
-    color-mix(in srgb, var(--ink) 18%, transparent) 52%,
-    transparent 68%);
+    color-mix(in srgb, var(--ink) 84%, transparent) 0%,
+    color-mix(in srgb, var(--ink) 74%, transparent) 30%,
+    color-mix(in srgb, var(--ink) 42%, transparent) 44%,
+    color-mix(in srgb, var(--ink) 12%, transparent) 58%,
+    transparent 70%);
 }
+.title-col { text-shadow: var(--legible); }
 .scrim--full {
   background:
     radial-gradient(120% 90% at 60% 50%, color-mix(in srgb, var(--ink) 35%, transparent) 0%, color-mix(in srgb, var(--ink) 72%, transparent) 100%);
@@ -691,7 +695,7 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(16em, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(20em, 1fr));
   align-content: start;
   gap: 1em;
   padding: 0.3em;
@@ -1016,7 +1020,7 @@
 .hud-lap__row b.is-best { color: var(--good); }
 
 /* minimap, top-right */
-.hud-map { position: absolute; top: 1.6em; right: 1.6em; width: 14em; height: 14em; overflow: hidden; transition: height 250ms var(--ease); }
+.hud-map { position: absolute; top: 1.6em; right: 1.6em; width: 14em; height: 14em; overflow: hidden; }
 .hud-map__canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .hud-map__north {
   position: absolute;

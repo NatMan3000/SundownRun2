@@ -41,12 +41,6 @@ function changeParam(file: TrackFile, param: string, value: number): void {
   else timer = setTimeout(flush, wait)
 }
 
-/** What the file itself says a param starts at (for reset-to-default). */
-function paramDefault(file: TrackFile, id: string): number | undefined {
-  if (id === 'bankDeg') return file.road.banking?.maxDeg ?? 10
-  return undefined
-}
-
 function paramFormat(id: string): (v: number) => string {
   if (id === 'bankDeg') return (v) => (Math.round(v) === 0 ? 'Flat' : `${Math.round(v)}°`)
   return (v) => (Math.abs(v) >= 10 ? String(Math.round(v)) : v.toFixed(1))
@@ -78,7 +72,7 @@ export function TrackParamRows(props: { idPrefix: string; emptyText?: string }) 
           max={p.max}
           step={paramStep(p.min, p.max)}
           format={paramFormat(p.id)}
-          defaultValue={paramDefault(file, p.id)}
+          defaultValue={p.default}
           onChange={(v) => changeParam(file, p.id, v)}
           help={`${file.name}: changes the road live, while you watch.`}
         />

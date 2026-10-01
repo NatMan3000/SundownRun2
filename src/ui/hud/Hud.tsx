@@ -26,7 +26,6 @@ import { useGame, getGame } from '../../core/store'
 import { useSettings } from '../../core/settings'
 import { cars, getCar, telemetry } from '../../core/telemetry'
 import type { CarState } from '../../core/telemetry'
-import { audio } from '../../core/api'
 import { frameStats } from '../../core/perf'
 import { getTrack } from '../../track/current'
 import { formatClock, formatLap, formatScore } from '../format'
@@ -189,6 +188,7 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
       tagClock: null as HTMLElement | null,
       tagMine: null as HTMLElement | null,
       countdown: null as HTMLElement | null,
+      raceLap: null as HTMLElement | null,
     }
     // Panels come and go with the mode and settings; look the nodes up again after a render.
     let seenLayout = -1
@@ -255,7 +255,9 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
         refs.cluster.style.setProperty('--boost', BOOST_STR[boost])
       }
 
-      // 3 - 2 - 1 - GO: every frame, so the numbers land on the beat.
+      // 3 - 2 - 1 - GO (race and stunt both use raceGoAt): every frame, so the
+      // numbers land on the beat. Visual only: audio plays the beeps from the
+      // race.countdown event.
       if (refs.countdown) {
         let txt = ''
         if (g.raceGoAt > 0) {
@@ -272,7 +274,6 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
             void c.offsetWidth // replay the pop for each new number
             c.classList.add('is-on')
             if (txt === 'GO') c.classList.add('is-go')
-            audio.ui(txt === 'GO' ? 'go' : 'countdown')
           }
         }
       }
@@ -311,6 +312,7 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
         if (refs.tagClock) refs.tagClock.textContent = formatClock(g.tagEndsAt > 0 ? (g.tagEndsAt - now) / 1000 : 0)
         if (refs.tagMine) refs.tagMine.textContent = `${(g.tagSeconds.player ?? 0).toFixed(1)} s`
         if (refs.raceGap) refs.raceGap.textContent = raceGapText()
+        if (refs.raceLap) refs.raceLap.textContent = raceLapText(g.raceLaps, g.raceState)
       }
 
       if (now - lastMap >= MAP_MS) {
@@ -327,6 +329,14 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [root])
+}
+
+/** "Lap 2 of 3" from the player's car (cars 'player'.lap = laps done this race). */
+function raceLapText(laps: number, state: string): string {
+  if (state === 'finished') return 'Finished'
+  const me = getCar('player')
+  const lap = Math.min(laps, (me?.lap ?? 0) + 1)
+  return `Lap ${lap} of ${laps}`
 }
 
 /** "+1.4 s to Nova" (the car ahead), or the lead over the car behind. */

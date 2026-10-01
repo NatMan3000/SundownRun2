@@ -340,9 +340,14 @@ let streak = 0
 /** Last time a menu action arrived (the pause watcher uses it to avoid double handling). */
 export const navTiming = { lastBackAt: 0 }
 
+/** The last few menu actions received, for the `ui` inspector (checkers read this). */
+export const navLog: string[] = []
+
 /** Handle one menu action. The menuBus calls this; dev tools can too (window.__dev.uiNav). */
-export function handleMenuAction(action: MenuAction, _device: InputDevice): void {
+export function handleMenuAction(action: MenuAction, device: InputDevice): void {
   const screen = activeScreen()
+  navLog.push(`${Math.round(performance.now())} ${device} ${action} @${screen ?? '-'}:${screen ? useUi.getState().focus[screen] ?? '-' : '-'}`)
+  if (navLog.length > 24) navLog.shift()
   if (!screen) return
   if (useUi.getState().loading) return
   const now = performance.now()
