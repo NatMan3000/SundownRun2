@@ -35,7 +35,7 @@ import {
 } from './terrain'
 import { buildCenterline, LOOP_SHIFT, WALL_RAMP } from './road'
 import { buildRibbonMeshes } from './ribbon'
-import { buildRampMeshes } from './ramps'
+import { buildRampMeshes, type RampSolid } from './ramps'
 import { buildSampleHash, makeRoadQueries } from './query'
 import { makeBillboards, makeCheckpoints, makeMinimap, makePosts, makeRacingLine } from './derived'
 import { hashString } from './noise'
@@ -53,8 +53,8 @@ export interface TrackInternals {
   envKey: string
   /** Build time in ms (for the checker and check-tracks). */
   buildMs: number
-  /** Ramp collider hulls: one convex point cloud per ramp. */
-  rampHulls: Float32Array[]
+  /** Ramp collision meshes: one closed solid per ramp. */
+  rampSolids: RampSolid[]
   /** Slab thickness per sample. */
   thickness: Float32Array
   /** Edge geometry for colliders. */
@@ -228,7 +228,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   }
 
   // ---- derived data ----
-  const pinned: { s0: number; s1: number }[] = []
+  const pinned: { s0: number; s1: number; value?: number }[] = []
   const fast: { s0: number; s1: number }[] = []
   for (const l of c.loops) {
     pinned.push({ s0: q.wrapS(l.s0 - LOOP_SHIFT - 10), s1: q.wrapS(l.s1 + LOOP_SHIFT + 10) })
@@ -237,9 +237,16 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   for (const w of c.walls) fast.push({ s0: q.wrapS(w.s0 - 10), s1: q.wrapS(w.s1) })
   for (const r of rampSpots) {
     const len = r.piece.length ?? 12
-    pinned.push({ s0: q.wrapS(r.s - len / 2 - 25), s1: q.wrapS(r.s + len / 2 + 5) })
+    pinned.push({ s0: q.wrapS(r.s - len / 2 - 25), s1: q.wrapS(r.s + len / 2 + 5), value: r.piece.offset ?? 0 })
   }
-  const racingLine = makeRacingLine({ samples: S, length: L, pinned, fast, ramps: rampSpots.map((r) => r.s) })
+  // A live bank change leaves the road's plan view untouched: keep the line, redo the speeds.
+  let reuseOffset: Float32Array | undefined
+  if (previous && previous.samples.count === S.count && previous.file.id === file.id) {
+    let same = true
+    for (let i = 0; i < S.count && same; i += 7) same = Math.abs(previous.samples.px[i] - S.px[i]) < 1e-3 && Math.abs(previous.samples.pz[i] - S.pz[i]) < 1e-3
+    if (same) reuseOffset = previous.racingLine.offset
+  }
+  const racingLine = makeRacingLine({ samples: S, length: L, pinned, fast, ramps: rampSpots.map((r) => r.s), edgeMargin: file.road.barriers === 'walls' ? 3 : 2.5, reuseOffset })
 
   const noPosts: { s0: number; s1: number }[] = []
   for (const l of c.loops) noPosts.push({ s0: q.wrapS(l.s0 - LOOP_SHIFT - 15), s1: q.wrapS(l.s1 + LOOP_SHIFT + 15) })
@@ -326,7 +333,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     natGrid,
     envKey,
     buildMs: now() - t0,
-    rampHulls: ramps.hulls,
+    rampSolids: ramps.solids,
     thickness: c.thickness,
     world,
   })

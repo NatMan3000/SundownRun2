@@ -40,6 +40,9 @@ export const LOOP_SHIFT = 80
 export const WALL_RAMP = 15
 /** How far round a wall ride's wall curls at full height (degrees past flat). */
 export const WALL_SWEEP_DEG = 100
+/** A bend must turn at least this many degrees over 80 m to get any auto-bank, and this many for full bank. */
+const BANK_TURN_MIN = 4
+const BANK_TURN_FULL = 12
 /** Curvature (1/m) below which a bend counts as straight for auto-banking. */
 const BANK_DEADBAND = 1 / 3000
 /** Slab thickness: a lifted road is this thick... */
@@ -203,6 +206,19 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   // Curves gentler than BANK_DEADBAND (radius > 3 km) count as straight.
   const bCurvBank = new Float32Array(bCurv)
   circularSmooth(bCurvBank, Math.round(25 / dsb), 2)
+  // A real corner also TURNS: a gentle wobble that changes direction by only a few
+  // degrees gets no bank at all, however fast the design speed. turnDeg is how far
+  // the road turns over the 80 m around each sample.
+  const turnDeg = new Float32Array(nb)
+  {
+    const W = Math.max(1, Math.round(40 / dsb))
+    let sum = 0
+    for (let k = -W; k <= W; k++) sum += bCurv[(k + nb) % nb]
+    for (let k = 0; k < nb; k++) {
+      turnDeg[k] = (Math.abs(sum) * dsb * 180) / Math.PI
+      sum += bCurv[(k + W + 1) % nb] - bCurv[(k - W + nb) % nb]
+    }
+  }
   const vDesign = road.banking.designSpeedKmh / 3.6
   const bankTarget = new Float32Array(nb)
   for (let k = 0; k < nb; k++) {
@@ -210,7 +226,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     let auto = 0
     if (road.banking.auto) {
       const into = (Math.atan((vDesign * vDesign * Math.abs(kk)) / G) * 180) / Math.PI
-      auto = Math.min(bankMaxDeg, into) * Math.sign(kk)
+      auto = Math.min(bankMaxDeg, into) * Math.sign(kk) * smoothstep(BANK_TURN_MIN, BANK_TURN_FULL, turnDeg[k])
     }
     // Overrides are "into the corner": right-handers and straights lift the left edge.
     const sgn = bCurvWide[k] >= -1 / 1500 ? 1 : -1

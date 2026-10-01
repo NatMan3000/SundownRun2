@@ -112,6 +112,16 @@ for (const path of targets) {
   console.log(`    pieces    ${Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}`)
   console.log(`    derived   ${t.checkpoints.length} checkpoints, ${t.props.length} prop spots, ${t.cores.length} cores, ${t.roadside.posts.length} posts, ${t.roadside.billboards.length} billboards`)
   console.log(`    racing    line speeds ${(vmin * 3.6).toFixed(0)} .. ${(vmax * 3.6).toFixed(0)} km/h`)
+  {
+    // The racing line must be a real line: not glued to one edge, never closer to an edge
+    // than the margin, and never planning more sideways grip than the car has.
+    const { racingLineStats } = await import('../src/track/selftest')
+    const margin = v.track.road.barriers === 'walls' ? 3 : 2.5
+    const r = racingLineStats(t)
+    const ok = r.clampFrac <= 0.35 && r.longestClampM <= 150 && r.minEdgeGap >= margin - 0.05 && r.maxLatG <= 1.45
+    if (!ok) failed++
+    console.log(`    line      ${ok ? 'ok  ' : 'FAIL'} ${(r.clampFrac * 100).toFixed(0)}% of the lap at a limit (longest ${r.longestClampM.toFixed(0)} m), closest ${r.minEdgeGap.toFixed(2)} m to an edge (needs ${margin}), planned grip up to ${r.maxLatG.toFixed(2)} g`)
+  }
   console.log(`    meshes    road ${t.meshes.road.indices.length / 3} tris, skirt ${t.meshes.skirt.indices.length / 3}, barriers ${t.meshes.barriers ? t.meshes.barriers.indices.length / 3 : 0}, ramps ${t.meshes.ramps ? t.meshes.ramps.indices.length / 3 : 0}`)
   console.log(`    world     ${t.world.size} m, edge ${t.world.edge}, play radius ${t.world.playRadius.toFixed(0)} m, reset below ${t.world.resetY.toFixed(1)} m`)
   console.log(`    build     ${x ? x.buildMs.toFixed(0) : '?'} ms`)

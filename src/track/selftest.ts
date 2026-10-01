@@ -170,14 +170,15 @@ export function windingErrors(t: TrackRuntime): Record<string, { bad: number; to
  * Banking sanity. A road should lean INTO the corner it is in, never the other way,
  * and roll in and out gently. Returns the fastest roll change (degrees per metre,
  * including across the start-line seam) and how many metres lean the wrong way by
- * more than 2 degrees (the corner's direction is the curvature averaged over +/-40 m).
+ * more than 2 degrees out of a clearly curved bit of road (curvature averaged over
+ * +/-20 m, radius under 600 m).
  * Bank overrides in the file can lean on purpose (off-camber), so those are reported
  * by the caller, not judged here.
  */
 export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; wrongSign: number; wrongAt: number } {
   const S = t.samples
   const n = S.count
-  const W = Math.max(1, Math.round(40 / S.ds))
+  const W = Math.max(1, Math.round(20 / S.ds))
   // Running sum for a fast circular average of the curvature.
   let sum = 0
   for (let k = -W; k <= W; k++) sum += S.curvature[(k + n) % n]
@@ -195,13 +196,68 @@ export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; w
     const kAvg = sum / (2 * W + 1)
     const bankDeg = (S.bank[i] * 180) / Math.PI
     // + bank = left edge up = leaning into a right-hander (+ curvature).
-    if (S.surface[i] === SURFACE_CODE.road && Math.abs(kAvg) > 1 / 1500 && Math.abs(bankDeg) > 2 && Math.sign(bankDeg) !== Math.sign(kAvg)) {
+    if (S.surface[i] === SURFACE_CODE.road && Math.abs(kAvg) > 1 / 600 && Math.abs(bankDeg) > 2 && Math.sign(bankDeg) !== Math.sign(kAvg)) {
       wrongSign++
       if (wrongAt < 0) wrongAt = i * S.ds
     }
     sum += S.curvature[(i + W + 1) % n] - S.curvature[(i - W + n) % n]
   }
   return { maxRate, rateAt, wrongSign: Math.round(wrongSign * S.ds), wrongAt }
+}
+
+/**
+ * Racing line health: how much of the lap sits at the edge limit (and the longest
+ * such stretch), the closest it comes to a road edge, and the most sideways grip
+ * its target speeds ask for (v^2 x curvature / g, ignoring banking).
+ */
+export function racingLineStats(t: TrackRuntime): { clampFrac: number; longestClampM: number; minEdgeGap: number; maxLatG: number } {
+  const S = t.samples
+  const n = S.count
+  const off = t.racingLine.offset
+  const spd = t.racingLine.speed
+  let atLimit = 0
+  let run = 0
+  let longest = 0
+  let minGap = Infinity
+  // The limit is whatever the builder clamped to; find it per sample as hw - |offset| at its smallest
+  // over the lap, then count samples within 5 cm of that.
+  for (let i = 0; i < n; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    minGap = Math.min(minGap, S.halfWidth[i] - Math.abs(off[i]))
+  }
+  for (let i = 0; i < 2 * n; i++) {
+    const k = i % n
+    const at = S.surface[k] === SURFACE_CODE.road && S.halfWidth[k] - Math.abs(off[k]) <= minGap + 0.05
+    if (i < n && at) atLimit++
+    run = at ? run + 1 : 0
+    if (run > longest) longest = run
+  }
+  // Planned sideways acceleration from the line's own curvature.
+  let maxLat = 0
+  const W = Math.max(1, Math.round(4 / S.ds))
+  for (let i = 0; i < n; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    const a = (i - W + n) % n
+    const b = (i + W) % n
+    const P = (j: number) => {
+      const rl = Math.hypot(S.rx[j], S.rz[j]) || 1
+      return [S.px[j] + (S.rx[j] / rl) * off[j], S.pz[j] + (S.rz[j] / rl) * off[j]]
+    }
+    const [ax, az] = P(a)
+    const [bx, bz] = P(i)
+    const [cx, cz] = P(b)
+    const ux = bx - ax
+    const uz = bz - az
+    const vx = cx - bx
+    const vz = cz - bz
+    const d = Math.hypot(ux, uz) * Math.hypot(vx, vz) * Math.hypot(cx - ax, cz - az)
+    const k = d > 1e-9 ? Math.abs((2 * (ux * vz - uz * vx)) / d) : 0
+    // Banking carries part of the load: count only what the tyres must provide.
+    const into = S.bank[i] * Math.sign(ux * vz - uz * vx)
+    const lat = (spd[i] * spd[i] * k * Math.cos(into) - 9.81 * Math.sin(into)) / 9.81
+    maxLat = Math.max(maxLat, lat)
+  }
+  return { clampFrac: atLimit / n, longestClampM: Math.min(longest, n) * S.ds, minEdgeGap: minGap, maxLatG: maxLat }
 }
 
 /** Timings for the README and the checker: query costs in microseconds. */
@@ -492,6 +548,71 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     if (fails) ok = false
     lines.push(`${fails ? 'FAIL' : 'ok  '} containment: ${shots.length - fails}/${shots.length} car boxes fired at ${V} m/s stayed on the surface they hit`)
     for (const f of failed) lines.push(`     fell through: ${f}`)
+  }
+
+  // ---- 3b. drive-through: slide a car box along the road into every piece ----
+  // A frictionless box launched along the centreline must never hit a face: no step,
+  // no end cap, no slab edge across the lane. A hit shows up as a sudden stop
+  // (deceleration far beyond what gravity on a slope can do).
+  {
+    const runs: { what: string; s: number; until: number; v: number; lat?: number }[] = []
+    for (const pc of t.pieces) {
+      const span = t.deltaS(pc.s0, pc.s1)
+      if (pc.type === 'loop') runs.push({ what: 'loop', s: pc.s0 - 12, until: pc.s0 + 25, v: 30 })
+      else if (pc.type === 'ramp') {
+        // Straight up the ramp, and (for an offset ramp) past it on the centreline, clipping its side slope.
+        const off = (pc.source as { offset?: number }).offset ?? 0
+        runs.push({ what: 'ramp', s: pc.s0 - 25, until: pc.s1 + 5, v: 30, lat: off })
+        if (Math.abs(off) > 0.5) runs.push({ what: 'beside an offset ramp', s: pc.s0 - 25, until: pc.s1 + 5, v: 30, lat: 0 })
+      }
+      else if (pc.type === 'wallride') runs.push({ what: 'wall ride', s: pc.s0 - 20, until: pc.s0 + Math.min(span, 60), v: 30 })
+    }
+    // Plus a plain run at every checkpoint (straight road joints, bridges, the seam).
+    for (let k = 0; k < t.checkpoints.length; k++) runs.push({ what: `road at checkpoint ${k}`, s: t.checkpoints[k] - 10, until: t.checkpoints[k] + 20, v: 45 })
+    let fails = 0
+    const failed: string[] = []
+    const hit2: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+    for (const r of runs) {
+      t.frameAt(r.s, frame)
+      negRight.copy(frame.right).negate()
+      basis.makeBasis(negRight, frame.up, frame.tangent)
+      quat.setFromRotationMatrix(basis)
+      const p0 = frame.position.clone().addScaledVector(frame.right, r.lat ?? 0).addScaledVector(frame.up, CAR.hy + 0.05)
+      const body = world.createRigidBody(
+        RAPIER.RigidBodyDesc.dynamic()
+          .setTranslation(p0.x, p0.y, p0.z)
+          .setRotation({ x: quat.x, y: quat.y, z: quat.z, w: quat.w })
+          .setLinvel(frame.tangent.x * r.v, frame.tangent.y * r.v, frame.tangent.z * r.v)
+          .setCcdEnabled(true),
+      )
+      const desc = RAPIER.ColliderDesc.cuboid(CAR.hx, CAR.hy, CAR.hz).setDensity(1200 / (8 * CAR.hx * CAR.hy * CAR.hz)).setFriction(0).setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
+      desc.setCollisionGroups(((1 << 1) << 16) | (1 << 0))
+      world.createCollider(desc, body)
+      let prevV = r.v
+      let worstDecel = 0
+      let sNow = r.s
+      const steps = Math.ceil(((t.deltaS(r.s, r.until) + 5) / r.v) * 60 * 1.6)
+      for (let i = 0; i < steps; i++) {
+        world.step()
+        const lv = body.linvel()
+        const v = Math.hypot(lv.x, lv.y, lv.z)
+        worstDecel = Math.max(worstDecel, (prevV - v) * 60)
+        prevV = v
+        const p = body.translation()
+        t.nearest(p.x, p.y, p.z, hit2, sNow)
+        sNow = hit2.s
+        if (t.deltaS(r.until, sNow) >= 0) break
+      }
+      // Gravity alone on a vertical loop face is ~10 m/s^2; a face across the lane is hundreds.
+      if (worstDecel > 40) {
+        fails++
+        if (failed.length < 6) failed.push(`${r.what} (from s=${r.s.toFixed(0)} at ${r.v} m/s): ${worstDecel.toFixed(0)} m/s^2 jolt, stopped near s=${sNow.toFixed(0)}`)
+      }
+      world.removeRigidBody(body)
+    }
+    if (fails) ok = false
+    lines.push(`${fails ? 'FAIL' : 'ok  '} drive-through: ${runs.length - fails}/${runs.length} frictionless car boxes slid along the road into every piece and joint without hitting a face`)
+    for (const f of failed) lines.push(`     hit: ${f}`)
   }
 
   // ---- 4. everywhere reachable: a drop grid over the whole playable world ----

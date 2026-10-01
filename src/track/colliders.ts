@@ -15,7 +15,7 @@
 //     barrier              stadium edge walls (a chain of thick boxes:
 //                          a box can't be tunnelled the way a thin
 //                          wall of triangles can)
-//     ramp                 one convex hull per kicker
+//     ramp                 one closed triangle mesh per kicker
 //
 //   terrain tiles (terrainTiles.ts): the ground as a grid of trimesh
 //   tiles. Only tiles whose heights changed are rebuilt on a live
@@ -97,7 +97,7 @@ export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): C
   if (t.meshes.barriers) addBarrierBoxes(world, R, set, t)
 
   const extras = trackInternals(t)
-  for (const hull of extras?.rampHulls ?? []) add(world, R, set, R.ColliderDesc.convexHull(hull), 'ramp')
+  for (const r of extras?.rampSolids ?? []) add(world, R, set, R.ColliderDesc.trimesh(r.vertices, r.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'ramp')
 
   return set
 }

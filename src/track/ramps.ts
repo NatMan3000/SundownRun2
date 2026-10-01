@@ -9,15 +9,15 @@
 //  which at speed sends the car into a tumble; a curve tips the car
 //  up smoothly so it leaves the lip flying straight.
 //
-//  Its sides slope outward (about 45 degrees) so a car that clips the
-//  edge rolls off rather than being flicked sideways.
+//  Its sides slope outward (about 18 degrees where the road has room)
+//  so a car that clips the edge rolls up and off rather than being
+//  flicked sideways.
 //
 //  The base sinks 0.15 m into the road and the top starts 5 cm below
 //  it, so no face of the ramp lies flat on the road (flat-on-flat
 //  faces flicker).
 //
-//  Colliders: one convex hull per slice along the curve (convex
-//  shapes are rapier's most reliable), all tagged 'ramp'.
+//  Collider: one closed triangle mesh per ramp, tagged 'ramp'.
 // ============================================================
 
 import type { RampPiece } from './schema'
@@ -25,7 +25,15 @@ import { SURFACE_CODE, type MeshBuffers, type TrackFrame } from './types'
 import type { RoadQueries } from './query'
 import { MeshBuilder } from './ribbon'
 
+/** A ramp's collision shape: a closed triangle mesh. */
+export interface RampSolid {
+  vertices: Float32Array
+  indices: Uint32Array
+}
+
 const SINK = 0.15
+/** Side slope: this many metres out per metre of height where the road has room (3 = ~18 degrees). */
+const SIDE_RUN = 3
 /** The top surface starts this far below the road at the toe. */
 const TOE = 0.05
 /** Slices along the ramp (more = smoother curve). */
@@ -37,10 +45,10 @@ export function buildRampMeshes(
   spots: { s: number; piece: RampPiece }[],
   q: RoadQueries,
   frame: TrackFrame,
-): { mesh: MeshBuffers | null; hulls: Float32Array[] } {
-  if (spots.length === 0) return { mesh: null, hulls: [] }
+): { mesh: MeshBuffers | null; solids: RampSolid[] } {
+  if (spots.length === 0) return { mesh: null, solids: [] }
   const mb = new MeshBuilder(['aAlong', 'aKind'])
-  const hulls: Float32Array[] = []
+  const solids: RampSolid[] = []
   for (const { s, piece } of spots) {
     const len = piece.length ?? 12
     const w = piece.width ?? 8
@@ -48,8 +56,12 @@ export function buildRampMeshes(
     const off = piece.offset ?? 0
     q.frameAt(s, frame)
     const hw = frame.halfWidth
-    // Side slope run at full height: ~45 degrees, narrowed if the road edge is close.
-    const runMax = Math.min(h, Math.max(0.5 * h, hw + 0.3 - (Math.abs(off) + w / 2)))
+    // Side slope run at full height, per side: a gentle ~27 degrees (2 x height)
+    // where there is room, steepened only where the road edge is close.
+    const lL = off - w / 2
+    const lR = off + w / 2
+    const runL = Math.min(SIDE_RUN * h, Math.max(0.5 * h, hw + 0.3 + lL))
+    const runR = Math.min(SIDE_RUN * h, Math.max(0.5 * h, hw + 0.3 - lR))
     const C = frame.position
     const T = frame.tangent
     const U = frame.up
@@ -60,30 +72,38 @@ export function buildRampMeshes(
       C.z + T.z * a + R.z * l + U.z * v,
     ]
     // Stations along the ramp: a (metres from the centre), top height, side run.
-    const st: { a: number; y: number; run: number; f: number }[] = []
+    const st: { a: number; y: number; runL: number; runR: number; f: number }[] = []
     for (let k = 0; k <= SLICES; k++) {
       const f = k / SLICES
       // Start a touch below the road so the top grows out of it (never lies flat on it).
       const y = -TOE + (h + TOE) * Math.pow(f, POWER)
-      st.push({ a: -len / 2 + len * f, y, run: (runMax * Math.max(0, y)) / h, f })
+      const rise = Math.max(0, y) / h
+      st.push({ a: -len / 2 + len * f, y, runL: runL * rise, runR: runR * rise, f })
     }
-    const lL = off - w / 2
-    const lR = off + w / 2
-    // Convex slices for the collider.
-    for (let k = 0; k < SLICES; k++) {
-      const A = st[k]
-      const B = st[k + 1]
-      const pts = [
-        P(A.a, lL - A.run, -SINK),
-        P(A.a, lR + A.run, -SINK),
-        P(B.a, lL - B.run, -SINK),
-        P(B.a, lR + B.run, -SINK),
-        P(A.a, lL, A.y),
-        P(A.a, lR, A.y),
-        P(B.a, lL, B.y),
-        P(B.a, lR, B.y),
-      ]
-      hulls.push(Float32Array.from(pts.flat()))
+    // The collider: one closed triangle mesh per ramp (top, both sides, the lip,
+    // the toe and the bottom). One mesh, not a stack of convex slices: a car sliding
+    // across the seam between two slices catches on it (measured: a 1500 m/s^2 jolt
+    // at 30 m/s). colliders.ts builds it with FIX_INTERNAL_EDGES.
+    {
+      const verts: number[] = []
+      const idx: number[] = []
+      for (const S of st) {
+        verts.push(...P(S.a, lL, S.y), ...P(S.a, lR, S.y), ...P(S.a, lL - S.runL, -SINK), ...P(S.a, lR + S.runR, -SINK))
+      }
+      // Corners per station: 0 top-left, 1 top-right, 2 base-left, 3 base-right.
+      const q = (a: number, b: number, c: number, d: number) => idx.push(a, b, c, a, c, d)
+      for (let k = 0; k < SLICES; k++) {
+        const A = k * 4
+        const B = (k + 1) * 4
+        q(A, A + 1, B + 1, B) // top
+        q(A + 2, A, B, B + 2) // left side
+        q(A + 1, A + 3, B + 3, B + 1) // right side
+        q(A + 3, A + 2, B + 2, B + 3) // bottom
+      }
+      q(0, 2, 3, 1) // toe
+      const E = SLICES * 4
+      q(E, E + 1, E + 3, E + 2) // lip face
+      solids.push({ vertices: Float32Array.from(verts), indices: Uint32Array.from(idx) })
     }
 
     // Mesh: top, two sloped sides, and the lip face. Every vertex carries aAlong (0 toe .. 1 lip).
@@ -101,16 +121,17 @@ export function buildRampMeshes(
       const nl = Math.hypot(1, slope)
       const nT: [number, number, number] = [(U.x - T.x * slope) / nl, (U.y - T.y * slope) / nl, (U.z - T.z * slope) / nl]
       top.push(vert(P(S.a, lL, S.y), nT, 0, S.a + len / 2, S.f), vert(P(S.a, lR, S.y), nT, 1, S.a + len / 2, S.f))
-      // Side normals: outward and up at about 45 degrees.
+      // Side normals: outward and up, matching each side's slope (run vs height).
       const sl = (s2: number): [number, number, number] => {
-        const nx = R.x * s2 + U.x
-        const ny = R.y * s2 + U.y
-        const nz = R.z * s2 + U.z
+        const run = s2 < 0 ? runL : runR
+        const nx = R.x * s2 * (h + SINK) + U.x * run
+        const ny = R.y * s2 * (h + SINK) + U.y * run
+        const nz = R.z * s2 * (h + SINK) + U.z * run
         const l = Math.hypot(nx, ny, nz)
         return [nx / l, ny / l, nz / l]
       }
-      left.push(vert(P(S.a, lL, S.y), sl(-1), 0, S.a + len / 2, S.f), vert(P(S.a, lL - S.run, -SINK), sl(-1), 1, S.a + len / 2, S.f))
-      right.push(vert(P(S.a, lR, S.y), sl(1), 0, S.a + len / 2, S.f), vert(P(S.a, lR + S.run, -SINK), sl(1), 1, S.a + len / 2, S.f))
+      left.push(vert(P(S.a, lL, S.y), sl(-1), 0, S.a + len / 2, S.f), vert(P(S.a, lL - S.runL, -SINK), sl(-1), 1, S.a + len / 2, S.f))
+      right.push(vert(P(S.a, lR, S.y), sl(1), 0, S.a + len / 2, S.f), vert(P(S.a, lR + S.runR, -SINK), sl(1), 1, S.a + len / 2, S.f))
     }
     for (let k = 0; k < SLICES; k++) {
       const i = k * 2
@@ -121,11 +142,11 @@ export function buildRampMeshes(
     // Lip face (facing forward, the way you fly off).
     const L = st[SLICES]
     const nF: [number, number, number] = [T.x, T.y, T.z]
-    const a = vert(P(L.a, lL - L.run, -SINK), nF, 0, 0, 1)
-    const b = vert(P(L.a, lR + L.run, -SINK), nF, 1, 0, 1)
+    const a = vert(P(L.a, lL - L.runL, -SINK), nF, 0, 0, 1)
+    const b = vert(P(L.a, lR + L.runR, -SINK), nF, 1, 0, 1)
     const c = vert(P(L.a, lR, L.y), nF, 1, h, 1)
     const d = vert(P(L.a, lL, L.y), nF, 0, h, 1)
     mb.quad(a, b, c, d)
   }
-  return { mesh: mb.build(), hulls }
+  return { mesh: mb.build(), solids }
 }

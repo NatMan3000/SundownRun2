@@ -15,7 +15,7 @@
 
 import type { ResolvedTrackFile } from './schema'
 import { SURFACE_CODE, type GroundPose, type TrackSamples } from './types'
-import { circularSmooth, horizontalCurvature, type Centerline } from './road'
+import { circularSmooth, type Centerline } from './road'
 import type { SampleHash } from './query'
 import { mulberry32, clamp } from './noise'
 
@@ -37,37 +37,80 @@ export interface RacingLineInput {
   samples: TrackSamples
   length: number
   /** [s0, s1] ranges where the line must hold the centre (loops, ramps). */
-  pinned: { s0: number; s1: number }[]
+  /** [s0, s1] ranges where the line must hold an offset (loops at 0, a ramp at its own offset). */
+  pinned: { s0: number; s1: number; value?: number }[]
   /** [s0, s1] ranges that need speed for magnetic grip (loops, wall rides). */
   fast: { s0: number; s1: number }[]
   /** Ramp positions: slow a little before one that launches into a corner. */
   ramps: number[]
+  /** Keep the line at least this far inside the road edges (more where there are walls). */
+  edgeMargin: number
+  /** The line from a previous build of the same road shape (a live bank change): reused as is. */
+  reuseOffset?: Float32Array
 }
 
-/** Relax a set of lateral offsets toward the straightest line within bounds (Gauss-Seidel). */
-function relax(
+/** Signed curvature of the circle through three points (x, z), + = turning right. */
+function menger(ax: number, az: number, bx: number, bz: number, cx: number, cz: number): number {
+  const ux = bx - ax
+  const uz = bz - az
+  const vx = cx - bx
+  const vz = cz - bz
+  const cross = ux * vz - uz * vx
+  const d = Math.hypot(ux, uz) * Math.hypot(vx, vz) * Math.hypot(cx - ax, cz - az)
+  return d > 1e-9 ? (2 * cross) / d : 0
+}
+
+/**
+ * Shape the line so its curvature changes as smoothly as possible (the K1999 method
+ * from the TORCS racing sim): each point moves sideways until its curvature is the
+ * average of its neighbours'. Corners get spread over the whole width, which gives
+ * the classic outside-apex-outside line, and long bends are taken wide rather than
+ * hugging the inside (hugging the inside is the shortest way round, not the fastest).
+ */
+function relaxCurvature(
   cx: Float64Array,
   cz: Float64Array,
   rx: Float64Array,
   rz: Float64Array,
-  lim: Float64Array,
+  lo: Float64Array,
+  hi: Float64Array,
   off: Float64Array,
   iterations: number,
 ): void {
   const M = off.length
+  const X = (m: number) => cx[(m + M) % M] + rx[(m + M) % M] * off[(m + M) % M]
+  const Z = (m: number) => cz[(m + M) % M] + rz[(m + M) % M] * off[(m + M) % M]
+  const DELTA = 0.1
   for (let it = 0; it < iterations; it++) {
     for (let m = 0; m < M; m++) {
-      const a = m === 0 ? M - 1 : m - 1
-      const b = m === M - 1 ? 0 : m + 1
-      const tx = (cx[a] + rx[a] * off[a] + cx[b] + rx[b] * off[b]) * 0.5
-      const tz = (cz[a] + rz[a] * off[a] + cz[b] + rz[b] * off[b]) * 0.5
-      let o = (tx - cx[m]) * rx[m] + (tz - cz[m]) * rz[m]
-      const L = lim[m]
-      if (o > L) o = L
-      else if (o < -L) o = -L
+      const ax = X(m - 1)
+      const az = Z(m - 1)
+      const bx = X(m + 1)
+      const bz = Z(m + 1)
+      const px = X(m)
+      const pz = Z(m)
+      const target = (menger(X(m - 2), Z(m - 2), ax, az, px, pz) + menger(px, pz, bx, bz, X(m + 2), Z(m + 2))) / 2
+      const k0 = menger(ax, az, px, pz, bx, bz)
+      const k1 = menger(ax, az, px + rx[m] * DELTA, pz + rz[m] * DELTA, bx, bz)
+      const dk = (k1 - k0) / DELTA
+      if (Math.abs(dk) < 1e-9) continue
+      let o = off[m] + 0.7 * ((target - k0) / dk)
+      if (o > hi[m]) o = hi[m]
+      else if (o < lo[m]) o = lo[m]
       off[m] = o
     }
   }
+}
+
+/** The pinned offset at s, or null if s is not in a pinned range. */
+function pinAt(s: number, ranges: { s0: number; s1: number; value?: number }[], length: number): number | null {
+  for (const r of ranges) {
+    let d = s - r.s0
+    d = ((d % length) + length) % length
+    const span = (((r.s1 - r.s0) % length) + length) % length
+    if (d <= span) return r.value ?? 0
+  }
+  return null
 }
 
 function inRanges(s: number, ranges: { s0: number; s1: number }[], length: number): boolean {
@@ -81,9 +124,8 @@ function inRanges(s: number, ranges: { s0: number; s1: number }[], length: numbe
 }
 
 /**
- * The Ai's racing line: a smooth apex-cutting offset within +/-(halfWidth - 2 m),
- * found by repeatedly pulling every point toward the midpoint of its neighbours
- * (a stretched string finds the straightest path through the corners). Then a
+ * The Ai's racing line: a smooth outside-apex-outside offset within the road
+ * (edgeMargin metres inside each edge), shaped by relaxCurvature(). Then a
  * target speed per sample from the line's curvature and banking, with a braking
  * pass backward and an acceleration pass forward so speeds are reachable.
  */
@@ -93,17 +135,81 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
   const ds = S.ds
   const L = inp.length
 
-  // Coarse-to-fine: solve at 16 m spacing, then refine at 4 m.
+  // ---- where the line may go: per-sample bounds ----
+  // Inside the edges by edgeMargin; held at a fixed offset on pinned stretches (loops at
+  // 0, a ramp at its own offset); and eased into each pinned stretch
+  // sideways along a gentle curve (PIN_EASE_R radius), so the line never kinks to meet a pin.
+  const PIN_EASE_R = 400
+  const loB = new Float64Array(count)
+  const hiB = new Float64Array(count)
+  const pinVal = new Float64Array(count).fill(NaN)
+  for (let i = 0; i < count; i++) {
+    const lim = Math.max(0, S.halfWidth[i] - inp.edgeMargin)
+    loB[i] = -lim
+    hiB[i] = lim
+    if (S.surface[i] !== SURFACE_CODE.road) pinVal[i] = 0
+    else {
+      const pin = pinAt(i * ds, inp.pinned, L)
+      if (pin !== null) pinVal[i] = pin
+    }
+  }
+  // Distance to (and value of) the nearest pin, both directions round the lap.
+  const dist = new Float64Array(count).fill(Infinity)
+  const near = new Float64Array(count)
+  for (let pass = 0; pass < 2; pass++) {
+    for (let n = 0; n < count * 2; n++) {
+      const i = pass === 0 ? n % count : (count * 2 - 1 - n) % count
+      if (!Number.isNaN(pinVal[i])) {
+        dist[i] = 0
+        near[i] = pinVal[i]
+        continue
+      }
+      const j = pass === 0 ? (i - 1 + count) % count : (i + 1) % count
+      if (dist[j] + ds < dist[i]) {
+        dist[i] = dist[j] + ds
+        near[i] = near[j]
+      }
+    }
+  }
+  for (let i = 0; i < count; i++) {
+    if (!Number.isFinite(dist[i])) continue
+    const dev = (dist[i] * dist[i]) / (2 * PIN_EASE_R)
+    const lo = Math.max(loB[i], near[i] - dev)
+    const hi = Math.min(hiB[i], near[i] + dev)
+    if (lo <= hi) {
+      loB[i] = lo
+      hiB[i] = hi
+    } else {
+      const v = clamp(near[i], loB[i], hiB[i])
+      loB[i] = v
+      hiB[i] = v
+    }
+  }
+
+  const offset = new Float32Array(count)
+  if (inp.reuseOffset && inp.reuseOffset.length === count) offset.set(inp.reuseOffset)
+  else solveOffsets(S, loB, hiB, offset)
+  for (let i = 0; i < count; i++) offset[i] = clamp(offset[i], loB[i], hiB[i])
+
+  return { offset, speed: makeSpeeds(inp, offset) }
+}
+
+/** The line itself: coarse-to-fine curvature relaxation inside the bounds. */
+function solveOffsets(S: TrackSamples, loB: Float64Array, hiB: Float64Array, offset: Float32Array): void {
+  const count = S.count
+  const ds = S.ds
+  // Coarse-to-fine: solve at 12 m spacing, then refine at 4 m.
   let prevOff: Float64Array | null = null
   let prevStride = 0
-  for (const strideM of [16, 4]) {
+  for (const strideM of [12, 4]) {
     const stride = Math.max(1, Math.round(strideM / ds))
     const M = Math.floor(count / stride)
     const cx = new Float64Array(M)
     const cz = new Float64Array(M)
     const rx = new Float64Array(M)
     const rz = new Float64Array(M)
-    const lim = new Float64Array(M)
+    const lo = new Float64Array(M)
+    const hi = new Float64Array(M)
     const off = new Float64Array(M)
     for (let m = 0; m < M; m++) {
       const i = m * stride
@@ -112,23 +218,22 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
       const rl = Math.hypot(S.rx[i], S.rz[i]) || 1
       rx[m] = S.rx[i] / rl
       rz[m] = S.rz[i] / rl
-      const pinned = S.surface[i] !== SURFACE_CODE.road || inRanges(i * ds, inp.pinned, L)
-      lim[m] = pinned ? 0 : Math.max(0, S.halfWidth[i] - 2)
+      lo[m] = loB[i]
+      hi[m] = hiB[i]
       if (prevOff) {
         // Start from the coarse solution.
         const fpos = (i / prevStride) % prevOff.length
         const a = Math.floor(fpos)
         const b = (a + 1) % prevOff.length
         const f = fpos - a
-        off[m] = clamp(prevOff[a] + (prevOff[b] - prevOff[a]) * f, -lim[m], lim[m])
-      }
+        off[m] = clamp(prevOff[a] + (prevOff[b] - prevOff[a]) * f, lo[m], hi[m])
+      } else off[m] = clamp(0, lo[m], hi[m])
     }
-    relax(cx, cz, rx, rz, lim, off, strideM === 16 ? 1500 : 600)
+    relaxCurvature(cx, cz, rx, rz, lo, hi, off, strideM === 12 ? 400 : 150)
     prevOff = off
     prevStride = stride
   }
 
-  const offset = new Float32Array(count)
   const po = prevOff!
   for (let i = 0; i < count; i++) {
     const fpos = i / prevStride
@@ -138,12 +243,14 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
     offset[i] = po[a] + (po[b] - po[a]) * f
   }
   circularSmooth(offset, Math.round(3 / ds), 2)
-  for (let i = 0; i < count; i++) {
-    const pinned = S.surface[i] !== SURFACE_CODE.road || inRanges(i * ds, inp.pinned, L)
-    const lim = pinned ? 0 : Math.max(0, S.halfWidth[i] - 2)
-    offset[i] = clamp(offset[i], -lim, lim)
-  }
+}
 
+/** Target speed per sample for a given line. */
+function makeSpeeds(inp: RacingLineInput, offset: Float32Array): Float32Array {
+  const S = inp.samples
+  const count = S.count
+  const ds = S.ds
+  const L = inp.length
   // ---- speeds from the line's curvature ----
   const lx = new Float64Array(count)
   const lz = new Float64Array(count)
@@ -152,11 +259,30 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
     lx[i] = S.px[i] + (S.rx[i] / rl) * offset[i]
     lz[i] = S.pz[i] + (S.rz[i] / rl) * offset[i]
   }
+  // Curvature of the line itself (circle through points 4 m either side), then the
+  // TIGHTEST value within +/-5 m: plan for the sharpest part of each bend, never an average.
+  const kRaw = new Float32Array(count)
+  const W4 = Math.max(1, Math.round(4 / ds))
+  for (let i = 0; i < count; i++) {
+    const a = (i - W4 + count) % count
+    const b = (i + W4) % count
+    kRaw[i] = menger(lx[a], lz[a], lx[i], lz[i], lx[b], lz[b])
+  }
   const k = new Float32Array(count)
-  horizontalCurvature(lx, lz, count, ds, k)
-  circularSmooth(k, Math.round(4 / ds), 2)
+  const W5 = Math.max(1, Math.round(5 / ds))
+  for (let i = 0; i < count; i++) {
+    let best = kRaw[i]
+    for (let d = -W5; d <= W5; d++) {
+      const v = kRaw[(i + d + count) % count]
+      if (Math.abs(v) > Math.abs(best)) best = v
+    }
+    k[i] = best
+  }
 
-  const MU = 1.5
+  // Grip we plan for: below the car's real grip so the Ai has margin (vehicle measures the real figure).
+  const MU = 1.25
+  // However much a bank helps, never plan a corner above this sideways acceleration.
+  const MAX_LAT_G = 1.4
   const VMAX = 75
   const MAG_MIN = 27
   const LOOP_SPEED = 34
@@ -179,7 +305,7 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
     const den = c - MU * sn
     const num = sn + MU * c
     const v2 = den <= 0.05 ? VMAX * VMAX : (G / kk) * (num / den)
-    speed[i] = Math.min(VMAX, Math.sqrt(Math.max(0, v2)))
+    speed[i] = Math.min(VMAX, Math.sqrt(Math.max(0, Math.min(v2, (MAX_LAT_G * G) / kk))))
   }
 
   // Crests: above sqrt(g R) the car goes light and leaves the road. Let the Ai float
@@ -216,8 +342,8 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
     }
   }
   floorFast()
-  // Backward: brake in time (~9 m/s^2). Forward: accelerate realistically (~5 m/s^2). Two laps each so the wrap settles.
-  const BRAKE = 9
+  // Backward: brake in time (~7 m/s^2, with margin). Forward: accelerate realistically (~5 m/s^2). Two laps each so the wrap settles.
+  const BRAKE = 7
   const ACCEL = 5
   for (let pass = 0; pass < 2; pass++) {
     for (let n = count * 2 - 1; n >= 0; n--) {
@@ -234,7 +360,7 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
     }
   }
   floorFast()
-  return { offset, speed }
+  return speed
 }
 
 // ---------------------------------------------------------------- minimap
