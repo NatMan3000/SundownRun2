@@ -23,9 +23,11 @@
 //    __dev.pylonWatch(on = true)     start (or stop) recording how
 //        close every car gets to any pylon; read it with
 //        __game.get('pylons')
+//    __dev.pylonSolid(on = true)     remove (false) or restore the
+//        colliders, to prove a crash really comes from them
 // ============================================================
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
 import { useRapier } from '@react-three/rapier'
@@ -84,9 +86,16 @@ export function BridgePylonColliders() {
   const { world, rapier } = useRapier()
   const track = useTrack()
   const paramVersion = useGame((s) => s.trackParamVersion)
+  const [solid, setSolid] = useState(true)
 
   useEffect(() => {
     if (!track) return
+    if (!solid) {
+      current = { track, pylons: trackPylons(track), colliders: 0 }
+      return () => {
+        current = null
+      }
+    }
     const pylons = trackPylons(track)
     if (pylons.length === 0) {
       current = { track, pylons, colliders: 0 }
@@ -113,7 +122,7 @@ export function BridgePylonColliders() {
       removeColliderSet(world, set)
       current = null
     }
-  }, [world, rapier, track, paramVersion])
+  }, [world, rapier, track, paramVersion, solid])
 
   useEffect(() => {
     const offAim = registerDev(
@@ -143,10 +152,19 @@ export function BridgePylonColliders() {
       closestPylon: watch.which,
       list: current?.pylons.map((p, i) => ({ i, s: Math.round(p.s), side: p.side, x: +p.x.toFixed(1), z: +p.z.toFixed(1), height: +p.height.toFixed(1) })) ?? [],
     }))
+    const offSolid = registerDev(
+      'pylonSolid',
+      ((on = true) => {
+        setSolid(!!on)
+        return on ? 'bridge pylons are solid' : 'bridge pylon colliders removed (test only)'
+      }) as never,
+      'pylonSolid(on = true): remove (false) or restore the bridge pylon colliders - a control for the crash test',
+    )
     return () => {
       offAim()
       offWatch()
       offInspect()
+      offSolid()
     }
   }, [])
 
