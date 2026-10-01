@@ -56,8 +56,8 @@ export interface GameEventMap {
   /** A drift ended and scored. */
   'drift.end': { seconds: number; points: number; maxAngleDeg: number }
 
-  /** A hard hit. what = what we hit. intensity 0..1. */
-  crash: { what: 'wall' | 'terrain' | 'prop' | 'car' | 'smashable' | 'barrier'; intensity: number; speedKmh: number; otherCarId?: string }
+  /** A hard hit. what = what we hit (road = the road, a ramp or a loop surface; terrain = the ground off it). intensity 0..1. */
+  crash: { what: 'wall' | 'terrain' | 'road' | 'prop' | 'car' | 'smashable' | 'barrier'; intensity: number; speedKmh: number; otherCarId?: string }
   /** A crash-prop cluster burst. */
   'prop.burst': { kind: string; points: number; remote: boolean }
   /** A roadside piece was smashed (hit above the smash speed). */
