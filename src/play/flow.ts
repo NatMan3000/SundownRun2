@@ -32,7 +32,7 @@ export const flow = {
   version: 0,
   stagingSince: 0,
   goAt: 0,
-  /** The countdown number last announced (3, 2, 1), so each is emitted once. */
+  /** 0 until the countdown is announced (once, when the visible 3 begins), then COUNTDOWN_S. */
   lastCount: 0,
   /** Stunt: score already on the board when the clock started. */
   trickBase: 0,

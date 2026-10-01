@@ -128,6 +128,82 @@ export function crossingClearance(t: TrackRuntime): { gap: number; s1: number; s
   return best
 }
 
+/**
+ * Every triangle must face the way its vertex normals say (three.js culls the back
+ * of a triangle, so a wrongly wound road is invisible from above). Returns how many
+ * triangles disagree, per mesh.
+ */
+export function windingErrors(t: TrackRuntime): Record<string, { bad: number; total: number }> {
+  const out: Record<string, { bad: number; total: number }> = {}
+  const meshes = { road: t.meshes.road, skirt: t.meshes.skirt, barriers: t.meshes.barriers, ramps: t.meshes.ramps }
+  for (const [name, m] of Object.entries(meshes)) {
+    if (!m) continue
+    const P = m.positions
+    const N = m.normals
+    const I = m.indices
+    let bad = 0
+    for (let k = 0; k < I.length; k += 3) {
+      const a = I[k] * 3
+      const b = I[k + 1] * 3
+      const c = I[k + 2] * 3
+      const e1x = P[b] - P[a]
+      const e1y = P[b + 1] - P[a + 1]
+      const e1z = P[b + 2] - P[a + 2]
+      const e2x = P[c] - P[a]
+      const e2y = P[c + 1] - P[a + 1]
+      const e2z = P[c + 2] - P[a + 2]
+      const gx = e1y * e2z - e1z * e2y
+      const gy = e1z * e2x - e1x * e2z
+      const gz = e1x * e2y - e1y * e2x
+      if (gx * gx + gy * gy + gz * gz < 1e-12) continue // a zero-area sliver faces nowhere
+      const nx = N[a] + N[b] + N[c]
+      const ny = N[a + 1] + N[b + 1] + N[c + 1]
+      const nz = N[a + 2] + N[b + 2] + N[c + 2]
+      if (gx * nx + gy * ny + gz * nz <= 0) bad++
+    }
+    out[name] = { bad, total: I.length / 3 }
+  }
+  return out
+}
+
+/**
+ * Banking sanity. A road should lean INTO the corner it is in, never the other way,
+ * and roll in and out gently. Returns the fastest roll change (degrees per metre,
+ * including across the start-line seam) and how many metres lean the wrong way by
+ * more than 2 degrees (the corner's direction is the curvature averaged over +/-40 m).
+ * Bank overrides in the file can lean on purpose (off-camber), so those are reported
+ * by the caller, not judged here.
+ */
+export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; wrongSign: number; wrongAt: number } {
+  const S = t.samples
+  const n = S.count
+  const W = Math.max(1, Math.round(40 / S.ds))
+  // Running sum for a fast circular average of the curvature.
+  let sum = 0
+  for (let k = -W; k <= W; k++) sum += S.curvature[(k + n) % n]
+  let maxRate = 0
+  let rateAt = 0
+  let wrongSign = 0
+  let wrongAt = -1
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    const rate = (Math.abs(S.bank[j] - S.bank[i]) * 180) / Math.PI / S.ds
+    if (rate > maxRate) {
+      maxRate = rate
+      rateAt = i * S.ds
+    }
+    const kAvg = sum / (2 * W + 1)
+    const bankDeg = (S.bank[i] * 180) / Math.PI
+    // + bank = left edge up = leaning into a right-hander (+ curvature).
+    if (S.surface[i] === SURFACE_CODE.road && Math.abs(kAvg) > 1 / 1500 && Math.abs(bankDeg) > 2 && Math.sign(bankDeg) !== Math.sign(kAvg)) {
+      wrongSign++
+      if (wrongAt < 0) wrongAt = i * S.ds
+    }
+    sum += S.curvature[(i + W + 1) % n] - S.curvature[(i - W + n) % n]
+  }
+  return { maxRate, rateAt, wrongSign: Math.round(wrongSign * S.ds), wrongAt }
+}
+
 /** Timings for the README and the checker: query costs in microseconds. */
 export function benchQueries(t: TrackRuntime): { frameAtUs: number; nearestHintUs: number; nearestColdUs: number; terrainUs: number } {
   const frame: TrackFrame = {

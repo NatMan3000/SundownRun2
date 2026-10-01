@@ -66,6 +66,7 @@ function inspectPlay() {
       steer: +d.steer.toFixed(2),
       powerScale: +(d.powerScale ?? 1).toFixed(3),
       resets: d.resets,
+      resetLog: d.resetLog,
       lapsDone: r?.lapsDone ?? 0,
       dist: r ? Math.round(r.dist) : 0,
       position: r?.position ?? 0,
@@ -116,6 +117,7 @@ export function PlayLayer() {
       registerDev('round', () => newRound(), 'new round of the current mode (props and cores re-scatter)'),
       registerDev('race', ((n: number) => devRace(n)) as never, 'race(n): start a race now with n Ai racers (0-5)'),
       registerDev('finishRace', () => devFinish(), 'end the running race (or stunt run) now and show results'),
+      registerDev('aiResets', () => [...drivers.values()].map((d) => `${d.id}: ` + d.resetLog.map((r) => `${r.why}@${r.s}m ${r.kmh}kmh lat${r.lateral}`).join(', ')).join(' | '), 'where and why each Ai racer reset'),
       registerDev('raceSummary', () => raceSummary(), 'one-line race status: stage, each racer laps/metres, Ai modes, resets'),
       registerInspector('play', inspectPlay),
     ]

@@ -103,9 +103,13 @@ function unfreezeAll(): void {
   for (const r of useRoster.getState().racers) getCar(r.id)?.api?.setFrozen(false)
 }
 
-/** Stop whatever race or stunt run was going, take the Ai cars away. */
-function teardownFlow(): void {
-  if (flow.kind !== 'none') unfreezeAll()
+/**
+ * Stop whatever race or stunt run was going, take the Ai cars away.
+ * `unmounting`: the physics world is being torn down with the track, so
+ * don't call into any car (their bodies may already be freed).
+ */
+function teardownFlow(unmounting = false): void {
+  if (flow.kind !== 'none' && !unmounting) unfreezeAll()
   if (useRoster.getState().racers.length > 0 || flow.kind !== 'none') {
     flow.version++
     useRoster.setState({ racers: [], version: flow.version })
@@ -202,10 +206,11 @@ function tryStage(track: TrackRuntime, now: number): void {
   }
   if (flow.kind === 'race') useGame.setState({ raceRacers: raceBook.racers.length, racePosition: raceBook.racers.length })
 
+  // Cars sit frozen on the grid for a short settle first. The countdown is
+  // announced (once) and shown only when the visible 3 begins, so it reads 3-2-1-GO.
   flow.stage = 'countdown'
   flow.goAt = now + SETTLE_MS + COUNTDOWN_S * 1000
   flow.lastCount = 0
-  useGame.setState({ raceState: 'countdown', raceGoAt: flow.goAt })
 }
 
 function go(track: TrackRuntime, now: number): void {
@@ -234,6 +239,8 @@ const hooks: RaceBookHooks = {
   },
   onFinish(r: Racer) {
     if (r.isPlayer) finishRace(performance.now())
+    // An Ai crossing the line after you: swap its projected time for the real one.
+    else if (flow.stage === 'finished') useGame.setState({ raceResults: buildResults(performance.now(), flow.goAt) })
   },
 }
 
@@ -361,7 +368,7 @@ export function ModeController() {
     const unsub = useGame.subscribe(check)
     return () => {
       unsub()
-      teardownFlow()
+      teardownFlow(true)
     }
   }, [])
 
@@ -391,10 +398,12 @@ export function ModeController() {
         tryStage(track, now)
         break
       case 'countdown': {
-        const left = Math.ceil((flow.goAt - now) / 1000)
-        if (left >= 1 && left <= COUNTDOWN_S && left !== flow.lastCount) {
-          flow.lastCount = left
-          emit('race.countdown', { seconds: left, racers: flow.kind === 'race' ? raceBook.racers.length : 1 })
+        // Announce once, when the 3 starts (contract: one race.countdown per countdown;
+        // store.raceGoAt holds GO's exact time, and the HUD and audio count from it).
+        if (flow.lastCount === 0 && now >= flow.goAt - COUNTDOWN_S * 1000) {
+          flow.lastCount = COUNTDOWN_S
+          useGame.setState({ raceState: 'countdown', raceGoAt: flow.goAt })
+          emit('race.countdown', { seconds: COUNTDOWN_S, racers: flow.kind === 'race' ? raceBook.racers.length : 1 })
         }
         if (now >= flow.goAt) go(track, now)
         break

@@ -92,6 +92,8 @@ interface FieldState {
   /** Per piece. */
   live: Uint8Array
   body: (RapierRigidBody | null)[]
+  /** Collider handle of each piece's body (kept here so untagging never has to ask rapier). */
+  colHandle: Int32Array
   /** Index of the piece in its instanced mesh (crates and cubes count separately). */
   slot: Int32Array
   crateCount: number
@@ -120,6 +122,7 @@ function PropField({ track }: { track: TrackRuntime }) {
       br: new Float32Array(clusters),
       live: new Uint8Array(cap),
       body: new Array(cap).fill(null),
+      colHandle: new Int32Array(cap),
       slot: new Int32Array(cap),
       crateCount: 0,
       cubeCount: 0,
@@ -169,17 +172,26 @@ function PropField({ track }: { track: TrackRuntime }) {
   )
 
   // ---- bodies ----
-  const removeBody = (p: number) => {
+  /**
+   * Forget piece p's body and take it out of the world. When the track
+   * changes, <Physics> may already have freed its world by the time we
+   * clean up, and calling into a freed world throws ("null pointer passed
+   * to rust") and takes the whole Canvas down. So: untag from our own
+   * stored handle (no rapier call), drop our reference first, and only
+   * then try the removal, which is allowed to fail on a dead world.
+   */
+  const removeBody = (p: number, teardown = false) => {
     const b = st.body[p]
     if (!b) return
-    for (let k = 0; k < b.numColliders(); k++) untagCollider(b.collider(k).handle)
-    try {
-      world.removeRigidBody(b)
-    } catch {
-      // the world went away with the track: nothing to remove
-    }
+    untagCollider(st.colHandle[p])
     st.body[p] = null
     st.activeBodies--
+    try {
+      if (world.getRigidBody(b.handle)) world.removeRigidBody(b)
+    } catch (err) {
+      // On teardown a freed world is expected. Mid-game it is not: say so.
+      if (!teardown) console.error('[play] could not remove a prop body', err)
+    }
   }
 
   const activate = (c: number) => {
@@ -209,6 +221,7 @@ function PropField({ track }: { track: TrackRuntime }) {
         body,
       )
       tagCollider(col.handle, { kind: 'prop', id: `cluster-${c}` })
+      st.colHandle[p] = col.handle
       body.sleep() // resting until something touches it
       st.body[p] = body
       st.activeBodies++
@@ -216,20 +229,21 @@ function PropField({ track }: { track: TrackRuntime }) {
     st.active[c] = 1
   }
 
-  const deactivate = (c: number) => {
+  const deactivate = (c: number, teardown = false) => {
     const L = st.layout!
     const start = L.pieceStart[c]
     const end = start + L.pieceCount[c]
-    for (let p = start; p < end; p++) removeBody(p)
+    for (let p = start; p < end; p++) removeBody(p, teardown)
     st.active[c] = 0
   }
 
-  const removeAllBodies = () => {
+  const removeAllBodies = (teardown = false) => {
     if (!st.layout) return
-    for (let c = 0; c < st.layout.clusterCount; c++) if (st.active[c]) deactivate(c)
+    for (let c = 0; c < st.layout.clusterCount; c++) if (st.active[c]) deactivate(c, teardown)
   }
 
-  useEffect(() => () => removeAllBodies(), []) // eslint-disable-line react-hooks/exhaustive-deps
+  // Unmount (track change, HMR): the world may already be gone, so this is a teardown.
+  useEffect(() => () => removeAllBodies(true), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Deal a new round: fresh layout, every cluster standing, no bodies. */
   const deal = (round: number) => {

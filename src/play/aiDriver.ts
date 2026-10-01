@@ -74,6 +74,9 @@ const CATCHUP_GAP = 180
 const PASS_OFFSET = 3.4
 const PASS_HOLD_S = 1.6
 const LANE_SLEW = 2.6 // m/s the aim line can move sideways
+/** Side-by-side room: cars overlapping along the road within SIDE_LEN m keep SIDE_GAP m apart sideways. */
+const SIDE_LEN = 5.5
+const SIDE_GAP = 3.0
 /** Recovery. */
 const STUCK_SPEED = 1.5
 const STUCK_TRIGGER_S = 1.2
@@ -139,12 +142,15 @@ export class AiDriver implements Driver {
   aimLateral = 0
   /** How many times this racer has had to reset to the road (inspector, balance checks). */
   resets = 0
+  /** The last few resets: where, why, and how fast it was going (for tuning; rare, so allocation is fine). */
+  resetLog: { s: number; why: 'flipped' | 'stuck'; kmh: number; lateral: number }[] = []
 
   private hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: true }
   private prevAlpha = 0
   private time = 0
   private phase: number
   private passOffset = 0
+  private sideShove = 0
   private passTarget = 0
   private passTimer = 0
   private laneNow = 0
@@ -242,7 +248,7 @@ export class AiDriver implements Driver {
     desired = this.boostLane(track, desired)
     const followCap = this.racecraft(track, desired, v, dt)
     this.passOffset += clamp(this.passTarget - this.passOffset, -LANE_SLEW * dt, LANE_SLEW * dt)
-    desired += this.passOffset
+    desired += this.passOffset + this.sideShove
 
     const lim = Math.max(0, _frame.halfWidth - EDGE_MARGIN)
     desired = clamp(desired, -lim, lim)
@@ -337,6 +343,21 @@ export class AiDriver implements Driver {
         blocker = i
       }
     }
+    // Personal space: a car right alongside (overlapping us along the road)
+    // and closer than SIDE_GAP sideways gets room, so packs don't trade paint and flip.
+    let shove = 0
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i]
+      if (o.id === this.id) continue
+      const ds = track.deltaS(this.s, o.s)
+      if (ds < -SIDE_LEN || ds > SIDE_LEN) continue
+      const gap = this.hit.lateral - o.lateral
+      const ag = Math.abs(gap)
+      if (ag >= SIDE_GAP) continue
+      shove += (gap >= 0 ? 1 : -1) * (SIDE_GAP - ag) * 0.9
+    }
+    this.sideShove = shove
+
     if (blocker >= 0) {
       const o = list[blocker]
       const half = Math.max(0, _frame.halfWidth - EDGE_MARGIN)
@@ -379,6 +400,8 @@ export class AiDriver implements Driver {
       this.watchProgress = 0
     }
     if (reset && this.resetCooldown <= 0 && car.api) {
+      this.resetLog.push({ s: Math.round(this.s), why: this.flippedT > FLIPPED_RESET_S ? 'flipped' : 'stuck', kmh: Math.round(v * 3.6), lateral: +this.hit.lateral.toFixed(1) })
+      if (this.resetLog.length > 12) this.resetLog.shift()
       car.api.resetToRoad()
       this.resets++
       this.mode = 'reset'

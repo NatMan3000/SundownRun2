@@ -116,11 +116,31 @@ for (const path of targets) {
   console.log(`    world     ${t.world.size} m, edge ${t.world.edge}, play radius ${t.world.playRadius.toFixed(0)} m, reset below ${t.world.resetY.toFixed(1)} m`)
   console.log(`    build     ${x ? x.buildMs.toFixed(0) : '?'} ms`)
   // No kinks: a sharp change of direction between neighbouring samples is a bump or a step.
-  const { groundClearance, ribbonSmoothness, crossingClearance } = await import('../src/track/selftest')
+  const { groundClearance, ribbonSmoothness, crossingClearance, windingErrors, bankCheck } = await import('../src/track/selftest')
+  // Every visible triangle faces outward (agrees with its vertex normals).
+  const wind = windingErrors(t)
+  const windBad = Object.values(wind).reduce((n, w) => n + w.bad, 0)
+  if (windBad) failed++
+  console.log(`    winding   ${windBad ? 'FAIL' : 'ok  '} ${Object.entries(wind).map(([k, w]) => `${k} ${w.total - w.bad}/${w.total}`).join(', ')} triangles face the way their normals do`)
   const sm = ribbonSmoothness(t)
   const smoothOk = sm.roadTurn < 4 && sm.upTurn < 4 && sm.loopTurn < 9 && sm.spacingErr < 0.05
   if (!smoothOk) failed++
   console.log(`    smooth    ${smoothOk ? 'ok  ' : 'FAIL'} sharpest turn ${sm.roadTurn.toFixed(2)} deg/m on the road (s=${sm.at.toFixed(0)}), ${sm.loopTurn.toFixed(2)} in loops; roll ${sm.upTurn.toFixed(2)} deg/m; spacing error ${(sm.spacingErr * 100).toFixed(1)} cm`)
+  // Banking leans into every corner and rolls gently, including across the start-line seam.
+  {
+    const hasOverrides = v.track.road.points.some((p) => typeof p.bank === 'number')
+    const adj = v.track.road.banking.adjustable
+    for (const b of adj ? [adj.max] : [null]) {
+      const tb = b === null ? t : buildTrack(v.track, { bankDeg: b }, t)
+      const bc = bankCheck(tb)
+      const rateOk = bc.maxRate <= 1.5
+      const signOk = hasOverrides || bc.wrongSign === 0
+      if (!rateOk || !signOk) failed++
+      console.log(
+        `    banking   ${rateOk && signOk ? 'ok  ' : 'FAIL'} ${b === null ? '' : `bank ${b} deg: `}fastest roll ${bc.maxRate.toFixed(2)} deg/m at s=${bc.rateAt.toFixed(0)} (limit 1.5); ${bc.wrongSign} m leaning out of a corner${bc.wrongSign ? ` (first at s=${bc.wrongAt.toFixed(0)})` : ''}${hasOverrides ? ' (file has bank overrides: not judged)' : ''}`,
+      )
+    }
+  }
   // Bridges: where the road passes over itself, a car must fit underneath.
   const cross = crossingClearance(t)
   if (cross) {
