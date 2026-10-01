@@ -18,10 +18,11 @@
 //    tag    "it" chosen, "it" rams the other, "it" passes on (both screens agree)
 // ============================================================
 
-import type { Browser, Page } from 'puppeteer-core'
+import type { Page } from 'puppeteer-core'
+
+const flag = (name: string) => process.argv.includes(`--${name}`)
 
 interface Kit {
-  browser: Browser
   hostBase: string
   joinBase: string
   relayPort: number
@@ -32,7 +33,8 @@ interface Kit {
   sections: string[]
   check: (name: string, ok: boolean, detail?: unknown) => void
   until: <T>(page: Page, expr: string, ms?: number) => Promise<T | null>
-  openPage: (browser: Browser, url: string, label: string) => Promise<Page>
+  /** Opens a page in its own browser (one per player, both in the foreground). */
+  openPage: (url: string, label: string) => Promise<Page>
   sleep: (ms: number) => Promise<unknown>
 }
 
@@ -102,8 +104,8 @@ const PILOT = `(async () => {
       track.frameAt(track.wrapS(s), frame)
       const p = new V(frame.position.x + frame.right.x * lateral, frame.position.y + frame.up.y * 0.6 + 0.4, frame.position.z + frame.right.z * lateral)
       const q = tel.telemetry.carQuaternion.clone()
-      // Face along the tangent: yaw from the tangent's xz (0 = facing -z).
-      const yaw = Math.atan2(-frame.tangent.x, -frame.tangent.z)
+      // Face along the tangent. The car model's nose is +z (vehicle/carSim: fwd = (0,0,1)).
+      const yaw = Math.atan2(frame.tangent.x, frame.tangent.z)
       q.set(0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2))
       tel.getCar('player').api.teleport(p, q)
       return { x: p.x, y: p.y, z: p.z }
@@ -113,13 +115,13 @@ const PILOT = `(async () => {
 })()`
 
 export async function runGameChecks(k: Kit): Promise<void> {
-  const { browser, check, until, sleep } = k
+  const { check, until, sleep } = k
   const q = `mp=1&relay=${k.relayPort}`
   console.log(`\n== game: two players in a drive on "${k.track}"`)
   // The joiner opens a DIFFERENT track on purpose: the host's must replace it.
-  const host = await k.openPage(browser, `${k.hostBase}/?${q}&name=JOSH&track=${k.track}&mode=free`, 'host')
+  const host = await k.openPage(`${k.hostBase}/?${q}&name=JOSH&track=${k.track}&mode=free`, 'host')
   await sleep(1500)
-  const join = await k.openPage(browser, `${k.joinBase}/?${q}&name=DAD&color=orange&track=${k.joinTrack}&mode=free`, 'join')
+  const join = await k.openPage(`${k.joinBase}/?${q}&name=DAD&color=orange&track=${k.joinTrack}&mode=free`, 'join')
   for (const p of [host, join]) await p.evaluate(PILOT)
 
   const hostKey = await until<string>(host, `window.__pilot.current.getTrack()?.key`, 20000)
@@ -149,6 +151,13 @@ export async function runGameChecks(k: Kit): Promise<void> {
     await sleep(1500)
     await join.screenshot({ path: `${k.shots}/game-joiner-sees-host.png` })
     console.log(`  shot ${k.shots}/game-joiner-sees-host.png`)
+    // Further back, so the name tag reads clear of the car's own glow.
+    await join.evaluate(`window.__pilot.place(30, 0)`)
+    await sleep(1500)
+    await join.screenshot({ path: `${k.shots}/game-name-tag.png`, clip: { x: 340, y: 120, width: 600, height: 340 } })
+    console.log(`  shot ${k.shots}/game-name-tag.png`)
+    const tagInfo = await join.evaluate(`(() => { const c = window.__game.cars.find((c) => c.kind === 'remote'); if (!c || !c.object) return null; const t = c.object.children.find((o) => o.isSprite); return t ? { visible: t.visible, opacity: t.material.opacity, rootVisible: c.object.visible, scale: +t.scale.x.toFixed(2), y: +t.position.y.toFixed(2) } : 'no sprite' })()`)
+    console.log(`  name tag: ${JSON.stringify(tagInfo)}`)
     // Smooth motion: sample the remote car's render pose over a second while the host drives.
     await host.evaluate(`window.__pilot.go(null, 60)`)
     const steps = (await join.evaluate(`new Promise((res) => { const out = []; const c = () => window.__game.cars.find((c) => c.kind === 'remote'); let last = c()?.position.clone(); let n = 0; function f() { const p = c()?.position; if (p && last) { out.push(+p.distanceTo(last).toFixed(3)); last.copy(p) } if (++n < 60) requestAnimationFrame(f); else res(out) } requestAnimationFrame(f) })`)) as number[]
@@ -158,21 +167,73 @@ export async function runGameChecks(k: Kit): Promise<void> {
     const meanStep = moving.reduce((a, b) => a + b, 0) / Math.max(1, moving.length)
     check('remote car moves smoothly (no frame jumps more than 3x the average step)', moving.length > 40 && maxStep < meanStep * 3 + 0.05, { frames: steps.length, moving: moving.length, meanStep: +meanStep.toFixed(3), maxStep })
 
+    // ---- a teleport is a jump, never a sweep ----
+    // The joiner parks on the road; the host teleports from behind it to in
+    // front of it. Its body must jump, not sweep through the joiner.
+    await host.evaluate(`window.__pilot.stop(); window.__pilot.place(20, 0)`)
+    await join.evaluate(`window.__pilot.stop(); window.__pilot.place(50, 0)`)
+    await sleep(2000)
+    await join.evaluate(`window.__pilot.release()`)
+    await sleep(500)
+    const parked = (await join.evaluate(`(() => { const p = window.__pilot.tel.telemetry.carPosition; return { x: p.x, z: p.z } })()`)) as { x: number; z: number }
+    await host.evaluate(`window.__pilot.place(85, 0)`)
+    await sleep(1500)
+    const sweptBy = (await join.evaluate(`(() => { const p = window.__pilot.tel.telemetry.carPosition; return +Math.hypot(p.x - ${parked.x}, p.z - ${parked.z}).toFixed(2) })()`)) as number
+    check('a remote teleport jumps past a parked car without sweeping it away', sweptBy < 0.5, { joinerMovedM: sweptBy })
+
     // ---- the ram: joiner sits still, host drives into it ----
     await host.evaluate(`window.__pilot.stop(); window.__pilot.place(40, 0)`)
     await join.evaluate(`window.__pilot.stop(); window.__pilot.place(62, 0)`)
     await sleep(1500)
-    const before = (await join.evaluate(`(() => { const p = window.__pilot.tel.telemetry.carPosition; return { x: p.x, y: p.y, z: p.z } })()`)) as { x: number; y: number; z: number }
+    // Control: released with nobody near, does the joiner sit still on its own?
     await join.evaluate(`window.__pilot.release()`)
+    await sleep(500)
+    const before = (await join.evaluate(`(() => { const p = window.__pilot.tel.telemetry.carPosition; return { x: p.x, y: p.y, z: p.z } })()`)) as { x: number; y: number; z: number }
+    await sleep(2500)
+    const drift = (await join.evaluate(`(() => { const t = window.__pilot.tel.telemetry; const p = t.carPosition; return { m: +Math.hypot(p.x - ${before.x}, p.z - ${before.z}).toFixed(2), kmh: Math.round(t.speedKmh), throttle: t.throttle, brake: t.brake, handbrake: t.handbrake, overrideActive: window.__pilot.controls.driveOverride.active } })()`)) as { m: number }
+    console.log(`  control (joiner released, host parked 22 m back): ${JSON.stringify(drift)}`)
+    check('control: the released joiner sits still with nobody touching it', drift.m < 0.3, drift)
     await host.evaluate(`window.__pilot.go(window.__game.cars.find((c) => c.kind === 'remote').id, 70)`)
-    const hit = await until<{ moved: number; impact: number }>(
-      join,
-      `(() => { const p = window.__pilot.tel.telemetry.carPosition; const d = Math.hypot(p.x - ${before.x}, p.z - ${before.z}); return d > 1.5 ? { moved: +d.toFixed(2), impact: window.__pilot.tel.telemetry.impact } : null })()`,
-      12000,
-    )
+    // Watch the joiner for 8 s: how far it is pushed, its peak speed and impact,
+    // and how fast the host was going when it arrived (the ram's strength).
+    const watch = join.evaluate(`new Promise((res) => {
+      const t = window.__pilot.tel.telemetry
+      let moved = 0, peakKmh = 0, peakImpact = 0
+      const t0 = performance.now()
+      const trace = []; let hitAt = 0
+      function f() {
+        const d = Math.hypot(t.carPosition.x - ${before.x}, t.carPosition.z - ${before.z})
+        if (!hitAt && (t.impact > 0.05 || t.speedKmh > 2)) hitAt = performance.now()
+        if (hitAt && trace.length < 60 && (performance.now() - hitAt) >= trace.length * 133) trace.push([Math.round(performance.now() - hitAt), Math.round(t.speedKmh), +t.carPosition.y.toFixed(1), t.airborne ? 1 : 0])
+        window.__ramTrace = trace
+        moved = Math.max(moved, d); peakKmh = Math.max(peakKmh, t.speedKmh); peakImpact = Math.max(peakImpact, t.impact)
+        if (performance.now() - t0 < 8000) requestAnimationFrame(f)
+        else res({ moved: +moved.toFixed(2), peakKmh: Math.round(peakKmh), peakImpact: +peakImpact.toFixed(2), hitPeakKmh: Math.max(0, ...trace.filter((p) => p[0] <= 1500).map((p) => p[1])) })
+      }
+      requestAnimationFrame(f)
+    })`)
+    // One ram: the host chases until its first bump goes out, then lets go.
+    let hostPeak = 0
+    let closest = Infinity
+    const sentBefore = (await host.evaluate(`window.__game.get('net').bumps.sent`)) as number
+    for (let i = 0; i < 80; i++) {
+      hostPeak = Math.max(hostPeak, (await host.evaluate(`window.__pilot.tel.telemetry.speedKmh`)) as number)
+      const d = (await host.evaluate(`(() => { const r = window.__game.cars.find((c) => c.kind === 'remote'); const p = window.__pilot.tel.telemetry.carPosition; return r ? r.position.distanceTo(p) : 999 })()`)) as number
+      closest = Math.min(closest, d)
+      if (((await host.evaluate(`window.__game.get('net').bumps.sent`)) as number) > sentBefore) break
+      await sleep(100)
+    }
+    await host.evaluate(`window.__pilot.stop()`)
+    console.log(`  ram: closest the host got to the joiner (centres): ${closest.toFixed(2)} m; bumps host ${JSON.stringify(await host.evaluate(`window.__game.get('net').bumps`))} joiner ${JSON.stringify(await join.evaluate(`window.__game.get('net').bumps`))}`)
+    const hit = (await watch) as { moved: number; peakKmh: number; peakImpact: number; hitPeakKmh: number }
+    if (flag('trace')) console.log(`  ram trace [ms, kmh, y, airborne]: ${JSON.stringify(await join.evaluate('window.__ramTrace'))}`)
     await join.screenshot({ path: `${k.shots}/game-ram.png` })
     await host.evaluate(`window.__pilot.stop()`)
-    check('a ram from the host shoves the joiner (it moved without touching its controls)', !!hit, hit ?? 'joiner never moved')
+    console.log(`  ram: host reached ${Math.round(hostPeak)} km/h; joiner ${JSON.stringify(hit)}`)
+    check('a ram from the host shoves the joiner (pushed over 1 m with its controls untouched)', hit.moved > 1, hit)
+    // One ram hands over roughly BUMP_SHARE (0.65) of the closing speed: a shove, not a launch.
+    // Judged on the 1.5 s after the hit (later, a coasting car can roll over a boost pad).
+    check('the shove is in proportion: in the 1.5 s after the hit the joiner peaks at 35-100% of the rammer speed', hit.hitPeakKmh >= hostPeak * 0.35 && hit.hitPeakKmh <= hostPeak, { hostKmh: Math.round(hostPeak), joinerKmhAfterHit: hit.hitPeakKmh })
     const crashEvt = await join.evaluate(`window.__events.recent.filter((e) => e.type === 'crash').map((e) => e.what)`)
     console.log(`  joiner crash events: ${JSON.stringify(crashEvt)}`)
   }

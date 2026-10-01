@@ -28,6 +28,14 @@ export const STALE_MS = 1500
 
 const RING = 32
 
+/**
+ * Two packets this far apart can't be driving (6 m in one packet gap is over
+ * 1000 km/h): it's a teleport (R, a race grid, a reset). Never blend across
+ * one, or the car would sweep through everything in between.
+ */
+export const JUMP_M = 6
+const JUMP2 = JUMP_M * JUMP_M
+
 const _qa = new THREE.Quaternion()
 const _qb = new THREE.Quaternion()
 
@@ -104,8 +112,13 @@ export class PoseBuffer {
     const iN = newer * POSE_FLOATS
     const t0 = this.times[older]
     const t1 = this.times[newer]
-    const a = t1 > t0 ? Math.min(1, Math.max(0, (t - t0) / (t1 - t0))) : 1
     const d = this.data
+    let a = t1 > t0 ? Math.min(1, Math.max(0, (t - t0) / (t1 - t0))) : 1
+    // A teleport between these two packets: jump, don't glide (see JUMP_M).
+    const jx = d[iN + POSE.px] - d[iO + POSE.px]
+    const jy = d[iN + POSE.py] - d[iO + POSE.py]
+    const jz = d[iN + POSE.pz] - d[iO + POSE.pz]
+    if (jx * jx + jy * jy + jz * jz > JUMP2) a = a < 0.5 ? 0 : 1
     outPos.set(
       d[iO + POSE.px] + (d[iN + POSE.px] - d[iO + POSE.px]) * a,
       d[iO + POSE.py] + (d[iN + POSE.py] - d[iO + POSE.py]) * a,

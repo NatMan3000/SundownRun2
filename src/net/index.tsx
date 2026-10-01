@@ -35,6 +35,7 @@ import { STALE_MS, peerPoses } from './poses'
 import { POSE_FLAG } from './protocol'
 import { sendTrackIfHost, startTrackSync } from './trackSync'
 import { RemoteCars } from './RemoteCars'
+import { BumpApplier, startBumps, stats as bumpStats } from './bump'
 import { currentRound, requestStart, roundsTick, startRounds } from './rounds'
 
 export { useNet } from './netStore'
@@ -77,6 +78,7 @@ export function NetLayer() {
     startNet()
     startTrackSync()
     startRounds()
+    startBumps()
     registerNetDev()
   }, [multiplayer])
   if (!multiplayer) return null
@@ -84,6 +86,7 @@ export function NetLayer() {
     <>
       <PoseSender />
       <RoundsTicker />
+      <BumpApplier />
       <RemoteCars />
     </>
   )
@@ -111,6 +114,7 @@ function inspect() {
     myTrackKey: track?.key ?? null,
     ...connectionInfo(),
     round: roundSummary(),
+    bumps: { ...bumpStats },
     peers: Object.values(net.peers).map((p) => {
       const buf = peerPoses.get(p.id)
       const live = peerLive.get(p.id)

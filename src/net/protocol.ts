@@ -157,7 +157,23 @@ export interface PropMsg {
   vz: number
 }
 
-export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg
+/**
+ * A ram, sent by the car that did the ramming. Each computer only simulates
+ * its own car and sees everyone else as an immovable (kinematic) body, so the
+ * rammer's own physics stops it dead and nothing would ever push the victim.
+ * Instead the rammer works out the push (a velocity change, m/s) and sends
+ * it; the victim adds it to its own car on its next physics step.
+ */
+export interface BumpMsg {
+  t: 'bump'
+  /** Relay id of the car that was hit. Everyone else ignores the message. */
+  to: number
+  dvx: number
+  dvy: number
+  dvz: number
+}
+
+export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg
 
 // ---------------------------------------------------------------- relay -> client
 

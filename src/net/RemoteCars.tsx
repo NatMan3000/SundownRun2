@@ -45,17 +45,22 @@ import { getTrack } from '../track/current'
 import type { NearestHit } from '../track/types'
 import { liveFor, useNet } from './netStore'
 import type { PeerInfo } from './netStore'
-import { INTERP_MS, STALE_MS, peerPoses } from './poses'
+import { INTERP_MS, JUMP_M, STALE_MS, peerPoses } from './poses'
 import { POSE_FLAG } from './protocol'
 import { canTag, tagged } from './rounds'
+import { maybeBump } from './bump'
 import { buildNameTag, disposeNameTag, TAG_WORLD_HEIGHT, TAG_WORLD_WIDTH } from './nameTag'
 
 /** Where a hidden car's body waits: far below the world and its catch floor. */
 const PARK = { x: 0, y: -5000, z: 0 }
 /** Seconds to fade a car in or out. */
 const FADE_S = 0.35
-/** A jump bigger than this between physics steps is a reset (R): teleport, don't sweep. */
-const TELEPORT_JUMP_M = 12
+/**
+ * A jump bigger than this between two physics steps is a reset (R, a race
+ * grid): teleport the body, never sweep it, or it would smash through every
+ * car in between at hundreds of m/s. Matches the pose buffer's JUMP_M.
+ */
+const TELEPORT_JUMP_M = JUMP_M
 
 /** Used until the car model is built: roughly a sports car. */
 const DEFAULT_HALF = new THREE.Vector3(0.95, 0.5, 2.1)
@@ -323,28 +328,39 @@ function RemoteCar({ peer }: { peer: PeerInfo }) {
     bodyLive.current = true
   })
 
-  // ---- tag: did OUR car touch this one while we're "it"? ----
-  // Only the "it" player's computer decides a tag, from its own physics:
-  // a real contact between our chassis and this car's body. (With ramming
-  // off there are no contacts; rounds.ts falls back to distance.)
+  // ---- contact: is OUR car touching this one right now? ----
+  // Checked from our own physics every step (a real contact between our
+  // chassis and this car's body). It feeds two things:
+  //   - a ram: we send them their share of the hit (net/bump.ts), because
+  //     nothing else would ever push their car on their screen
+  //   - tag: if we're "it", they are now (only the "it" player decides)
+  // With ramming off there are no contacts; rounds.ts tags by distance.
   const touch = useMemo(() => {
-    const state = { hit: false, collider: null as RapierCollider | null }
+    const state = { hit: false, collider: null as RapierCollider | null, mine: null as RapierCollider | null }
     const onManifold = (manifold: { numContacts: () => number }) => {
       if (manifold.numContacts() > 0) state.hit = true
     }
     const onPair = (other: RapierCollider) => {
       if (state.hit || !state.collider) return
-      if (ownerOf(other.handle)?.id === 'player') world.contactPair(state.collider, other, onManifold)
+      if (ownerOf(other.handle)?.id !== 'player') return
+      world.contactPair(state.collider, other, onManifold)
+      if (state.hit) state.mine = other
     }
     return { state, onPair }
   }, [world])
   useAfterPhysicsStep(() => {
     const collider = colliderRef.current
-    if (!collider || !bodyLive.current || !canTag()) return
+    if (!collider || !bodyLive.current) return
     touch.state.hit = false
+    touch.state.mine = null
     touch.state.collider = collider
     world.contactPairsWith(collider, touch.onPair)
-    if (touch.state.hit) tagged(peer.id)
+    // (Read through a typed local: the callback above sets these, which TypeScript can't see.)
+    const mineCollider = touch.state.mine as RapierCollider | null
+    if (!touch.state.hit || !mineCollider) return
+    const mine = mineCollider.parent() as RapierRigidBody | null
+    if (mine) maybeBump(peer.id, mine, car)
+    if (canTag()) tagged(peer.id)
   })
 
   // ---- render frame: pose the visual, fade, keep `cars` up to date ----

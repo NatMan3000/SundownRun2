@@ -109,13 +109,34 @@ async function until<T>(page: Page, expr: string, ms = 8000): Promise<T | null> 
   return null
 }
 
-async function openPage(browser: Browser, url: string, label: string): Promise<Page> {
-  const page = await browser.newPage()
+/**
+ * Each player gets their OWN headless Chrome. Two tabs in one browser would
+ * leave one tab in the background, where Chrome stops drawing frames - that
+ * tab would stop sending its pose, which never happens on two real computers.
+ */
+const browsers: Browser[] = []
+async function openPage(url: string, label: string): Promise<Page> {
+  const browser = await puppeteer.launch({
+    executablePath: findChrome(),
+    headless: !flag('headed'),
+    defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+    args: [
+      '--use-angle=metal',
+      '--enable-gpu',
+      '--ignore-gpu-blocklist',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+      '--no-first-run',
+    ],
+  })
+  browsers.push(browser)
+  const page = (await browser.pages())[0] ?? (await browser.newPage())
   page.on('console', (m) => {
     const t = m.type()
     if (t === 'error' || t === 'warn') console.log(`  [${label} ${t}] ${m.text()}`)
   })
-  page.on('pageerror', (e) => console.log(`  [${label} threw] ${(e as Error).message}`))
+  page.on('pageerror', (e) => console.log(`  [${label} threw] ${(e as Error).stack ?? (e as Error).message}`))
   await page.goto(url, { waitUntil: 'load', timeout: 60000 })
   return page
 }
@@ -156,29 +177,14 @@ if (!lan) throw new Error('No LAN address: the joiner needs one to look like a s
 const hostBase = `http://localhost:${GAME_PORT}`
 const joinBase = `http://${lan}:${GAME_PORT}`
 
-const browser = await puppeteer.launch({
-  executablePath: findChrome(),
-  headless: !flag('headed'),
-  defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
-  args: [
-    '--use-angle=metal',
-    '--enable-gpu',
-    '--ignore-gpu-blocklist',
-    '--disable-background-timer-throttling',
-    '--disable-renderer-backgrounding',
-    '--disable-backgrounding-occluded-windows',
-    '--no-first-run',
-  ],
-})
-
 try {
   // ============================================================ client
   if (ONLY.includes('client')) {
     console.log('\n== client: the bare net client (no game scene needed)')
     // Load the page (any URL without ?track) and drive client.ts directly.
     const q = `?mp=1&relay=${RELAY}`
-    const host = await openPage(browser, `${hostBase}/${q}&name=HOSTY`, 'host')
-    const join = await openPage(browser, `${joinBase}/${q}&name=JOINY&color=orange`, 'join')
+    const host = await openPage(`${hostBase}/${q}&name=HOSTY`, 'host')
+    const join = await openPage(`${joinBase}/${q}&name=JOINY&color=orange`, 'join')
     const start = `(async () => { const c = await import('/src/net/client.ts'); window.__netc = c; window.__nets = await import('/src/net/netStore.ts'); window.__netp = await import('/src/net/poses.ts'); c.startNet(); return true })()`
     await host.evaluate(start)
     await sleep(300)
@@ -224,13 +230,13 @@ try {
   const gameSections = ['game', 'drawn', 'race', 'tag'].filter((s) => ONLY.includes(s))
   if (gameSections.length) {
     const { runGameChecks } = await import('./mp-check-game')
-    await runGameChecks({ browser, hostBase, joinBase, relayPort: RELAY, track: TRACK, joinTrack: JOIN_TRACK, shots: SHOTS, sections: gameSections, check, until, openPage, sleep })
+    await runGameChecks({ hostBase, joinBase, relayPort: RELAY, track: TRACK, joinTrack: JOIN_TRACK, shots: SHOTS, sections: gameSections, check, until, openPage, sleep })
   }
 } catch (err) {
   failures++
   console.log(`FAIL  crashed: ${(err as Error).stack ?? err}`)
 } finally {
-  await browser.close()
+  for (const b of browsers) await b.close().catch(() => undefined)
   relay.stop(true)
   vite?.kill()
 }
