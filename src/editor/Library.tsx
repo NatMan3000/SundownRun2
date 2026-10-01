@@ -107,7 +107,11 @@ export function Library(props: { onClose: () => void }) {
                         if (!window.confirm(`Delete "${t.name}" from this browser? Export it first if you want to keep a copy.`)) return
                         deleteDrawnTrack(t.id)
                         const s = useEditor.getState()
-                        if (s.savedId === t.id) useEditor.setState({ savedId: null, dirty: true, draft: { ...s.draft, id: '' } })
+                        if (s.savedId === t.id) {
+                          // Same road, just no longer saved: the checks already run on it still count.
+                          const draft = { ...s.draft, id: '' }
+                          useEditor.setState({ savedId: null, dirty: true, draft, checkedDraft: s.checkedDraft === s.draft ? draft : s.checkedDraft })
+                        }
                         setVersion((v) => v + 1)
                         say(`Deleted "${t.name}".`, 'info')
                       }}

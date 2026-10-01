@@ -8,7 +8,9 @@
 //    2. saves a working copy in this browser (so a reload, or a test
 //       drive and back, never loses work),
 //    3. after a short pause, rebuilds the 3D world from the draft so
-//       he sees the real road, terrain and banking as he edits.
+//       he sees the real road, terrain and banking as he edits, and
+//       runs the game's own track checks on it (checks.ts), so the
+//       Checks panel agrees with `bun run tracks:check`.
 //
 //  The draft becomes a real track file with draftFile() and is saved
 //  with the track registry (src/track/registry.ts), exactly like a
@@ -18,12 +20,14 @@
 import { create } from 'zustand'
 import type { CoreSpot, EnvironmentSpec, Piece, PropSpot, RoadPoint, TrackFile, TrackIssue } from '../track/schema'
 import { getCurrentTrackFile, getTrack, setTrackFromFile } from '../track/current'
+import type { TrackGate } from '../track/gates'
 import { freeTrackId, getTrackSource, listDrawnTracks, saveDrawnTrack } from '../track/registry'
 import { validateTrack } from '../track/validate'
 import { startSession } from '../core/session'
 import { audio } from '../core/api'
 import { BASE_WORLDS, DEFAULT_BASE_WORLD, cloneJson, draftFile, roadBound } from './draftFile'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
+import { checkBuiltTrack } from './checks'
 import type { P } from './geom'
 import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
 import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, reanchor, roadCurve, sectionRedraw, wrapAt, LOOP_RUN_IN } from './road'
@@ -64,6 +68,15 @@ export interface EditorState {
   /** What the track validator says about the draft right now. */
   errors: TrackIssue[]
   warnings: TrackIssue[]
+  /**
+   * The game's own track checks (src/track/gates.ts, the same rows `bun run
+   * tracks:check` prints) on the last built preview. null until the first build.
+   */
+  gates: TrackGate[] | null
+  /** The draft the gates (and errors/warnings) were worked out for; the verdict only counts while it is still the draft. */
+  checkedDraft: Draft | null
+  /** How long the last gate run took, ms. */
+  gatesMs: number
   /** 'pending' while the live preview waits to rebuild. */
   preview: 'pending' | 'built' | 'failed'
   /** A short message for the status line (plain words). */
@@ -195,6 +208,9 @@ export const useEditor = create<EditorState>(() => ({
   notes: null,
   errors: [],
   warnings: [],
+  gates: null,
+  checkedDraft: null,
+  gatesMs: 0,
   preview: 'pending',
   message: null,
   tool: 'pencil',
@@ -262,7 +278,10 @@ export function schedulePreview(delayMs = 350): void {
   previewTimer = setTimeout(previewNow, delayMs)
 }
 
-/** Rebuild the 3D world from the draft right now. Returns the validation result. */
+/**
+ * Rebuild the 3D world from the draft right now, then run the game's track
+ * checks on what was built (checks.ts). Returns the validation result.
+ */
 export function previewNow() {
   if (previewTimer) clearTimeout(previewTimer)
   previewTimer = null
@@ -273,10 +292,17 @@ export function previewNow() {
     result = setTrackFromFile(file)
   } catch (err) {
     console.error('[editor] the track builder threw on the draft', err)
-    useEditor.setState({ preview: 'failed', errors: [{ path: '', message: 'The game could not build this track. Try Undo.' }], warnings: [] })
+    useEditor.setState({ preview: 'failed', errors: [{ path: '', message: 'The game could not build this track. Try Undo.' }], warnings: [], gates: [], checkedDraft: s.draft })
     return null
   }
-  useEditor.setState({ preview: result.ok ? 'built' : 'failed', errors: result.errors, warnings: result.warnings })
+  if (!result.ok) {
+    // Nothing was built (the current track is still the old one), so there is nothing to gate.
+    useEditor.setState({ preview: 'failed', errors: result.errors, warnings: result.warnings, gates: [], checkedDraft: s.draft })
+    return result
+  }
+  // Same rows as `bun run tracks:check` (10-100 ms; this already runs debounced after edits).
+  const run = checkBuiltTrack(getTrack())
+  useEditor.setState({ preview: 'built', errors: result.errors, warnings: result.warnings, gates: run.gates, gatesMs: run.ms, checkedDraft: s.draft })
   return result
 }
 
@@ -395,7 +421,8 @@ export function saveDraft(): string | null {
     return null
   }
   const draft = { ...s.draft, id }
-  useEditor.setState({ draft, savedId: id, dirty: false })
+  // Same road, new id: the checks already run on it still count.
+  useEditor.setState({ draft, savedId: id, dirty: false, checkedDraft: s.checkedDraft === s.draft ? draft : s.checkedDraft })
   writeWorking({ draft, savedId: id, dirty: false })
   say(`Saved "${file.name}".`, 'good')
   return id

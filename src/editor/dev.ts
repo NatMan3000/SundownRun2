@@ -18,6 +18,9 @@
 //    __dev.editor('fit')                   frame the track
 //    __dev.editor('view', [cx, cz, mpp])   look somewhere (or pass a road point index)
 //    __dev.editor('selftest')              run the clean-up self-test
+//    __dev.editor('checks')                the Checks panel's verdict and the game's
+//                                          track gates on the built draft (the same
+//                                          rows `bun run tracks:check` prints)
 //
 //  Inspector: __game.get('editor') - a summary of the draft.
 //  URL switch: ?editor=1 opens the editor straight away.
@@ -27,6 +30,7 @@ import { registerDev, registerInspector, urlParam } from '../core/devHandles'
 import { openEditor } from '../core/session'
 import { useGame } from '../core/store'
 import { getTrackFile } from '../track/registry'
+import { getTrack } from '../track/current'
 import type { P } from './geom'
 import {
   applyStroke,
@@ -44,6 +48,7 @@ import {
 } from './draft'
 import { fitToDraft } from './Overlay'
 import { runEditorSelfTest } from './selfTest'
+import { checkVerdict } from './checks'
 import { cancelDriveToDraw, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
 import { closeWorldMap, isMapOpen, openWorldMap } from './worldMap'
 import { setView, view } from './view'
@@ -125,7 +130,7 @@ function strokeResult(raw: P[]) {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | map | mapClose | selftest | state'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | map | mapClose | selftest | checks | state'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -160,7 +165,8 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
         const p = useEditor.getState().draft.points[arg]
         if (p) setView(p.x, p.z, 0.25)
       }
-      return { cx: view.cx, cz: view.cz, mpp: view.mpp }
+      // width/height: the map's size in CSS pixels, so a checker can turn world points into clicks.
+      return { cx: view.cx, cz: view.cz, mpp: view.mpp, width: view.width, height: view.height }
     }
     case 'fit':
       fitToDraft()
@@ -186,10 +192,29 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       return isMapOpen()
     case 'selftest':
       return runEditorSelfTest()
+    case 'checks':
+      return checksSummary()
     case 'state':
       return summary()
     default:
       return `unknown editor command "${cmd}" - try __dev.editor('help')`
+  }
+}
+
+/** What the Checks panel is showing, and the raw gate rows behind it. */
+function checksSummary() {
+  const s = useEditor.getState()
+  const fresh = s.checkedDraft === s.draft && s.preview !== 'pending'
+  const cleanupErrors = (s.notes?.issues ?? []).filter((i) => i.level === 'error').length
+  const t = getTrack()
+  return {
+    verdict: checkVerdict({ fresh, errors: s.errors, gates: s.gates, cleanupErrors }),
+    panel: document.querySelector('.sre-verdict')?.textContent ?? null,
+    trackKey: t?.key ?? null,
+    gatesMs: Math.round(s.gatesMs),
+    gates: (s.gates ?? []).map((g) => ({ name: g.name, level: g.level, message: g.message, fix: g.fix })),
+    validatorErrors: s.errors.map((e) => `${e.path}: ${e.message}`),
+    validatorWarnings: s.warnings.map((w) => `${w.path}: ${w.message}`),
   }
 }
 
@@ -211,6 +236,9 @@ function summary() {
     preview: s.preview,
     errors: s.errors.length,
     warnings: s.warnings.map((w) => w.message),
+    verdict: checkVerdict({ fresh: s.checkedDraft === s.draft && s.preview !== 'pending', errors: s.errors, gates: s.gates, cleanupErrors: (s.notes?.issues ?? []).filter((i) => i.level === 'error').length }),
+    gatesFailing: (s.gates ?? []).filter((g) => g.level === 'fail').map((g) => g.name),
+    gatesWarning: (s.gates ?? []).filter((g) => g.level === 'warn').map((g) => g.name),
     view: { cx: Math.round(view.cx), cz: Math.round(view.cz), mpp: Math.round(view.mpp * 100) / 100 },
   }
 }

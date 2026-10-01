@@ -45,6 +45,7 @@ import {
 } from './draft'
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
 import { issueLocation, roadGeometry } from './mapDraw'
+import { type CheckItem, checkVerdict, gateItems, plainWords } from './checks'
 import { pieceLabel } from './pieces'
 import { startDriveToDraw } from './driveToDraw'
 import { metresBetween, roadLength } from './road'
@@ -59,6 +60,7 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
   const dirty = useEditor((s) => s.dirty)
   const savedId = useEditor((s) => s.savedId)
   const preview = useEditor((s) => s.preview)
+  const gateFails = useEditor((s) => s.checkedDraft === s.draft && !!s.gates?.some((g) => g.level === 'fail'))
   const selection = useEditor((s) => s.selection)
   const length = useMemo(() => roadLength(roadGeometry(draft.points, draft.width).rc), [draft.points, draft.width])
 
@@ -91,7 +93,7 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
       <header className="sre-head">
         <div className="sre-kicker">
           Road editor
-          <span className={`sre-state is-${preview}`}>{preview === 'pending' ? 'building...' : preview === 'failed' ? 'needs fixing' : dirty ? 'not saved' : savedId ? 'saved' : 'new'}</span>
+          <span className={`sre-state is-${gateFails && preview === 'built' ? 'failed' : preview}`}>{preview === 'pending' ? 'building...' : preview === 'failed' || gateFails ? 'needs fixing' : dirty ? 'not saved' : savedId ? 'saved' : 'new'}</span>
         </div>
         <TextField label="Track name" value={draft.name} onCommit={setName} big />
         <div className="sre-stats">
@@ -429,46 +431,84 @@ function PieceFields(p: { piece: Piece; index: number; roadWidth: number }) {
 
 // ---------------------------------------------------------------- checks
 
-/** Everything the game wants to tell you, in plain words; click one to see where it is. */
+/** How many rows the Checks list shows before "and N more". */
+const CHECKS_SHOWN = 10
+
+/**
+ * Everything the game wants to tell you, in plain words, worst first; click one to see
+ * where it is. The verdict at the top comes from the game's own track gates (checks.ts),
+ * the same ones `bun run tracks:check` runs, so "All good" here means OK there.
+ */
 function Problems() {
   const errors = useEditor((s) => s.errors)
   const warnings = useEditor((s) => s.warnings)
+  const gates = useEditor((s) => s.gates)
+  const checkedDraft = useEditor((s) => s.checkedDraft)
+  const preview = useEditor((s) => s.preview)
   const notes = useEditor((s) => s.notes)
   const draft = useEditor((s) => s.draft)
-  const items = [
-    ...errors.map((e) => ({ tone: 'bad' as const, text: plainIssue(e.path, e.message), at: issueLocation(e.path, draft) })),
-    ...warnings.map((w) => ({ tone: 'warn' as const, text: plainIssue(w.path, w.message), at: issueLocation(w.path, draft) })),
-    ...(notes?.issues ?? []).map((i) => ({ tone: i.level === 'error' ? ('bad' as const) : i.level === 'warning' ? ('warn' as const) : ('note' as const), text: i.message, at: i.at ?? null })),
+  const rc = useMemo(() => roadGeometry(draft.points, draft.width).rc, [draft.points, draft.width])
+  const fresh = checkedDraft === draft && preview !== 'pending'
+  const cleanup = notes?.issues ?? []
+  const verdict = checkVerdict({ fresh, errors, gates, cleanupErrors: cleanup.filter((i) => i.level === 'error').length })
+  const fromGates = fresh && gates ? gateItems(gates, draft, rc) : []
+  const fromValidator = (list: typeof errors, tone: 'bad' | 'warn'): CheckItem[] => list.map((e) => ({ tone, ...plainIssue(e.path, e.message), at: issueLocation(e.path, draft, rc) }))
+  const fromCleanup = (level: 'error' | 'warning' | 'info', tone: CheckItem['tone']): CheckItem[] => cleanup.filter((i) => i.level === level).map((i) => ({ tone, title: i.message, at: i.at ?? null }))
+  // Worst first: things that stop the track working, then things worth a look, then notes.
+  const items: CheckItem[] = [
+    ...fromValidator(errors, 'bad'),
+    ...fromGates.filter((it) => it.tone === 'bad'),
+    ...fromCleanup('error', 'bad'),
+    ...fromGates.filter((it) => it.tone === 'warn'),
+    ...fromValidator(warnings, 'warn'),
+    ...fromCleanup('warning', 'warn'),
+    ...fromCleanup('info', 'note'),
   ]
-  if (!items.length) {
-    return (
-      <section className="sre-section sre-problems is-clear">
-        <span className="sre-section-title">Checks</span>
-        <p className="sre-ok">All good: this track builds and drives.</p>
-      </section>
-    )
-  }
+  const bad = items.filter((it) => it.tone === 'bad').length
+  const headline =
+    verdict === 'pass'
+      ? 'All good: this track builds and drives.'
+      : verdict === 'fail'
+        ? `Not ready yet: ${bad === 1 ? 'one problem stops' : `${bad} problems stop`} this track working. Fix the red ${bad === 1 ? 'one' : 'ones'} first.`
+        : 'Checking the road...'
   return (
-    <section className="sre-section sre-problems">
+    <section className="sre-section sre-problems" aria-label="Checks" data-verdict={verdict}>
       <span className="sre-section-title">Checks</span>
-      <ul>
-        {items.slice(0, 10).map((it, i) => (
-          <li key={i}>
-            <button type="button" className={`sre-issue is-${it.tone}`} disabled={!it.at} onClick={() => it.at && setView(it.at.x, it.at.z, Math.min(view.mpp, 0.6))}>
-              {it.text}
-            </button>
-          </li>
-        ))}
-      </ul>
+      <p className={`sre-verdict is-${verdict}`} role="status">
+        {headline}
+        {verdict === 'pass' && items.some((it) => it.tone === 'warn') ? ' A few things are worth a look:' : ''}
+      </p>
+      {items.length > 0 && (
+        <ul>
+          {items.slice(0, CHECKS_SHOWN).map((it, i) => (
+            <li key={i}>
+              <button type="button" className={`sre-issue is-${it.tone}`} disabled={!it.at} onClick={() => it.at && setView(it.at.x, it.at.z, Math.min(view.mpp, 0.6))} title={it.at ? 'Show it on the map' : undefined}>
+                <span className="sre-issue-text">
+                  <span className="sre-issue-title">{it.title}</span>
+                  {it.detail && <span className="sre-issue-detail">{it.detail}</span>}
+                  {it.fix && <span className="sre-issue-fix">Fix: {it.fix}</span>}
+                </span>
+              </button>
+            </li>
+          ))}
+          {items.length > CHECKS_SHOWN && <li className="sre-help">and {items.length - CHECKS_SHOWN} more: fix the ones above and they will show here.</li>}
+        </ul>
+      )}
     </section>
   )
 }
 
-/** The validator talks about "road.points[3]" or "pieces[2]"; Josh doesn't need the path. */
-function plainIssue(path: string, message: string): string {
-  const text = message.charAt(0).toUpperCase() + message.slice(1)
-  if (/^(road\.points|pieces|props|cores)/.test(path) || !path) return text
-  return `${path}: ${text}`
+/**
+ * The validator talks about "road.points[3]" or "pieces[2]"; Josh doesn't need the path.
+ * Its messages are "what; what to do", so the first part is the title and the rest the
+ * detail (the same shape as the gate rows), in the same plain words.
+ */
+function plainIssue(path: string, message: string): { title: string; detail?: string } {
+  const cut = message.indexOf('; ')
+  const title = plainWords(cut > 0 ? message.slice(0, cut) : message)
+  const detail = cut > 0 ? plainWords(message.slice(cut + 2)) : undefined
+  if (/^(road\.points|pieces|props|cores)/.test(path) || !path) return { title, detail }
+  return { title: `${path}: ${title}`, detail }
 }
 
 function Legend() {

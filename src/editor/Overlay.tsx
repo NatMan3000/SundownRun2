@@ -327,9 +327,12 @@ export function Overlay() {
         const was = dragging
         dragging = null
         // A dragged loop settles on the nearest straight, level stretch (or goes back if there is none).
+        // A click that only selected it (no move) leaves it exactly where it is.
         if (was.kind === 'piece') {
           const piece = useEditor.getState().draft.pieces[was.index]
-          if (piece?.type === 'loop') {
+          const startAt = gestureStartAt(was.index)
+          const moved = !!piece && startAt !== null && Math.abs(piece.at - startAt) > 1e-6
+          if (piece?.type === 'loop' && moved) {
             const spot = loopSpot(piece.at)
             if (spot === null) {
               say('A loop needs a straight, flat stretch about 140 m long. It went back where it was.', 'warn')

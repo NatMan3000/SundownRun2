@@ -304,9 +304,33 @@
 .sre-issue.is-note {
   color: var(--dim);
 }
-.sre-ok {
+/* Title, then the game's own words (dimmer), then what to do. */
+.sre-issue-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.sre-issue-detail {
+  font-size: 0.86em;
+  color: var(--dim);
+}
+.sre-issue-fix {
+  font-size: 0.86em;
+}
+/* The verdict line: green only when every one of the game's checks passed. */
+.sre-verdict {
   margin: 0;
+  line-height: 1.35;
+}
+.sre-verdict.is-pass {
   color: var(--good);
+}
+.sre-verdict.is-fail {
+  color: var(--bad);
+}
+.sre-verdict.is-checking {
+  color: var(--dim);
 }
 
 /* legend */

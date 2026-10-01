@@ -5,7 +5,9 @@
 //  drawings - a shaky circle, a hairpin too narrow for a car, a
 //  figure-eight, a square with sharp corners, a road off the edge
 //  of the world, a line that never comes back - and checks that
-//  every result is a road a car can drive.
+//  every result is a road a car can drive. It also checks the
+//  editing maths, and that the Checks panel's verdict (checks.ts)
+//  agrees with the game's own track gates.
 //
 //  Run it two ways:
 //    bun src/editor/selfTest.ts          (prints a pass/fail table)
@@ -18,7 +20,9 @@ import { validateTrack } from '../track/validate'
 import { buildTrack } from '../track/build'
 import { DEFAULT_BASE_WORLD, draftFile, roadBound } from './draftFile'
 import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, roadCurve, sectionRedraw } from './road'
-import type { RoadPoint } from '../track/schema'
+import type { Piece, RoadPoint } from '../track/schema'
+import { checkBuiltTrack, checkVerdict, gateItems } from './checks'
+import type { Draft } from './draft'
 
 export interface CheckResult {
   name: string
@@ -254,6 +258,71 @@ export function runEditorSelfTest(): CheckResult[] {
     const v = validateTrack(draftFile({ id: 'selftest-eight', name: 'Self-test eight', points: res.points }))
     if (v.errors.some((e) => /not built yet/.test(e.message))) return 'skipped: the track validator is not built yet'
     return v.ok ? [] : v.errors.map((e) => `${e.path}: ${e.message}`)
+  })
+
+  // ---------------------------------------------------------------- the Checks verdict
+
+  check("the Checks verdict agrees with the game's gates (a loop under a bridge fails)", () => {
+    // The same figure-eight: its crossing becomes a bridge. A loop that starts just
+    // before the bridge rises through the deck, so the game's loops gate fails it and
+    // the editor must not say "All good". Try the loop at several spots around the
+    // bridge: at every one, the verdict must be exactly what the gates say.
+    const stroke = shaky((t) => ({ x: 260 * Math.sin(t * TAU), z: 130 * Math.sin(2 * t * TAU) }), 600, 3, 2, 0.1, 1.1)
+    const res = cleanStroke(stroke, opts)
+    if (!res.ok) return ['clean-up failed']
+    const bridge = res.crossings.find((c) => c.over !== null)
+    if (!bridge) return ['the eight has no bridged crossing to test with']
+    // The road point nearest the crossing on the lower (unlifted) branch.
+    let under = -1
+    let best = Infinity
+    res.points.forEach((p, i) => {
+      const d = dist(p, bridge.at)
+      if (!p.lift && d < best) {
+        best = d
+        under = i
+      }
+    })
+    if (under < 0 || best > 30) return ['no road point under the bridge']
+    const run = (pieces: Piece[]) => {
+      const v = validateTrack(draftFile({ id: 'selftest-checks', name: 'Self-test checks', points: res.points, pieces }))
+      if (!v.ok || !v.track) return null
+      const r = checkBuiltTrack(buildTrack(v.track, {}))
+      return { verdict: checkVerdict({ fresh: true, errors: v.errors, gates: r.gates, cleanupErrors: 0 }), gates: r.gates, ms: r.ms }
+    }
+    const bad: string[] = []
+    const plain = run([])
+    if (!plain) return ['the eight without a loop did not validate']
+    if (plain.verdict !== 'pass') bad.push(`no loop: verdict ${plain.verdict} (${plain.gates.filter((g) => g.level === 'fail').map((g) => `${g.name}: ${g.message}`).join(' / ')})`)
+    const rc = roadCurve(res.points)
+    const draftLike = { points: res.points, startAt: 0 } as unknown as Draft
+    const seen: string[] = []
+    let blocked = 0
+    for (const off of [-2, -1, 0, 1]) {
+      const at = (under + off + res.points.length) % res.points.length
+      const r = run([{ type: 'loop', at }])
+      if (!r) {
+        bad.push(`loop at point ${at}: did not validate`)
+        continue
+      }
+      const gatesFail = r.gates.some((g) => g.level === 'fail')
+      if (r.verdict !== (gatesFail ? 'fail' : 'pass')) bad.push(`loop at point ${at}: verdict ${r.verdict} but the gates ${gatesFail ? 'fail' : 'pass'}`)
+      const loopRow = r.gates.find((g) => g.name === 'loops')
+      seen.push(`${at}: ${loopRow?.level ?? 'no row'}`)
+      if (loopRow?.level !== 'fail') continue
+      blocked++
+      // The panel row: plain words, a fix, and a pin on the loop.
+      const item = gateItems(r.gates, draftLike, rc).find((it) => it.label === 'LOOP BLOCKED')
+      if (!item) bad.push(`loop at point ${at}: no LOOP BLOCKED row`)
+      else {
+        if (!item.fix) bad.push(`loop at point ${at}: the row has no fix line`)
+        if (/s=\d/.test(`${item.detail} ${item.fix}`)) bad.push(`loop at point ${at}: the row still says s=: ${item.detail}`)
+        const pin = item.at ? dist(item.at, frameAt(rc, at).p) : Infinity
+        if (pin > 25) bad.push(`loop at point ${at}: the pin is ${pin.toFixed(0)} m from the loop`)
+      }
+    }
+    if (!blocked) bad.push('no loop near the bridge failed the loops gate, so this test proves nothing: move the candidates')
+    info = `no loop: ${plain.verdict} (gates ${plain.ms.toFixed(0)} ms); loops gate by start point near the bridge: ${seen.join(', ')}`
+    return bad
   })
 
   // ---------------------------------------------------------------- editing maths (stage B)

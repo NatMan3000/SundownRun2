@@ -5,7 +5,8 @@
 //  draws, in crisp screen pixels, what a map needs: the road outline
 //  when zoomed out, which way you drive, the start line, bridges,
 //  every piece as an icon, props and cores, what is selected, and
-//  pins on anything the game wants you to check.
+//  pins on anything the game wants you to check (its track checks
+//  come from checks.ts; a failing one gets a red tag by its pin).
 //
 //  Overlay.tsx calls drawMap() whenever something changed. Nothing
 //  here changes any state.
@@ -15,6 +16,7 @@ import { FONTS, PALETTE } from '../core/palette'
 import { cars, telemetry } from '../core/telemetry'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
 import type { EditorState } from './draft'
+import { gateItems } from './checks'
 import { type P } from './geom'
 import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type PlaceKind } from './pieces'
 import { type RoadCurve, PER, advanceAt, frameAt, roadCurve, wrapAt } from './road'
@@ -597,9 +599,18 @@ function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['
 
 // ---------------------------------------------------------------- pins, scale, compass
 
-/** Pins for clean-up notes and validator warnings that point at a place. */
+/**
+ * Pins for clean-up notes, validator warnings and the game's track checks (checks.ts)
+ * that point at a place. A failing check also gets a short red tag beside its pin.
+ */
 function drawPins(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve): void {
-  const pins: { at: P; tone: 'warn' | 'bad' | 'note' }[] = []
+  const pins: { at: P; tone: 'warn' | 'bad' | 'note'; label?: string }[] = []
+  // Only while the checks are about the road on screen (not mid-drag, not the world map).
+  if (s.gates && s.checkedDraft === s.draft && s.preview !== 'pending') {
+    for (const it of gateItems(s.gates, s.draft, rc)) {
+      if (it.at && it.tone !== 'note') pins.push({ at: it.at, tone: it.tone, label: it.label })
+    }
+  }
   for (const issue of s.notes?.issues ?? []) {
     if (issue.at && issue.code !== 'bridged') pins.push({ at: issue.at, tone: issue.level === 'warning' ? 'warn' : issue.level === 'error' ? 'bad' : 'note' })
   }
@@ -611,6 +622,9 @@ function drawPins(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve):
     const at = issueLocation(e.path, s.draft, rc)
     if (at) pins.push({ at, tone: 'bad' })
   }
+  // The most serious on top: a red pin must never hide under an amber one at the same spot.
+  const rank = { note: 0, warn: 1, bad: 2 }
+  pins.sort((a, b) => rank[a.tone] - rank[b.tone])
   ctx.save()
   for (const pin of pins) {
     const { sx, sy } = worldToScreen(pin.at.x, pin.at.z)
@@ -634,6 +648,12 @@ function drawPins(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve):
     }
   }
   ctx.restore()
+  // Tags after every pin, so each one can step around the others.
+  for (const pin of pins) {
+    if (!pin.label) continue
+    const { sx, sy } = worldToScreen(pin.at.x, pin.at.z)
+    placePill(ctx, pin.label, sx + 16, sy - 16, [-24, 24, -48, 48], PALETTE.uiBad)
+  }
 }
 
 /** Where on the map a validator message is about ("road.points[3]", "pieces[2]", "props[0]"...). */
