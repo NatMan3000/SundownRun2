@@ -4,7 +4,8 @@
 //  Each speed trap gets a floating holographic readout off the
 //  right-hand edge (never over the road: no gantries), angled to
 //  face the cars coming at it. It shows the last speed through the
-//  trap and the best, from store.trapLastKmh / trapBestKmh.
+//  trap and the best, from store.trapLastKmh / trapBestKmh (with the
+//  bank angle on the Hyperdrome, where each angle has its own best).
 //
 //  The text is drawn into a small canvas texture only when those
 //  numbers change; the shader adds the hologram feel (scan lines,
@@ -48,7 +49,11 @@ void main() {
 }
 `
 
-function drawSign(ctx: CanvasRenderingContext2D, last: number | null, best: number | null): void {
+/**
+ * angle: on a track with a bank slider (the Hyperdrome) each bank angle keeps
+ * its own best, so the best line names the angle it belongs to ("30°").
+ */
+function drawSign(ctx: CanvasRenderingContext2D, last: number | null, best: number | null, angle: string | null): void {
   ctx.clearRect(0, 0, W, H)
   // thin frame
   ctx.strokeStyle = PALETTE.speedTrap
@@ -70,7 +75,8 @@ function drawSign(ctx: CanvasRenderingContext2D, last: number | null, best: numb
   ctx.fillText('km/h', 36 + bigW, 182)
   ctx.fillStyle = PALETTE.speedTrap
   ctx.font = `500 28px ${FONTS.display}`
-  ctx.fillText(best === null ? 'BEST  ---' : `BEST  ${Math.round(best)}`, 26, 228)
+  const bestText = best === null ? 'BEST  ---' : `BEST  ${Math.round(best)}`
+  ctx.fillText(angle ? `${bestText}  AT ${angle}` : bestText, 26, 228)
 }
 
 const _f: TrackFrame = {
@@ -89,6 +95,8 @@ const _f: TrackFrame = {
 export function SpeedTrapSigns({ track, time }: { track: TrackRuntime; time: { value: number } }) {
   const last = useGame((s) => s.trapLastKmh)
   const best = useGame((s) => s.trapBestKmh)
+  const bankDeg = track.params.bankDeg
+  const angle = track.file.road.banking.adjustable && typeof bankDeg === 'number' && Number.isFinite(bankDeg) ? `${Math.round(bankDeg)}°` : null
 
   const sign = useMemo(() => {
     const canvas = document.createElement('canvas')
@@ -112,9 +120,9 @@ export function SpeedTrapSigns({ track, time }: { track: TrackRuntime; time: { v
   }, [time])
 
   useEffect(() => {
-    drawSign(sign.ctx, last, best)
+    drawSign(sign.ctx, last, best, angle)
     sign.texture.needsUpdate = true
-  }, [sign, last, best])
+  }, [sign, last, best, angle])
 
   useEffect(
     () => () => {
