@@ -8,6 +8,8 @@
 //    winding   every triangle faces the right way
 //    smooth    no kinks in the road
 //    banking   leans into corners, rolls gently
+//    crest     where the bank rolls, no lane curves away from a car
+//              faster than gravity holds it on (bankRolls.ts)
 //    bridges   a car fits under every crossing
 //    loops     nothing in a car's way on or around a loop
 //    surface   the road faces the way its frames say, and the physics
@@ -38,6 +40,11 @@ import { colliderDriveSurface } from './colliders'
 import { groundHoleAt } from './terrainTiles'
 import { barrierAxes, type BarrierAxes } from './ribbon'
 import { brakeOnSlope, carFullLockG, LINE_MAX_LAT_G } from './derived'
+import { CREST_CHECK_KMH, CREST_LANE_INSET, CREST_LIMIT, CREST_SPAN, LEAN_AHEAD_DEG, LEAN_SPEED_KMH } from './bankRolls'
+
+const G = 9.81
+/** The banking gate's limit on leaning ahead of the bend: the builder's own rule plus a degree. */
+const LEAN_AHEAD_LIMIT_DEG = LEAN_AHEAD_DEG + 1
 
 /** One gate row. `level` 'warn' never fails a track; 'fail' does (and then ok is false). */
 export interface TrackGate {
@@ -321,8 +328,12 @@ export function windingErrors(t: TrackRuntime): Record<string, { bad: number; to
  * +/-20 m, radius under 600 m).
  * Where a `bank` override in the file makes the road lean out on purpose (off-camber),
  * those metres are counted separately as overrideOut and not treated as a fault.
+ * Also how far the bank leans AHEAD of its bend (leanAhead, degrees): more than the
+ * bend wants at the track's design speed (capped at LEAN_SPEED_KMH), which on a
+ * straight pulls every car down the slope (bankRolls.ts, LEAN_AHEAD_DEG). A bank the
+ * file asks for with an override is the file's choice and not counted.
  */
-export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; wrongSign: number; wrongAt: number; overrideOut: number } {
+export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; wrongSign: number; wrongAt: number; overrideOut: number; leanAhead: number; leanAt: number } {
   const over = trackInternals(t)?.overrideWeight
   let overrideOut = 0
   const S = t.samples
@@ -335,6 +346,9 @@ export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; w
   let rateAt = 0
   let wrongSign = 0
   let wrongAt = -1
+  let leanAhead = -Infinity
+  let leanAt = 0
+  const vLean = Math.min(t.file.road.banking.designSpeedKmh, LEAN_SPEED_KMH) / 3.6
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n
     const rate = (Math.abs(S.bank[j] - S.bank[i]) * 180) / Math.PI / S.ds
@@ -354,9 +368,16 @@ export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; w
         if (wrongAt < 0) wrongAt = i * S.ds
       }
     }
+    if (S.surface[i] === SURFACE_CODE.road && !(over && over[i] > 0.5)) {
+      const wants = (Math.atan((vLean * vLean * Math.max(0, kAvg * Math.sign(bankDeg))) / G) * 180) / Math.PI
+      if (Math.abs(bankDeg) - wants > leanAhead) {
+        leanAhead = Math.abs(bankDeg) - wants
+        leanAt = i * S.ds
+      }
+    }
     sum += S.curvature[(i + W + 1) % n] - S.curvature[(i - W + n) % n]
   }
-  return { maxRate, rateAt, wrongSign: Math.round(wrongSign * S.ds), wrongAt, overrideOut: Math.round(overrideOut * S.ds) }
+  return { maxRate, rateAt, wrongSign: Math.round(wrongSign * S.ds), wrongAt, overrideOut: Math.round(overrideOut * S.ds), leanAhead: Math.max(0, leanAhead), leanAt }
 }
 
 /**
@@ -835,6 +856,120 @@ export function barrierStance(t: TrackRuntime): { face: number; faceAt: number; 
   return { face, faceAt, vAngle, vAt, ditch, ditchAt }
 }
 
+/** A car can be going this much faster than the racing line plans (a later brake, a boost). */
+const CREST_LINE_MARGIN = 1.15
+
+/**
+ * Bank-roll crests (see bankRolls.ts). Along the outermost lanes a car's middle can be
+ * on (CREST_LANE_INSET from each edge), how much of gravity's pull toward the road the
+ * road's curving away asks for, measured on the finished 3D road over CREST_SPAN
+ * metres either side. The lane swinging about the middle as the bank rolls counts, and
+ * so does the middle's bend under the bank: a corner pressing the car into its bank
+ * helps, a wobble the other way under a steep bank lifts it. The middle's own hilltops
+ * (crests that unload the car on purpose) are the track's design and are not judged;
+ * a dip that presses the car on still helps.
+ *
+ * Judged at the speed a car can be doing there: the racing line's plan plus 15%, up to
+ * CREST_CHECK_KMH. `flat` is the worst at CREST_CHECK_KMH everywhere (reported only).
+ * Also returns the roll the worst spot sits in: where it starts and ends and its banks.
+ */
+export function bankCrests(t: TrackRuntime): {
+  worst: number
+  at: number
+  lateral: number
+  kmh: number
+  need: number
+  hold: number
+  flat: number
+  roll: { s0: number; s1: number; bank0: number; bank1: number }
+} {
+  const S = t.samples
+  const n = S.count
+  const h = Math.max(1, Math.round(CREST_SPAN / S.ds))
+  const d = h * S.ds
+  const vTop = CREST_CHECK_KMH / 3.6
+  let worst = -Infinity
+  let wi = 0
+  let lateral = 0
+  let kmh = 0
+  let need = 0
+  let hold = 0
+  let flat = -Infinity
+  for (let i = 0; i < n; i++) {
+    const a = (i - h + n) % n
+    const b = (i + h) % n
+    if (S.surface[a] !== SURFACE_CODE.road || S.surface[i] !== SURFACE_CODE.road || S.surface[b] !== SURFACE_CODE.road) continue
+    const nx = S.ux[i]
+    const ny = S.uy[i]
+    const nz = S.uz[i]
+    // Second differences of the middle (C) and of the right vector (R), along the road's up.
+    const c2x = (S.px[a] + S.px[b] - 2 * S.px[i]) / (d * d)
+    const c2y = (S.py[a] + S.py[b] - 2 * S.py[i]) / (d * d)
+    const c2z = (S.pz[a] + S.pz[b] - 2 * S.pz[i]) / (d * d)
+    // Split the middle's bend into its part in the upright plane along the road (hills,
+    // V) and its sideways part (bends, H = tangent x V), each seen along the road's up.
+    const tx = S.tx[i]
+    const ty = S.ty[i]
+    const tz = S.tz[i]
+    let vx = -tx * ty
+    let vy = 1 - ty * ty
+    let vz = -tz * ty
+    const vl = Math.hypot(vx, vy, vz) || 1
+    vx /= vl
+    vy /= vl
+    vz /= vl
+    const hill = (c2x * vx + c2y * vy + c2z * vz) * (nx * vx + ny * vy + nz * vz)
+    const hx = ty * vz - tz * vy
+    const hy = tz * vx - tx * vz
+    const hz = tx * vy - ty * vx
+    const side = (c2x * hx + c2y * hy + c2z * hz) * (nx * hx + ny * hy + nz * hz)
+    const r2 = ((S.rx[a] + S.rx[b] - 2 * S.rx[i]) * nx + (S.ry[a] + S.ry[b] - 2 * S.ry[i]) * ny + (S.rz[a] + S.rz[b] - 2 * S.rz[i]) * nz) / (d * d)
+    const c1x = (S.px[b] - S.px[a]) / (2 * d)
+    const c1y = (S.py[b] - S.py[a]) / (2 * d)
+    const c1z = (S.pz[b] - S.pz[a]) / (2 * d)
+    const r1x = (S.rx[b] - S.rx[a]) / (2 * d)
+    const r1y = (S.ry[b] - S.ry[a]) / (2 * d)
+    const r1z = (S.rz[b] - S.rz[a]) / (2 * d)
+    const g = G * ny // gravity's pull toward the road
+    if (g <= 0) continue
+    const v = Math.min(vTop, t.racingLine.speed[i] * CREST_LINE_MARGIN)
+    const lane = S.halfWidth[i] - CREST_LANE_INSET
+    for (const l of [-lane, lane]) {
+      // The lane's path is C + l R; at speed v it needs v^2 x (its curvature along up) of pull.
+      const p2 = (c1x + l * r1x) ** 2 + (c1y + l * r1y) ** 2 + (c1z + l * r1z) ** 2
+      // + = curving away from the car (a crest), - = pressing it in.
+      const crest = (-l * r2 - side + Math.min(0, -hill)) / p2
+      const r = (crest * v * v) / g
+      if (r > worst) {
+        worst = r
+        wi = i
+        lateral = l
+        kmh = v * 3.6
+        need = (crest * v * v) / G
+        hold = ny
+      }
+      flat = Math.max(flat, (crest * vTop * vTop) / g)
+    }
+  }
+  // The roll the worst spot sits in: out to where the bank stops changing (under 0.02 deg/m).
+  const still = ((0.02 * Math.PI) / 180) * S.ds
+  let i0 = wi
+  let i1 = wi
+  for (let k = 0; k < n / 2 && Math.abs(S.bank[i0] - S.bank[(i0 - 1 + n) % n]) > still; k++) i0 = (i0 - 1 + n) % n
+  for (let k = 0; k < n / 2 && Math.abs(S.bank[(i1 + 1) % n] - S.bank[i1]) > still; k++) i1 = (i1 + 1) % n
+  const deg = 180 / Math.PI
+  return {
+    worst,
+    at: wi * S.ds,
+    lateral,
+    kmh,
+    need,
+    hold,
+    flat,
+    roll: { s0: i0 * S.ds, s1: i1 * S.ds, bank0: S.bank[i0] * deg, bank1: S.bank[i1] * deg },
+  }
+}
+
 /**
  * Run every non-physics gate on a built track. `t.file` is the resolved track the
  * runtime was built from; tracks with an adjustable bank are rebuilt at the slider's
@@ -901,18 +1036,42 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
   }
   // Banking leans into every corner and rolls gently, including across the start-line seam.
   const adj = file.road.banking.adjustable
-  for (const b of adj ? [adj.max] : [null]) {
+  for (const b of adj ? [...new Set([curBank, adj.min, adj.max])] : [null]) {
     const tb = atBank(b)
     const bc = bankCheck(tb)
     const bad: string[] = []
     if (bc.maxRate > 1.5) bad.push(`roll changes ${bc.maxRate.toFixed(2)} deg/m at ${at(bc.rateAt)} > limit 1.5`)
     // Up to 5 m is allowed: rolling smoothly through an S-bend means the lean trails the curve briefly.
     if (bc.wrongSign > 5) bad.push(`${bc.wrongSign} m leaning OUT of a corner (limit 5 m), first at ${at(bc.wrongAt)}`)
+    if (bc.leanAhead > LEAN_AHEAD_LIMIT_DEG) bad.push(`the bank leans ${bc.leanAhead.toFixed(0)} deg more than the road's bend wants at ${at(bc.leanAt)} (limit ${LEAN_AHEAD_LIMIT_DEG}): on road that hardly turns it pulls every car down the slope`)
     gate(
       'banking',
       bad.length === 0,
-      `${b === null ? '' : `bank ${b} deg: `}${bad.length ? bad.join('; ') : `fastest roll ${bc.maxRate.toFixed(2)} deg/m (limit 1.5), ${bc.wrongSign} m leaning out of a corner (limit 5)`}${bc.overrideOut ? `; ${bc.overrideOut} m off-camber because of your bank overrides (allowed)` : ''}`,
-      'the road there changes direction too abruptly for the auto-bank to follow (often a point squeezed between two bends): move the point a little so the bend flows, or set a `bank` override there.',
+      `${b === null ? '' : `bank ${b} deg: `}${bad.length ? bad.join('; ') : `fastest roll ${bc.maxRate.toFixed(2)} deg/m (limit 1.5), ${bc.wrongSign} m leaning out of a corner (limit 5), leans at most ${bc.leanAhead.toFixed(0)} deg ahead of its bend (limit ${LEAN_AHEAD_LIMIT_DEG})`}${bc.overrideOut ? `; ${bc.overrideOut} m off-camber because of your bank overrides (allowed)` : ''}`,
+      bc.leanAhead > LEAN_AHEAD_LIMIT_DEG && bc.maxRate <= 1.5 && bc.wrongSign <= 5
+        ? 'this is a builder bug, not your file: report it.'
+        : 'the road there changes direction too abruptly for the auto-bank to follow (often a point squeezed between two bends): move the point a little so the bend flows, or set a `bank` override there.',
+    )
+  }
+  // Bank-roll crests: where the road rolls into or out of a bank, no lane curves away
+  // from a car faster than gravity can hold it on (at the track's bank and a slider's ends).
+  for (const b of adj ? [...new Set([curBank, adj.min, adj.max])] : [null]) {
+    const tb = atBank(b)
+    const c = bankCrests(tb)
+    const bank = b === null ? '' : `bank ${b} deg: `
+    const pct = (x: number) => `${Math.max(0, x * 100).toFixed(0)}%`
+    const ok = c.worst <= CREST_LIMIT
+    const rollLen = tb.wrapS(c.roll.s1 - c.roll.s0)
+    const side = c.lateral < 0 ? 'left' : 'right'
+    gate(
+      'crest',
+      ok,
+      ok && c.worst < 0.01
+        ? `${bank}no bank roll lifts a car on any lane (every lane asks under 1% of gravity's pull)`
+        : ok
+        ? `${bank}where the bank rolls, every lane keeps the car on the road: the worst asks ${pct(c.worst)} of gravity's pull (limit ${pct(CREST_LIMIT)}) at ${at(c.at)}, ${Math.abs(c.lateral).toFixed(0)} m ${side} of the middle at ${c.kmh.toFixed(0)} km/h, the fastest a car is likely to be there (a car at ${CREST_CHECK_KMH} km/h everywhere would need ${pct(c.flat)})`
+        : `${bank}the road rolls from ${Math.abs(c.roll.bank0).toFixed(0)} to ${Math.abs(c.roll.bank1).toFixed(0)} deg of bank${c.roll.bank0 * c.roll.bank1 < 0 ? ' leaning the other way' : ''} in only ${rollLen.toFixed(0)} m (${at(c.roll.s0)} to ${at(c.roll.s1)}), so a car at ${c.kmh.toFixed(0)} km/h ${Math.abs(c.lateral).toFixed(0)} m ${side} of the middle goes light over the top of the roll at ${at(c.at)}: the road falls away from it ${c.need.toFixed(1)} g, and gravity only pulls it down ${c.hold.toFixed(2)} g there (${pct(c.worst)} of it; limit ${pct(CREST_LIMIT)})`,
+      'the bank changes too much in too little road. The builder lengthens rolls into the straight beside them by itself, so this one has no room: put more straight road before or after the banked corner (spread its points out), keep the start line and loops further from it, or use less bank there (a smaller `bank` on those points, or a lower banking `maxDeg`).',
     )
   }
   // Bridges: where the road passes over itself, a car must fit underneath.

@@ -11,6 +11,8 @@
 //   4. Corners get banked from their curvature (the faster the design
 //      speed and the tighter the corner, the steeper, up to a cap),
 //      with per-point overrides, smoothed so corners roll in and out.
+//      A roll too quick for a car on the outer lanes at 250 km/h is
+//      made longer (bankRolls.ts).
 //   5. Loops are spliced in: the road runs dead straight into the loop's
 //      mouth, goes up and over a teardrop-shaped loop while drifting
 //      across (a corkscrew, so the way in and the way out run side by
@@ -31,6 +33,7 @@ import { SURFACE_CODE, type TrackSamples } from './types'
 import { averagedHeight, type NaturalTerrain } from './terrain'
 import { arcLengthAtParam, nodeAtLength, sampleClosedSpline } from './spline'
 import { clamp, smoothstep } from './noise'
+import { shapeBankRolls } from './bankRolls'
 
 const G = 9.81
 /** Target spacing of the final samples, metres. */
@@ -58,6 +61,12 @@ const LOOP_BANK_EASE = 40
 export const WALL_RAMP = 15
 /** How far round a wall ride's wall curls at full height (degrees past flat). */
 export const WALL_SWEEP_DEG = 100
+/**
+ * A level start grid stays level: a bank roll never grows into the road from this many
+ * metres behind the start line to this many after it (the grid is 12 slots, ~47 m long).
+ */
+const GRID_KEEP_BEHIND = 55
+const GRID_KEEP_AHEAD = 15
 /** A bend must turn at least this many degrees over 80 m to get any auto-bank, and this many for full bank. */
 const BANK_TURN_MIN = 4
 const BANK_TURN_FULL = 12
@@ -325,6 +334,25 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   circularSmooth(bankTarget, Math.round(20 / dsb), 2)
   const bBank = new Float32Array(nb)
   for (let k = 0; k < nb; k++) bBank[k] = (clamp(bankTarget[k], -85, 85) * Math.PI) / 180
+  // Rolls into and out of a bank: long enough that a car on any lane stays on the road
+  // (bankRolls.ts), grown into the straight beside them. They never grow into the start
+  // grid or a loop's stretch (its run-in, the loop, and the S back after it).
+  {
+    const keepLevel = new Uint8Array(nb)
+    for (const L of loopSpecs) {
+      // From the run-in to the end of the S that brings the road back after the loop.
+      const flat0 = L.sb - LOOP_RUN_IN
+      const flat1 = L.sb + L.shape.advance + LOOP_EXIT_EASE
+      for (let k = 0; k < nb; k++) if (wrapDelta(k * dsb, flat0, Lb) <= 0 && wrapDelta(flat1, k * dsb, Lb) <= 0) keepLevel[k] = 1
+    }
+    // (A grid the file itself puts on a bank, 3 degrees or more, is left to the bank.)
+    let gridLevel = true
+    for (let sv = -GRID_KEEP_BEHIND; sv <= GRID_KEEP_AHEAD; sv++) if (Math.abs(bBank[((Math.round(sv / dsb) % nb) + nb) % nb]) >= (3 * Math.PI) / 180) gridLevel = false
+    if (gridLevel) for (let sv = -GRID_KEEP_BEHIND; sv <= GRID_KEEP_AHEAD; sv++) keepLevel[((Math.round(sv / dsb) % nb) + nb) % nb] = 1
+    const bCurvRaw = new Float32Array(nb)
+    horizontalCurvature(bx, bz, nb, dsb, bCurvRaw)
+    shapeBankRolls(bBank, bHalf, bCurv, bCurvRaw, keepLevel, dsb, road.banking.designSpeedKmh)
+  }
 
   // ---- base tangents (3D) ----
   const btx = new Float64Array(nb)

@@ -56,8 +56,12 @@ import { hashString } from './noise'
  *   6: stadium barriers stand upright on a bank's low edge, with level ground behind them
  *      (no ditch); a bridge's clearance cut no longer digs beside or under the grounded road
  *      where it rises into the bridge, and tapers in over the bridge's first 10 m.
+ *   7: a bank roll that would lift a car off a lane at 250 km/h is made longer, as an
+ *      even S, into the straight as far as the bank there stays near what the bend wants,
+ *      then into the banked corner (bankRolls.ts): the Hyperdrome's rolls go from about
+ *      95 m to 126 m (bank 30), 162 m (45) and 201-211 m (60).
  */
-export const BUILDER_VERSION = 6
+export const BUILDER_VERSION = 7
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
