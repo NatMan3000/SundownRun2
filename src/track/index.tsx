@@ -28,6 +28,9 @@ import { trackInternals } from './build'
 import { createTerrainTiles, removeTerrainTiles, updateTerrainTiles, type TerrainTiles } from './terrainTiles'
 import type { TrackRuntime } from './types'
 
+/** Collider build timings, for trackInfo(). */
+const timing = { worldMs: 0, roadMs: 0, tilesRebuilt: 0 }
+
 export function TrackPhysics() {
   const { world, rapier } = useRapier()
   const track = useTrack()
@@ -38,8 +41,10 @@ export function TrackPhysics() {
   useEffect(() => {
     const t = getTrack()
     if (!t) return
+    const t0 = performance.now()
     const set = createWorldColliders(world, rapier, t)
     tiles.current = { tiles: createTerrainTiles(world, rapier, t), builtFrom: t }
+    timing.worldMs = performance.now() - t0
     return () => {
       removeColliderSet(world, set)
       if (tiles.current) removeTerrainTiles(world, tiles.current.tiles)
@@ -59,7 +64,9 @@ export function TrackPhysics() {
       changedTiles = updateTerrainTiles(world, rapier, tiles.current.tiles, t)
       tiles.current.builtFrom = t
     }
-    if (paramVersion > 0) console.info(`[track] road colliders rebuilt in ${(performance.now() - t0).toFixed(1)} ms (${changedTiles} ground tiles)`)
+    timing.roadMs = performance.now() - t0
+    timing.tilesRebuilt = changedTiles
+    if (paramVersion > 0) console.info(`[track] road colliders rebuilt in ${timing.roadMs.toFixed(1)} ms (${changedTiles} ground tiles)`)
     return () => removeColliderSet(world, set)
   }, [world, rapier, track, paramVersion])
 
@@ -89,6 +96,7 @@ registerDev(
       world: t.world,
       params: t.params,
       buildMs: x ? Math.round(x.buildMs) : null,
+      colliderMs: { groundAndEdge: Math.round(timing.worldMs), road: Math.round(timing.roadMs), tilesRebuilt: timing.tilesRebuilt },
     }
   },
   'summary of the current track build',

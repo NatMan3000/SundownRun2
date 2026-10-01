@@ -70,18 +70,23 @@ export function add(world: World, R: Rapier, set: ColliderSet, desc: ColliderDes
 /** The road set: drivable surfaces, skirt, barriers and ramps. */
 export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): ColliderSet {
   const set: ColliderSet = { body: world.createRigidBody(R.RigidBodyDesc.fixed()), handles: [] }
-  const road = t.meshes.road
-  const kindAttr = road.attributes.aKind.array
-  const idx = road.indices
+  // The drivable top is flat across every sample (a banked plane), so the collider
+  // needs only the two edges per sample: 2 triangles a metre instead of the look
+  // mesh's 24. Same surface, a tenth of the build time on a live rebuild.
+  const S = t.samples
   for (const [kind, code] of [
     ['road', SURFACE_CODE.road],
     ['loop', SURFACE_CODE.loop],
-    ['wall', SURFACE_CODE.wall],
   ] as const) {
-    // A triangle belongs to a surface by its first vertex's kind.
-    const part = splitBy(road, (tri) => kindAttr[idx[tri * 3]] === code)
+    const part = edgeStrip(t, (i) => S.surface[i] === code)
     if (part.indices.length) add(world, R, set, R.ColliderDesc.trimesh(part.vertices, part.indices), kind)
   }
+  // Wall-ride walls are curved: use the look mesh's own wall triangles.
+  const road = t.meshes.road
+  const kindAttr = road.attributes.aKind.array
+  const idx = road.indices
+  const walls = splitBy(road, (tri) => kindAttr[idx[tri * 3]] === SURFACE_CODE.wall)
+  if (walls.indices.length) add(world, R, set, R.ColliderDesc.trimesh(walls.vertices, walls.indices), 'wall')
   const skirt = splitBy(t.meshes.skirt, () => true)
   if (skirt.indices.length) add(world, R, set, R.ColliderDesc.trimesh(skirt.vertices, skirt.indices), 'skirt')
 
@@ -93,12 +98,40 @@ export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): C
   return set
 }
 
+/** The road top as one strip between its two edges, for samples where `keep(i)` (and the next sample). */
+function edgeStrip(t: TrackRuntime, keep: (i: number) => boolean): { vertices: Float32Array; indices: Uint32Array } {
+  const S = t.samples
+  const n = S.count
+  const verts = new Float32Array(n * 6)
+  for (let i = 0; i < n; i++) {
+    const hw = S.halfWidth[i]
+    verts[i * 6] = S.px[i] - S.rx[i] * hw
+    verts[i * 6 + 1] = S.py[i] - S.ry[i] * hw
+    verts[i * 6 + 2] = S.pz[i] - S.rz[i] * hw
+    verts[i * 6 + 3] = S.px[i] + S.rx[i] * hw
+    verts[i * 6 + 4] = S.py[i] + S.ry[i] * hw
+    verts[i * 6 + 5] = S.pz[i] + S.rz[i] * hw
+  }
+  const idx: number[] = []
+  for (let i = 0; i < n; i++) {
+    if (!keep(i)) continue
+    const j = (i + 1) % n
+    const a = i * 2 //     left, this sample
+    const b = i * 2 + 1 // right, this sample
+    const c = j * 2 + 1 // right, next sample
+    const d = j * 2 //     left, next sample
+    // Counter-clockwise seen from above the road, so the face points along its up.
+    idx.push(a, b, d, b, c, d)
+  }
+  return { vertices: verts, indices: Uint32Array.from(idx) }
+}
+
 /** Stadium edge barriers as a chain of thick boxes following the road edge. */
 function addBarrierBoxes(world: World, R: Rapier, set: ColliderSet, t: TrackRuntime): void {
   const S = t.samples
   const H = t.file.road.barrierHeight
   const thick = trackInternals(t)?.thickness
-  const step = Math.max(1, Math.round(4 / S.ds))
+  const step = Math.max(1, Math.round(8 / S.ds))
   const DEPTH = 3 // metres of box beyond the edge: far thicker than the visible 0.7 m wall
   for (const side of [-1, 1]) {
     for (let i0 = 0; i0 < S.count; i0 += step) {

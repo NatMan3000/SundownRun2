@@ -23,8 +23,8 @@ import { add, type ColliderSet } from './colliders'
 
 import type { Rapier, RigidBody, World } from './rapierTypes'
 
-/** Cells per tile side. ~2k triangles a tile, well under a millisecond to build. */
-export const TILE = 32
+/** Cells per tile side. 800 triangles a tile: a live rebuild only redoes the ground near the road. */
+export const TILE = 20
 
 export interface TerrainTiles {
   body: RigidBody

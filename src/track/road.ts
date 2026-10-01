@@ -39,6 +39,8 @@ export const LOOP_SHIFT = 50
 export const WALL_RAMP = 15
 /** How far round a wall ride's wall curls at full height (degrees past flat). */
 export const WALL_SWEEP_DEG = 100
+/** Curvature (1/m) below which a bend counts as straight for auto-banking. */
+const BANK_DEADBAND = 1 / 3000
 /** Slab thickness: a lifted road is this thick... */
 export const SLAB_THICKNESS = 1.2
 /** ...and a grounded road's sides reach this far down into the fill. */
@@ -194,10 +196,16 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const bCurvWide = new Float32Array(bCurv)
   circularSmooth(bCurvWide, Math.round(30 / dsb), 2)
 
+  // Bank from a broader view of the curvature: a spline's small wobble where a bend
+  // meets a straight would otherwise bank the road the wrong way for a few metres
+  // (at a 320 km/h design speed even a 1 km radius asks for the full bank).
+  // Curves gentler than BANK_DEADBAND (radius > 3 km) count as straight.
+  const bCurvBank = new Float32Array(bCurv)
+  circularSmooth(bCurvBank, Math.round(25 / dsb), 2)
   const vDesign = road.banking.designSpeedKmh / 3.6
   const bankTarget = new Float32Array(nb)
   for (let k = 0; k < nb; k++) {
-    const kk = bCurv[k]
+    const kk = Math.sign(bCurvBank[k]) * Math.max(0, Math.abs(bCurvBank[k]) - BANK_DEADBAND)
     let auto = 0
     if (road.banking.auto) {
       const into = (Math.atan((vDesign * vDesign * Math.abs(kk)) / G) * 180) / Math.PI
