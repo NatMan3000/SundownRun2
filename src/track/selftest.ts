@@ -35,7 +35,7 @@ import { createRoadColliders, createWorldColliders } from './colliders'
 import { createTerrainTiles } from './terrainTiles'
 import { SIDE_RUN } from './ramps'
 import { LOOP_RUN_IN, loopShape } from './road'
-import { brakeOnSlope } from './derived'
+import { brakeOnSlope, carFullLockG } from './derived'
 import { surfaceOf } from '../core/physics'
 import * as THREE from 'three'
 
@@ -252,7 +252,17 @@ export function bankCheck(t: TrackRuntime): { maxRate: number; rateAt: number; w
  * target speeds ask for (v^2 x curvature / g, less what banking carries), and how
  * many metres of braking ask for more than the brakes have on that slope.
  */
-export function racingLineStats(t: TrackRuntime): { clampFrac: number; longestClampM: number; minEdgeGap: number; maxLatG: number; brakeOverM: number; brakeOverBy: number } {
+export function racingLineStats(t: TrackRuntime): {
+  clampFrac: number
+  longestClampM: number
+  minEdgeGap: number
+  maxLatG: number
+  brakeOverM: number
+  brakeOverBy: number
+  /** The most of the worst car's full-lock turn the line asks for anywhere (1 = full lock). */
+  lockShare: number
+  lockShareKmh: number
+} {
   const S = t.samples
   const n = S.count
   const off = t.racingLine.offset
@@ -274,8 +284,11 @@ export function racingLineStats(t: TrackRuntime): { clampFrac: number; longestCl
     run = at ? run + 1 : 0
     if (run > longest) longest = run
   }
-  // Planned sideways acceleration from the line's own curvature.
+  // Planned sideways acceleration from the line's own curvature, and how much of the
+  // worst car's full-lock turn that is at the planned speed.
   let maxLat = 0
+  let lockShare = 0
+  let lockShareKmh = 0
   const W = Math.max(1, Math.round(4 / S.ds))
   for (let i = 0; i < n; i++) {
     if (S.surface[i] !== SURFACE_CODE.road) continue
@@ -298,6 +311,11 @@ export function racingLineStats(t: TrackRuntime): { clampFrac: number; longestCl
     const into = S.bank[i] * Math.sign(ux * vz - uz * vx)
     const lat = (spd[i] * spd[i] * k * Math.cos(into) - 9.81 * Math.sin(into)) / 9.81
     maxLat = Math.max(maxLat, lat)
+    const share = (spd[i] * spd[i] * k) / 9.81 / carFullLockG(spd[i])
+    if (share > lockShare) {
+      lockShare = share
+      lockShareKmh = spd[i] * 3.6
+    }
   }
   // Braking that fits the hill: slowing from speed[i] to speed[i+1] over one sample must
   // need no more than the brakes have there (less downhill, more uphill).
@@ -311,7 +329,7 @@ export function racingLineStats(t: TrackRuntime): { clampFrac: number; longestCl
     if (over > 0.05) brakeOver++
     brakeOverBy = Math.max(brakeOverBy, over)
   }
-  return { clampFrac: atLimit / n, longestClampM: Math.min(longest, n) * S.ds, minEdgeGap: minGap, maxLatG: maxLat, brakeOverM: brakeOver * S.ds, brakeOverBy }
+  return { clampFrac: atLimit / n, longestClampM: Math.min(longest, n) * S.ds, minEdgeGap: minGap, maxLatG: maxLat, brakeOverM: brakeOver * S.ds, brakeOverBy, lockShare, lockShareKmh }
 }
 
 /** Timings for the README and the checker: query costs in microseconds. */

@@ -262,11 +262,55 @@ function solveOffsets(S: TrackSamples, loB: Float64Array, hiB: Float64Array, off
  * from these two numbers, so this is the one place to change how hard the Ai is
  * asked to corner. LINE_GRIP_G is what the tyres give on flat road (kept under the
  * car's real grip so the Ai has margin: vehicle measured a 1.48 g skidpad);
- * a bank into the corner adds to it, but never past LINE_MAX_LAT_G. The line gate
- * in tracks:check allows LINE_MAX_LAT_G + 0.05.
+ * a bank into the corner adds to it, but never past LINE_MAX_LAT_G, nor past what the
+ * worst car can steer at that speed (lineLatCapG below). The line gate in tracks:check
+ * allows LINE_MAX_LAT_G + 0.05 of tyre grip and checks the steering reach.
  */
 export const LINE_GRIP_G = 1.25
 export const LINE_MAX_LAT_G = 1.4
+
+/**
+ * How hard the car can corner at full steering lock, in g, by speed: measured by the
+ * vehicle worker on flat road (Dart, analog full lock, part throttle, 2026-10-01).
+ * Downforce adds a little with speed. If the car's grip or steering rack is retuned,
+ * re-measure and update this table: the line's corner speeds come from it.
+ */
+const CAR_FULL_LOCK = { kmh: [89, 124, 160, 196], g: [1.37, 1.46, 1.52, 1.57] }
+/** The least grippy body's share of that (Blade 0.95): the line must suit every car. */
+const WORST_BODY_GRIP = 0.95
+/** The line plans at most this share of the worst car's full lock, so the Ai always has steering left to correct with. */
+const FULL_LOCK_SHARE = 0.95
+
+/**
+ * The most sideways acceleration (g) the worst-gripping car can reach at full lock at
+ * speed v (m/s), from the measured table (held flat beyond its ends).
+ */
+export function carFullLockG(v: number): number {
+  const kmh = v * 3.6
+  const K = CAR_FULL_LOCK.kmh
+  const Gs = CAR_FULL_LOCK.g
+  let g = Gs[Gs.length - 1]
+  if (kmh <= K[0]) g = Gs[0]
+  else {
+    for (let i = 0; i < K.length - 1; i++) {
+      if (kmh <= K[i + 1]) {
+        g = Gs[i] + ((Gs[i + 1] - Gs[i]) * (kmh - K[i])) / (K[i + 1] - K[i])
+        break
+      }
+    }
+  }
+  return g * WORST_BODY_GRIP
+}
+
+/**
+ * The line's cornering cap at speed v (m/s), in g of total sideways acceleration
+ * (v^2 x curvature). A bank lets the tyres carry more, but the steering still has
+ * to turn the car that tightly, so the cap is on the whole turn: never more than
+ * LINE_MAX_LAT_G, and never more than FULL_LOCK_SHARE of the worst car's full lock.
+ */
+export function lineLatCapG(v: number): number {
+  return Math.min(LINE_MAX_LAT_G, FULL_LOCK_SHARE * carFullLockG(v))
+}
 
 /** Braking and acceleration the line plans on flat road, m/s^2 (with margin under the car's real figures). */
 const BRAKE = 7
@@ -344,7 +388,12 @@ function makeSpeeds(inp: RacingLineInput, offset: Float32Array): Float32Array {
     const den = c - LINE_GRIP_G * sn
     const num = sn + LINE_GRIP_G * c
     const v2 = den <= 0.05 ? VMAX * VMAX : (G / kk) * (num / den)
-    speed[i] = Math.min(VMAX, Math.sqrt(Math.max(0, Math.min(v2, (LINE_MAX_LAT_G * G) / kk))))
+    // Grip says v; the steering cap depends on speed too, so settle it: each pass can
+    // only lower v, and the cap falls with v, so a few passes land on the speed where
+    // v^2 x curvature is exactly the cap (it changes slowly, so this converges fast).
+    let v = Math.min(VMAX, Math.sqrt(Math.max(0, v2)))
+    for (let it = 0; it < 6; it++) v = Math.min(v, Math.sqrt((lineLatCapG(v) * G) / kk))
+    speed[i] = v
   }
 
   // Crests: above sqrt(g R) the car goes light and leaves the road. Let the Ai float
