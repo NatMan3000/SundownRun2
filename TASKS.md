@@ -115,7 +115,7 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ⬜ The .bat files on Windows
 - ⬜ Windows firewall rule prompt
 - ⬜ Multiplayer across two real machines
-- ⬜ Frame rate on Josh's laptop (RTX 4060, 165 Hz)
+- ⬜ Frame rate on Josh's laptop (RTX 4060, 165 Hz); Settings > Graphics should name the NVIDIA chip (the amber built-in-chip note only appears on an integrated chip under 50 fps)
 
 ## Found along the way
 
