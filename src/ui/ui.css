@@ -317,6 +317,21 @@
   gap: 0.2em;
 }
 .title-menu { width: 23em; }
+/* quieter than the menu: the hint-bar voice */
+.learn-link {
+  align-self: flex-start;
+  padding: 0.3em 0.7em;
+  margin: -0.4em 0 0 0.4em;
+  border-radius: var(--radius-s);
+  font-family: var(--font-display);
+  font-size: 0.95em;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--text) 70%, transparent);
+  transition: color 160ms ease-out;
+}
+.learn-link.is-focused, .learn-link:hover { color: var(--accent); }
 .title-menu .menu-btn { font-size: 2.1em; }
 
 .mp-status {

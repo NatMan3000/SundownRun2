@@ -14,10 +14,10 @@
 import { useGame } from '../../core/store'
 import { openEditor } from '../../core/session'
 import { useNet } from '../../net'
-import { NavScreen } from '../nav'
+import { NavScreen, useNavItem } from '../nav'
 import { MenuButton, HelpLine } from '../widgets'
 import { HintBar } from '../hints'
-import { openScreen, useUi } from '../uiStore'
+import { openScreen, showNotice, useUi } from '../uiStore'
 import { SoundHint } from '../SoundHint'
 
 export function Logo(props: { compact?: boolean }) {
@@ -73,6 +73,32 @@ export function MpStatus() {
   )
 }
 
+/** Josh's workshop (bun run learn writes it at the repo root, which only the dev server serves). */
+const LEARN_URL = '/Learn%20To%20Code.html'
+
+/**
+ * "Learn to code": a quiet link under the menu that opens the workshop in a new
+ * tab. Browsers only open tabs from a key press or click, not a controller
+ * button, so from the pad it explains that instead of failing silently.
+ */
+function LearnLink() {
+  const nav = useNavItem<HTMLButtonElement>('learn', {
+    onAccept: () => {
+      const tab = window.open(LEARN_URL, '_blank', 'noopener')
+      if (!tab && useGame.getState().inputDevice === 'gamepad') {
+        showNotice('The browser only opens a new tab from a key or a click: press Enter or click Learn to code.')
+      }
+    },
+    acceptHint: 'Open',
+    help: 'Learn to code with Sundown Run Two: missions that change the real game. Opens in a new tab.',
+  })
+  return (
+    <button type="button" tabIndex={-1} ref={nav.ref} {...nav.props} className={`learn-link${nav.focused ? ' is-focused' : ''}`}>
+      Learn to code
+    </button>
+  )
+}
+
 export function TitleScreen() {
   const mp = useGame((s) => s.multiplayer)
   return (
@@ -96,6 +122,7 @@ export function TitleScreen() {
             <MenuButton id="editor" label="Road Editor" help="Draw your own track, drop in loops and boost pads, then test drive it." onAccept={openEditor} />
             <MenuButton id="settings" label="Settings" help="Handling, camera, sound, time of day, graphics and more." onAccept={() => openScreen('settings')} />
           </nav>
+          {import.meta.env.DEV && <LearnLink />}
           <HelpLine />
           {mp && <MpStatus />}
           <SoundHint variant="menu" />
