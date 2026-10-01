@@ -124,6 +124,10 @@ export interface GameState {
   tagSeconds: Record<string, number>
   tagEndsAt: number
 
+  // ---- spawn (writer: net in multiplayer; 0 otherwise) ----
+  /** The grid slot the player's car spawns and Shift+R-restarts on. Read only at spawn/restart, so changing it never moves a driving car. */
+  playerGridSlot: number
+
   // ---- world map (writer: core/session openMap/closeMap) ----
   /** The editor's top-down world map is open over the PAUSED game (Physics and the car stay mounted). */
   mapOpen: boolean
@@ -187,6 +191,8 @@ const initial: GameState = {
   tagItId: null,
   tagSeconds: {},
   tagEndsAt: 0,
+
+  playerGridSlot: 0,
 
   mapOpen: false,
 
