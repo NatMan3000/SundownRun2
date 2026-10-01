@@ -29,6 +29,10 @@
 //                          ridge crest, or the stadium's outer wall
 //
 //  Every collider is in GROUPS.world and tagged with its SurfaceKind.
+//  Triangle meshes are built with FIX_INTERNAL_EDGES: without it a box
+//  sliding over the seam between two flat triangles can catch on the
+//  shared edge and stop dead (measured: a car box at 30 m/s on a
+//  straight road lost 20 m/s in one step).
 // ============================================================
 
 import { GROUPS, tagSurface, untagSurface, type SurfaceKind } from '../core/physics'
@@ -79,16 +83,16 @@ export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): C
     ['loop', SURFACE_CODE.loop],
   ] as const) {
     const part = edgeStrip(t, (i) => S.surface[i] === code)
-    if (part.indices.length) add(world, R, set, R.ColliderDesc.trimesh(part.vertices, part.indices), kind)
+    if (part.indices.length) add(world, R, set, R.ColliderDesc.trimesh(part.vertices, part.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), kind)
   }
   // Wall-ride walls are curved: use the look mesh's own wall triangles.
   const road = t.meshes.road
   const kindAttr = road.attributes.aKind.array
   const idx = road.indices
   const walls = splitBy(road, (tri) => kindAttr[idx[tri * 3]] === SURFACE_CODE.wall)
-  if (walls.indices.length) add(world, R, set, R.ColliderDesc.trimesh(walls.vertices, walls.indices), 'wall')
+  if (walls.indices.length) add(world, R, set, R.ColliderDesc.trimesh(walls.vertices, walls.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'wall')
   const skirt = splitBy(t.meshes.skirt, () => true)
-  if (skirt.indices.length) add(world, R, set, R.ColliderDesc.trimesh(skirt.vertices, skirt.indices), 'skirt')
+  if (skirt.indices.length) add(world, R, set, R.ColliderDesc.trimesh(skirt.vertices, skirt.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'skirt')
 
   if (t.meshes.barriers) addBarrierBoxes(world, R, set, t)
 

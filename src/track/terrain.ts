@@ -251,6 +251,8 @@ export function sampleNaturalGrid(nat: NaturalTerrain): NaturalGrid {
 const HIDE_DEPTH = 0.6
 // ...rising to this far below at the very edge, so it meets the slab's side just under the lip.
 const EDGE_DEPTH = 0.3
+/** How far (horizontal metres, more than one grid cell) the bank plane runs on past the road edge. */
+const BANK_RUNOUT = 4.5
 const SHOULDER_MIN = 12
 const SHOULDER_MAX = 36
 /** A bridge keeps at least this much air between its underside and the ground. */
@@ -285,7 +287,7 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
   const inv = 1 / cellSize
   for (let i = 0; i < count; i++) {
     // Loops never shape the ground (they sit on the flattened lanes either side): only road does.
-    if (S.uy[i] < 0.5 || S.surface[i] !== SURFACE_CODE.road) continue
+    if (S.surface[i] !== SURFACE_CODE.road) continue
     const cx = S.px[i]
     const cz = S.pz[i]
     const grounded = S.grounded[i] === 1
@@ -334,7 +336,13 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
       const dz = z - S.pz[ig]
       const lat = rh2 > 1e-4 ? (dx * rxh + dz * rzh) / rh2 : 0
       const hw = S.halfWidth[ig]
-      const latC = clamp(lat, -hw, hw)
+      // The bank plane carries on a little past each edge before the shoulder blends
+      // back to natural, so on the LOW side of a steep bank the ground beside the
+      // edge is lower than the edge too (a flat shoulder there would rise above the
+      // road once a grid triangle straddles the edge).
+      // (BANK_RUNOUT is a horizontal distance; on a steep bank that is more metres along the slope.)
+      const runout = BANK_RUNOUT / Math.sqrt(Math.max(0.09, rh2))
+      const latC = clamp(lat, -hw - runout, hw + runout)
       const surfY = S.py[ig] + S.ry[ig] * latC
       const beyond = Math.abs(lat) - hw
       if (beyond <= 0) {
@@ -367,7 +375,49 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): Float32Ar
     }
     out[v] = h
   }
+  keepUnderRoad(grid, out, S)
   return out
+}
+
+/** Every point of a grounded road keeps at least this much ground clearance below it. */
+const MIN_CLEARANCE = 0.15
+
+/**
+ * Safety pass: walk across the road at every sample and, wherever the ground
+ * (as interpolated on the grid's triangles) comes within MIN_CLEARANCE of the
+ * surface, lower that cell's corners until it doesn't. Steep banks on tight
+ * curves can otherwise leave a grid triangle poking up at the low edge.
+ */
+function keepUnderRoad(grid: NaturalGrid, h: Float32Array, S: TrackSamples): void {
+  const { n, half, cellSize } = grid
+  const g = { n, half, cellSize, heights: h }
+  const inv = 1 / cellSize
+  for (let pass = 0; pass < 3; pass++) {
+    let fixed = 0
+    for (let i = 0; i < S.count; i++) {
+      if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1) continue
+      const hw = S.halfWidth[i] + 0.5
+      const steps = Math.ceil((hw * 2) / 0.75)
+      for (let k = 0; k <= steps; k++) {
+        const l = -hw + (2 * hw * k) / steps
+        const x = S.px[i] + S.rx[i] * l
+        const y = S.py[i] + S.ry[i] * l
+        const z = S.pz[i] + S.rz[i] * l
+        const excess = gridHeight(g, x, z) - (y - MIN_CLEARANCE)
+        if (excess <= 0) continue
+        const ix = Math.min(n - 1, Math.max(0, Math.floor((x + half) * inv)))
+        const iz = Math.min(n - 1, Math.max(0, Math.floor((z + half) * inv)))
+        const a = iz * (n + 1) + ix
+        const drop = excess + 0.05
+        h[a] -= drop
+        h[a + 1] -= drop
+        h[a + n + 1] -= drop
+        h[a + n + 2] -= drop
+        fixed++
+      }
+    }
+    if (fixed === 0) break
+  }
 }
 
 /**

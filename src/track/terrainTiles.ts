@@ -86,7 +86,7 @@ function buildTile(world: World, R: Rapier, tiles: TerrainTiles, t: TrackRuntime
   }
   const m = tileMesh(t, tx, tz)
   const set: ColliderSet = { body: tiles.body, handles: [] }
-  add(world, R, set, R.ColliderDesc.trimesh(m.vertices, m.indices), 'terrain')
+  add(world, R, set, R.ColliderDesc.trimesh(m.vertices, m.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'terrain')
   tiles.handles[k] = set.handles[0] ?? -1
 }
 

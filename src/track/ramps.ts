@@ -1,17 +1,23 @@
 // ============================================================
-//  RAMPS - kicker wedges that sit on the road
+//  RAMPS - kicker ramps that sit on the road
 // ------------------------------------------------------------
-//  A ramp is a wedge: it rises from the road surface to `height` at
-//  its lip, which faces the driving direction, then drops straight
-//  down. Its sides slope outward (about 45 degrees) so a car that
-//  clips the edge rolls off it rather than being flicked sideways.
+//  A ramp rises from the road surface to `height` at its lip, which
+//  faces the driving direction, then drops straight down. Its top is
+//  a curve, not a flat wedge: it leaves the road with no kink at all
+//  and steepens toward the lip (height grows as (x / length)^1.6).
+//  A flat wedge kicks the front wheels up in one instant at the toe,
+//  which at speed sends the car into a tumble; a curve tips the car
+//  up smoothly so it leaves the lip flying straight.
 //
-//  The base sinks 0.15 m into the road: the top surface grows out
-//  of the asphalt with no step to bump over, and no face of the
-//  wedge lies flat on the road (flat-on-flat faces flicker).
+//  Its sides slope outward (about 45 degrees) so a car that clips the
+//  edge rolls off rather than being flicked sideways.
 //
-//  Each ramp gives a convex point cloud (the collider is a convex
-//  hull, the most reliable shape rapier has) and faces for the mesh.
+//  The base sinks 0.15 m into the road and the top starts 5 cm below
+//  it, so no face of the ramp lies flat on the road (flat-on-flat
+//  faces flicker).
+//
+//  Colliders: one convex hull per slice along the curve (convex
+//  shapes are rapier's most reliable), all tagged 'ramp'.
 // ============================================================
 
 import type { RampPiece } from './schema'
@@ -20,6 +26,12 @@ import type { RoadQueries } from './query'
 import { MeshBuilder } from './ribbon'
 
 const SINK = 0.15
+/** The top surface starts this far below the road at the toe. */
+const TOE = 0.05
+/** Slices along the ramp (more = smoother curve). */
+const SLICES = 10
+/** Shape of the curve: height = h * (x / length)^POWER. */
+const POWER = 1.6
 
 export function buildRampMeshes(
   spots: { s: number; piece: RampPiece }[],
@@ -36,7 +48,8 @@ export function buildRampMeshes(
     const off = piece.offset ?? 0
     q.frameAt(s, frame)
     const hw = frame.halfWidth
-    const run = Math.min(h, Math.max(0.5 * h, hw + 0.3 - (Math.abs(off) + w / 2)))
+    // Side slope run at full height: ~45 degrees, narrowed if the road edge is close.
+    const runMax = Math.min(h, Math.max(0.5 * h, hw + 0.3 - (Math.abs(off) + w / 2)))
     const C = frame.position
     const T = frame.tangent
     const U = frame.up
@@ -46,59 +59,73 @@ export function buildRampMeshes(
       C.y + T.y * a + R.y * l + U.y * v,
       C.z + T.z * a + R.z * l + U.z * v,
     ]
-    const a0 = -len / 2
-    const a1 = len / 2
+    // Stations along the ramp: a (metres from the centre), top height, side run.
+    const st: { a: number; y: number; run: number; f: number }[] = []
+    for (let k = 0; k <= SLICES; k++) {
+      const f = k / SLICES
+      // Start a touch below the road so the top grows out of it (never lies flat on it).
+      const y = -TOE + (h + TOE) * Math.pow(f, POWER)
+      st.push({ a: -len / 2 + len * f, y, run: (runMax * Math.max(0, y)) / h, f })
+    }
     const lL = off - w / 2
     const lR = off + w / 2
-    const FL = P(a0, lL, -SINK)
-    const FR = P(a0, lR, -SINK)
-    const BLb = P(a1, lL - run, -SINK)
-    const BRb = P(a1, lR + run, -SINK)
-    const BLt = P(a1, lL, h)
-    const BRt = P(a1, lR, h)
-    hulls.push(Float32Array.from([...FL, ...FR, ...BLb, ...BRb, ...BLt, ...BRt]))
-
-    // The wedge's middle: every face must point away from it.
-    const mid = P(0, off, h * 0.3)
-    // Faces, each with its own flat normal, wound to face outward.
-    const face = (ptsIn: [number, number, number][], uvsIn: [number, number][], alongIn: number[]) => {
-      let pts = ptsIn
-      let uvs = uvsIn
-      let along = alongIn
-      const [a, b, c] = pts
-      const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
-      const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]
-      let nx = e1[1] * e2[2] - e1[2] * e2[1]
-      let ny = e1[2] * e2[0] - e1[0] * e2[2]
-      let nz = e1[0] * e2[1] - e1[1] * e2[0]
-      const l = Math.hypot(nx, ny, nz) || 1
-      nx /= l
-      ny /= l
-      nz /= l
-      let cx = 0
-      let cy = 0
-      let cz = 0
-      for (const p of pts) {
-        cx += p[0] / pts.length
-        cy += p[1] / pts.length
-        cz += p[2] / pts.length
-      }
-      if ((cx - mid[0]) * nx + (cy - mid[1]) * ny + (cz - mid[2]) * nz < 0) {
-        pts = [...pts].reverse()
-        uvs = [...uvs].reverse()
-        along = [...along].reverse()
-        nx = -nx
-        ny = -ny
-        nz = -nz
-      }
-      const ids = pts.map((p, k) => mb.vertex(p[0], p[1], p[2], nx, ny, nz, uvs[k][0], uvs[k][1], { aAlong: along[k], aKind: SURFACE_CODE.ramp }))
-      if (ids.length === 3) mb.idx.push(ids[0], ids[1], ids[2])
-      else mb.idx.push(ids[0], ids[1], ids[2], ids[0], ids[2], ids[3])
+    // Convex slices for the collider.
+    for (let k = 0; k < SLICES; k++) {
+      const A = st[k]
+      const B = st[k + 1]
+      const pts = [
+        P(A.a, lL - A.run, -SINK),
+        P(A.a, lR + A.run, -SINK),
+        P(B.a, lL - B.run, -SINK),
+        P(B.a, lR + B.run, -SINK),
+        P(A.a, lL, A.y),
+        P(A.a, lR, A.y),
+        P(B.a, lL, B.y),
+        P(B.a, lR, B.y),
+      ]
+      hulls.push(Float32Array.from(pts.flat()))
     }
-    face([FL, BLt, BRt, FR], [[0, 0], [0, len], [1, len], [1, 0]], [0, 1, 1, 0]) // top (the run-up)
-    face([BLb, BRb, BRt, BLt], [[0, 0], [1, 0], [1, h], [0, h]], [1, 1, 1, 1]) // lip face
-    face([FL, BLb, BLt], [[0, 0], [0, len], [1, len]], [0, 1, 1]) // left slope
-    face([FR, BRt, BRb], [[0, 0], [1, len], [0, len]], [0, 1, 1]) // right slope
+
+    // Mesh: top, two sloped sides, and the lip face. Every vertex carries aAlong (0 toe .. 1 lip).
+    const ex = { aAlong: 0, aKind: SURFACE_CODE.ramp }
+    const vert = (p: [number, number, number], n: [number, number, number], u: number, v: number, along: number) => {
+      ex.aAlong = along
+      return mb.vertex(p[0], p[1], p[2], n[0], n[1], n[2], u, v, ex)
+    }
+    const top: number[] = []
+    const left: number[] = []
+    const right: number[] = []
+    for (const S of st) {
+      // Top normal: perpendicular to the curve's slope dy/da.
+      const slope = S.f > 0 ? (POWER * (h + TOE) * Math.pow(S.f, POWER - 1)) / len : 0
+      const nl = Math.hypot(1, slope)
+      const nT: [number, number, number] = [(U.x - T.x * slope) / nl, (U.y - T.y * slope) / nl, (U.z - T.z * slope) / nl]
+      top.push(vert(P(S.a, lL, S.y), nT, 0, S.a + len / 2, S.f), vert(P(S.a, lR, S.y), nT, 1, S.a + len / 2, S.f))
+      // Side normals: outward and up at about 45 degrees.
+      const sl = (s2: number): [number, number, number] => {
+        const nx = R.x * s2 + U.x
+        const ny = R.y * s2 + U.y
+        const nz = R.z * s2 + U.z
+        const l = Math.hypot(nx, ny, nz)
+        return [nx / l, ny / l, nz / l]
+      }
+      left.push(vert(P(S.a, lL, S.y), sl(-1), 0, S.a + len / 2, S.f), vert(P(S.a, lL - S.run, -SINK), sl(-1), 1, S.a + len / 2, S.f))
+      right.push(vert(P(S.a, lR, S.y), sl(1), 0, S.a + len / 2, S.f), vert(P(S.a, lR + S.run, -SINK), sl(1), 1, S.a + len / 2, S.f))
+    }
+    for (let k = 0; k < SLICES; k++) {
+      const i = k * 2
+      mb.quad(top[i], top[i + 1], top[i + 3], top[i + 2])
+      mb.quad(left[i], left[i + 1], left[i + 3], left[i + 2])
+      mb.quad(right[i], right[i + 1], right[i + 3], right[i + 2])
+    }
+    // Lip face (facing forward, the way you fly off).
+    const L = st[SLICES]
+    const nF: [number, number, number] = [T.x, T.y, T.z]
+    const a = vert(P(L.a, lL - L.run, -SINK), nF, 0, 0, 1)
+    const b = vert(P(L.a, lR + L.run, -SINK), nF, 1, 0, 1)
+    const c = vert(P(L.a, lR, L.y), nF, 1, h, 1)
+    const d = vert(P(L.a, lL, L.y), nF, 0, h, 1)
+    mb.quad(a, b, c, d)
   }
   return { mesh: mb.build(), hulls }
 }

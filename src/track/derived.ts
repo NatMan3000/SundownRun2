@@ -159,9 +159,15 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
   const MU = 1.5
   const VMAX = 75
   const MAG_MIN = 27
+  const LOOP_SPEED = 34
   const speed = new Float32Array(count)
   for (let i = 0; i < count; i++) {
     const kk = Math.abs(k[i])
+    if (S.surface[i] === SURFACE_CODE.loop) {
+      // Fast enough to stick upside down, not so fast the entry slams the suspension.
+      speed[i] = LOOP_SPEED
+      continue
+    }
     if (S.surface[i] !== SURFACE_CODE.road || kk < 1e-5) {
       speed[i] = VMAX
       continue
@@ -174,6 +180,20 @@ export function makeRacingLine(inp: RacingLineInput): { offset: Float32Array; sp
     const num = sn + MU * c
     const v2 = den <= 0.05 ? VMAX * VMAX : (G / kk) * (num / den)
     speed[i] = Math.min(VMAX, Math.sqrt(Math.max(0, v2)))
+  }
+
+  // Crests: above sqrt(g R) the car goes light and leaves the road. Let the Ai float
+  // a little (x CREST_FLOAT) but not launch off a crest flat out into the next bend.
+  const CREST_FLOAT = 1.35
+  const W = Math.max(1, Math.round(6 / ds))
+  for (let i = 0; i < count; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    const a = (i - W + count) % count
+    const b = (i + W) % count
+    const ga = S.ty[a] / (Math.hypot(S.tx[a], S.tz[a]) || 1)
+    const gb = S.ty[b] / (Math.hypot(S.tx[b], S.tz[b]) || 1)
+    const kv = (gb - ga) / (2 * W * ds)
+    if (kv < -1e-4) speed[i] = Math.min(speed[i], CREST_FLOAT * Math.sqrt(G / -kv))
   }
 
   // Ramps that launch into a corner: arrive a bit slower.

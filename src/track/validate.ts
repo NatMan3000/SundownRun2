@@ -562,8 +562,8 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
     }
     if (p.type === 'loop') {
       let maxK = 0
-      for (let d = -70; d <= 70; d += 10) maxK = Math.max(maxK, curvAt(s + d))
-      if (maxK > 1 / 400) I.warn(`pieces[${i}]`, `this loop sits on a bend (radius ~${(1 / maxK).toFixed(0)} m); loops need a straight about 140 m long`)
+      for (let d = -100; d <= 100; d += 10) maxK = Math.max(maxK, curvAt(s + d))
+      if (maxK > 1 / 400) I.warn(`pieces[${i}]`, `this loop sits on a bend (radius ~${(1 / maxK).toFixed(0)} m); loops need a straight about 200 m long`)
       const a = Math.floor(p.at)
       const b = (a + 1) % pts.length
       const ya = pts[a].y ?? pts[a].lift ?? 0
@@ -582,7 +582,7 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
   const spans: { i: number; type: string; s0: number; s1: number }[] = []
   t.pieces.forEach((p, i) => {
     const s = sOfAt(p.at)
-    if (p.type === 'loop') spans.push({ i, type: p.type, s0: s - 60, s1: s + 60 })
+    if (p.type === 'loop') spans.push({ i, type: p.type, s0: s - 90, s1: s + 90 })
     else if (p.type === 'wallride') spans.push({ i, type: p.type, s0: s, s1: s + (p.length ?? 120) })
     else if (p.type === 'ramp') spans.push({ i, type: p.type, s0: s - (p.length ?? 12) / 2 - 5, s1: s + (p.length ?? 12) / 2 + 5 })
   })

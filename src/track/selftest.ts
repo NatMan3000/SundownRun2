@@ -27,6 +27,63 @@ import * as THREE from 'three'
 /** Half extents of a car-sized test box, metres (a car is about 1.9 x 1.2 x 4.3). */
 const CAR = { hx: 0.95, hy: 0.55, hz: 2.15 }
 
+/**
+ * Worst gap between the ground and the road surface, measured across every
+ * grounded sample (negative = the ground is safely below). No physics needed.
+ */
+export function groundClearance(t: TrackRuntime): { worst: number; s: number; lateral: number } {
+  const S = t.samples
+  let worst = -Infinity
+  let ws = 0
+  let wl = 0
+  for (let i = 0; i < S.count; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1) continue
+    const hw = S.halfWidth[i]
+    for (let k = 0; k <= 16; k++) {
+      const l = -hw + (2 * hw * k) / 16
+      const d = t.terrainHeight(S.px[i] + S.rx[i] * l, S.pz[i] + S.rz[i] * l) - (S.py[i] + S.ry[i] * l)
+      if (d > worst) {
+        worst = d
+        ws = i * S.ds
+        wl = l
+      }
+    }
+  }
+  return { worst, s: ws, lateral: wl }
+}
+
+/**
+ * How smooth the ribbon is: the sharpest turn of the tangent and of the up vector
+ * between neighbouring samples (degrees per metre), and the worst spacing error.
+ * A kink here is a bump a car feels (or a step it crashes into).
+ */
+export function ribbonSmoothness(t: TrackRuntime): { roadTurn: number; loopTurn: number; upTurn: number; spacingErr: number; at: number } {
+  const S = t.samples
+  const n = S.count
+  let roadTurn = 0
+  let loopTurn = 0
+  let upTurn = 0
+  let spacingErr = 0
+  let at = 0
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    const dt = Math.acos(Math.min(1, S.tx[i] * S.tx[j] + S.ty[i] * S.ty[j] + S.tz[i] * S.tz[j])) * (180 / Math.PI) / S.ds
+    const du = Math.acos(Math.min(1, S.ux[i] * S.ux[j] + S.uy[i] * S.uy[j] + S.uz[i] * S.uz[j])) * (180 / Math.PI) / S.ds
+    const sp = Math.abs(Math.hypot(S.px[j] - S.px[i], S.py[j] - S.py[i], S.pz[j] - S.pz[i]) - S.ds)
+    const onLoop = S.surface[i] === SURFACE_CODE.loop || S.surface[j] === SURFACE_CODE.loop
+    if (onLoop) loopTurn = Math.max(loopTurn, dt)
+    else {
+      if (dt > roadTurn) {
+        roadTurn = dt
+        at = i * S.ds
+      }
+      upTurn = Math.max(upTurn, du)
+    }
+    spacingErr = Math.max(spacingErr, sp)
+  }
+  return { roadTurn, loopTurn, upTurn, spacingErr, at }
+}
+
 export interface SelfTestResult {
   ok: boolean
   lines: string[]
@@ -174,6 +231,28 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       const z = Math.sin(a) * t.world.half * 0.45
       const y = t.terrainHeight(x, z)
       shots.push({ what: `terrain (${x.toFixed(0)}, ${z.toFixed(0)})`, x, y: y + 4, z, vx: 0, vy: -V, vz: 0, check: (p) => p.y > t.terrainHeight(p.x, p.z) - 0.2 })
+    }
+    // Barriers: fired sideways at the edge walls, both sides.
+    if (t.meshes.barriers) {
+      for (let k = 0; k < 4; k++) {
+        const s = ((k + 0.23) / 4) * t.length
+        t.frameAt(s, frame)
+        const side = k % 2 === 0 ? 1 : -1
+        const o = frame.right.clone().multiplyScalar(side)
+        const base = frame.position.clone()
+        const hw = frame.halfWidth
+        const start = base.clone().addScaledVector(o, hw - 3).addScaledVector(frame.up, 1)
+        shots.push({
+          what: `barrier (${side > 0 ? 'right' : 'left'}) s=${s.toFixed(0)}`,
+          x: start.x,
+          y: start.y,
+          z: start.z,
+          vx: o.x * V,
+          vy: o.y * V,
+          vz: o.z * V,
+          check: (p) => (p.x - base.x) * o.x + (p.y - base.y) * o.y + (p.z - base.z) * o.z < hw + 0.3,
+        })
+      }
     }
     // Loops: from the loop's centre, fired at the top of the loop (from inside).
     for (const pc of t.pieces) {

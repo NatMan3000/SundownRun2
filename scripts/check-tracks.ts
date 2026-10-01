@@ -114,6 +114,22 @@ for (const path of targets) {
   console.log(`    meshes    road ${t.meshes.road.indices.length / 3} tris, skirt ${t.meshes.skirt.indices.length / 3}, barriers ${t.meshes.barriers ? t.meshes.barriers.indices.length / 3 : 0}, ramps ${t.meshes.ramps ? t.meshes.ramps.indices.length / 3 : 0}`)
   console.log(`    world     ${t.world.size} m, edge ${t.world.edge}, play radius ${t.world.playRadius.toFixed(0)} m, reset below ${t.world.resetY.toFixed(1)} m`)
   console.log(`    build     ${x ? x.buildMs.toFixed(0) : '?'} ms`)
+  // No kinks: a sharp change of direction between neighbouring samples is a bump or a step.
+  const { groundClearance, ribbonSmoothness } = await import('../src/track/selftest')
+  const sm = ribbonSmoothness(t)
+  const smoothOk = sm.roadTurn < 4 && sm.upTurn < 4 && sm.loopTurn < 9 && sm.spacingErr < 0.05
+  if (!smoothOk) failed++
+  console.log(`    smooth    ${smoothOk ? 'ok  ' : 'FAIL'} sharpest turn ${sm.roadTurn.toFixed(2)} deg/m on the road (s=${sm.at.toFixed(0)}), ${sm.loopTurn.toFixed(2)} in loops; roll ${sm.upTurn.toFixed(2)} deg/m; spacing error ${(sm.spacingErr * 100).toFixed(1)} cm`)
+  // The ground must stay under the road everywhere (at every bank angle a slider allows).
+  const adjBank = v.track.road.banking.adjustable
+  const variants = adjBank ? [adjBank.min, v.track.road.banking.maxDeg, adjBank.max] : [null]
+  for (const b of variants) {
+    const tv = b === null ? t : buildTrack(v.track, { bankDeg: b }, t)
+    const g = groundClearance(tv)
+    const ok = g.worst < -0.1
+    if (!ok) failed++
+    console.log(`    ground    ${ok ? 'ok  ' : 'FAIL'} ${b === null ? '' : `bank ${b} deg: `}ground stays ${(-g.worst).toFixed(2)} m or more under the road (closest at s=${g.s.toFixed(0)}, lateral ${g.lateral.toFixed(1)})`)
+  }
   for (const w of v.warnings) console.log(`    warning   ${w.path || '(file)'}: ${w.message}`)
 
   if (physics) {

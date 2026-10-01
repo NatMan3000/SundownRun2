@@ -12,8 +12,9 @@
 //      speed and the tighter the corner, the steeper, up to a cap),
 //      with per-point overrides, smoothed so corners roll in and out.
 //   5. Loops are spliced in: the road shifts sideways before the loop,
-//      goes round a vertical circle while drifting across (a corkscrew,
-//      so the way in and the way out run side by side), then shifts back.
+//      goes up and over a teardrop-shaped loop while drifting across (a
+//      corkscrew, so the way in and the way out run side by side), then
+//      shifts back.
 //   6. The result is re-sampled once more at an exact spacing, and each
 //      sample gets its frame: tangent, up (the surface normal) and right.
 //
@@ -34,7 +35,7 @@ export const SAMPLE_SPACING = 1
 /** A road this far (or less) above the natural ground is "grounded": the ground is filled up to it. */
 export const FILL_MAX = 6
 /** Metres over which the road shifts sideways before and after a loop. */
-export const LOOP_SHIFT = 50
+export const LOOP_SHIFT = 80
 /** A wall ride ramps its wall in and out over this many metres at each end. */
 export const WALL_RAMP = 15
 /** How far round a wall ride's wall curls at full height (degrees past flat). */
@@ -235,22 +236,29 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     btz[k] = tz / l
   }
 
-  // ---- 5. loops: sideways shift either side, then splice the circle in ----
+  // ---- 5. loops: sideways shift either side, then splice the loop in ----
   const pieces = file.pieces
-  const loopSpecs: { pieceIndex: number; sb: number; radius: number }[] = []
+  const loopSpecs: { pieceIndex: number; sb: number; radius: number; shape: LoopShape }[] = []
   pieces.forEach((p, idx) => {
-    if (p.type === 'loop') loopSpecs.push({ pieceIndex: idx, sb: baseSOfAt(p.at), radius: (p as LoopPiece).radius ?? 12 })
+    if (p.type !== 'loop') return
+    const radius = (p as LoopPiece).radius ?? 12
+    loopSpecs.push({ pieceIndex: idx, sb: baseSOfAt(p.at), radius, shape: loopShape(radius) })
   })
   loopSpecs.sort((a, b) => a.sb - b.sb)
 
+  // The loop comes down `advance` metres further along than it went up, so the
+  // base road it lands on starts there; the base samples in between are skipped.
   const shift = new Float64Array(nb)
+  const skip = new Uint8Array(nb)
   for (const L of loopSpecs) {
     const k0 = Math.floor(L.sb / dsb) % nb
     const d = bHalf[k0] * 2 + 1
+    const adv = L.shape.advance
     for (let k = 0; k < nb; k++) {
       const delta = wrapDelta(L.sb, k * dsb, Lb)
       if (delta >= -LOOP_SHIFT && delta < 0) shift[k] += (-d / 2) * ((1 - Math.cos((Math.PI * (delta + LOOP_SHIFT)) / LOOP_SHIFT)) / 2)
-      else if (delta >= 0 && delta <= LOOP_SHIFT) shift[k] += (d / 2) * (1 - (1 - Math.cos((Math.PI * delta) / LOOP_SHIFT)) / 2)
+      else if (delta >= 0 && delta < adv) skip[k] = 1
+      else if (delta >= adv && delta <= adv + LOOP_SHIFT) shift[k] += (d / 2) * (1 - (1 - Math.cos((Math.PI * (delta - adv)) / LOOP_SHIFT)) / 2)
     }
   }
 
@@ -301,7 +309,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
 
   let li = 0
   for (let k = 0; k < nb; k++) {
-    pushBase(k)
+    if (!skip[k]) pushBase(k)
     const sNext = (k + 1) * dsb
     while (li < loopSpecs.length && loopSpecs[li].sb >= k * dsb && loopSpecs[li].sb < sNext) {
       const L = loopSpecs[li]
@@ -316,23 +324,37 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
       const Tz = btz[k] / hl
       const Rx = -Tz
       const Rz = Tx
-      const R = L.radius
       const hw = bHalf[k]
       const d = hw * 2 + 1
-      const m = Math.max(64, Math.ceil((Math.PI * 2 * R) / 0.4))
+      const sh = L.shape
+      // Where the base road really is when the loop comes down (it may have climbed or
+      // curved a little since the entry): bend the loop gently so it lands exactly there.
+      const m = sh.fwd.length - 1
+      const se = (L.sb + sh.advance) / dsb
+      const e0 = Math.floor(se) % nb
+      const e1 = (e0 + 1) % nb
+      const ef = se - Math.floor(se)
+      const ehl = Math.hypot(btx[e0], btz[e0]) || 1
+      const Ex = bx[e0] + (bx[e1] - bx[e0]) * ef + (-btz[e0] / ehl) * (d / 2)
+      const Ey = by[e0] + (by[e1] - by[e0]) * ef
+      const Ez = bz[e0] + (bz[e1] - bz[e0]) * ef + (btx[e0] / ehl) * (d / 2)
+      const Mx = Ex - (Px + Rx * (d / 2) + Tx * sh.advance)
+      const My = Ey - Py
+      const Mz = Ez - (Pz + Rz * (d / 2) + Tz * sh.advance)
       for (let q = 0; q <= m; q++) {
-        const th = (q / m) * Math.PI * 2
-        const lat = -d / 2 + (d * (th - Math.sin(th))) / (Math.PI * 2)
-        const fwd = R * Math.sin(th)
-        nx.push(Px + Rx * lat + Tx * fwd)
-        ny.push(Py + R * (1 - Math.cos(th)))
-        nz.push(Pz + Rz * lat + Tz * fwd)
+        const ph = sh.phi[q]
+        // Corkscrew drift across by d, with zero drift rate at the bottom (in and out).
+        const lat = -d / 2 + (d * (ph - Math.sin(ph))) / (Math.PI * 2)
+        const w = (1 - Math.cos((Math.PI * q) / m)) / 2
+        nx.push(Px + Rx * lat + Tx * sh.fwd[q] + Mx * w)
+        ny.push(Py + sh.up[q] + My * w)
+        nz.push(Pz + Rz * lat + Tz * sh.fwd[q] + Mz * w)
         nhw.push(hw)
         nbank.push(0)
-        // Up points at the loop's centre.
-        nux.push(-Tx * Math.sin(th))
-        nuy.push(Math.cos(th))
-        nuz.push(-Tz * Math.sin(th))
+        // Up is the surface normal: perpendicular to the direction of travel, toward the inside.
+        nux.push(-Tx * Math.sin(ph))
+        nuy.push(Math.cos(ph))
+        nuz.push(-Tz * Math.sin(ph))
         nsurf.push(SURFACE_CODE.loop)
         nbs.push(L.sb)
       }
@@ -532,6 +554,79 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   })
 
   return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt }
+}
+
+/**
+ * A loop's side profile. Not a circle: a circle switches from straight road to its
+ * full curvature in one step, which at 110 km/h slams a car with ~8 g and bottoms
+ * the suspension into the road (measured: the car stopped dead at the entry).
+ * Real loops use a "teardrop": the curvature grows smoothly from gentle at the
+ * bottom (about a 60 m radius) to tight at the top, so entry is ~1.5 g at 30 m/s
+ * and the top is still tight enough to hold you upside down.
+ *
+ * The shape is the curvature profile k(u) = base + (1 - base) * sin^2(pi u / L),
+ * scaled so the heading turns a full 360 degrees and the top is 2 x radius high.
+ * Because the top sits ahead of the entry, the loop comes down `advance` metres
+ * further along the road than it went up.
+ */
+export interface LoopShape {
+  /** Metres forward (along the road) and up, and the heading angle, per node. */
+  fwd: Float64Array
+  up: Float64Array
+  phi: Float64Array
+  /** Where it comes down, metres ahead of where it went up. */
+  advance: number
+  /** Length of the loop's road, metres. */
+  length: number
+}
+
+const LOOP_BASE = 0.15
+
+export function loopShape(radius: number): LoopShape {
+  // Integrate a unit-length loop finely, then scale it to the requested height.
+  const N = 2000
+  const du = 1 / N
+  const shapeK = new Float64Array(N)
+  let area = 0
+  for (let i = 0; i < N; i++) {
+    const sn = Math.sin(Math.PI * (i + 0.5) * du)
+    shapeK[i] = LOOP_BASE + (1 - LOOP_BASE) * sn * sn
+    area += shapeK[i] * du
+  }
+  const fx = new Float64Array(N + 1)
+  const fy = new Float64Array(N + 1)
+  const fp = new Float64Array(N + 1)
+  let h = 0
+  let x = 0
+  let y = 0
+  let ymax = 0
+  for (let i = 0; i < N; i++) {
+    const k = (Math.PI * 2 * shapeK[i]) / area
+    h += (k * du) / 2
+    x += Math.cos(h) * du
+    y += Math.sin(h) * du
+    h += (k * du) / 2
+    fx[i + 1] = x
+    fy[i + 1] = y
+    fp[i + 1] = h
+    if (y > ymax) ymax = y
+  }
+  const L = (2 * radius) / ymax
+  // Resample at ~0.4 m.
+  const m = Math.max(64, Math.ceil(L / 0.4))
+  const fwd = new Float64Array(m + 1)
+  const up = new Float64Array(m + 1)
+  const phi = new Float64Array(m + 1)
+  for (let q = 0; q <= m; q++) {
+    const j = Math.round((q / m) * N)
+    fwd[q] = fx[j] * L
+    up[q] = fy[j] * L
+    phi[q] = fp[j]
+  }
+  // Land exactly level (removes the integration's last few millimetres of error).
+  up[m] = 0
+  phi[m] = Math.PI * 2
+  return { fwd, up, phi, advance: fwd[m], length: L }
 }
 
 /** Flip short runs of grounded / not-grounded so the ground doesn't flicker along the road. */
