@@ -150,3 +150,7 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ⬜ [track, next worker] Drive-through gate false positive: the centreline "road at checkpoint k" run fails when an offset ramp's 18-deg side slope crosses lat 0 within its window; skip/offset those runs over a ramp's s0..s1 (designer repro: afterglow start.at 2.0, ramp at 31.6).
 - ✅ [track] Worker stopped at 92% context after rounds 1-3; handoff at /tmp/sr2/reports/track-handoff.md for a fresh track worker.
 - ✅ [net] Stage C (worker-run): robust 24/24, mp:check against a built preview 37/37, relay tests 18/18. Checker mp-1 running on adc93dd.
+- ⚠️ [ui] Checker ui-1 on 75e790d: 5 pass / 3 fail. PASS: controller-only path, keyboard path (no arrow leak), hot-swap, settings live + persisted, Hyperdrome bank live from pause and settings (car keeps driving), HUD (rAF + refs, legible into the sun), console. FAIL: D1 settings Track tab focus on a track with no params; D2 garage car hidden behind panel (vehicle camera + ui); D3 track-select panel 77% empty; D4 settings panel blank on short tabs. Pad double-fire NOT reproduced.
+- ⬜ [play] Stunt run ends instantly on resume after a pause longer than the time left (ui-1 P1).
+- ⬜ [vehicle] Held trigger through pause is ignored after resume until re-pressed (car coasts into a wall); limit the anti-leak to menu keys.
+- ⬜ [vehicle] NaN torque at spawn caught by the firewall on Afterglow (orchestrator probe 19:52).
