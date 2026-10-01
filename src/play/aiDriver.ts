@@ -51,6 +51,9 @@ import { raceBook, racerById } from './raceBook'
 
 /** Sideways acceleration the brain may spend correcting its position, on top of the road's curve, m/s^2. */
 const CORRECTION_ALAT = 4
+/** ...plus this much per metre off the lane, up to CORRECTION_ALAT_MAX. */
+const CORRECTION_PER_M = 0.9
+const CORRECTION_ALAT_MAX = 12
 /** Steering damping on how fast the angle to the aim point is changing (stops overshoot). */
 const STEER_DAMP = 0.25
 /** Rejoining the lane: aim at least this many metres ahead per metre off it. */
@@ -58,6 +61,9 @@ const REJOIN_RATIO = 5
 /** Trail braking: above this much lock the brake is eased, down to (1 - TRAIL_EASE) at full lock. */
 const TRAIL_FROM = 0.35
 const TRAIL_EASE = 0.8
+/** Ramps: start aiming at the landing this far before the ramp, and aim this far past its end. */
+const RAMP_AIM_M = 60
+const RAMP_LAND_M = 60
 /** Clearance from a boost pad's edge for the car to miss it, metres. */
 const PAD_CLEAR = 1.6
 /** The last stretch before a loop is driven dead centre, metres. */
@@ -72,7 +78,7 @@ const LOOK_PER_MS = 0.55
 const LOOK_MIN = 7
 const LOOK_MAX = 75
 /** Braking the brain plans with, m/s^2 (a bit under what the car can do, so it is never late). */
-const PLAN_DECEL = 6.5
+const PLAN_DECEL = 5
 /** How far up the road to look for slow sections, metres (more when fast). */
 const SPEED_SCAN_MAX = 240
 /** Never plan on less braking than this, even on the steepest downhill. */
@@ -186,6 +192,19 @@ function planRunInLane(track: TrackRuntime, s: number, toLoop: number, lim: numb
     }
   }
   return best
+}
+
+/** If a kicker ramp starts within RAMP_AIM_M ahead (or we're on one), the s where it ends; else -1. */
+function rampAhead(track: TrackRuntime, s: number): number {
+  const pieces = track.pieces
+  for (let i = 0; i < pieces.length; i++) {
+    const p = pieces[i]
+    if (p.type !== 'ramp') continue
+    const toStart = track.deltaS(s, p.s0)
+    const toEnd = track.deltaS(s, p.s1)
+    if ((toStart >= 0 && toStart <= RAMP_AIM_M) || (toStart < 0 && toEnd >= 0)) return p.s1
+  }
+  return -1
 }
 
 /** Metres along the road to the start of the next loop piece (within 400 m), or -1. */
@@ -360,7 +379,13 @@ export class AiDriver implements Driver {
     // across the road and overshooting the other edge.
     const offLane = Math.abs(this.hit.lateral - this.laneNow)
     if (offLane * REJOIN_RATIO > look) look = Math.min(LOOK_MAX * 1.5, offLane * REJOIN_RATIO)
-    const aimS = this.s + look
+    let aimS = this.s + look
+    // Kicker ramps: in the air the car flies straight while the road keeps
+    // turning, so it lands off the side. From RAMP_AIM_M before a ramp until
+    // we're off it, aim at the landing zone instead: take off already pointing
+    // where the road will be.
+    const ramp = rampAhead(track, this.s)
+    if (ramp >= 0) aimS = ramp + RAMP_LAND_M
     track.frameAt(aimS, _frame)
     const lineOff = sampleAt(track, track.racingLine.offset, aimS)
     const wander = Math.sin(this.time * 0.37 + this.phase) * this.personality.wander * 0.9
@@ -396,6 +421,11 @@ export class AiDriver implements Driver {
       desired += this.passOffset + this.sideShove
     }
 
+    if (ramp >= 0) {
+      desired = 0 // the landing zone's centre
+      this.passTarget = 0
+      this.sideShove = 0
+    }
     const lim = Math.max(0, _frame.halfWidth - EDGE_MARGIN)
     desired = clamp(desired, -lim, lim)
     // slew the lane so lateral changes are smooth, never a twitch
@@ -418,7 +448,10 @@ export class AiDriver implements Driver {
     // sideways acceleration to fix our position. Without it, a few metres off line at
     // 250 km/h asks for 4 g, slams full lock and spins the car.
     const kRoad = sampleAt(track, track.samples.curvature, this.s + chord * 0.5)
-    const kBudget = CORRECTION_ALAT / Math.max(25, speed * speed)
+    // the further off line, the more we may spend getting back (a car 15 m off
+    // the road needs a real turn, not a polite nudge)
+    const offLine = Math.abs(this.hit.lateral - this.laneNow)
+    const kBudget = Math.min(CORRECTION_ALAT_MAX, CORRECTION_ALAT + CORRECTION_PER_M * offLine) / Math.max(25, speed * speed)
     const kWanted = clamp((2 * Math.sin(alpha)) / chord, kRoad - kBudget, kRoad + kBudget)
     const steerWanted = (kWanted / this.steerGain(v)) * PP_WEIGHT + STEER_DAMP * alphaRate
     this.steer = clamp(steerWanted, -1, 1)
