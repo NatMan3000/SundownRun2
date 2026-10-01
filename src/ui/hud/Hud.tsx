@@ -31,7 +31,7 @@ import { getTrack } from '../../track/current'
 import { formatClock, formatLap, formatScore } from '../format'
 import { installFeed } from './feed'
 import { SoundHint } from '../SoundHint'
-import { Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
+import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
 
 /** Text writes per second for numbers. The eye can't read a 60 Hz speedo anyway. */
@@ -396,6 +396,7 @@ export function Hud() {
       <Toasts />
       <Countdown />
       {visible && <DriveHint />}
+      {visible && <AirTrickHint />}
     </div>
   )
 }

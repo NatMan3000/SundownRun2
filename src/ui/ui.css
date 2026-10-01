@@ -1305,6 +1305,9 @@
   white-space: nowrap;
 }
 .hud-hint.is-gone { opacity: 0; }
+/* the air-trick hint sits just above the controls row, a touch brighter */
+.hud-hint--air { bottom: 4.4em; font-size: 0.95em; opacity: 1; transition: opacity 180ms ease-out; }
+.hint__plus { font-family: var(--font-display); font-weight: 700; color: var(--dim); }
 
 .glyph--stick {
   width: 1.75em;

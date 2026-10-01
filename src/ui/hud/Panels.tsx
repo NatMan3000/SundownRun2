@@ -11,6 +11,7 @@
 //  Countdown   3 - 2 - 1 - GO
 //  SpeedTrap   a big amber readout after a speed trap
 //  DriveHint   the controls for your device, until you're driving
+//  AirTrickHint  how to flip and roll, only while you're in the air
 //
 //  Anything that ticks every frame (clocks, the gap, the countdown)
 //  has a data-hud="..." slot that the HUD's one animation loop
@@ -23,6 +24,7 @@ import { useGame } from '../../core/store'
 import { useSettings } from '../../core/settings'
 import { getCar, telemetry } from '../../core/telemetry'
 import { useFeed } from './feed'
+import { on } from '../../core/events'
 import { Glyph } from '../hints'
 import { formatLap, formatScore } from '../format'
 
@@ -254,6 +256,55 @@ export function DriveHint() {
           <span className="hint__label">{label}</span>
         </span>
       ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------- air-trick hint
+
+/** Seconds in the air before the trick hint shows (small hops don't count). */
+const AIR_HINT_DELAY_S = 0.2
+
+/**
+ * "Space + W A S D in the air: tricks" (or "A + LS" on the pad), shown only
+ * while the car is airborne, so the hint bar stays calm on the ground. Once
+ * you land a flip, spin or roll this round, you know: it stays hidden until
+ * the next round.
+ */
+export function AirTrickHint() {
+  const pad = useGame((s) => s.inputDevice) === 'gamepad'
+  const round = useGame((s) => s.round)
+  const tricks = useSettings((s) => s.tricks)
+  const [show, setShow] = useState(false)
+  const learned = useRef(false)
+  useEffect(() => {
+    learned.current = false
+    const off = on('trick.land', (e) => {
+      if (e.tricks.some((t) => t.name === 'flip' || t.name === 'spin' || t.name === 'roll')) learned.current = true
+    })
+    // A few checks a second is plenty; React state only changes on the edges.
+    let shown = false
+    const t = setInterval(() => {
+      const want = !learned.current && telemetry.airborne && telemetry.airTime >= AIR_HINT_DELAY_S
+      if (want !== shown) {
+        shown = want
+        setShow(want)
+      }
+    }, 100)
+    return () => {
+      off()
+      clearInterval(t)
+    }
+  }, [round])
+  if (!tricks) return null
+  return (
+    <div className={`hud-hint hud-hint--air${show ? '' : ' is-gone'}`} aria-hidden={!show}>
+      <span className="hint">
+        <Glyph name={pad ? 'A' : 'Space'} pad={pad} />
+        <span className="hint__plus">+</span>
+        <Glyph name={pad ? 'LS' : 'W A S D'} pad={pad} />
+        <span className="hint__label">in the air: tricks</span>
+      </span>
     </div>
   )
 }
