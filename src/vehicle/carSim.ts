@@ -33,6 +33,7 @@ import * as THREE from 'three'
 import type { RapierCollider, RapierContext, RapierRigidBody } from '@react-three/rapier'
 import { GROUPS, isMagnetic, isOnRoad, ownerOf, surfaceOf } from '../core/physics'
 import type { SurfaceKind } from '../core/physics'
+import type { GameEventMap } from '../core/events'
 import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
 import type { BodyTuning } from './bodies/catalog'
 import { WALL_RAMP, WALL_SWEEP_DEG } from '../track/road'
@@ -47,8 +48,10 @@ import {
   GEAR_TOP_KMH,
   GRAVITY,
   HOLD,
+  LANDING,
   MAG,
   RAY_LENGTH,
+  ROLLBACK,
   RPM,
   STATE,
   STEERING,
@@ -70,6 +73,7 @@ const _ground = new THREE.Vector3()
 const _force = new THREE.Vector3()
 const _tyreSum = new THREE.Vector3()
 const _tmp = new THREE.Vector3()
+const _tmp2 = new THREE.Vector3()
 const _anchor = new THREE.Vector3()
 const _magN = new THREE.Vector3()
 const _w = new THREE.Vector3()
@@ -222,7 +226,8 @@ export interface StepNews {
   magOff: SurfaceKind | null
   magFell: boolean
   crash: number //         intensity 0..1, 0 = none
-  crashWhat: 'wall' | 'terrain' | 'prop' | 'car' | 'smashable' | 'barrier'
+  /** What the body hit: the events contract's own list (src/core/events.ts). */
+  crashWhat: GameEventMap['crash']['what']
   crashCarId: string | null
   /** Speed just before the hit, km/h. */
   crashSpeedKmh: number
@@ -265,6 +270,8 @@ export class CarSim {
   readonly groundNormal = new THREE.Vector3(0, 1, 0)
   private readonly prevLinvel = new THREE.Vector3()
   private readonly prevLinvelForDebug = new THREE.Vector3()
+  /** Last step's velocity change, while it is being judged as a crash or not. */
+  private readonly hitDv = new THREE.Vector3()
 
   // ---- outputs (telemetry for the player, CarState for everyone) ----
   speed = 0 //          m/s, full 3D
@@ -306,6 +313,8 @@ export class CarSim {
   /** Dev: world-vertical sum of this step's wheel forces (suspension + tyre), N. */
   debugWheelForceY = 0
   debugSuspSum = 0
+  /** Dev: the landing catch's total push this step, N (stepLandingCatch; 0 almost always). */
+  debugLandCatch = 0
   /** Dev: loop guidance this step [lateral m, lateral speed m/s, commanded accel m/s^2, heading error rad]. */
   readonly debugGuide = new Float32Array(4)
   /** Dev: per wheel (FL, FR, RL, RR) x [slip angle rad, lateral force N, longitudinal force N, load N]. */
@@ -338,6 +347,8 @@ export class CarSim {
   }
   /** Physics steps since the car (re)spawned. */
   steps = 0
+  /** Seconds since the car last had no wheel down (0 while airborne). */
+  sinceAir = 99
 
   // ---- per-wheel ----
   readonly wheelContact: boolean[] = [false, false, false, false]
@@ -389,6 +400,8 @@ export class CarSim {
   private readonly wheelOmega = new Float64Array(WHEELS)
   private readonly longClip = new Float64Array(WHEELS)
   private readonly driveShare = new Float64Array(WHEELS)
+  /** The landing catch's push per wheel this step, N (stepLandingCatch). */
+  private readonly landF = new Float64Array(WHEELS)
   private readonly contactPts = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
   private readonly wheelNormals = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
   private readonly wheelFwd = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
@@ -396,6 +409,8 @@ export class CarSim {
   private readonly magNormal = new THREE.Vector3(0, 1, 0)
   private appliedMass = 0
   private shiftTimer = 0
+  /** Road speed the gearbox reads (km/h): the forward speed, held while airborne. */
+  private rpmKmh = 0
   private settleSteps = 6
   private uprightTimer = 0
   private buriedTimer = 0
@@ -413,6 +428,14 @@ export class CarSim {
   readonly reseats = { moved: 0, skipped: 0 }
   /** Auto-hold is gripping the car (stopped, no pedal): see HOLD in tuning.ts. */
   holding = false
+  /** The roll-back catch's brake this step, 0..1 of the full brake (ROLLBACK in tuning.ts). */
+  rollbackBrake = 0
+  /**
+   * The roll-back catch is for a person on keys or a pad (S is brake AND reverse). An Ai brain
+   * or the demo autopilot coasts backwards on purpose (backing up for a loop run-up), so its
+   * owner switches the catch off.
+   */
+  rollbackCatch = true
   /** On a loop: the turn it is asking for this step, v^2 / R toward its centre (m/s^2). 0 off a loop. */
   loopAccel = 0
   /** On a wall ride: how hard the wall's curve presses the car into it this step (m/s^2, < 0 = away). */
@@ -527,12 +550,13 @@ export class CarSim {
       _rv.x = this.fwd.x * this.pendingSpeed
       _rv.y = this.fwd.y * this.pendingSpeed
       _rv.z = this.fwd.z * this.pendingSpeed
-      this.pendingSpeed = -1
       if (finiteV(this.fwd)) {
         body.setLinvel(_rv, true)
         this.prevLinvel.set(_rv.x, _rv.y, _rv.z)
         this.settleSteps = 2
+        this.rpmKmh = this.pendingSpeed * 3.6 // a launch into the air (dev drop) revs at its speed
       }
+      this.pendingSpeed = -1
     }
 
     // ---- read the body (rapier allocates these; nothing else here does) ----
@@ -587,6 +611,7 @@ export class CarSim {
     }
 
     // ---- impact: |dv| in one step (dv x mass IS the collision impulse) ----
+    let crashCheck = false
     if (this.settleSteps > 0) {
       this.settleSteps--
     } else {
@@ -594,11 +619,11 @@ export class CarSim {
       const dv = _tmp.length()
       const hit = clamp((dv - STATE.impactThreshold) / STATE.impactRange, 0, 1)
       if (hit > this.impact) this.impact = hit // camera kick + landing thump (landings included)
-      // Crash: only the change across the car's forward / side axes (up axis removed).
-      const dvAcross = _tmp.addScaledVector(up, -_tmp.dot(up)).length()
-      if (dvAcross > STATE.crashMinDv && this.crashCooldown <= 0 && chassis) {
+      // A crash? Judged after the wheels have looked at the ground (senseCrash, below).
+      if (dv > STATE.crashMinDv && this.crashCooldown <= 0 && chassis) {
         this.news.crashSpeedKmh = this.prevLinvel.length() * 3.6 // the speed going IN to the hit
-        this.senseCrash(world, chassis, clamp((dvAcross - STATE.crashMinDv) / STATE.crashRange, 0.05, 1))
+        this.hitDv.copy(_tmp)
+        crashCheck = true
       }
     }
     this.prevLinvel.copy(linvel)
@@ -768,6 +793,10 @@ export class CarSim {
     this.debugChassisContact = this.debugProbeChassis && chassis !== null && this.probeBodyDebug(world, chassis)
     const airborne = grounded === 0
     this.airTime = airborne ? this.airTime + DT : 0
+    this.sinceAir = airborne ? 0 : this.sinceAir + DT
+    // A hard hit last step: what did the body touch, and which part of the hit counts? After the
+    // wheel rays so "the ground" is the surface the car has just come down on.
+    if (crashCheck && chassis) this.senseCrash(world, chassis, this.hitDv)
 
     // ---- anti-roll bars: load the outside corner, unload the inside ----
     // This clamp to the plain maxForce also caps the bump stops at 26 kN a wheel. Letting them
@@ -789,6 +818,11 @@ export class CarSim {
       sf[3] = clamp(sf[3] - d, 0, sc[3])
     }
 
+    // ---- landing catch: never let a hard landing slam the body into the ground ----
+    // Not while any wheel is on a loop or wall ride: the loop and the wall carry their own turn.
+    if (grounded > 0 && magWheels === 0 && !this.magGrip) this.stepLandingCatch(body, mass, massRatio, grounded, comX, comY, comZ)
+    else this.debugLandCatch = 0
+
     // ---- limited-slip diff: torque goes where the load is ----
     // A flat 50/50 split saturates the unloaded inside rear mid-corner and the
     // tail snaps. Biasing by load makes that a slide you feel arriving.
@@ -796,6 +830,20 @@ export class CarSim {
     const shareRL = rearLoad > 1 ? clamp(sf[2] / rearLoad, DRIVE.torqueBiasMin, DRIVE.torqueBiasMax) : 0.5
     this.driveShare[2] = shareRL
     this.driveShare[3] = 1 - shareRL
+
+    // ---- roll-back catch: no pedal down and rolling tail first -> brake to a stop ----
+    // See ROLLBACK in tuning.ts. Once it is slow enough the auto-hold (further down) takes over.
+    // Not on a loop or wall ride (a car too slow for one must roll off it) and not in the air.
+    this.rollbackBrake = 0
+    if (this.rollbackCatch && !this.frozen && throttle <= 0.02 && brake <= 0.02 && vLongCar < -0.3 && grounded >= 2 && magWheels === 0 && !this.magGrip) {
+      const backKmh = -vLongCar * 3.6
+      let amt = ROLLBACK.brake * (1 - smoothstep(ROLLBACK.fullKmh, ROLLBACK.fadeKmh, backKmh))
+      // Steering the roll on purpose: let it roll, but never run away.
+      const steerHeld = Number.isFinite(c.steer) ? Math.abs(c.steer) : 0
+      if (steerHeld > ROLLBACK.steerIntent) amt *= smoothstep(ROLLBACK.steerKmh * 0.6, ROLLBACK.steerKmh, backKmh)
+      this.rollbackBrake = amt
+      if (amt > brakeCmd) brakeCmd = amt
+    }
 
     // =========================================================
     //  PASS B - tyres, friction circle, apply
@@ -977,9 +1025,13 @@ export class CarSim {
     else this.wallGuard = 0
 
     // ---- boost pads ----
-    if (track) this.stepBoost(body, track, mass, airborne)
+    if (track) this.stepBoost(body, track, mass, airborne, vTop)
     if (this.boost > 0 && !airborne && vLongCar > 0) {
-      const push = BOOST.accel * this.boostPower * this.boost * mass
+      // The push stops at the boost-raised limit, like the engine: pad after pad used to stack
+      // (306-346 km/h on the Hyperdrome against a 260 top speed). The limit sinks back to the top
+      // speed as the envelope fades, and drag brings the car down after it.
+      const lim = 1 - smoothstep(vLimit * DRIVE.limiterLo, vLimit * DRIVE.limiterHi, vLongCar)
+      const push = BOOST.accel * this.boostPower * this.boost * lim * mass
       this.addForce(body, fwd.x * push, fwd.y * push, fwd.z * push)
     }
 
@@ -1198,6 +1250,84 @@ export class CarSim {
   }
 
   /**
+   * The landing catch (LANDING in tuning.ts). For each wheel on the ground: how fast is that
+   * corner closing on the ground, and can its spring stop it in the travel it has left? If not,
+   * push along the ground's normal at that wheel with just enough to stop it in time (and never
+   * more than stops it dead this step, so it can't throw the car back up). The push is sized
+   * with the corner's effective mass (how hard that point is to stop, rotation included) and
+   * never carries tyre load.
+   */
+  private stepLandingCatch(body: RapierRigidBody, mass: number, massRatio: number, grounded: number, comX: number, comY: number, comZ: number): void {
+    const up = this.up
+    const ix = CHASSIS.inertia.x * massRatio
+    const iy = CHASSIS.inertia.y * massRatio
+    const iz = CHASSIS.inertia.z * massRatio
+    const lf = this.landF
+    let total = 0
+    let springsN = 0
+    for (let i = 0; i < WHEELS; i++) {
+      lf[i] = 0
+      if (!this.wheelContact[i]) continue
+      const n = this.wheelNormals[i]
+      const upN = up.dot(n)
+      springsN += this.suspForce[i] * Math.max(upN, 0)
+      const cpi = this.contactPts[i]
+      _arm.set(cpi.x - comX, cpi.y - comY, cpi.z - comZ)
+      _pointVel.crossVectors(this.angvel, _arm).add(this.linvel)
+      const vIn = -_pointVel.dot(n) // closing speed on the ground, m/s
+      if (!(vIn > LANDING.minApproach)) continue
+      // Only ground the car is coming down ONTO (facing its underside): a ray grazing the side of
+      // a ramp or a kerb's face must never become a wall that stops the car.
+      if (upN < LANDING.minFacing) continue
+      // Travel left before the body would touch, measured along the ground's normal.
+      const rem = Math.max((WHEEL.restLength - this.compression[i] - LANDING.margin) * upN, 0.005)
+      // Effective mass at this point along n: 1 / (1/m + sum over the car's axes of (r x n)^2 / I).
+      _tmp.crossVectors(_arm, n)
+      const cx = _tmp.dot(this.right) // the car's pitch axis (its +X is -right; squared, the sign is moot)
+      const cy = _tmp.dot(up)
+      const cz = _tmp.dot(this.fwd)
+      const effM = Math.min(1 / (1 / mass + (cx * cx) / ix + (cy * cy) / iy + (cz * cz) / iz), mass / grounded)
+      const aGrav = GRAVITY * Math.max(n.y, 0) //          gravity pressing it in
+      const aHave = (this.suspForce[i] * upN) / effM //     the spring's own push along n
+      const aNeed = (vIn * vIn) / (2 * rem) //              to stop within what is left
+      let aExtra = aNeed + aGrav - aHave
+      if (!(aExtra > 0)) continue
+      aExtra = Math.min(aExtra, vIn / DT + aGrav - aHave) // at most: stopped dead this step
+      if (!(aExtra > 0)) continue
+      lf[i] = effM * aExtra
+      total += lf[i]
+    }
+    if (total <= 0) {
+      this.debugLandCatch = 0
+      return
+    }
+    // Each wheel is sized as if it stopped its own corner, but they all push the same body: on a
+    // three-wheel landing their sum stopped the car and threw it back up at 2-5 m/s. So together
+    // they never take more than stops the whole car's approach (along the mean ground normal).
+    const gn = this.groundNormal
+    const vC = -this.linvel.dot(gn)
+    const cap = Math.max(0, mass * (Math.max(vC, 0) / DT + GRAVITY * Math.max(gn.y, 0)) - springsN)
+    const scale = total > cap ? cap / total : 1
+    total = 0
+    for (let i = 0; i < WHEELS; i++) {
+      const f = lf[i] * scale
+      if (!(f > 0)) continue
+      const cpi = this.contactPts[i]
+      _force.copy(this.wheelNormals[i]).multiplyScalar(f)
+      if (!finiteV(_force) || !finiteV(cpi)) continue
+      _rv.x = _force.x
+      _rv.y = _force.y
+      _rv.z = _force.z
+      _rp.x = cpi.x
+      _rp.y = cpi.y
+      _rp.z = cpi.z
+      body.addForceAtPoint(_rv, _rp, true)
+      total += f
+    }
+    this.debugLandCatch = total
+  }
+
+  /**
    * Mass, centre of mass and inertia come from here, not from the collider (it
    * has density 0), so they are explicit and tunable per body. Re-applied when
    * the garage swaps the body.
@@ -1357,6 +1487,7 @@ export class CarSim {
     this.steps = 0
     this.airTime = 0
     this.steerAngle = 0
+    this.rpmKmh = 0
     for (let i = 0; i < WHEELS; i++) this.wheelOmega[i] = 0
     this.prevToi.fill(-1)
     this.holding = false
@@ -1721,7 +1852,7 @@ export class CarSim {
   }
 
   /** Boost pads: a kick on entry, then the envelope pushes and lifts the top speed. */
-  private stepBoost(body: RapierRigidBody, track: TrackRuntime, mass: number, airborne: boolean): void {
+  private stepBoost(body: RapierRigidBody, track: TrackRuntime, mass: number, airborne: boolean, vTop: number): void {
     const zones = track.boostZones
     if (this.boostCooldown.length !== zones.length) this.boostCooldown = new Float64Array(zones.length)
     if (!this.hasTrackS || zones.length === 0) return
@@ -1743,11 +1874,15 @@ export class CarSim {
       this.boostAge = 0
       this.boost = 1
       // The kick goes along the pad's direction (the road), whatever the car is pointing at.
+      // It never carries the car past the boost's ceiling (top speed + BOOST.overTop): a pad hit
+      // already that fast still lights the boost, it just adds no more speed.
       const tx = zone.tangent.x
       const ty = zone.tangent.y
       const tz = zone.tangent.z
-      const imp = BOOST.kick * strength * mass
-      if (Number.isFinite(tx + ty + tz)) {
+      const vAlong = this.linvel.x * tx + this.linvel.y * ty + this.linvel.z * tz
+      const kick = Math.min(BOOST.kick * strength, Math.max(0, vTop * (1 + BOOST.overTop) - vAlong))
+      const imp = kick * mass
+      if (Number.isFinite(tx + ty + tz) && imp > 0) {
         _rv.x = tx * imp
         _rv.y = ty * imp
         _rv.z = tz * imp
@@ -1908,8 +2043,11 @@ export class CarSim {
     return this.debugBody[0] !== 0
   }
 
-  /** A hard hit: find what the chassis is touching, rank it, and report it. */
-  private senseCrash(world: RapierWorld, chassis: RapierCollider, intensity: number): void {
+  /**
+   * A hard hit (`dv`, this step's velocity change): find what the chassis is touching, rank it,
+   * and decide which part of the hit counts as a crash.
+   */
+  private senseCrash(world: RapierWorld, chassis: RapierCollider, dv: THREE.Vector3): void {
     let rank = -1
     let what: StepNews['crashWhat'] = 'terrain'
     let carId: string | null = null
@@ -1958,11 +2096,30 @@ export class CarSim {
       }
     })
     if (rank < 0) return // no chassis contact: a hard landing on the wheels, not a crash
-    // Upright with the wheels down and only the ground touching: a hard landing that
-    // bottomed out, not a crash (the bump stops already soaked it).
-    if (rank <= 1 && this.wheelsDown >= 3 && this.up.dot(this.groundNormal) > 0.8) return
+    let across: number
+    if (rank <= 1) {
+      // The ground (road, ramp, loop, terrain). Coming down onto it is a LANDING, however hard and
+      // however tilted, so only the part of the hit along the surface counts: the speed the body
+      // scrubbed off sliding or digging in. Measured across the car's own axes instead, a car
+      // saved on two wheels at 40-75 deg of roll read its landing as a crash (0.22-0.85) the same
+      // step the tricks scored it clean (feel-2 O1). On its roof the whole hit counts.
+      const n = this.wheelsDown > 0 ? this.groundNormal : this.surfaceUp
+      const wheelsSide = this.up.dot(n) >= STATE.crashLandUp
+      // Just down from the air and not on its roof: the landing itself, saved or not (the tricks
+      // judge that). Tilted two-wheel saves shoved sideways by their tyres read 0.06-0.22 here.
+      if (wheelsSide && this.sinceAir < STATE.crashLandWindow) return
+      if (wheelsSide) across = _tmp2.copy(dv).addScaledVector(n, -dv.dot(n)).length()
+      else across = dv.length()
+    } else {
+      // Walls, barriers, cars, props: across the car's forward / side axes (a landing is along its up).
+      across = _tmp2.copy(dv).addScaledVector(this.up, -dv.dot(this.up)).length()
+    }
+    // Upright with the wheels down and only the ground touching is a scrape (the nose catching a
+    // kicker's lip, a bottomed-out dip), not a crash, unless it really stops the car.
+    const minDv = rank <= 1 && this.wheelsDown >= 3 && this.up.dot(this.groundNormal) > 0.8 ? STATE.crashScrapeDv : STATE.crashMinDv
+    if (!(across > minDv)) return
     this.crashCooldown = STATE.crashCooldown
-    this.news.crash = intensity
+    this.news.crash = clamp((across - minDv) / STATE.crashRange, 0.05, 1)
     this.news.crashWhat = what
     this.news.crashCarId = carId
   }
@@ -1973,7 +2130,11 @@ export class CarSim {
    * engine free-revs with the throttle instead of falling silent (a v1 lesson).
    */
   private updateGearAndRpm(throttle: number, reversing: boolean, longSlip: number, airborne: boolean): void {
-    const kmh = Math.abs(this.forwardSpeed) * 3.6
+    // The gearbox reads road speed, so in the air it keeps the speed the wheels left the ground
+    // at: steering spins the car in the air, and its speed along the nose fell with every degree
+    // of spin (full steer dropped the needle to 0.17, under the hands-off 0.36: feel-2 O8).
+    if (!airborne) this.rpmKmh = Math.abs(this.forwardSpeed) * 3.6
+    const kmh = this.rpmKmh
     if (this.shiftTimer > 0) this.shiftTimer -= DT
     let target: number
     if (reversing) {

@@ -226,6 +226,7 @@ export function VehicleLayer() {
           surface: s.surface,
           chassis: { touching: s.chassisTouching, supportUp: +s.chassisSupportUp.toFixed(2) },
           holding: s.holding,
+          rollbackBrake: +s.rollbackBrake.toFixed(2),
           reseats: { ...s.reseats },
           onRoad: s.onRoad,
           forces: { suspSum: Math.round(s.debugSuspSum), wheelY: Math.round(s.debugWheelForceY), weight: Math.round(s.speed >= 0 ? 9.81 * 1200 * s.tuning.mass : 0) },

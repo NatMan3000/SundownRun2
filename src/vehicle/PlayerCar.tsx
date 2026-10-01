@@ -205,6 +205,8 @@ export function PlayerCar() {
     if (demoDrive.active && t && g.phase === 'playing') demoDrive.update(s, t, car)
     const c = s.controls
     c.powerScale = 1
+    // The roll-back catch helps a person on keys or a pad; the autopilot means every coast.
+    s.rollbackCatch = !driveOverride.active
     if (driveOverride.active) {
       const k = 1 - Math.exp(-OVERRIDE_RATE * DT)
       c.throttle += (driveOverride.throttle - c.throttle) * k

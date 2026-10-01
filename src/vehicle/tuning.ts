@@ -76,6 +76,25 @@ export const SUSPENSION = {
   antiRollRear: 14000,
 }
 
+/**
+ *  LANDING CATCH - the other half of forgiving landings. A big jump comes down faster than
+ *  0.4 m of suspension can stop (a 3 s jump lands at 17-20 m/s, 0.3 m a step), so the body
+ *  slammed into the road: that hit scrubbed 20-45 km/h off the landing, and pushing the body
+ *  back out of the road threw the car into the air again for 0.3-0.5 s. Now, when a wheel
+ *  closes on the ground faster than its spring can stop it in the travel left, the car gets a
+ *  push along the ground's normal at that wheel, just enough to stop it `margin` short of the
+ *  body touching. It only ever slows the approach (never pushes back, so nothing bounces) and
+ *  carries no tyre load (so it scrubs no speed). The 26 kN spring cap above stays.
+ */
+export const LANDING = {
+  /** Travel kept spare, m: the catch stops the corner this far before the body would touch. */
+  margin: 0.06,
+  /** Closing speeds under this (m/s) are ordinary bumps the springs deal with. */
+  minApproach: 1,
+  /** Only ground facing the car's underside: car up . ground normal at least this (0.6 = 53 deg). */
+  minFacing: 0.6,
+}
+
 export const TYRE = {
   /** Peak friction (x the grip setting). The rear a touch under the front: the car likes to rotate. */
   muFront: 1.62,
@@ -426,7 +445,11 @@ export const BOOST = {
   accel: 9,
   /** Envelope 1 -> 0 over this long. */
   seconds: 1.5,
-  /** How far past the top speed boost may carry the car (fades with the envelope). */
+  /**
+   * How far past the top speed boost may carry the car: the kick, the push and the engine all
+   * stop at top speed x (1 + overTop x envelope), so pads never stack past +35% and the ceiling
+   * sinks back to the top speed as the envelope fades.
+   */
   overTop: 0.35,
   /** The same pad cannot fire again for this long. */
   cooldown: 1.0,
@@ -447,6 +470,30 @@ export const HOLD = {
   mu: 0.9,
 }
 
+/**
+ *  ROLL-BACK CATCH. With no pedal down, a car rolling backwards (tail first) is braked to a
+ *  stop, and then the auto-hold above keeps it there. S is brake AND reverse: a kid who
+ *  tapped S at rest facing up a hill started a reverse, let go already faster than the
+ *  hold's releaseSpeed, and rolled 45 m back down the hill at 30 km/h. Holding S still
+ *  reverses as far as you like. Steering while it rolls back is a roll-back on purpose
+ *  (swinging the nose round), so then it only stops the roll getting faster than steerKmh.
+ *  It stands down on loops and wall rides (a car too slow for those must roll off them).
+ */
+export const ROLLBACK = {
+  /** How much of the full brake force the catch uses: 0.35 stops a roll in well under a second. */
+  brake: 0.35,
+  /**
+   * Full catch up to this backwards speed (km/h; reverse tops out at 45, a hill can add a few),
+   * fading out by fadeKmh: a car spun round and sliding backwards fast is left to the driver.
+   */
+  fullKmh: 50,
+  fadeKmh: 80,
+  /** Steering past this much (0..1) while rolling back means "I'm steering this roll"... */
+  steerIntent: 0.3,
+  /** ...and then the roll may run up to this speed (km/h) before the catch leans on it. */
+  steerKmh: 10,
+}
+
 export const STATE = {
   /** Speed (m/s) and rear slip above which `drifting` is true. */
   driftSpeed: 5,
@@ -463,6 +510,19 @@ export const STATE = {
   crashMinDv: 3,
   crashRange: 11,
   crashCooldown: 0.6,
+  /**
+   * Hitting the GROUND with the body counts only the hit along the surface (sliding, digging in),
+   * never the landing itself, while car up . surface up is at least this: wheels-side down, up to
+   * lying on its side. Below it (on the roof) the whole hit counts.
+   */
+  crashLandUp: 0,
+  /**
+   * Upright on its wheels with the body scraping the ground (a kicker's lip, a dip): a crash only
+   * past this much speed lost along the surface in one step, m/s (~29 km/h).
+   */
+  crashScrapeDv: 8,
+  /** For this long after the wheels come back down (s, the tricks' recovery window), a body hit on the ground is the landing, not a crash. */
+  crashLandWindow: 0.4,
   /** Upside down and nearly stopped this long = auto reset. */
   upsideDownSeconds: 2.5,
   upsideDownSpeed: 3,

@@ -33,6 +33,8 @@
 //  (the lip's angle there), Wpress (the curve's push into the wall, m/s^2),
 //  Wguard (the lip guard's push back down, m/s^2), Wclear (m round the curve
 //  to the lip) and Warc (speed up the wall, m/s).
+//  land = the landing catch's push this step (kN, 0 unless a landing is
+//  too hard for the springs) and rb = the roll-back catch's brake (0..1).
 //  Buffers are preallocated: recording costs a few array writes per step
 //  and nothing at all when idle.
 // ============================================================
@@ -40,7 +42,7 @@
 import type { CarSim } from '../vehicle/carSim'
 import { DT, GRAVITY } from '../vehicle/tuning'
 
-const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody', 'boost', 'rack', 'aF', 'aR', 'fyF', 'fyR', 'fxF', 'fxR', 'nFL', 'nFR', 'nRL', 'nRR', 'loopG', 'gLatV', 'gAcc', 'gHead', 'hgt', 'suspG', 'body', 'imp', 'Lsup', 'Lspr', 'Lmag', 'Lgrav', 'Lacc', 'Lk', 'bWhat', 'bImp', 'bGap', 'bNUp', 'ws', 'crash', 'Wphi', 'Wlip', 'Wpress', 'Wguard', 'Wclear', 'Warc'] as const
+const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody', 'boost', 'rack', 'aF', 'aR', 'fyF', 'fyR', 'fxF', 'fxR', 'nFL', 'nFR', 'nRL', 'nRR', 'loopG', 'gLatV', 'gAcc', 'gHead', 'hgt', 'suspG', 'body', 'imp', 'Lsup', 'Lspr', 'Lmag', 'Lgrav', 'Lacc', 'Lk', 'bWhat', 'bImp', 'bGap', 'bNUp', 'ws', 'crash', 'Wphi', 'Wlip', 'Wpress', 'Wguard', 'Wclear', 'Warc', 'land', 'rb'] as const
 const KIND_CODE: Record<string, number> = { road: 1, loop: 2, wall: 2, ramp: 3, barrier: 4, skirt: 5, terrain: 6, floor: 7 }
 const CRASH_CODE: Record<string, number> = { barrier: 4, wall: 5, terrain: 6, car: 8, prop: 8, smashable: 8 }
 const MAX_STEPS = 60 * 60
@@ -121,6 +123,8 @@ export const feelTrace = {
     buf[o + 52] = ws
     buf[o + 53] = s.news.crash > 0 ? (CRASH_CODE[s.news.crashWhat] ?? 9) : 0
     for (let k = 0; k < 6; k++) buf[o + 54 + k] = s.debugWall[k]
+    buf[o + 60] = s.debugLandCatch / 1000
+    buf[o + 61] = s.rollbackBrake
     count++
   },
 

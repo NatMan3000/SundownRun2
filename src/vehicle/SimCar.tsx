@@ -38,6 +38,8 @@ export function SimCar(props: SimCarProps) {
     h.topSpeedKmh = set.topSpeedKmh
     h.magGripKmh = set.magGripKmh
     h.boostStrength = set.boostStrength
+    // An Ai brain coasts backwards on purpose (backing up for a loop run-up): no roll-back catch.
+    s.rollbackCatch = false
     try {
       driver.update(car, DT)
     } catch (err) {
