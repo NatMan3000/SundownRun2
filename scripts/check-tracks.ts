@@ -22,6 +22,7 @@ import { SURFACE_CODE } from '../src/track/types'
 
 const args = process.argv.slice(2)
 const physics = args.includes('--physics')
+const bench = args.includes('--bench')
 const files = args.filter((a) => !a.startsWith('--'))
 const root = resolve(import.meta.dir, '..')
 const targets = files.length
@@ -115,11 +116,18 @@ for (const path of targets) {
   console.log(`    world     ${t.world.size} m, edge ${t.world.edge}, play radius ${t.world.playRadius.toFixed(0)} m, reset below ${t.world.resetY.toFixed(1)} m`)
   console.log(`    build     ${x ? x.buildMs.toFixed(0) : '?'} ms`)
   // No kinks: a sharp change of direction between neighbouring samples is a bump or a step.
-  const { groundClearance, ribbonSmoothness } = await import('../src/track/selftest')
+  const { groundClearance, ribbonSmoothness, crossingClearance } = await import('../src/track/selftest')
   const sm = ribbonSmoothness(t)
   const smoothOk = sm.roadTurn < 4 && sm.upTurn < 4 && sm.loopTurn < 9 && sm.spacingErr < 0.05
   if (!smoothOk) failed++
   console.log(`    smooth    ${smoothOk ? 'ok  ' : 'FAIL'} sharpest turn ${sm.roadTurn.toFixed(2)} deg/m on the road (s=${sm.at.toFixed(0)}), ${sm.loopTurn.toFixed(2)} in loops; roll ${sm.upTurn.toFixed(2)} deg/m; spacing error ${(sm.spacingErr * 100).toFixed(1)} cm`)
+  // Bridges: where the road passes over itself, a car must fit underneath.
+  const cross = crossingClearance(t)
+  if (cross) {
+    const ok = cross.gap >= 6.2
+    if (!ok) failed++
+    console.log(`    bridges   ${ok ? 'ok  ' : 'FAIL'} the road passes over itself with ${cross.gap.toFixed(1)} m between levels at the tightest (s=${cross.s1.toFixed(0)} over s=${cross.s2.toFixed(0)}; needs 6.2 m: slab plus a car)`)
+  }
   // The ground must stay under the road everywhere (at every bank angle a slider allows).
   const adjBank = v.track.road.banking.adjustable
   const variants = adjBank ? [adjBank.min, v.track.road.banking.maxDeg, adjBank.max] : [null]
@@ -132,6 +140,19 @@ for (const path of targets) {
   }
   for (const w of v.warnings) console.log(`    warning   ${w.path || '(file)'}: ${w.message}`)
 
+  if (bench) {
+    const { benchQueries } = await import('../src/track/selftest')
+    // Rebuild timings: a cold build, then live rebuilds that reuse the natural ground.
+    const times: number[] = []
+    let prev = t
+    for (let k = 0; k < 5; k++) {
+      prev = buildTrack(v.track, { ...t.params }, prev)
+      times.push(trackInternals(prev)?.buildMs ?? 0)
+    }
+    const b = benchQueries(t)
+    console.log(`    bench     cold build ${x ? x.buildMs.toFixed(0) : '?'} ms; live rebuild ${Math.min(...times).toFixed(0)}-${Math.max(...times).toFixed(0)} ms`)
+    console.log(`    bench     frameAt ${b.frameAtUs.toFixed(2)} us, nearest with hint ${b.nearestHintUs.toFixed(2)} us, nearest cold ${b.nearestColdUs.toFixed(2)} us, terrainHeight ${b.terrainUs.toFixed(2)} us`)
+  }
   if (physics) {
     const { runPhysicsSelfTest } = await import('../src/track/selftest')
     const r = runPhysicsSelfTest(t, await loadGameRapier())

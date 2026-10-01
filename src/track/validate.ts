@@ -518,8 +518,9 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
   }
   if (worst < MIN_RADIUS) I.warn('road.points', `the corner near point ${worstAt.toFixed(1)} has a ${worst.toFixed(0)} m radius; keep corners above ${MIN_RADIUS} m or cars will struggle`)
 
-  // The world edge: the mountains (ridge) start rising about 15% of the size in from the edge.
-  const edgeMargin = t.environment.terrain.edge === 'ridge' ? Math.max(170, t.environment.size * 0.15) + 40 : 40
+  // The world edge: the mountains (ridge) start rising about 0.15 x size + 30 m in from the edge.
+  // Matches terrain.ts: the ridge span is clamp(0.15 x size, 170, 300) and its crest sits 30 m in.
+  const edgeMargin = t.environment.terrain.edge === 'ridge' ? Math.min(300, Math.max(170, t.environment.size * 0.15)) + 30 + 40 : 40
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i]
     const r = Math.max(Math.abs(p.x), Math.abs(p.z))
@@ -534,7 +535,15 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
       if (i < stride * 4 && j > n - stride * 8) continue
       const j2 = Math.min(n, j + stride)
       if (segmentsCross(dense.x[i], dense.z[i], dense.x[i2], dense.z[i2], dense.x[j], dense.z[j], dense.x[j2], dense.z[j2])) {
-        I.warn('road.points', `the road crosses itself near point ${dense.at[i].toFixed(1)} and point ${dense.at[j].toFixed(1)}: give one of them lift (8 m or more) to make a bridge`)
+        // Both roads stand on the same patch of ground, so their height difference
+        // is the difference in lift (when neither uses an absolute y).
+        const la = liftAt(pts, dense.at[i])
+        const lb = liftAt(pts, dense.at[j])
+        if (la === null || lb === null) {
+          I.warn('road.points', `the road crosses itself near point ${dense.at[i].toFixed(1)} and point ${dense.at[j].toFixed(1)}; check one passes at least 7 m over the other (bun run tracks:check measures it)`)
+        } else if (Math.abs(la - lb) < BRIDGE_MIN) {
+          I.warn('road.points', `the road crosses itself near point ${dense.at[i].toFixed(1)} and point ${dense.at[j].toFixed(1)} only ${Math.abs(la - lb).toFixed(1)} m apart in height: give one of them ${BRIDGE_MIN} m or more of lift to make a bridge`)
+        }
       }
     }
   }
@@ -595,6 +604,20 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
       if (overlap) I.warn(`pieces[${B.i}]`, `this ${B.type} overlaps pieces[${A.i}] (${A.type}); give each its own stretch of road`)
     }
   }
+}
+
+/** Height a crossing needs: slab (1.2 m) plus room for a car underneath. */
+const BRIDGE_MIN = 7
+
+/** Lift at a control-point position, blended like the builder does; null if a point there uses absolute y. */
+function liftAt(pts: ResolvedTrackFile['road']['points'], at: number): number | null {
+  const n = pts.length
+  const a = ((at % n) + n) % n
+  const i = Math.floor(a) % n
+  const j = (i + 1) % n
+  if (typeof pts[i].y === 'number' || typeof pts[j].y === 'number') return null
+  const w = (1 - Math.cos(Math.PI * (a - Math.floor(a)))) / 2
+  return (pts[i].lift ?? 0) + ((pts[j].lift ?? 0) - (pts[i].lift ?? 0)) * w
 }
 
 function segmentsCross(ax: number, az: number, bx: number, bz: number, cx: number, cz: number, dx: number, dz: number): boolean {

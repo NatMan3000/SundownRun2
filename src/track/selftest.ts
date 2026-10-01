@@ -12,8 +12,12 @@
 //   2. Resting. A car-sized box dropped just above the road, at a
 //      dozen places round the lap, settles ON the road surface.
 //   3. Containment. Car-sized boxes fired down at 60 m/s onto every
-//      kind of surface (road, terrain, loop, wall ride, ramp) end up
-//      on top of it, never through it.
+//      kind of surface (road, terrain, loop, wall ride, ramp, barrier)
+//      end up on top of it, never through it.
+//   4. A drop grid across the whole playable world (12 x 12 points).
+//   5. The world edge: boxes fired outward at 90 m/s from 24 bearings
+//      stay inside world.playRadius.
+//   6. The catch floor catches anything that gets below the ground.
 // ============================================================
 
 import type { Collider, Rapier, RigidBody } from './rapierTypes'
@@ -82,6 +86,89 @@ export function ribbonSmoothness(t: TrackRuntime): { roadTurn: number; loopTurn:
     spacingErr = Math.max(spacingErr, sp)
   }
   return { roadTurn, loopTurn, upTurn, spacingErr, at }
+}
+
+/**
+ * Where the road passes over itself (a bridge), the smallest height gap between
+ * the two levels, measured on the built road. null when the road never overlaps
+ * itself. Loops are left out (their lanes pass under their own loop by design).
+ */
+export function crossingClearance(t: TrackRuntime): { gap: number; s1: number; s2: number } | null {
+  const S = t.samples
+  const n = S.count
+  const CELL = 16
+  const cells = new Map<number, number[]>()
+  const key = (cx: number, cz: number) => cx * 100003 + cz
+  for (let i = 0; i < n; i++) {
+    if (S.surface[i] === SURFACE_CODE.loop) continue
+    const k = key(Math.floor(S.px[i] / CELL), Math.floor(S.pz[i] / CELL))
+    const list = cells.get(k)
+    if (list) list.push(i)
+    else cells.set(k, [i])
+  }
+  let best: { gap: number; s1: number; s2: number } | null = null
+  for (let i = 0; i < n; i++) {
+    if (S.surface[i] === SURFACE_CODE.loop) continue
+    const cx = Math.floor(S.px[i] / CELL)
+    const cz = Math.floor(S.pz[i] / CELL)
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        for (const j of cells.get(key(cx + dx, cz + dz)) ?? []) {
+          if (j <= i) continue
+          const ds = Math.abs(t.deltaS(i * S.ds, j * S.ds))
+          if (ds < 80) continue
+          const h = Math.hypot(S.px[i] - S.px[j], S.pz[i] - S.pz[j])
+          if (h > S.halfWidth[i] + S.halfWidth[j]) continue
+          const gap = Math.abs(S.py[i] - S.py[j])
+          if (!best || gap < best.gap) best = { gap, s1: i * S.ds, s2: j * S.ds }
+        }
+      }
+    }
+  }
+  return best
+}
+
+/** Timings for the README and the checker: query costs in microseconds. */
+export function benchQueries(t: TrackRuntime): { frameAtUs: number; nearestHintUs: number; nearestColdUs: number; terrainUs: number } {
+  const frame: TrackFrame = {
+    s: 0,
+    position: new THREE.Vector3(),
+    tangent: new THREE.Vector3(),
+    up: new THREE.Vector3(),
+    right: new THREE.Vector3(),
+    halfWidth: 0,
+    bank: 0,
+    curvature: 0,
+    surface: 'road',
+  }
+  const hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+  const N = 20000
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+  // Points near the road (what cars ask about), from frames with a sideways and upward offset.
+  const pts = new Float64Array(N * 4)
+  for (let i = 0; i < N; i++) {
+    const s = (i * 7.31) % t.length
+    t.frameAt(s, frame)
+    pts[i * 4] = frame.position.x + frame.right.x * ((i % 11) - 5)
+    pts[i * 4 + 1] = frame.position.y + 0.8
+    pts[i * 4 + 2] = frame.position.z + frame.right.z * ((i % 11) - 5)
+    pts[i * 4 + 3] = s
+  }
+  let sink = 0
+  let t0 = now()
+  for (let i = 0; i < N; i++) sink += t.frameAt(i * 0.37, frame).halfWidth
+  const frameAtUs = ((now() - t0) * 1000) / N
+  t0 = now()
+  for (let i = 0; i < N; i++) sink += t.nearest(pts[i * 4], pts[i * 4 + 1], pts[i * 4 + 2], hit, pts[i * 4 + 3] + 2).s
+  const nearestHintUs = ((now() - t0) * 1000) / N
+  t0 = now()
+  for (let i = 0; i < N; i++) sink += t.nearest(pts[i * 4], pts[i * 4 + 1], pts[i * 4 + 2], hit).s
+  const nearestColdUs = ((now() - t0) * 1000) / N
+  t0 = now()
+  for (let i = 0; i < N; i++) sink += t.terrainHeight(pts[i * 4], pts[i * 4 + 2])
+  const terrainUs = ((now() - t0) * 1000) / N
+  if (!Number.isFinite(sink)) throw new Error('bench produced a non-finite value')
+  return { frameAtUs, nearestHintUs, nearestColdUs, terrainUs }
 }
 
 export interface SelfTestResult {
@@ -329,6 +416,92 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     if (fails) ok = false
     lines.push(`${fails ? 'FAIL' : 'ok  '} containment: ${shots.length - fails}/${shots.length} car boxes fired at ${V} m/s stayed on the surface they hit`)
     for (const f of failed) lines.push(`     fell through: ${f}`)
+  }
+
+  // ---- 4. everywhere reachable: a drop grid over the whole playable world ----
+  {
+    const V = 60
+    const inner = t.world.edge === 'ridge' ? t.world.half * 0.62 : t.world.playRadius * 0.92
+    const ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 })
+    const topY = t.terrain.maxHeight + 80
+    let n = 0
+    let fails = 0
+    const failed: string[] = []
+    for (let a = -1; a <= 1.0001; a += 2 / 11) {
+      for (let b = -1; b <= 1.0001; b += 2 / 11) {
+        const x = a * inner + 0.7
+        const z = b * inner - 0.3
+        if (t.world.edge === 'wall' && Math.hypot(x, z) > inner) continue
+        // The highest surface here (road, ramp, loop or ground), straight down.
+        ray.origin = { x, y: topY, z }
+        const first = world.castRay(ray, topY - t.world.catchFloorY + 10, true)
+        if (!first) continue
+        const surfaceY = topY - first.timeOfImpact
+        quat.identity()
+        const body = spawnBox(x, surfaceY + 4, z, quat, 0, -V, 0)
+        run(1.2)
+        const p = body.translation()
+        n++
+        // It may have slid down a slope or a bank: judge it against the surface where it ended up.
+        ray.origin = { x: p.x, y: topY, z: p.z }
+        const under = world.castRay(ray, topY - t.world.catchFloorY + 10, true, undefined, undefined, undefined, body)
+        const endSurface = under ? topY - under.timeOfImpact : -Infinity
+        if (p.y < endSurface - 0.2) {
+          fails++
+          if (failed.length < 5) failed.push(`(${x.toFixed(0)}, ${z.toFixed(0)}) surface ${surfaceY.toFixed(1)} -> ended at y ${p.y.toFixed(1)}, under a surface at ${endSurface.toFixed(1)}`)
+        }
+        world.removeRigidBody(body)
+      }
+    }
+    if (fails) ok = false
+    lines.push(`${fails ? 'FAIL' : 'ok  '} drop grid: ${n - fails}/${n} car boxes dropped at ${V} m/s across the whole world stayed on top of whatever they hit`)
+    for (const f of failed) lines.push(`     fell through: ${f}`)
+  }
+
+  // ---- 5. the world edge holds: fire boxes flat out at it from every direction ----
+  {
+    const V = 90
+    const BEARINGS = 24
+    const start = t.world.edge === 'ridge' ? t.world.half * 0.55 : t.world.playRadius - 40
+    let escaped = 0
+    const failed: string[] = []
+    let worstR = 0
+    for (let k = 0; k < BEARINGS; k++) {
+      const th = (k / BEARINGS) * Math.PI * 2 + 0.05
+      const dx = Math.cos(th)
+      const dz = Math.sin(th)
+      const x = dx * start
+      const z = dz * start
+      const y = t.terrainHeight(x, z) + 2
+      quat.identity()
+      const body = spawnBox(x, y, z, quat, dx * V, 8, dz * V)
+      run(5)
+      const p = body.translation()
+      const r = Math.hypot(p.x, p.z)
+      worstR = Math.max(worstR, r)
+      if (r > t.world.playRadius || p.y < t.world.catchFloorY - 2) {
+        escaped++
+        if (failed.length < 5) failed.push(`bearing ${((th * 180) / Math.PI).toFixed(0)} deg -> ended at r ${r.toFixed(0)} m, y ${p.y.toFixed(0)}`)
+      }
+      world.removeRigidBody(body)
+    }
+    if (escaped) ok = false
+    lines.push(
+      `${escaped ? 'FAIL' : 'ok  '} world edge (${t.world.edge}): ${BEARINGS - escaped}/${BEARINGS} car boxes fired outward at ${V} m/s stayed inside (furthest r ${worstR.toFixed(0)} m, play radius ${t.world.playRadius.toFixed(0)} m)`,
+    )
+    for (const f of failed) lines.push(`     escaped: ${f}`)
+  }
+
+  // ---- 6. the catch floor: anything that does get under the ground lands on it ----
+  {
+    quat.identity()
+    const body = spawnBox(13, t.world.resetY - 1, -7, quat, 0, -60, 0)
+    run(2)
+    const p = body.translation()
+    const pass = p.y > t.world.catchFloorY - 0.5 && p.y < t.world.resetY
+    if (!pass) ok = false
+    lines.push(`${pass ? 'ok  ' : 'FAIL'} catch floor: a box below the reset height landed at y ${p.y.toFixed(1)} (floor top ${t.world.catchFloorY.toFixed(1)}, reset below ${t.world.resetY.toFixed(1)})`)
+    world.removeRigidBody(body)
   }
 
   world.free()
