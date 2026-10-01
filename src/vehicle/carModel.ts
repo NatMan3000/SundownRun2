@@ -16,7 +16,8 @@
 //    anchors   CarAnchors               light / underglow / wheel / bonnet-camera points (look and camera use it)
 //    bodyId
 //
-//  8 draw calls per car: paint, glass, trim, lights, 4 wheels.
+//  8 draw calls per car: paint, glass, trim, lights, 4 wheels. The ghost
+//  is 6: a depth-only copy of its merged shell, the shell, 4 wheels.
 //
 //  Colours:
 //    paint   the player's paint, plus a contrast ACCENT (wings, fins,
@@ -45,7 +46,7 @@ import type { CarAnchors } from '../core/telemetry'
 import { registerDev, registerInspector } from '../core/devHandles'
 import { BODIES, bodyEntry } from './bodies/catalog'
 import type { BodyId } from './bodies/catalog'
-import { bodyGeometry, wheelGeometry } from './bodies/build'
+import { bodyGeometry, ghostBodyGeometry, wheelGeometry } from './bodies/build'
 import { CHASSIS, ROAD_Y_AT_REST, WHEEL } from './tuning'
 
 interface LightUniforms {
@@ -430,16 +431,31 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     materials.push(paintMat, glassMat, trimMat, lightMat, wheelMat)
   }
 
-  const paintMesh = new THREE.Mesh(g.paint, paintMat ?? glassMat)
-  paintMesh.castShadow = !!opts.shadows
-  paintMesh.receiveShadow = !opts.ghost
-  if (paintMat) paintMesh.onBeforeRender = tickPaintSun
-  const glassMesh = new THREE.Mesh(g.glass, glassMat)
-  const trimMesh = new THREE.Mesh(g.trim, trimMat)
-  const lightMesh = new THREE.Mesh(g.lights, lightMat)
-  // the flame grows out of the geometry's bounds in the shader: never cull it early
-  lightMesh.frustumCulled = false
-  sprung.add(paintMesh, glassMesh, trimMesh, lightMesh)
+  // The ghost is one see-through shell: the whole body merged into one mesh,
+  // drawn after a depth-only copy of itself, so only its outer surface shows
+  // (no tub, fender and wheel-well faces layered inside it). 2 draws, not 4.
+  let lightMesh: THREE.Mesh | null = null
+  if (opts.ghost) {
+    const shell = ghostBodyGeometry(id)
+    const depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true, transparent: true })
+    materials.push(depthOnly)
+    const depthMesh = new THREE.Mesh(shell, depthOnly)
+    depthMesh.name = 'ghost-depth'
+    const shellMesh = new THREE.Mesh(shell, glassMat)
+    shellMesh.name = 'ghost-shell'
+    sprung.add(depthMesh, shellMesh)
+  } else {
+    const paintMesh = new THREE.Mesh(g.paint, paintMat ?? glassMat)
+    paintMesh.castShadow = !!opts.shadows
+    paintMesh.receiveShadow = true
+    if (paintMat) paintMesh.onBeforeRender = tickPaintSun
+    const glassMesh = new THREE.Mesh(g.glass, glassMat)
+    const trimMesh = new THREE.Mesh(g.trim, trimMat)
+    lightMesh = new THREE.Mesh(g.lights, lightMat)
+    // the flame grows out of the geometry's bounds in the shader: never cull it early
+    lightMesh.frustumCulled = false
+    sprung.add(paintMesh, glassMesh, trimMesh, lightMesh)
+  }
 
   const steer: THREE.Group[] = []
   const spin: THREE.Group[] = []
@@ -458,7 +474,8 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     steer.push(s)
     spin.push(sp)
   }
-  if (opts.ghost) group.traverse((o) => ((o as THREE.Mesh).renderOrder = 10))
+  // transparent pass, after everything else: the depth copy first (9), then the shell and wheels (10)
+  if (opts.ghost) group.traverse((o) => ((o as THREE.Mesh).renderOrder = o.name === 'ghost-depth' ? 9 : 10))
 
   const anchors: CarAnchors = {
     tailLights: g.tailLights.map((v) => v.clone()),
@@ -492,7 +509,7 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     shownBoost: -1,
   }
   rigs.set(group, rig)
-  if (lightUniforms) lightMesh.onBeforeRender = () => tickRocket(rig)
+  if (lightUniforms && lightMesh) lightMesh.onBeforeRender = () => tickRocket(rig)
   setCarColors(group, paint, glow)
   setCarBrake(group, 0)
   return group

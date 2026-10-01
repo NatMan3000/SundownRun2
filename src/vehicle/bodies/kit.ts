@@ -299,7 +299,8 @@ export function plateFront(outline: V2[], depth: number, z: number, facing: 1 | 
 /** A rounded box centred at (x, y, z), tilted `rx` about the car's x axis. */
 export function rbox(w: number, h: number, d: number, x: number, y: number, z: number, radius = 0.03, rx = 0): THREE.BufferGeometry {
   const r = Math.min(radius, w / 2 - 1e-4, h / 2 - 1e-4, d / 2 - 1e-4)
-  const g = r > 0.002 ? new RoundedBoxGeometry(w, h, d, 1, r) : new THREE.BoxGeometry(w, h, d)
+  // small radii don't read at game distance: a plain box is 12 triangles instead of 108
+  const g = r >= 0.015 ? new RoundedBoxGeometry(w, h, d, 1, r) : new THREE.BoxGeometry(w, h, d)
   if (rx) g.rotateX(rx)
   g.translate(x, y, z)
   return g

@@ -48,6 +48,23 @@ function flipFender(f: FenderSpec): FenderSpec {
   return { ...f, zc: -f.zc, front: -f.back, back: -f.front, xOut: flip(f.xOut), yTop: flip(f.yTop) }
 }
 
+/**
+ * Tub stations that close a body into a smooth dome: from the full section
+ * `base` at z0 to a point at zTip, every width and height shrinking along a
+ * rounded curve toward the nose's centre height `yc`. Ordered z0 -> zTip.
+ */
+function dome(base: number[], z0: number, zTip: number, yc: number): number[][] {
+  const out: number[][] = []
+  for (const t of [0, 0.35, 0.6, 0.78, 0.9, 0.97, 1]) {
+    const e = Math.max(0.06, Math.sqrt(1 - Math.pow(t, 2.4)))
+    const z = z0 + (zTip - z0) * t
+    const [, yBot, wBot, yMid, wMid, ySh, wSh, yTop, wTop, yCrown] = base
+    const y = (v: number) => yc + (v - yc) * e
+    out.push([z, y(yBot), wBot * e, y(yMid), wMid * e, y(ySh), wSh * e, y(yTop), wTop * e, y(yCrown)])
+  }
+  return out
+}
+
 // ---------------------------------------------------------------- Dart: the all-rounder
 
 /**
@@ -412,23 +429,20 @@ function manta(b: BodyBuilder): void {
  */
 function pulse(b: BodyBuilder): void {
   b.wheel = 'pod'
+  // The middle is authored; the nose and tail are worked out as smooth domes
+  // from it (an ellipse in side and plan view), so the pebble has no lumps.
+  const mid: number[][] = [
+    [0.99, -0.3, 0.52, 0.1, 0.55, 0.36, 0.76, 0.5, 0.62, 0.56],
+    [0.85, -0.3, 0.64, -0.06, 0.84, 0.36, 0.85, 0.5, 0.64, 0.56],
+    [0.0, -0.31, 0.66, -0.08, 0.86, 0.38, 0.86, 0.52, 0.66, 0.58],
+    [-0.85, -0.3, 0.64, -0.06, 0.84, 0.36, 0.85, 0.5, 0.64, 0.56],
+    [-0.99, -0.3, 0.52, 0.1, 0.55, 0.36, 0.76, 0.5, 0.62, 0.56],
+  ]
+  const end: number[] = [1.42, -0.29, 0.5, 0.1, 0.55, 0.36, 0.72, 0.5, 0.6, 0.56]
   b.tub(
-    [
-      [2.03, -0.14, 0.4, -0.02, 0.54, 0.2, 0.6, 0.34, 0.48, 0.4],
-      [1.92, -0.24, 0.46, 0.0, 0.55, 0.3, 0.66, 0.44, 0.56, 0.5],
-      [1.7, -0.28, 0.48, 0.06, 0.55, 0.34, 0.7, 0.48, 0.58, 0.54],
-      [1.42, -0.29, 0.5, 0.1, 0.55, 0.36, 0.72, 0.5, 0.6, 0.56],
-      [0.99, -0.3, 0.52, 0.1, 0.55, 0.36, 0.76, 0.5, 0.62, 0.56],
-      [0.85, -0.3, 0.64, -0.06, 0.84, 0.36, 0.85, 0.5, 0.64, 0.56],
-      [0.0, -0.31, 0.66, -0.08, 0.86, 0.38, 0.86, 0.52, 0.66, 0.58],
-      [-0.85, -0.3, 0.64, -0.06, 0.84, 0.36, 0.85, 0.5, 0.64, 0.56],
-      [-0.99, -0.3, 0.52, 0.1, 0.55, 0.36, 0.76, 0.5, 0.62, 0.56],
-      [-1.42, -0.29, 0.5, 0.1, 0.55, 0.36, 0.72, 0.5, 0.6, 0.56],
-      [-1.7, -0.28, 0.48, 0.06, 0.55, 0.34, 0.7, 0.48, 0.58, 0.54],
-      [-1.92, -0.24, 0.46, 0.0, 0.55, 0.3, 0.66, 0.44, 0.56, 0.5],
-      [-2.03, -0.14, 0.4, -0.02, 0.54, 0.2, 0.6, 0.34, 0.48, 0.4],
-    ],
-    { bulge: 0.18 },
+    [...dome(end, 1.42, 2.09, 0.2).reverse(), ...mid, ...dome(end, -1.42, -2.09, 0.2)],
+    // a wide smoothing angle: a pebble, not a cut gem
+    { bulge: 0.18, sub: 2, crease: 1.15 },
   )
   const pod: FenderSpec = {
     zc: AXLE_Z,
@@ -441,6 +455,7 @@ function pulse(b: BodyBuilder): void {
     archR: 0.42,
     round: 0.2,
     lean: 0.0,
+    crease: 1.0,
   }
   const podR = flipFender(pod)
   b.fender(pod).fender(podR)

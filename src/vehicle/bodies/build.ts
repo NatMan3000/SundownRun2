@@ -34,6 +34,7 @@
 import * as THREE from 'three'
 import type { BodyId } from './catalog'
 import { RECIPES } from './profiles'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { AXLE_Z, bar, curve, densify, HUB_Y, lathe, loft, mirroredRing, PartList, plateSide, ringXY, roundHalf, steps } from './kit'
 import type { Shading, V2 } from './kit'
 
@@ -99,6 +100,8 @@ export interface FenderSpec {
   /** How far the top face leans in toward the car (0 flat, 0.1 sloping). */
   lean?: number
   accent?: boolean
+  /** Smoothing angle for its normals (radians; default the paint's crisp 0.62). */
+  crease?: number
 }
 
 export interface WingSpec {
@@ -210,7 +213,7 @@ export class BodyBuilder {
   // ---- painted parts
 
   /** The main body, lofted nose to tail through the stations (smoothed between them). */
-  tub(stations: TubStation[], opts: { bulge?: number; sub?: number; accent?: boolean } = {}): this {
+  tub(stations: TubStation[], opts: { bulge?: number; sub?: number; accent?: boolean; crease?: number } = {}): this {
     // z, underside and lower flank go in straight lines between stations, so they never bulge into a tyre
     const dense = densify(stations, opts.sub ?? 3, [0, 1, 2, 3, 4])
     this.tubDense = dense
@@ -220,7 +223,7 @@ export class BodyBuilder {
       const cy = (half[0][1] + half[half.length - 1][1]) / 2
       return mirroredRing(roundHalf(half, bulge, cy), st[0])
     })
-    return this.paint(loft(rings), { accent: opts.accent, shading: PAINT_CREASE })
+    return this.paint(loft(rings), { accent: opts.accent, shading: opts.crease ?? PAINT_CREASE })
   }
 
   /** A point on the tub's surface (index into the station: 1 bottom edge .. 4 deck edge) at any z. */
@@ -276,7 +279,7 @@ export class BodyBuilder {
       ]
       return ringXY(pts, z)
     })
-    return this.paint(loft(rings), { accent: f.accent, mirror: true, shading: PAINT_CREASE })
+    return this.paint(loft(rings), { accent: f.accent, mirror: true, shading: f.crease ?? PAINT_CREASE })
   }
 
   /** The glass canopy, lofted like the tub. */
@@ -599,6 +602,32 @@ export function bodyGeometry(id: BodyId): BodyGeometry {
     cache.set(id, g)
   }
   return g
+}
+
+// ---------------------------------------------------------------- the ghost's body
+
+const ghostCache = new Map<BodyId, THREE.BufferGeometry>()
+
+/**
+ * The whole body (paint, glass, trim, lights) as ONE geometry with just
+ * positions and normals, for the see-through ghost: it is drawn with a
+ * single material anyway, so one mesh is one draw call instead of four.
+ */
+export function ghostBodyGeometry(id: BodyId): THREE.BufferGeometry {
+  const hit = ghostCache.get(id)
+  if (hit) return hit
+  const g = bodyGeometry(id)
+  const parts = [g.paint, g.glass, g.trim, g.lights].map((src) => {
+    const c = new THREE.BufferGeometry()
+    c.setAttribute('position', src.getAttribute('position'))
+    c.setAttribute('normal', src.getAttribute('normal'))
+    return c
+  })
+  const merged = mergeGeometries(parts, false)
+  if (!merged) throw new Error(`[vehicle] ghost body merge failed for "${id}"`)
+  merged.computeBoundingSphere()
+  ghostCache.set(id, merged)
+  return merged
 }
 
 // ---------------------------------------------------------------- the wheel
