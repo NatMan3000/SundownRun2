@@ -286,7 +286,7 @@ if (bend > 0.001) {
 
 // ---- loops: rings of light every 3 m; wall rides: ribs every 2.5 m
 float ringD = abs(fract(s / 3.0 + 0.5) - 0.5) * 3.0;
-float ring = sr2Line(ringD, 0.14, wS) * isLoop;
+float ring = sr2Line(ringD, 0.07, wS) * isLoop; // thin: blooms as a line, not a wash
 float ribD = abs(fract(s / 2.5 + 0.5) - 0.5) * 2.5;
 float rib = sr2Line(ribD, 0.08, wS) * isWall * smoothstep(0.2, 0.6, -dEdge); // on the wall, beyond the road's edge
 
@@ -447,7 +447,7 @@ export function makeRoadMaterial(uniforms: RoadUniforms): THREE.MeshStandardMate
       .replace('#include <lights_fragment_end>', fragmentLightsEnd)
   }
   // One program for every road material (the shader text never changes).
-  mat.customProgramCacheKey = () => 'sr2-road-v4'
+  mat.customProgramCacheKey = () => 'sr2-road-v5'
   return mat
 }
 

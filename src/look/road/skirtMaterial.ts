@@ -52,6 +52,7 @@ uniform vec2 uLoopRange[${MAX_RANGES}];
 uniform int uLoopCount;
 uniform vec2 uWallRange[${MAX_RANGES}];
 uniform int uWallCount;
+uniform vec3 uRoadColor;
 varying float vLipDist;
 varying float vSkirtS;
 varying float vSkirtLat;
@@ -59,27 +60,34 @@ varying float vSkirtHalf;
 ${ROAD_GLSL}
 `
 
+// Where three reads a roughness map: work out which piece this bit of slab
+// belongs to, and turn a loop's outside into near-black glass.
+const fragmentFields = /* glsl */ `
+float roughnessFactor = roughness;
+float s = vSkirtS;
+float wS = max(fwidth(s), 1e-4);
+float wU = max(fwidth(vLipDist), 1e-4);
+// which piece (if any) this bit of slab belongs to (soft ends: 1.5 m fades)
+float inLoop = 0.0;
+for (int i = 0; i < ${MAX_RANGES}; i++) {
+  if (i >= uLoopCount) break;
+  inLoop = max(inLoop, smoothstep(uLoopRange[i].x - 1.5, uLoopRange[i].x, s) * (1.0 - smoothstep(uLoopRange[i].y, uLoopRange[i].y + 1.5, s)));
+}
+float inWall = 0.0;
+for (int i = 0; i < ${MAX_RANGES}; i++) {
+  if (i >= uWallCount) break;
+  inWall = max(inWall, smoothstep(uWallRange[i].x - 1.5, uWallRange[i].x, s) * (1.0 - smoothstep(uWallRange[i].y, uWallRange[i].y + 1.5, s)));
+}
+// the wall's own back (beyond the drivable edge), not the plain slab side opposite it
+float wallBack = inWall * step(vSkirtHalf + 0.5, abs(vSkirtLat));
+// a loop's outside: the road's own near-black, glossy (a faint sheen of sky)
+diffuseColor.rgb = mix(diffuseColor.rgb, uRoadColor, inLoop);
+roughnessFactor = mix(roughnessFactor, 0.16, inLoop);
+`
+
 const fragmentEmissive = /* glsl */ `
 #include <emissivemap_fragment>
 {
-  float s = vSkirtS;
-  float wS = max(fwidth(s), 1e-4);
-  float wU = max(fwidth(vLipDist), 1e-4);
-
-  // which piece (if any) this bit of slab belongs to (soft ends: 1.5 m fades)
-  float inLoop = 0.0;
-  for (int i = 0; i < ${MAX_RANGES}; i++) {
-    if (i >= uLoopCount) break;
-    inLoop = max(inLoop, smoothstep(uLoopRange[i].x - 1.5, uLoopRange[i].x, s) * (1.0 - smoothstep(uLoopRange[i].y, uLoopRange[i].y + 1.5, s)));
-  }
-  float inWall = 0.0;
-  for (int i = 0; i < ${MAX_RANGES}; i++) {
-    if (i >= uWallCount) break;
-    inWall = max(inWall, smoothstep(uWallRange[i].x - 1.5, uWallRange[i].x, s) * (1.0 - smoothstep(uWallRange[i].y, uWallRange[i].y + 1.5, s)));
-  }
-  // the wall's own back (beyond the drivable edge), not the plain slab side opposite it
-  float wallBack = inWall * step(vSkirtHalf + 0.5, abs(vSkirtLat));
-
   vec3 lineCol = mix(uEdgeColor, uLoopColor, inLoop);
 
   // A soft rim where the slab turns away from you, so its silhouette never
@@ -89,18 +97,17 @@ const fragmentEmissive = /* glsl */ `
   vec3 faceN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
   float facing = abs(dot(faceN, normalize(vViewPosition)));
   float rim = pow(1.0 - facing, 3.5);
-  totalEmissiveRadiance += lineCol * rim * 0.22;
+  totalEmissiveRadiance += lineCol * rim * mix(0.22, 0.05, inLoop);
 
   // the lip line, continuing the road's edge strip down the side
   totalEmissiveRadiance += lineCol * sr2Line(vLipDist - 0.06, 0.035, wU) * uGlowT2 * 0.8 * (1.0 - wallBack);
 
-  // loops: hoops every 3 m (same phase as the driving surface's rings) and
-  // a soft glow over the outside so the loop reads against the night sky
-  // (on the outside the hoops sit just over the bloom line, T1 at its low end:
-  // at full T2 their bloom filled the dark glass between them into a flat cyan
-  // face; this keeps a soft halo and dark glass in between)
-  float hoop = sr2Line(abs(fract(s / 3.0 + 0.5) - 0.5) * 3.0, 0.09, wS);
-  totalEmissiveRadiance += uLoopColor * inLoop * (hoop * 1.25 + 0.02 * uGlowT0);
+  // loops: thin bright hoops every 3 m (same phase as the driving surface's
+  // rings). Thin is the point: bloom spreads light in proportion to how much
+  // of it there is, so a thin T2 line blooms as a line, where a wide one
+  // washed the dark glass between the hoops into a flat panel.
+  float hoop = sr2Line(abs(fract(s / 3.0 + 0.5) - 0.5) * 3.0, 0.045, wS);
+  totalEmissiveRadiance += uLoopColor * inLoop * hoop * uGlowT2;
 
   // wall rides: an edge tube along the top lip, violet ribs down the back
   float lipTube = sr2Line(vLipDist - 0.4, 0.11, wU);
@@ -117,13 +124,15 @@ export function makeSkirtMaterial(uniforms: RoadUniforms): THREE.MeshStandardMat
   })
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms)
+    shader.uniforms.uRoadColor = { value: new THREE.Color(PALETTE.road) }
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${vertexPars}`)
       .replace('#include <uv_vertex>', `#include <uv_vertex>\n${vertexMain}`)
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${fragmentPars}`)
+      .replace('#include <roughnessmap_fragment>', fragmentFields)
       .replace('#include <emissivemap_fragment>', fragmentEmissive)
   }
-  mat.customProgramCacheKey = () => 'sr2-skirt-v4'
+  mat.customProgramCacheKey = () => 'sr2-skirt-v5'
   return mat
 }
