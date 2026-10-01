@@ -68,16 +68,17 @@ export class MeshBuilder {
     const ax = P[a * 3]
     const ay = P[a * 3 + 1]
     const az = P[a * 3 + 2]
-    // Geometric normal from the diagonal cross product (robust for skinny quads).
+    // Face normal of a->b->c->d from its diagonals: (c - a) x (d - b), which points
+    // the way the counter-clockwise winding a, b, c faces (robust for skinny quads).
     const e1x = P[c * 3] - ax
     const e1y = P[c * 3 + 1] - ay
     const e1z = P[c * 3 + 2] - az
     const e2x = P[d * 3] - P[b * 3]
     const e2y = P[d * 3 + 1] - P[b * 3 + 1]
     const e2z = P[d * 3 + 2] - P[b * 3 + 2]
-    const gx = e2y * e1z - e2z * e1y
-    const gy = e2z * e1x - e2x * e1z
-    const gz = e2x * e1y - e2y * e1x
+    const gx = e1y * e2z - e1z * e2y
+    const gy = e1z * e2x - e1x * e2z
+    const gz = e1x * e2y - e1y * e2x
     const wx = N[a * 3] + N[b * 3] + N[c * 3] + N[d * 3]
     const wy = N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1] + N[d * 3 + 1]
     const wz = N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2] + N[d * 3 + 2]
@@ -284,7 +285,8 @@ function addWall(
       const u = side > 0 ? 1 + arc / (2 * hw) : -arc / (2 * hw)
       road.vertex(x, y, z, nx, ny, nz, u, s, ex)
       sk.aLateral = side * (hw + arc)
-      skirt.vertex(x - nx * WALL_THICKNESS, y - ny * WALL_THICKNESS, z - nz * WALL_THICKNESS, -nx, -ny, -nz, arc + WALL_THICKNESS, s, sk)
+      // uv.x on the back: metres from the wall's top lip (across the lip, then down the back).
+      skirt.vertex(x - nx * WALL_THICKNESS, y - ny * WALL_THICKNESS, z - nz * WALL_THICKNESS, -nx, -ny, -nz, WALL_THICKNESS + R * (sweep - phi), s, sk)
     }
   }
   const rowsN = front.length
