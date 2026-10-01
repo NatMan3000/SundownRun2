@@ -20,8 +20,32 @@ Guidance for Claude Code sessions working in this repository.
 | Typecheck / build | `bun run typecheck` / `bun run build` |
 | Check every track file | `bun run tracks:check` |
 | Headless probe (screenshots, perf) | `bun run probe -- --url "http://localhost:5201/?track=afterglow" --wait 6 --shot /tmp/a.png` |
+| Physics proofs for a track | `bun run tracks:check tracks/<id>.json --physics` (`--bench` adds build timings) |
+| Multiplayer host / relay alone | `bun run mp` / `bun run relay` |
+| Two-client multiplayer proof / relay tests | `bun run mp:check` / `bun run test:relay` |
+| Regenerate Josh's workshop | `bun run learn` -> `Learn To Code.html` (commit it) |
 
-Ports: 5201 dev server, 5202 multiplayer relay, 5210-5219 build-worker scratch servers, 5220-5239 checker previews.
+Ports: 5201 dev server, 5202 multiplayer relay, 5203 Nathan's stable copy (`vite preview` of the last good commit, built from a /tmp worktree), 5210-5219 build-worker scratch servers, 5220-5239 checker previews.
+
+## Inspecting a running game
+
+`src/core/devHandles.ts` is the contract. Every build, dev and production, exposes:
+
+- `window.__game`: read-only getters (telemetry, cars, frame stats, `renderInfo()`, settings, `get('<inspector>')`, `inspectors()`).
+- `window.__dev`: commands each system registers; `__dev.help()` lists them (teleport, camera bookmarks, finish a race, hide a look layer, and so on).
+- `window.__perf`: the frame report from the last `?demo=1` recording. `window.__events`: recent game events.
+- URL switches: `?track=`, `?mode=free|timetrial|race|stunt`, `?demo=1`, `?time=0..1`, `?quality=low|medium|high`, `?cam=<bookmark>`, `?ai=<n>`, `?nomusic=1`, `?mp=1&name=&color=`, `?editor=1`.
+
+Checking a change: a production build (`bunx vite build`, then `bunx vite preview` on a 5220-5239 port) is what counts, not the dev server. Frame cost is measured as max(CPU, GPU) with a GPU timer query, over a `?demo=1` drive at the high preset; the budget table is in `CONSTITUTION.md` section 2. The GPU is shared with anything else probing, so measure perf with nothing else running.
+
+## Changing things safely
+
+- `src/core/config.ts` is Josh's knob file: the defaults, commented for a 12-year-old. A value he edits there beats the same value saved from the Settings menu. Keep new knobs in his language.
+- The contracts (`CONSTITUTION.md` section 6) are frozen. Change one only by adding a dated amendment to section 7 in the same commit, and update every reader.
+- A track is one file. If a change to the track builder (`src/track/build.ts`) moves geometry, bump `BUILDER_VERSION`: it feeds every track's key, so old ghosts and local records stop matching instead of replaying through moved road.
+- One driving brain: the Ai racers and the demo autopilot both use `createAiDriver` in `src/play/aiDriver.ts`. Fix driving there, never in a second copy.
+- Colours come from `src/core/palette.ts` and follow the colour semantics in `CONSTITUTION.md` section 1 (cyan player, magenta track, amber caution, mint boost, violet pickups). No pure primaries.
+- `~/Dev/SundownRun` is v1: read it for proven solutions, never modify it.
 
 ## Architecture
 
