@@ -1,7 +1,8 @@
 // ============================================================
 //  PAUSE MENU - Esc / Menu while driving
 // ------------------------------------------------------------
-//  Resume, Restart, Settings, the current track's live sliders
+//  Resume, Restart, Settings, Map (the editor's top-down world map;
+//  this menu hides while it's open), the current track's live sliders
 //  right here (the Hyperdrome's bank angle, so you can tilt the
 //  banking and watch the road change), Road Editor, Quit.
 //
@@ -11,7 +12,7 @@
 // ============================================================
 
 import { useGame } from '../../core/store'
-import { openEditor, resumeGame } from '../../core/session'
+import { openEditor, openMap, resumeGame } from '../../core/session'
 import { NavScreen } from '../nav'
 import { HelpLine, MenuButton } from '../widgets'
 import { HintBar } from '../hints'
@@ -19,6 +20,14 @@ import { openScreen } from '../uiStore'
 import { quitToTitle, restartSession } from '../flow'
 import { TrackParamRows } from '../TrackParamRows'
 import { SoundHint } from '../SoundHint'
+
+/**
+ * The Map button opens the editor's top-down world map over the paused game.
+ * Hidden until the editor's map and its Back (closeMap) are wired, because
+ * opening it before then strands the player on an empty screen. Flip to true
+ * when the editor lands.
+ */
+const MAP_READY = false
 
 const MODE_WORD = { free: 'Free Roam', timetrial: 'Time Trial', race: 'Race', stunt: 'Stunt Attack', tag: 'Tag' } as const
 
@@ -42,6 +51,7 @@ export function PauseScreen() {
             <MenuButton id="resume" label="Resume" help="Back to the road." onAccept={resumeGame} acceptSound="back" />
             <MenuButton id="restart" label="Restart" help="Start this run again from the start line." onAccept={restartSession} acceptSound="start" />
             <MenuButton id="settings" label="Settings" help="Handling, camera, sound, time of day and more. Changes apply straight away." onAccept={() => openScreen('settings')} />
+            {MAP_READY && <MenuButton id="map" label="Map" help="The whole world from above: where you are, the road and everything on it." onAccept={openMap} />}
             <div className="pause-params">
               <TrackParamRows idPrefix="pause-track" />
             </div>

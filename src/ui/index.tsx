@@ -112,6 +112,8 @@ const BACK_SHADOW_MS = 250
 function onPausePressed(): void {
   if (performance.now() - navTiming.lastBackAt < BACK_SHADOW_MS) return
   const g = getGame()
+  // The world map (editor-owned) handles its own Back / Esc -> closeMap().
+  if (g.mapOpen) return
   if (g.phase === 'playing') {
     audio.ui('toggle')
     pauseGame()
@@ -236,10 +238,11 @@ function useDevHandles(): void {
 function useInputContext(root: RefObject<HTMLDivElement | null>): void {
   const stackLen = useUi((s) => s.stack.length)
   const phase = useGame((s) => s.phase)
+  const mapOpen = useGame((s) => s.mapOpen)
   useEffect(() => {
-    if (phase === 'editor') return
+    if (phase === 'editor' || mapOpen) return // the editor owns input there
     if (stackLen > 0 && inputState.context !== 'text') setInputContext('menu')
-  }, [stackLen, phase])
+  }, [stackLen, phase, mapOpen])
   useEffect(() => {
     // Listen on the document (our root unmounts while the editor is open) and
     // only react to text fields inside our own overlay.
@@ -304,6 +307,7 @@ const SCREENS: Record<ScreenId, () => JSX.Element> = {
 
 export function UiRoot() {
   const phase = useGame((s) => s.phase)
+  const mapOpen = useGame((s) => s.mapOpen)
   const screen = useActiveScreen()
   const root = useRef<HTMLDivElement | null>(null)
 
@@ -321,7 +325,10 @@ export function UiRoot() {
   // The road editor draws its own UI; ours steps aside completely.
   if (phase === 'editor') return null
 
-  const Screen = screen ? SCREENS[screen] : null
+  // While the world map is open over the pause menu, the menu steps aside
+  // (unmounting it also hides the focus ring); closing the map brings it back
+  // with focus on the Map button.
+  const Screen = screen && !mapOpen ? SCREENS[screen] : null
   return (
     <div
       ref={root}
