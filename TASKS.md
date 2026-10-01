@@ -139,3 +139,7 @@ Status: ✅ done (verified by a tool result) · ⬜ pending · ⚠️ partial ·
 - ⬜ [play] race.countdown emitted every second (should be once); goAt includes settle time so the HUD shows a "4".
 - ⬜ [vehicle] Clean landings classified as intensity-1 crashes (8 per 45 s demo).
 - ⬜ [harness, outside repo] Kai's tabguard hook denies MCP press_key/click/emulate when Canary has a new-tab-page tab (CDP /json/list says chrome://newtab/, MCP lists chrome://new-tab-page/). Not edited (outside the build's scope); checkers work around it.
+- ⬜ [proof] Third track "Neon Pocket" being authored by a fresh agent from tracks/README.md only (19:45 AEST); then a checker proves it loads, plays, validates laps, Ai finish it.
+- ✅ [play] Hyperdrome race proof (worker-run): 5 Ai + demo player finished all 5 laps, 3 Ai resets, finishes 218-235 s.
+- ✅ [net] Stage B (worker-run, two clients): synced 5-lap race with identical results, shared prop rounds, tag agreement within 16 ms, CrashProps track-change repro 20/20 clean.
+- ⬜ [look] Loop reads as a dark curling wave, not "rings of light": edge tubes round the whole loop, full hoops, no flat magenta outer face.
