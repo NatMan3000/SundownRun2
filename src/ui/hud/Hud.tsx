@@ -30,6 +30,7 @@ import { frameStats } from '../../core/perf'
 import { getTrack } from '../../track/current'
 import { formatClock, formatLap, formatScore } from '../format'
 import { installFeed } from './feed'
+import { SoundHint } from '../SoundHint'
 import { Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
 
@@ -381,6 +382,7 @@ export function Hud() {
         {panels.tag && <TagPanel />}
         {!panels.stunt && !panels.tag && <LapPanel />}
         {panels.hunt && <HuntPanel />}
+        {visible && <SoundHint variant="chip" />}
       </div>
       {hasTrack && <MinimapPanel />}
       <div className="hud-stack hud-stack--bl">

@@ -18,6 +18,7 @@ import { HintBar } from '../hints'
 import { openScreen } from '../uiStore'
 import { quitToTitle, restartSession } from '../flow'
 import { TrackParamRows } from '../TrackParamRows'
+import { SoundHint } from '../SoundHint'
 
 const MODE_WORD = { free: 'Free Roam', timetrial: 'Time Trial', race: 'Race', stunt: 'Stunt Attack', tag: 'Tag' } as const
 
@@ -48,6 +49,7 @@ export function PauseScreen() {
             <MenuButton id="quit" label="Quit to title" help="Leave this run and go back to the title screen." onAccept={quitToTitle} acceptSound="back" />
           </nav>
           <HelpLine />
+          <SoundHint variant="menu" />
         </section>
         <HintBar
           items={[

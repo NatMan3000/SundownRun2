@@ -18,6 +18,7 @@ import { NavScreen } from '../nav'
 import { MenuButton, HelpLine } from '../widgets'
 import { HintBar } from '../hints'
 import { openScreen, useUi } from '../uiStore'
+import { SoundHint } from '../SoundHint'
 
 export function Logo(props: { compact?: boolean }) {
   return (
@@ -97,6 +98,7 @@ export function TitleScreen() {
           </nav>
           <HelpLine />
           {mp && <MpStatus />}
+          <SoundHint variant="menu" />
         </div>
         <HintBar
           items={[
