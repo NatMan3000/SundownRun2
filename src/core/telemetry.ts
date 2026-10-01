@@ -116,6 +116,10 @@ export interface CarState {
   lap: number //       completed laps this race/session
   /** lap + trackS / track length - the race position sort key. */
   progress: number
+  /** The car's last completed lap was dirty (too long off-road): it can't count as a best. Writer: the car's lap tracker (vehicle). */
+  lastLapDirty: boolean
+  /** Exact time of the car's last completed lap, ms (null before the first). Writer: the car's lap tracker. */
+  lastLapMs: number | null
   finished: boolean
   finishMs: number
   /** Multiplayer tag: this car is "it". */
@@ -156,6 +160,8 @@ export function makeCarState(id: string, kind: CarKind, name: string): CarState 
     trackS: 0,
     lap: 0,
     progress: 0,
+    lastLapDirty: false,
+    lastLapMs: null,
     finished: false,
     finishMs: 0,
     isIt: false,

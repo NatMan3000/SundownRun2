@@ -44,6 +44,12 @@ export interface Racer {
   finishMs: number
   /** 1 = leading. */
   position: number
+  /** Off-road time in the lap in progress, ms (Ai dirty-lap rule). */
+  offRoadMs: number
+  /** Player only: the dirty flag from the vehicle's own lap.complete event, waiting for the lap to land here. */
+  pendingDirty: boolean | null
+  /** Player only: the exact lap time from the same event (physics-step accurate). */
+  pendingMs: number | null
   /** Speed along the road, m/s (smoothed), for overtaking and projections. */
   speed: number
   hit: NearestHit
@@ -64,6 +70,9 @@ function makeRacer(id: string, name: string, isPlayer: boolean): Racer {
     finishMs: 0,
     position: 1,
     speed: 0,
+    offRoadMs: 0,
+    pendingDirty: null,
+    pendingMs: null,
     hit: { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: true },
   }
 }
@@ -113,7 +122,34 @@ export function armRaceBook(track: TrackRuntime, now: number): void {
     r.finished = false
     r.finishMs = 0
     r.speed = 0
+    r.offRoadMs = 0
+    r.pendingDirty = null
+    r.pendingMs = null
   }
+}
+
+/**
+ * The dirty-lap rule (vehicle's lap tracker): more than this much off-road time
+ * in a lap and it still counts, but can never be a best lap.
+ */
+const DIRTY_GRACE_MS = 3000
+
+/**
+ * On the road for lap purposes: within the road's width (as track.nearest
+ * says), or up on a wall ride beside it (a wall ride is road, not a shortcut).
+ */
+function onRoadForLaps(track: TrackRuntime, r: Racer): boolean {
+  if (r.hit.onRoad) return true
+  const pieces = track.pieces
+  for (let i = 0; i < pieces.length; i++) {
+    const p = pieces[i]
+    if (p.type !== 'wallride' && p.type !== 'loop') continue
+    if (track.deltaS(p.s0, r.s) >= 0 && track.deltaS(r.s, p.s1) >= 0) {
+      const half = track.samples.halfWidth[r.hit.index] ?? 7
+      return Math.abs(r.hit.lateral) < half + (p.height ?? p.radius ?? 9) + 1
+    }
+  }
+  return false
 }
 
 /** Callbacks the mode controller passes in so this file never emits events itself. */
@@ -139,12 +175,19 @@ export function updateRaceBook(track: TrackRuntime, now: number, goAt: number, d
     if (dt > 0 && Math.abs(ds) < 40) r.speed += (ds / dt - r.speed) * Math.min(1, dt * 4)
     if (r.finished) continue
     if (Number.isFinite(car.progress)) r.dist = car.progress * length
+    if (!onRoadForLaps(track, r)) r.offRoadMs += dt * 1000
 
     if (car.lap > r.lapsDone) {
       r.lapsDone = car.lap
-      const lapMs = now - r.lapStartAt
+      const lapMs = r.isPlayer && r.pendingMs !== null ? r.pendingMs : now - r.lapStartAt
       r.lapStartAt = now
-      if (r.bestLapMs === null || lapMs < r.bestLapMs) r.bestLapMs = lapMs
+      // Only a clean lap can be a best lap (same rule as records). The player's
+      // flag is the vehicle's own verdict; an Ai's is play's copy of the rule.
+      const dirty = r.isPlayer ? (r.pendingDirty ?? r.offRoadMs > DIRTY_GRACE_MS) : r.offRoadMs > DIRTY_GRACE_MS
+      r.offRoadMs = 0
+      r.pendingDirty = null
+      r.pendingMs = null
+      if (!dirty && (r.bestLapMs === null || lapMs < r.bestLapMs)) r.bestLapMs = lapMs
       if (r.lapsDone >= raceBook.laps) {
         r.finished = true
         r.finishMs = now - goAt
