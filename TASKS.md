@@ -175,3 +175,4 @@ Updated 2026-10-01 ~20:20 AEST. Lead = this session (Kai). Briefs: scratchpad/br
 - Stopped: track (handoff /tmp/sr2/reports/track-handoff.md), world (handoff /tmp/sr2/reports/world-handoff.md), audio.
 - Next checks to spawn: ui-2 re-check (ui-1 D1-D4 + play P1), visual judge (both tracks + Neon Pocket, sundown + night; after vehicle body polish), perf (demo per track on a QUIET machine, after the demo uses play's Ai brain and laps cleanly), Hyperdrome bank/speed-trap check, loops + wall rides feel check (after vehicle stage B), mp-2 re-check, clean clone (last).
 - Final steps: regenerate Learn To Code.html; finish CLAUDE.md; final report with three headings (Blocked on me / Changed / Found).
+- ⬜ [vehicle] ITEM 0 (track2 finding, repro /tmp/sr2/track2/ccdrepro.ts): hard CCD halves a car's travel while sliding on a trimesh (and can stop it dead): switch car bodies to softCcdPrediction={2}. Reset near a loop should step back ~150 m for a run-up.
