@@ -22,6 +22,7 @@ import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
 import { RoundCuboidCollider, RigidBody, useBeforePhysicsStep, useRapier } from '@react-three/rapier'
 import type { RapierCollider, RapierRigidBody } from '@react-three/rapier'
+import { on } from '../core/events'
 import { GROUPS, tagCollider, untagCollider } from '../core/physics'
 import { addCar, makeCarState, removeCar } from '../core/telemetry'
 import type { CarKind, CarState } from '../core/telemetry'
@@ -58,6 +59,9 @@ export interface SimulatedCarProps {
 // Module temps for the render frame.
 const _p = new THREE.Vector3()
 const _q = new THREE.Quaternion()
+const _seatM = new THREE.Matrix4()
+const _seatParent = new THREE.Matrix4()
+const _seatScale = new THREE.Vector3()
 const _spawnPos = new THREE.Vector3()
 const _spawnQuat = new THREE.Quaternion()
 /** Chassis edge radius, metres. */
@@ -146,6 +150,32 @@ export function SimulatedCar(props: SimulatedCarProps) {
     return () => props.onBody?.(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // A live road rebuild (the Hyperdrome's bank slider): move with the road the moment it changes,
+  // even under the pause menu, not on the next physics step. Physics doesn't step while paused,
+  // so rapier won't copy the new pose to the drawn car either: do that here too.
+  useEffect(
+    () =>
+      on('track.param', () => {
+        const b = bodyRef.current
+        if (!b || !sim.reseatTo(b, getTrack())) return
+        const obj = visualRef.current?.parent
+        if (!obj) return
+        const t = b.translation()
+        const r = b.rotation()
+        _p.set(t.x, t.y, t.z)
+        _q.set(r.x, r.y, r.z, r.w)
+        _seatScale.copy(obj.scale)
+        _seatM.compose(_p, _q, _seatScale)
+        if (obj.parent) {
+          obj.parent.updateWorldMatrix(true, false)
+          _seatM.premultiply(_seatParent.copy(obj.parent.matrixWorld).invert())
+        }
+        _seatM.decompose(obj.position, obj.quaternion, _seatScale)
+        obj.updateMatrixWorld(true)
+      }),
+    [sim],
+  )
 
   // ---------------------------------------------------------------- fixed 60 Hz step
   useBeforePhysicsStep(() => {

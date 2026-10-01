@@ -56,6 +56,7 @@ const _vel = new THREE.Vector3()
 const _tmp = new THREE.Vector3()
 const _pivot = new THREE.Vector3()
 const _airFwd = new THREE.Vector3(0, 0, 1)
+const _carry = new THREE.Vector3()
 const WORLD_UP = new THREE.Vector3(0, 1, 0)
 const _shot: Shot = { position: new THREE.Vector3(), look: new THREE.Vector3() }
 const _rendered = new THREE.Vector3()
@@ -205,6 +206,8 @@ export function CameraRig() {
     clipPull: 0,
     /** Last frame's arm length after the clip, metres (Infinity = nothing to ease from). */
     clipArm: Infinity,
+    /** The player's last re-seat this camera has carried itself through (CarSim.seatMove.tick). */
+    seatTick: -1,
   }).current
   const camera = useThree((st) => st.camera) as THREE.PerspectiveCamera
   const ray = useRef<InstanceType<NonNullable<typeof links.rapier>['Ray']> | null>(null)
@@ -296,6 +299,26 @@ export function CameraRig() {
     if (cameraState.transition < 1) cameraState.transition = Math.min(1, cameraState.transition + dt / TRANSITION_S)
     const ease = smoothstep01(cameraState.transition)
     if (cameraState.transition >= 1) cameraState.from = cameraState.mode
+
+    // ---- the road was rebuilt live and the car moved with it (CarSim.seatMove): the camera moves
+    // the same way, so the view of the car and its road stays put. Left to the springs it sat at the
+    // old road's height (inside the new road under the pause menu) and swung up to 6 m on resume.
+    const seat = links.playerSim?.seatMove
+    if (seat && seat.tick !== s.seatTick) {
+      if (s.ready && s.seatTick >= 0) {
+        _camPos.sub(seat.from).applyQuaternion(seat.rotate).add(seat.to)
+        _lookPos.sub(seat.from).applyQuaternion(seat.rotate).add(seat.to)
+        _up.applyQuaternion(seat.rotate)
+        _airFwd.applyQuaternion(seat.rotate)
+        for (let k = 0; k < 9; k += 3) {
+          _carry.set(springVel[k], springVel[k + 1], springVel[k + 2]).applyQuaternion(seat.rotate)
+          springVel[k] = _carry.x
+          springVel[k + 1] = _carry.y
+          springVel[k + 2] = _carry.z
+        }
+      }
+      s.seatTick = seat.tick
+    }
 
     const speed = telemetry.carVelocity.length()
     const speedFrac = Math.min(speed / Math.max(10, set.topSpeedKmh / 3.6), 1)

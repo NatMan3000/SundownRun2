@@ -433,8 +433,17 @@ export class CarSim {
   private lastTrack: TrackRuntime | null = null
   /** Dev: live road rebuilds this car moved with (moved) or sat out (skipped: its road did not change). */
   readonly reseats = { moved: 0, skipped: 0 }
+  /**
+   * The last re-seat as a rigid move, new = rotate(old - from) + to: the camera carries itself by
+   * the same move so the view of the car and its road doesn't change (CameraRig). tick counts moves.
+   */
+  readonly seatMove = { tick: 0, rotate: new THREE.Quaternion(), from: new THREE.Vector3(), to: new THREE.Vector3() }
   /** Auto-hold is gripping the car (stopped, no pedal): see HOLD in tuning.ts. */
   holding = false
+  /** Just reset: the hold keeps the car exactly where it was put, even on a steep bank, until the first pedal (HOLD.resetLift). */
+  parked = false
+  /** Seconds left of the pull-away hold across a steep bank after a reset (HOLD.launchFadeLo); 0 = off. */
+  launch = 0
   /** The roll-back catch's brake this step, 0..1 of the full brake (ROLLBACK in tuning.ts). */
   rollbackBrake = 0
   /**
@@ -503,6 +512,20 @@ export class CarSim {
     this.pendingReason = reason
   }
 
+  /**
+   * The road was just rebuilt live (track.param): move the car with it NOW, paused or not, so it
+   * sits on the new road while the player watches it change under the pause menu. True if the
+   * car moved. The step's own check (a new runtime, same id) then finds nothing left to do.
+   */
+  reseatTo(body: RapierRigidBody, track: TrackRuntime | null): boolean {
+    const old = this.lastTrack
+    this.lastTrack = track
+    if (!track || !old || track === old || track.id !== old.id) return false
+    const moved = this.reseats.moved
+    this.reseat(body, old, track)
+    return this.reseats.moved > moved
+  }
+
   // ------------------------------------------------------------ the step
 
   /**
@@ -534,8 +557,10 @@ export class CarSim {
       const t = body.translation()
       let s: number
       if (kind === 'start') s = startPose(track, this.gridSlot, _resetPos, _resetQuat)
-      else s = roadResetPose(track, t.x, t.y, t.z, this.hasTrackS ? this.trackS : undefined, 1.0, _resetPos, _resetQuat)
+      else s = roadResetPose(track, t.x, t.y, t.z, this.hasTrackS ? this.trackS : undefined, HOLD.resetLift, _resetPos, _resetQuat)
       this.place(body, _resetPos, _resetQuat, s)
+      this.parked = true // on its wheels and held there until the first pedal (HOLD.resetLift)
+      this.launch = HOLD.launchSeconds // and held across a steep bank while it pulls away (HOLD.launchFadeLo)
       news.reset = kind
       news.resetReason = this.pendingReason
       return
@@ -673,7 +698,11 @@ export class CarSim {
     }
 
     // ---- steering: constant-g rack, rate limited ----
-    const gCap = (STEERING.wheelbase * STEERING.latLimitG * GRAVITY * h.steerGain) / Math.max(speed * speed, 1)
+    // On a bank gravity's pull toward the inside carries part of a turn into it, so full lock may
+    // turn tighter by that much (STEERING.bankHelpMaxG). steer < 0 is a left turn.
+    const bankLeft = this.bankPullLeft()
+    const rackHelp = steer < 0 ? Math.max(0, bankLeft) : Math.max(0, -bankLeft)
+    const gCap = (STEERING.wheelbase * (STEERING.latLimitG * GRAVITY + rackHelp) * h.steerGain) / Math.max(speed * speed, 1)
     let limit = Math.min(STEERING.maxAngleLow, Math.max(STEERING.minAngle, gCap))
     // The rack opens wider only to CATCH a slide, never to feed one.
     if (this.drifting && counterSteer) limit = Math.max(limit, STEERING.driftAngle)
@@ -998,9 +1027,11 @@ export class CarSim {
     // Off while frozen (the countdown has its own hold), in the air, and with any wheel on a loop
     // or wall ride, magnet or not: a car that stalls on a loop's climb rolls back down it
     // (holding there, it parked at 42 deg with the magnet off).
+    // Parked after a reset (HOLD.resetLift): held fully, whatever the slope, until a pedal or a shove.
     const pedal = throttle > 0.02 || brake > 0.02
+    if (throttle > HOLD.parkedPedal || brake > HOLD.parkedPedal || this.frozen || this.magGrip || speed > HOLD.parkedRelease) this.parked = false
     if (this.frozen || pedal || grounded < 3 || this.magGrip || magWheels > 0) this.holding = false
-    else if (speed < HOLD.engageSpeed) this.holding = true
+    else if (speed < HOLD.engageSpeed || this.parked) this.holding = true
     else if (speed > HOLD.releaseSpeed) this.holding = false
     if (this.holding) {
       const n = this.groundNormal
@@ -1009,10 +1040,28 @@ export class CarSim {
       _tmp.multiplyScalar(-mass)
       _force.copy(linvel).addScaledVector(n, -linvel.dot(n)).multiplyScalar(-mass / HOLD.settleSeconds)
       _tmp.add(_force)
-      const cap = HOLD.mu * mass * GRAVITY * Math.max(n.y, 0)
+      const cap = this.parked ? Infinity : HOLD.mu * mass * GRAVITY * Math.max(n.y, 0)
       const f = _tmp.length()
       if (f > cap && f > 1e-6) _tmp.multiplyScalar(cap / f)
       this.addForce(body, _tmp.x, _tmp.y, _tmp.z)
+    }
+    // Pulling away from a reset on a steep bank (HOLD.launchFadeLo): until the car is fast enough for
+    // the bank to carry it, cancel gravity's pull ACROSS the car, so it drives off along the bank
+    // instead of sliding down it. Along the car nothing changes: it rolls and speeds up as normal.
+    if (this.launch > 0) {
+      if (!this.parked) this.launch -= DT
+      const kmh = speed * 3.6
+      if (this.frozen || this.magGrip || kmh > HOLD.launchFadeHi) this.launch = 0
+      else if (!this.holding && grounded >= 3 && magWheels === 0) {
+        const n = this.groundNormal
+        _tmp2.copy(right).addScaledVector(n, -right.dot(n)) // the car's right, along the ground
+        const len = _tmp2.length()
+        if (len > 0.5) {
+          _tmp2.divideScalar(len)
+          const push = mass * GRAVITY * _tmp2.y * (1 - smoothstep(HOLD.launchFadeLo, HOLD.launchFadeHi, kmh))
+          this.addForce(body, _tmp2.x * push, _tmp2.y * push, _tmp2.z * push)
+        }
+      }
     }
 
     // ---- aero ----
@@ -1081,7 +1130,9 @@ export class CarSim {
       // closes the gap. Never while asking for a slide, never on a loop or wall.
       const tiSpeed = smoothstep(ASSIST.turnInLo, ASSIST.turnInHi, speed)
       if (tiSpeed > 0 && ASSIST.turnInK > 0 && !handbrake && !counterSteer && !reversing && !this.magGrip && vLongCar > 1) {
-        const capR = (ASSIST.turnInMaxG * grip * GRAVITY) / speed
+        // On a bank the tyres hold the same turn plus gravity's pull into it (see STEERING.bankHelpMaxG).
+        const turnHelp = this.steerAngle >= 0 ? Math.max(0, bankLeft) : Math.max(0, -bankLeft)
+        const capR = (ASSIST.turnInMaxG * grip * GRAVITY + turnHelp) / speed
         const rRef = clamp((vLongCar * Math.tan(this.steerAngle)) / STEERING.wheelbase, -capR, capR)
         let err = rRef - yawRate
         // Adding rotation is only allowed while the rear tyres still grip: it never feeds a slide.
@@ -1221,6 +1272,23 @@ export class CarSim {
   }
 
   // ------------------------------------------------------------ pieces of the step
+
+  /**
+   * Gravity's pull along the ground toward the car's left, m/s^2 (negative = toward its right),
+   * from last step's wheels: on a bank this is the part of a turn into it that gravity carries
+   * (STEERING.bankHelpMaxG). 0 with fewer than two wheels down and on loops and wall rides,
+   * which carry their own turns.
+   */
+  private bankPullLeft(): number {
+    if (this.wheelsDown < 2 || this.magGrip || isMagnetic(this.surface)) return 0
+    const n = this.groundNormal
+    // The car's right, flattened onto the ground: its height change is how far the bank leans.
+    _tmp2.copy(this.right).addScaledVector(n, -this.right.dot(n))
+    const len = _tmp2.length()
+    if (len < 0.5) return 0
+    const cap = STEERING.bankHelpMaxG * GRAVITY
+    return clamp((GRAVITY * _tmp2.y) / len, -cap, cap)
+  }
 
   private addForce(body: RapierRigidBody, x: number, y: number, z: number): void {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
@@ -1437,6 +1505,9 @@ export class CarSim {
       _resetQuat.set(r.x, r.y, r.z, r.w).premultiply(_qNew).normalize()
       _seatVel.set(lv.x, lv.y, lv.z).applyQuaternion(_qNew)
       _rel.set(av.x, av.y, av.z).applyQuaternion(_qNew)
+      this.seatMove.rotate.copy(_qNew)
+      this.seatMove.from.copy(fo.position)
+      this.seatMove.to.copy(fn.position)
       moved = true
     } else {
       // Off the road: a car resting on (or just above) the ground follows the ground's new height.
@@ -1451,6 +1522,9 @@ export class CarSim {
       _resetQuat.set(r.x, r.y, r.z, r.w)
       _seatVel.set(lv.x, lv.y, lv.z)
       _rel.set(av.x, av.y, av.z)
+      this.seatMove.rotate.identity()
+      this.seatMove.from.set(0, 0, 0)
+      this.seatMove.to.set(0, dy, 0)
       moved = true
     }
     if (!moved || !finiteV(_seatPos) || !finiteV(_seatVel) || !finiteV(_rel) || !Number.isFinite(_resetQuat.w)) return
@@ -1484,6 +1558,7 @@ export class CarSim {
     this.trackS = s
     this.hasTrackS = true
     this.reseats.moved++
+    this.seatMove.tick++
   }
 
   /** Snap the body to a pose with zero velocity, and forget anything in flight. */
@@ -1542,6 +1617,8 @@ export class CarSim {
     for (let i = 0; i < WHEELS; i++) this.wheelOmega[i] = 0
     this.prevToi.fill(-1)
     this.holding = false
+    this.parked = false
+    this.launch = 0
     if (s >= 0) {
       this.trackS = s
       this.hasTrackS = true

@@ -197,6 +197,17 @@ export const STEERING = {
    */
   latLimitG: 1.8,
   wheelbase: 2 * WHEEL.halfBase,
+  /**
+   *  BANKS. On a banked road gravity pulls the car along the road toward the inside, and that
+   *  pull carries part of any turn into the bank. So on a bank full lock asks the tyres for the
+   *  same latLimitG as on the flat, PLUS gravity's pull, and the car turns tighter by just that
+   *  much (the turn-in target, ASSIST.turnInMaxG, gets the same help). On the Hyperdrome's 60 deg
+   *  ends at 240 km/h the pull is 0.87 g: without it full lock turned the car no tighter than on
+   *  flat road, the line needed 80% of it, and nothing was left to correct with. A bank leaning
+   *  the other way never takes lock away (flat road and off-camber stay exactly as they were).
+   *  The pull counted is capped at this many g (sin 60 deg, the steepest bank in the game).
+   */
+  bankHelpMaxG: 0.87,
   /** While CATCHING a slide (and only then) the rack opens this far, so counter-steer is always there. */
   driftAngle: 0.42,
   /** Rack slew rate, rad/s. */
@@ -487,6 +498,27 @@ export const HOLD = {
   /** Leftover drift is soaked up over about this long, seconds. */
   settleSeconds: 0.15,
   mu: 0.9,
+  /**
+   * PARKED AFTER A RESET. R (and Shift+R and the automatic resets) put the car back on the road
+   * on its wheels, `resetLift` m above where it sits at rest, and it stays parked there: the hold
+   * cancels ALL of gravity's pull along the road, not just mu of it, until the first pedal (or a
+   * shove past `parkedRelease` m/s). A stopped car can't grip a 60 deg bank by itself (that takes
+   * mu 1.73): R there used to drop the car from a metre up and it slid down into the inner barrier.
+   */
+  resetLift: 0.03,
+  parkedRelease: 3,
+  /** A pedal past this much (0..1) lets go of a parked car: a deliberate press, not a trigger easing off. */
+  parkedPedal: 0.3,
+  /**
+   * PULLING AWAY FROM A RESET on a steep bank: a bank only carries a car that is going fast enough
+   * for it (about 40 km/h at 60 deg; slower, gravity drags it down the slope faster than the tyres
+   * can hold). So after a reset the hold keeps cancelling gravity's pull ACROSS the car (never along
+   * it: the car rolls and speeds up as normal) until it passes launchFadeLo, gone by launchFadeHi
+   * (km/h), or launchSeconds after it set off. Flat road: nothing to cancel.
+   */
+  launchFadeLo: 40,
+  launchFadeHi: 60,
+  launchSeconds: 6,
 }
 
 /**
