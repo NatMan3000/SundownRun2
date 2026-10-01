@@ -28,7 +28,8 @@
 //  terrain or untagged, 7 floor, 8 car/prop), bImp (impulse, N s), bGap
 //  (m, negative = overlapping) and bNUp (contact normal . car up). Always:
 //  ws = what each wheel stands on as four digits FL FR RL RR (same codes,
-//  0 = no ground) and crash = the crash code this step (0 = none).
+//  0 = no ground) and crash = the crash code this step (0 = none, 1 road,
+//  4 barrier, 5 wall, 6 terrain, 8 car / prop / smashable).
 //  On a wall ride: Wphi (deg round the wall's curve, 90 = vertical), Wlip
 //  (the lip's angle there), Wpress (the curve's push into the wall, m/s^2),
 //  Wguard (the lip guard's push back down, m/s^2), Wclear (m round the curve
@@ -44,7 +45,7 @@ import { DT, GRAVITY } from '../vehicle/tuning'
 
 const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody', 'boost', 'rack', 'aF', 'aR', 'fyF', 'fyR', 'fxF', 'fxR', 'nFL', 'nFR', 'nRL', 'nRR', 'loopG', 'gLatV', 'gAcc', 'gHead', 'hgt', 'suspG', 'body', 'imp', 'Lsup', 'Lspr', 'Lmag', 'Lgrav', 'Lacc', 'Lk', 'bWhat', 'bImp', 'bGap', 'bNUp', 'ws', 'crash', 'Wphi', 'Wlip', 'Wpress', 'Wguard', 'Wclear', 'Warc', 'land', 'rb'] as const
 const KIND_CODE: Record<string, number> = { road: 1, loop: 2, wall: 2, ramp: 3, barrier: 4, skirt: 5, terrain: 6, floor: 7 }
-const CRASH_CODE: Record<string, number> = { barrier: 4, wall: 5, terrain: 6, car: 8, prop: 8, smashable: 8 }
+const CRASH_CODE: Record<string, number> = { road: 1, barrier: 4, wall: 5, terrain: 6, car: 8, prop: 8, smashable: 8 }
 const MAX_STEPS = 60 * 60
 const RAD2DEG = 180 / Math.PI
 

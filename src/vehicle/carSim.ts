@@ -2085,8 +2085,9 @@ export class CarSim {
           r = 2
           w = 'wall'
         } else {
+          // The driving surface (road, a ramp or a loop) or the ground off the road.
           r = 1
-          w = 'terrain'
+          w = s === 'road' || s === 'ramp' || s === 'loop' ? 'road' : 'terrain'
         }
       }
       if (r > rank) {
