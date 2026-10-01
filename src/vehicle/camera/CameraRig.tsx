@@ -62,6 +62,13 @@ const _rendered = new THREE.Vector3()
 
 /** tan(21.5 deg): how far left of the car the showroom camera aims, per metre of distance. */
 const SHOWROOM_OFFSET = 0.39
+/**
+ * Title showroom framing (ui): the sun is the hero, so the orbit is biased off
+ * the anti-sun line to put the sun in the open gap between the menu column and
+ * the car, and only sways a little around that, so it never leaves the frame.
+ */
+const SHOWROOM_SUN_BIAS = -0.35 // rad (negative moves the sun left on screen)
+const SHOWROOM_SWAY = 0.12 // rad
 
 // spring velocities: [0..2] position, [3..5] look, [6..8] up, [9] fov
 const springVel = new Float64Array(10)
@@ -224,7 +231,7 @@ export function CameraRig() {
       const sun = environment.sunDirection
       const sunYaw = Math.atan2(-sun.x, -sun.z) // camera opposite the sun: car in front of the sunset
       s.orbitAngle += dt * (showroom ? 0.16 : 0.12)
-      const yaw = showroom ? sunYaw + Math.sin(s.orbitAngle) * 0.55 : s.orbitAngle
+      const yaw = showroom ? sunYaw + SHOWROOM_SUN_BIAS + Math.sin(s.orbitAngle) * SHOWROOM_SWAY : s.orbitAngle
       const r = showroom ? 7.8 : 9.5
       const hgt = showroom ? 1.7 : 3.2
       const c = telemetry.carPosition

@@ -29,6 +29,10 @@
   --legible: 0 1px 2px var(--shade), 0 0 0.8em color-mix(in srgb, var(--ink) 55%, transparent);
   --radius: 14px;
   --radius-s: 9px;
+  /* One glass for every HUD surface (panels, trick pops, toasts, the speed
+     trap, the speedometer disc, the sound chip): dense enough that HUD text
+     separates from anything behind it, billboards and white road glare included. */
+  --hud-glass: color-mix(in srgb, var(--panel-solid) 82%, transparent);
 }
 
 .sr-ui ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
@@ -130,6 +134,8 @@
     transparent 70%);
 }
 .title-col { text-shadow: var(--legible); }
+/* Gradient letters are painted through background-clip: a text-shadow would draw over them. */
+.title-col .logo, .title-col .logo * { text-shadow: none; }
 .scrim--full {
   background:
     radial-gradient(120% 90% at 60% 50%, color-mix(in srgb, var(--ink) 35%, transparent) 0%, color-mix(in srgb, var(--ink) 72%, transparent) 100%);
@@ -139,7 +145,6 @@
   position: relative;
   background: var(--panel);
   backdrop-filter: blur(16px) saturate(1.25);
-  -webkit-backdrop-filter: blur(16px) saturate(1.25);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: 0 1.4em 3.2em color-mix(in srgb, var(--ink) 45%, transparent);
@@ -344,7 +349,6 @@
   border: 1px solid var(--line);
   background: var(--panel);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   font-size: 0.95em;
 }
 .mp-status__dot {
@@ -972,7 +976,6 @@
   border: 1px solid var(--line);
   background: var(--panel);
   backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   font-weight: 500;
   text-shadow: var(--legible);
   animation: notice-in 220ms var(--ease) both, notice-out 260ms ease-in 3900ms forwards;
@@ -995,9 +998,8 @@
 
 .hud-panel {
   position: relative;
-  background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  background: var(--hud-glass);
   backdrop-filter: blur(10px) saturate(1.2);
-  -webkit-backdrop-filter: blur(10px) saturate(1.2);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   text-shadow: var(--legible);
@@ -1071,6 +1073,17 @@
   width: 13.5em;
   height: 13.5em;
   --boost: 0;
+}
+.hud-speed::before {
+  /* The dial sits on a disc of the HUD glass, so KM/H and the gear box stay
+     legible over the brightest road reflection. */
+  content: '';
+  position: absolute;
+  inset: 2%;
+  border-radius: 50%;
+  background: var(--hud-glass);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(10px) saturate(1.2);
 }
 .hud-speed__boost {
   position: absolute;
@@ -1205,7 +1218,7 @@
   gap: 0.6em;
   padding: 0.3em 0.75em;
   border-radius: var(--radius-s);
-  background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  background: var(--hud-glass);
   border: 1px solid var(--line);
   text-shadow: var(--legible);
   white-space: nowrap;
@@ -1241,9 +1254,8 @@
   padding: 0.45em 1.3em 0.5em;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel-solid) 62%, transparent);
+  background: var(--hud-glass);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   text-shadow: var(--legible);
   white-space: nowrap;
   animation: toast-in 220ms var(--ease) both, toast-out 260ms ease-in 2300ms forwards;
@@ -1268,9 +1280,8 @@
   padding: 0.6em 1.1em 0.7em;
   border-radius: var(--radius);
   border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
-  background: color-mix(in srgb, var(--panel-solid) 60%, transparent);
+  background: var(--hud-glass);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   box-shadow: 0 0 1.6em color-mix(in srgb, var(--warn) 22%, transparent);
   text-shadow: var(--legible);
   animation: trap-in 260ms var(--ease) both, toast-out 300ms ease-in 3800ms forwards;
@@ -1349,9 +1360,8 @@
   pointer-events: auto;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
-  background: color-mix(in srgb, var(--panel-solid) 70%, transparent);
+  background: var(--hud-glass);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   color: var(--text);
   text-shadow: var(--legible);
   animation: toast-in 220ms var(--ease) both;
