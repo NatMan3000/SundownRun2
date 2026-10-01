@@ -33,7 +33,7 @@ import {
   type NaturalGrid,
   type NaturalTerrain,
 } from './terrain'
-import { buildCenterline, WALL_RAMP } from './road'
+import { buildCenterline, WALL_RAMP, type LoopInfo } from './road'
 import { buildRibbonMeshes } from './ribbon'
 import { buildRampMeshes, type RampSolid } from './ramps'
 import { buildSampleHash, makeRoadQueries } from './query'
@@ -47,8 +47,9 @@ import { hashString } from './noise'
  * bump gives every track a new key once and old local records stop matching.
  *   1: the first builder.
  *   2: loops run straight into the mouth and ease back over 180 m after (track2, round 1).
+ *   3: the bank flattens over a loop's run-in and landing; a loop on a curve drifts to its inside.
  */
-export const BUILDER_VERSION = 2
+export const BUILDER_VERSION = 3
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
@@ -73,6 +74,8 @@ export interface TrackInternals {
   atOfS: (s: number) => number
   /** 0..1 per sample: how much of the bank comes from a file override. */
   overrideWeight: Float32Array
+  /** Each loop as built (where it sits, which way it drifts, how far it was bent to land). */
+  loops: LoopInfo[]
 }
 
 const internals = new WeakMap<TrackRuntime, TrackInternals>()
@@ -358,6 +361,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     world,
     atOfS: c.atOfS,
     overrideWeight: c.overrideWeight,
+    loops: c.loops,
   })
   return runtime
 }

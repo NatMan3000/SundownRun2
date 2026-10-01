@@ -50,6 +50,8 @@ export const LOOP_EXIT_EASE = 180
 export const LOOP_RUN_IN = 80
 /** Metres of clear air between a loop's way in and its way out, beside each other. */
 const LOOP_LANE_GAP = 1
+/** A bend's bank rolls out to flat over this many metres before a loop's run-in (and back in after it lands). */
+const LOOP_BANK_EASE = 40
 /** A wall ride ramps its wall in and out over this many metres at each end. */
 export const WALL_RAMP = 15
 /** How far round a wall ride's wall curls at full height (degrees past flat). */
@@ -73,6 +75,24 @@ export interface LoopInfo {
   center: { x: number; y: number; z: number }
   /** Which way the corkscrew drifts: +1 = it comes down to the right of the way in, -1 = left. */
   side: 1 | -1
+  /** How far the loop had to be bent to land on the road (non-zero when it sits on a bend or slope). */
+  stretch: LoopStretch
+}
+
+/**
+ * A loop is built as a perfect shape on a straight, then bent so its way out lands
+ * exactly on the road. On a straight, level road these are all about 0. On a bend or
+ * a slope they grow: `across` < 0 swings the way-out leg back toward the way in (the
+ * two legs only have LOOP_LANE_GAP metres between them), `along` stretches or squashes
+ * it, `up` tilts it. Metres; the loop gate in runTrackGates judges them.
+ */
+export interface LoopStretch {
+  /** Sideways, + = further from the way in. */
+  across: number
+  /** Along the road, + = lands further on. */
+  along: number
+  /** Up, + = lands higher. */
+  up: number
 }
 
 export interface WallInfo {
@@ -239,6 +259,37 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
       sum += bCurv[(k + W + 1) % nb] - bCurv[(k - W + nb) % nb]
     }
   }
+  // ---- loops: where they sit (needed now: the road is flattened for them) ----
+  const pieces = file.pieces
+  const loopSpecs: { pieceIndex: number; sb: number; radius: number; shape: LoopShape; side: 1 | -1; stretch: LoopStretch }[] = []
+  pieces.forEach((p, idx) => {
+    if (p.type !== 'loop') return
+    const radius = (p as LoopPiece).radius ?? 12
+    const sb = baseSOfAt(p.at)
+    const shape = loopShape(radius)
+    // Which way the corkscrew drifts:
+    //  - If the road itself curves under the loop (a loop placed on a bend), drift to
+    //    the inside of that curve. The loop is bent to land where the road really is,
+    //    and on the inside that bend pulls the way out further from the way in;
+    //    drifting the other way would swing the way-out leg back over the way in.
+    //  - Otherwise drift toward the side the road bends to next, so the ease back
+    //    finishes turning the same way as that bend and flows into it. A road that
+    //    carries on straight drifts right.
+    const sumTurn = (fromS: number, metres: number): number => {
+      let turn = 0
+      const k0 = Math.round(fromS / dsb)
+      const kn = Math.round(metres / dsb)
+      for (let k = 0; k < kn; k++) turn += bCurv[(((k0 + k) % nb) + nb) % nb] * dsb
+      return turn
+    }
+    const underLoop = sumTurn(sb, shape.advance + 20)
+    const nextBend = sumTurn(sb + shape.advance, LOOP_EXIT_EASE + 150)
+    const deg = Math.PI / 180
+    const side: 1 | -1 = Math.abs(underLoop) > deg ? (underLoop < 0 ? -1 : 1) : nextBend < -3 * deg ? -1 : 1
+    loopSpecs.push({ pieceIndex: idx, sb, radius, shape, side, stretch: { across: 0, along: 0, up: 0 } })
+  })
+  loopSpecs.sort((a, b) => a.sb - b.sb)
+
   const vDesign = road.banking.designSpeedKmh / 3.6
   const bankTarget = new Float32Array(nb)
   for (let k = 0; k < nb; k++) {
@@ -251,6 +302,23 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     // Overrides are "into the corner": right-handers and straights lift the left edge.
     const sgn = bCurvWide[k] >= -1 / 1500 ? 1 : -1
     bankTarget[k] = auto * (1 - bOverW[k]) + bOverV[k] * sgn
+  }
+  // A loop enters and lands level: no bank from the start of its run-in to 20 m past where
+  // it comes down, rolling out of (and back into) any bend's bank over LOOP_BANK_EASE metres
+  // either side. (A loop dropped on a banked bend used to snap from the bend's bank to
+  // flat at its mouth: a roll the car can't follow.)
+  for (const L of loopSpecs) {
+    const flat0 = L.sb - LOOP_RUN_IN
+    const flat1 = L.sb + L.shape.advance + 20
+    for (let k = 0; k < nb; k++) {
+      const before = wrapDelta(k * dsb, flat0, Lb) // > 0: sample k is before the flat stretch
+      const after = wrapDelta(flat1, k * dsb, Lb) // > 0: sample k is after it
+      let w = 1
+      if (before <= 0 && after <= 0) w = 0
+      else if (before > 0 && before < LOOP_BANK_EASE) w = smoothstep(0, LOOP_BANK_EASE, before)
+      else if (after > 0 && after < LOOP_BANK_EASE) w = smoothstep(0, LOOP_BANK_EASE, after)
+      bankTarget[k] *= w
+    }
   }
   circularSmooth(bankTarget, Math.round(20 / dsb), 2)
   const bBank = new Float32Array(nb)
@@ -273,24 +341,6 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   }
 
   // ---- 5. loops: splice each loop in, then ease the road back after it ----
-  const pieces = file.pieces
-  const loopSpecs: { pieceIndex: number; sb: number; radius: number; shape: LoopShape; side: 1 | -1 }[] = []
-  pieces.forEach((p, idx) => {
-    if (p.type !== 'loop') return
-    const radius = (p as LoopPiece).radius ?? 12
-    const sb = baseSOfAt(p.at)
-    const shape = loopShape(radius)
-    // Drift toward the side the road bends to next. The ease back then finishes by
-    // turning the same way as that bend, so it flows into it instead of flicking
-    // the other way first. A road that carries on straight drifts right.
-    let turn = 0
-    const k0 = Math.round((sb + shape.advance) / dsb)
-    const kn = Math.round((LOOP_EXIT_EASE + 150) / dsb)
-    for (let k = 0; k < kn; k++) turn += bCurv[(k0 + k) % nb] * dsb
-    const side: 1 | -1 = turn < -(3 * Math.PI) / 180 ? -1 : 1
-    loopSpecs.push({ pieceIndex: idx, sb, radius, shape, side })
-  })
-  loopSpecs.sort((a, b) => a.sb - b.sb)
 
   // The loop comes down `advance` metres further along than it went up, so the
   // base road it lands on starts there; the base samples in between are skipped.
@@ -390,6 +440,10 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
       const Mx = Ex - (Px + Rx * d + Tx * sh.advance)
       const My = Ey - Py
       const Mz = Ez - (Pz + Rz * d + Tz * sh.advance)
+      // Record how far the loop had to be bent to land (see LoopStretch).
+      L.stretch.across = (Mx * Rx + Mz * Rz) * L.side
+      L.stretch.along = Mx * Tx + Mz * Tz
+      L.stretch.up = My
       for (let q = 0; q <= m; q++) {
         const ph = sh.phi[q]
         // Corkscrew drift across by d, with zero drift rate at the bottom (in and out),
@@ -585,6 +639,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
         z: S.pz[mid] + S.uz[mid] * L.radius,
       },
       side: L.side,
+      stretch: { ...L.stretch },
     })
   }
 
