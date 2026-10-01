@@ -118,7 +118,7 @@ function TrackDetail(props: { t: TrackListing | undefined; mode: GameMode }) {
         {rec && (
           <div>
             <dt>Best lap</dt>
-            <dd className="stats__good">{formatLap(rec.bestLapMs ?? null)}</dd>
+            <dd className={rec.bestLapMs !== undefined ? 'stats__good' : 'stats__none'}>{rec.bestLapMs !== undefined ? formatLap(rec.bestLapMs) : 'None yet'}</dd>
           </div>
         )}
         {rec?.stuntBest !== undefined && (

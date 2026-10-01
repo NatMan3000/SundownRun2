@@ -741,6 +741,8 @@
 .stats dt { font-family: var(--font-display); font-size: 0.75em; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: var(--dim); }
 .stats dd { margin: 0; font-family: var(--font-display); font-size: 1.35em; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stats__good { color: var(--good); }
+.stats__none { color: var(--dim); font-size: 1.05em !important; }
+.stats--wide { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 .chips { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 0.4em; }
 .chip { padding: 0.25em 0.65em; border-radius: 999px; font-size: 0.85em; color: color-mix(in srgb, var(--text) 85%, transparent); background: color-mix(in srgb, var(--text) 9%, transparent); }

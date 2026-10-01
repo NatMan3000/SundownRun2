@@ -112,15 +112,47 @@ function TagStandings() {
   )
 }
 
+/** Free roam and time trial: a summary of the run (only the numbers that happened). */
+function RunSummary() {
+  const laps = useGame((s) => s.lapCount)
+  const lastLap = useGame((s) => s.lastLapMs)
+  const bestLap = useGame((s) => s.bestLapMs)
+  const tricks = useGame((s) => s.trickScore)
+  const props = useGame((s) => s.propScore)
+  const found = useGame((s) => s.coresFound)
+  const total = useGame((s) => s.coresTotal)
+  const trap = useGame((s) => s.trapBestKmh)
+  const newBest = lastLap !== null && bestLap !== null && lastLap <= bestLap
+  const rows: [string, string, boolean?][] = [[laps === 1 ? 'Lap' : 'Laps', String(laps)]]
+  if (lastLap !== null) rows.push(['Last lap', formatLap(lastLap), newBest])
+  if (bestLap !== null) rows.push(['Best lap', formatLap(bestLap)])
+  if (tricks > 0) rows.push(['Trick points', formatScore(tricks)])
+  if (props > 0) rows.push(['Prop points', formatScore(props)])
+  if (total > 0) rows.push(['Energy cores', `${found} / ${total}`])
+  if (trap !== null) rows.push(['Top speed', `${Math.round(trap)} km/h`])
+  return (
+    <>
+      <div className="result-hero">
+        <span className={`result-hero__big${newBest ? ' is-win' : ''}`}>{newBest ? 'New best lap' : 'Run over'}</span>
+      </div>
+      <dl className="stats stats--wide">
+        {rows.map(([k, v, good]) => (
+          <div key={k}>
+            <dt>{k}</dt>
+            <dd className={good ? 'stats__good' : undefined}>{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </>
+  )
+}
+
 function ResultBody() {
   const mode = useGame((s) => s.mode)
   const stuntScore = useGame((s) => s.stuntScore)
   const stuntBest = useGame((s) => s.stuntBest)
   const huntLast = useGame((s) => s.huntLastMs)
   const huntBest = useGame((s) => s.huntBestMs)
-  const lastLap = useGame((s) => s.lastLapMs)
-  const bestLap = useGame((s) => s.bestLapMs)
-  const laps = useGame((s) => s.lapCount)
   if (mode === 'race') return <RaceStandings />
   if (mode === 'tag') return <TagStandings />
   if (mode === 'stunt') {
@@ -129,7 +161,7 @@ function ResultBody() {
   if (huntLast !== null) {
     return <ScoreVsBest label="Core hunt" value={formatLap(huntLast)} best={formatLap(huntBest)} isBest={huntBest !== null && huntLast <= huntBest} bestLabel="Your best" />
   }
-  return <ScoreVsBest label={`${laps} ${laps === 1 ? 'lap' : 'laps'}`} value={formatLap(lastLap)} best={formatLap(bestLap)} isBest={lastLap !== null && bestLap !== null && lastLap <= bestLap} bestLabel="Best lap" />
+  return <RunSummary />
 }
 
 export function ResultsScreen() {
