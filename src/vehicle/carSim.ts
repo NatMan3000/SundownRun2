@@ -33,7 +33,7 @@ import * as THREE from 'three'
 import type { RapierCollider, RapierContext, RapierRigidBody } from '@react-three/rapier'
 import { GROUPS, isMagnetic, isOnRoad, ownerOf, surfaceOf } from '../core/physics'
 import type { SurfaceKind } from '../core/physics'
-import type { NearestHit, TrackRuntime } from '../track/types'
+import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
 import type { BodyTuning } from './bodies/catalog'
 import { roadResetPose, startPose } from './trackNav'
 import {
@@ -151,6 +151,8 @@ export interface StepNews {
   crash: number //         intensity 0..1, 0 = none
   crashWhat: 'wall' | 'terrain' | 'prop' | 'car' | 'smashable' | 'barrier'
   crashCarId: string | null
+  /** Speed just before the hit, km/h. */
+  crashSpeedKmh: number
   reset: ResetKind | null
   resetReason: string
   teleported: boolean
@@ -223,6 +225,8 @@ export class CarSim {
   /** Dev: world-vertical sum of this step's wheel forces (suspension + tyre), N. */
   debugWheelForceY = 0
   debugSuspSum = 0
+  /** Dev: loop guidance this step [lateral m, lateral speed m/s, commanded accel m/s^2, heading error rad]. */
+  readonly debugGuide = new Float32Array(4)
   /** Physics steps since the car (re)spawned. */
   steps = 0
 
@@ -244,6 +248,7 @@ export class CarSim {
     crash: 0,
     crashWhat: 'wall',
     crashCarId: null,
+    crashSpeedKmh: 0,
     reset: null,
     resetReason: '',
     teleported: false,
@@ -251,6 +256,17 @@ export class CarSim {
 
   // ---- private per-car state ----
   private readonly hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: true }
+  private readonly frame: TrackFrame = {
+    s: 0,
+    position: new THREE.Vector3(),
+    tangent: new THREE.Vector3(),
+    up: new THREE.Vector3(),
+    right: new THREE.Vector3(),
+    halfWidth: 7,
+    bank: 0,
+    curvature: 0,
+    surface: 'road',
+  }
   private readonly compression = new Float64Array(WHEELS)
   private readonly suspForce = new Float64Array(WHEELS)
   private readonly rayToi = new Float64Array(WHEELS)
@@ -269,6 +285,8 @@ export class CarSim {
   private buriedTimer = 0
   private magGrace = 0
   private magSurface: SurfaceKind = 'loop'
+  /** 0..1 how much the wall lip guard is engaged (set by stepWallGuard, read by the steering). */
+  private wallGuard = 0
   private boostAge = 99
   private boostPower = 0
   private boostCooldown: Float64Array = new Float64Array(0)
@@ -428,7 +446,10 @@ export class CarSim {
       const dv = _tmp.subVectors(linvel, this.prevLinvel).length()
       const hit = clamp((dv - STATE.impactThreshold) / STATE.impactRange, 0, 1)
       if (hit > this.impact) this.impact = hit
-      if (hit > STATE.crashImpact && this.crashCooldown <= 0 && chassis) this.senseCrash(world, chassis, hit)
+      if (hit > STATE.crashImpact && this.crashCooldown <= 0 && chassis) {
+        this.news.crashSpeedKmh = this.prevLinvel.length() * 3.6 // the speed going IN to the hit
+        this.senseCrash(world, chassis, hit)
+      }
     }
     this.prevLinvel.copy(linvel)
     if (this.crashCooldown > 0) this.crashCooldown -= DT
@@ -448,6 +469,26 @@ export class CarSim {
     // Counter-steer = turning the nose BACK toward the velocity. beta > 0 needs a
     // right yaw and steer is +right, so it is simply sign(steer) === sign(beta).
     const counterSteer = Math.abs(beta) > ASSIST.counterSteerBeta && Math.abs(steer) > 0.15 && Math.sign(steer) === Math.sign(beta)
+
+    // ---- loop auto-steer (see MAG.loopSteerHeading): the loop drives the wheel for you ----
+    if (this.magGrip && this.magSurface === 'loop' && track && this.hasTrackS) {
+      const lf = track.frameAt(this.trackS, this.frame)
+      _tmp.crossVectors(fwd, lf.tangent)
+      const headingErr = Math.asin(clamp(_tmp.dot(up), -1, 1)) // < 0: the road bends to our right
+      const latVel = this.linvel.dot(lf.right)
+      const auto = clamp(-MAG.loopSteerHeading * headingErr - MAG.loopSteerLateral * this.lateral - MAG.loopSteerDamp * latVel, -1, 1)
+      const b = MAG.loopSteerBlend * this.magStrength
+      steer = steer + (auto - steer) * b
+    }
+
+    // ---- wall lip guard, steering half: high on a wall and climbing, turn back along the wall ----
+    if (this.magGrip && this.magSurface === 'wall' && this.wallGuard > 0 && track && this.hasTrackS) {
+      const wf = track.frameAt(this.trackS, this.frame)
+      _tmp.crossVectors(fwd, wf.tangent)
+      const headingErr = Math.asin(clamp(_tmp.dot(up), -1, 1))
+      const auto = clamp(-MAG.wallSteerHeading * headingErr, -1, 1)
+      steer = steer + (auto - steer) * MAG.wallSteerBlend * this.wallGuard
+    }
 
     // ---- steering: constant-g rack, rate limited ----
     const gCap = (STEERING.wheelbase * STEERING.latLimitG * GRAVITY * h.steerGain) / Math.max(speed * speed, 1)
@@ -694,6 +735,10 @@ export class CarSim {
 
     // ---- magnetic grip on loops and wall rides ----
     this.stepMagnet(body, mass, magWheels, airborne)
+    if (track && this.magGrip && this.magSurface === 'loop') this.stepLoopGuide(body, track, mass)
+    else this.debugGuide.fill(0)
+    if (track && this.magGrip && this.magSurface === 'wall') this.stepWallGuard(body, track, mass)
+    else this.wallGuard = 0
 
     // ---- boost pads ----
     if (track) this.stepBoost(body, track, mass, airborne)
@@ -973,6 +1018,61 @@ export class CarSim {
       this.news.magOff = this.magSurface
       this.news.magFell = strength <= 0 || airborne || this.up.y < 0.2
     }
+  }
+
+  /** Loop guidance: hold the car on the centre line and aligned with the road (MAG.loopLatK ...). */
+  private stepLoopGuide(body: RapierRigidBody, track: TrackRuntime, mass: number): void {
+    if (!this.hasTrackS) return
+    const f = track.frameAt(this.trackS, this.frame)
+    const up = this.up
+    // Sideways: drive the lateral speed toward a spring target back to the line.
+    const latVel = this.linvel.dot(f.right)
+    const want = -MAG.loopLatK * this.lateral
+    const acc = clamp((want - latVel) * MAG.loopLatGain, -MAG.loopLatMax, MAG.loopLatMax) * this.magStrength
+    this.addForce(body, f.right.x * acc * mass, f.right.y * acc * mass, f.right.z * acc * mass)
+    this.debugGuide[0] = this.lateral
+    this.debugGuide[1] = latVel
+    this.debugGuide[2] = acc
+    // Heading: yaw (about the car's own up) toward the road tangent.
+    _tmp.crossVectors(this.fwd, f.tangent)
+    const err = Math.asin(clamp(_tmp.dot(up), -1, 1))
+    const errRate = this.angvel.dot(up)
+    const tq = (MAG.loopYawK * err - MAG.loopYawDamp * errRate) * this.magStrength * (mass / CHASSIS.mass)
+    this.addTorque(body, up.x * tq, up.y * tq, up.z * tq)
+    this.debugGuide[3] = err
+  }
+
+  /** Wall lip guard (MAG.wallGuardFrom ...): high on a wall ride, upward speed is bent along the wall. */
+  private stepWallGuard(body: RapierRigidBody, track: TrackRuntime, mass: number): void {
+    if (!this.hasTrackS) return
+    // How tall is the wall we're on? (A few pieces per track: a plain loop is cheap.)
+    let height = 9
+    const pieces = track.pieces
+    for (let i = 0; i < pieces.length; i++) {
+      const p = pieces[i]
+      if (p.type !== 'wallride') continue
+      const along = track.deltaS(p.s0, this.trackS)
+      if (along >= -2 && along <= track.deltaS(p.s0, p.s1) + 2) {
+        height = p.height ?? 9
+        break
+      }
+    }
+    const f = track.frameAt(this.trackS, this.frame)
+    const h = _tmp.subVectors(this.pos, f.position).dot(f.up) // height above the road plane
+    const frac = h / Math.max(height, 1)
+    const g = smoothstep(MAG.wallGuardFrom, MAG.wallGuardFull, frac)
+    this.wallGuard = 0
+    if (g <= 0) return
+    // "Up the wall" inside the wall's surface: world up with the surface normal taken out.
+    const n = this.magNormal
+    _tmp.set(0, 1, 0).addScaledVector(n, -n.y)
+    if (_tmp.lengthSq() < 1e-4) return
+    _tmp.normalize()
+    const vUp = this.linvel.dot(_tmp)
+    if (vUp <= 0) return
+    this.wallGuard = g // next step's steering reads this
+    const a = -Math.min(vUp * MAG.wallGuardK, MAG.wallGuardMax) * g * this.magStrength
+    this.addForce(body, _tmp.x * a * mass, _tmp.y * a * mass, _tmp.z * a * mass)
   }
 
   /** Boost pads: a kick on entry, then the envelope pushes and lifts the top speed. */

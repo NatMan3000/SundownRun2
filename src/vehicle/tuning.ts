@@ -257,6 +257,43 @@ export const MAG = {
   stickAccel: 14,
   /** Wheels that must be on a magnetic surface. */
   minWheels: 2,
+  /**
+   *  LOOP GUIDANCE. A loop has a corkscrew offset (so it doesn't drive through
+   *  itself); without steering the car slid 7.6 m sideways and flew off a
+   *  quarter of the way round. Nobody steers a corkscrew upside down, so on a
+   *  loop surface the car is guided: a lateral spring toward the centre line and
+   *  a yaw alignment to the road. Wall rides are left free - steering there is
+   *  the fun.
+   */
+  loopLatK: 2.0, //      1/s: target sideways speed per metre off the line
+  loopLatGain: 7, //      1/s: how fast the sideways speed is corrected
+  loopLatMax: 16, //      m/s^2 cap on the correction
+  loopYawK: 7000, //      Nm per rad of heading error to the road
+  loopYawDamp: 2500, //   Nm per rad/s of heading-error rate
+  /**
+   *  ...but on a loop the tyres carry ~10 g of load, so the car goes where its
+   *  nose points and forces alone can't hold it (measured: pinned at the cap and
+   *  still sliding off). So the loop also STEERS for you, like a driver would:
+   *  toward the road's direction and back to the centre line, blended over
+   *  whatever the player is doing.
+   */
+  loopSteerHeading: 4, //  steer per rad of heading error
+  loopSteerLateral: 0.18, // steer per metre off the centre line
+  loopSteerDamp: 0.12, //    steer per m/s of sideways speed (stops it swinging across)
+  loopSteerBlend: 0.85, //   how much of the steering the loop takes over
+  /**
+   *  WALL LIP GUARD. Steering hard up a wall ride at speed carried the car
+   *  straight over the 9 m lip and 18 m into the sky, like a skate ramp. High on
+   *  the wall, speed that is carrying the car UP the face is bent back along the
+   *  wall, so you ride the wall instead of launching off its top.
+   */
+  wallGuardFrom: 0.3, //   fraction of the wall height where the guard starts
+  wallGuardFull: 0.8, //   ...and is fully on
+  wallGuardK: 8, //        1/s: how hard upward speed is removed
+  wallGuardMax: 55, //     m/s^2 cap
+  /** ...and the nose is steered back along the wall (the tyres would otherwise keep climbing). */
+  wallSteerHeading: 3,
+  wallSteerBlend: 0.8,
 }
 
 export const BOOST = {

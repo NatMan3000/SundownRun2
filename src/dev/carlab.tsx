@@ -36,7 +36,7 @@ function Env() {
     const pm = new THREE.PMREMGenerator(gl)
     const env = pm.fromScene(new RoomEnvironment(), 0.04).texture
     scene.environment = env
-    scene.environmentIntensity = 0.35
+    scene.environmentIntensity = 0.5
     return () => env.dispose()
   }, [gl, scene])
   return null
@@ -93,7 +93,7 @@ function Lab() {
       <directionalLight position={[8, 6, 6]} intensity={0.5} color={PALETTE.laneLine} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[80, 80]} />
-        <meshPhysicalMaterial color={PALETTE.ground} roughness={0.25} metalness={0.4} clearcoat={1} />
+        <meshStandardMaterial color={PALETTE.ground} roughness={0.7} metalness={0.1} />
       </mesh>
       <Lineup />
       <EffectComposer>

@@ -15,15 +15,17 @@
 //  The wheel is shared by every car: tyre, aero disc and a glowing
 //  rim ring merged into one geometry with an `aGlow` attribute.
 //
-//  FACETED ON PURPOSE: every triangle gets its own flat normal
-//  (non-indexed geometry), so each panel catches its own highlight.
-//  Winding is fixed per triangle by checking its normal points away
-//  from the car's centre line, so a typo in a profile can never turn
-//  a panel inside out.
+//  SMOOTH PANELS, CRISP LINES: the stations are interpolated along
+//  the car (a smooth curve through them), each cross-section's panels
+//  are rounded slightly, and normals are "creased": smooth across
+//  gentle angles, sharp across real character lines (the shoulder, the
+//  deck edge, every box edge). Winding is fixed per triangle by checking
+//  its normal points away from the car's centre line, so a typo in a
+//  profile can never turn a panel inside out.
 // ============================================================
 
 import * as THREE from 'three'
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { mergeGeometries, toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { PALETTE } from '../../core/palette'
 import type { BodyId } from './catalog'
 import { PROFILES } from './profiles'
@@ -71,11 +73,13 @@ class Soup {
     this.tri(a, c, d, ox, oy, oz, extra)
   }
 
-  geometry(extraName?: string): THREE.BufferGeometry {
-    const g = new THREE.BufferGeometry()
+  /** Build the geometry. With a crease angle, normals are smoothed across gentler angles than that. */
+  geometry(extraName?: string, creaseAngle = 0): THREE.BufferGeometry {
+    let g = new THREE.BufferGeometry()
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3))
     if (extraName) g.setAttribute(extraName, new THREE.Float32BufferAttribute(this.extra, 1))
-    g.computeVertexNormals() // non-indexed: one flat normal per triangle
+    if (creaseAngle > 0) g = toCreasedNormals(g, creaseAngle)
+    else g.computeVertexNormals() // non-indexed: one flat normal per triangle
     g.computeBoundingSphere()
     return g
   }
@@ -114,6 +118,68 @@ function canopyHalf(st: number[]): [number, number][] {
   ]
 }
 
+/** Catmull-Rom through four values. */
+function cr(p0: number, p1: number, p2: number, p3: number, t: number): number {
+  const t2 = t * t
+  const t3 = t2 * t
+  return 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+}
+
+/**
+ * Densify stations along the car: a smooth curve through them, `sub` steps per
+ * gap. Components listed in `linear` are interpolated in straight lines instead
+ * (the hull's lower flank, which must never bulge into a tyre).
+ */
+function densify(stations: number[][], sub: number, linear: readonly number[]): number[][] {
+  const n = stations.length
+  const out: number[][] = []
+  for (let i = 0; i < n - 1; i++) {
+    const a = stations[Math.max(0, i - 1)]
+    const b = stations[i]
+    const c = stations[i + 1]
+    const d = stations[Math.min(n - 1, i + 2)]
+    for (let k = 0; k < sub; k++) {
+      const t = k / sub
+      const row: number[] = []
+      for (let j = 0; j < b.length; j++) row.push(linear.includes(j) ? b[j] + (c[j] - b[j]) * t : cr(a[j], b[j], c[j], d[j], t))
+      out.push(row)
+    }
+  }
+  out.push(stations[n - 1].slice())
+  return out
+}
+
+/**
+ * Round a half cross-section: a point is added in the middle of each panel,
+ * pushed outward by `bulge` x the panel's length (away from the centre at
+ * height `cy`). The first panel (the flat underside) is left flat.
+ */
+function roundHalf(half: [number, number][], bulge: number, cy: number): [number, number][] {
+  const out: [number, number][] = [half[0]]
+  for (let i = 0; i < half.length - 1; i++) {
+    const [x0, y0] = half[i]
+    const [x1, y1] = half[i + 1]
+    if (i > 0) {
+      const mx = (x0 + x1) / 2
+      const my = (y0 + y1) / 2
+      let nx = y1 - y0
+      let ny = -(x1 - x0)
+      const len = Math.hypot(nx, ny)
+      if (len > 1e-6) {
+        nx /= len
+        ny /= len
+        if (nx * mx + ny * (my - cy) < 0) {
+          nx = -nx
+          ny = -ny
+        }
+        out.push([Math.max(0, mx + nx * bulge * len), my + ny * bulge * len])
+      }
+    }
+    out.push(half[i + 1])
+  }
+  return out
+}
+
 /** A full ring (both sides) of points at station z. */
 function ring(half: [number, number][], z: number): THREE.Vector3[] {
   const out: THREE.Vector3[] = []
@@ -122,13 +188,13 @@ function ring(half: [number, number][], z: number): THREE.Vector3[] {
   return out
 }
 
-/** Join stations into a closed, capped, faceted solid. */
-function loft(soup: Soup, stations: number[][], halfOf: (st: number[]) => [number, number][]): void {
-  const rings = stations.map((st) => ring(halfOf(st), st[0]))
+/** Join stations into a closed, capped solid (cross-sections rounded by `bulge`). */
+function loft(soup: Soup, stations: number[][], halfOf: (st: number[]) => [number, number][], bulge: number): void {
   const centres = stations.map((st) => {
     const h = halfOf(st)
     return (h[0][1] + h[h.length - 1][1]) / 2
   })
+  const rings = stations.map((st, i) => ring(roundHalf(halfOf(st), bulge, centres[i]), st[0]))
   for (let r = 0; r < rings.length - 1; r++) {
     const A = rings[r]
     const B = rings[r + 1]
@@ -191,9 +257,25 @@ const LIGHT_HEAD = 1
 const LIGHT_TAIL = 2
 const STRIP_OUT = 0.012 // strips stand proud of the paint so they never z-fight it
 
-/** Interpolate a hull point (index `pi`) at any z between stations. */
+/** Station densities: how many steps between authored stations. */
+const HULL_SUB = 4
+const CANOPY_SUB = 4
+/** Hull components interpolated in straight lines (z, underside, lower flank): never bulge into a tyre. */
+const HULL_LINEAR = [0, 1, 2, 3, 4] as const
+
+const denseHulls = new Map<BodyProfile, number[][]>()
+function denseHull(p: BodyProfile): number[][] {
+  let d = denseHulls.get(p)
+  if (!d) {
+    d = densify(p.hull, HULL_SUB, HULL_LINEAR)
+    denseHulls.set(p, d)
+  }
+  return d
+}
+
+/** Interpolate a hull point (index `pi`) at any z, on the same smooth hull the loft builds. */
 function hullPointAt(p: BodyProfile, pi: number, z: number, out: THREE.Vector2): THREE.Vector2 {
-  const h = p.hull
+  const h = denseHull(p)
   for (let i = 0; i < h.length - 1; i++) {
     const a = h[i]
     const b = h[i + 1]
@@ -238,11 +320,11 @@ function buildBody(id: BodyId): BodyGeometry {
   const p = PROFILES[id]
 
   const paint = new Soup()
-  loft(paint, p.hull, hullHalf)
+  loft(paint, denseHull(p), hullHalf, 0.02)
   boxes(paint, p.paint)
 
   const glass = new Soup()
-  loft(glass, p.canopy, canopyHalf)
+  loft(glass, densify(p.canopy, CANOPY_SUB, [0]), canopyHalf, 0.06)
 
   const trim = new Soup()
   boxes(trim, p.trim)
@@ -266,8 +348,8 @@ function buildBody(id: BodyId): BodyGeometry {
   const front = p.hull[0][0]
   const back = p.hull[p.hull.length - 1][0]
   return {
-    paint: paint.geometry(),
-    glass: glass.geometry(),
+    paint: paint.geometry(undefined, PAINT_CREASE),
+    glass: glass.geometry(undefined, GLASS_CREASE),
     trim: trim.geometry(),
     lights: lights.geometry('aLight'),
     tailLights: [
@@ -281,6 +363,10 @@ function buildBody(id: BodyId): BodyGeometry {
     underglow: { halfWidth: 0.72, halfLength: (front - back) * 0.42, y: -0.42 },
   }
 }
+
+/** Crease angles: panels meeting at less than this are smoothed together; sharper meets stay a crisp line. */
+const PAINT_CREASE = 0.35 // ~20 deg: tight, so panels stay flat and edges stay sharp
+const GLASS_CREASE = 0.7
 
 const cache = new Map<BodyId, BodyGeometry>()
 

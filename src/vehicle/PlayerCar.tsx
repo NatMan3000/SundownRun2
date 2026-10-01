@@ -235,7 +235,7 @@ export function PlayerCar() {
     if (news.magOn) emit('mag.on', { surface: news.magOn === 'wall' ? 'wall' : 'loop', speedKmh: Math.round(s.speedKmh) })
     if (news.magOff) emit('mag.off', { surface: news.magOff === 'wall' ? 'wall' : 'loop', speedKmh: Math.round(s.speedKmh), fell: news.magFell })
     if (news.crash > 0) {
-      const payload = { what: news.crashWhat, intensity: Math.round(news.crash * 100) / 100, speedKmh: Math.round(s.speedKmh) }
+      const payload = { what: news.crashWhat, intensity: Math.round(news.crash * 100) / 100, speedKmh: Math.round(news.crashSpeedKmh) }
       emit('crash', news.crashCarId ? { ...payload, otherCarId: news.crashCarId } : payload)
     }
 

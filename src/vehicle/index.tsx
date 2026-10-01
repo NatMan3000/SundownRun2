@@ -168,7 +168,7 @@ export function VehicleLayer() {
           surface: s.surface,
           onRoad: s.onRoad,
           forces: { suspSum: Math.round(s.debugSuspSum), wheelY: Math.round(s.debugWheelForceY), weight: Math.round(s.speed >= 0 ? 9.81 * 1200 * s.tuning.mass : 0) },
-          mag: { grip: s.magGrip, strength: +s.magStrength.toFixed(2) },
+          mag: { grip: s.magGrip, strength: +s.magStrength.toFixed(2), guide: Array.from(s.debugGuide).map((v) => +v.toFixed(2)) },
           boost: +s.boost.toFixed(2),
           frozen: s.frozen,
           trackS: +s.trackS.toFixed(1),
