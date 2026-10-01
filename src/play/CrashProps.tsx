@@ -93,7 +93,7 @@ interface FieldState {
   live: Uint8Array
   body: (RapierRigidBody | null)[]
   /** Collider handle of each piece's body (kept here so untagging never has to ask rapier). */
-  colHandle: Int32Array
+  colHandle: Float64Array
   /** Index of the piece in its instanced mesh (crates and cubes count separately). */
   slot: Int32Array
   crateCount: number
@@ -122,7 +122,7 @@ function PropField({ track }: { track: TrackRuntime }) {
       br: new Float32Array(clusters),
       live: new Uint8Array(cap),
       body: new Array(cap).fill(null),
-      colHandle: new Int32Array(cap),
+      colHandle: new Float64Array(cap), // rapier handles are 64-bit floats: an Int32Array truncates them
       slot: new Int32Array(cap),
       crateCount: 0,
       cubeCount: 0,
