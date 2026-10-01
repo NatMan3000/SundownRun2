@@ -33,6 +33,7 @@ import { initInput, inputDebug, pollInput } from '../core/input'
 import { getTrack } from '../track/current'
 import { demoDrive } from '../dev/demoDrive'
 import { feelTrace } from '../dev/feelTrace'
+import '../dev/feelPad'
 import { BODIES } from './bodies/catalog'
 import { buildCarModel, disposeCarModel } from './carModel'
 import { cameraState } from './camera/CameraRig'
@@ -68,6 +69,8 @@ export function InputSystem() {
 
 const _p = new THREE.Vector3()
 const _q = new THREE.Quaternion()
+const _qYaw = new THREE.Quaternion()
+const _e = new THREE.Euler()
 
 /** Everything vehicle that lives inside <Physics>. */
 export function VehicleLayer() {
@@ -88,17 +91,37 @@ export function VehicleLayer() {
     const off = [
       registerDev(
         'teleport',
-        ((s: number, lateral = 0) => {
+        ((s: number, lateral = 0, yawDeg = 0) => {
           const t = getTrack()
           const sim = links.playerSim
           if (!t || !sim || !Number.isFinite(s)) return 'no track or car'
           const f = frameAt(t, s)
           _p.copy(f.position).addScaledVector(f.right, Number(lateral) || 0).addScaledVector(f.up, RIDE_HEIGHT + 0.1)
           quatFromFrame(f.tangent, f.up, _q)
+          // Optional heading offset (+ = nose left), about the road's up: handy for feel tests.
+          const yaw = ((Number(yawDeg) || 0) * Math.PI) / 180
+          if (yaw !== 0) _q.premultiply(_qYaw.setFromAxisAngle(f.up, yaw))
           sim.teleport(_p, _q, t.wrapS(s))
           return { s: t.wrapS(s), x: _p.x, y: _p.y, z: _p.z }
         }) as never,
-        'teleport(s, lateral = 0): put the player on the road s metres from the start, lateral metres right',
+        'teleport(s, lateral = 0, yawDeg = 0): put the player on the road s metres from the start, lateral metres right, nose turned yawDeg left',
+      ),
+      registerDev(
+        'drop',
+        ((height = 8, rollDeg = 0, pitchDeg = 0) => {
+          const sim = links.playerSim
+          if (!sim) return 'no car'
+          // Lift the car straight up from where it is, keep its speed, tilt it: air and landing tests.
+          _p.copy(sim.pos)
+          _p.y += Number(height) || 0
+          _e.set(((Number(pitchDeg) || 0) * Math.PI) / 180, 0, ((Number(rollDeg) || 0) * Math.PI) / 180)
+          _q.copy(sim.quat).multiply(_qYaw.setFromEuler(_e))
+          const kmh = sim.forwardSpeed * 3.6
+          sim.teleport(_p, _q, sim.trackS)
+          if (kmh > 1) sim.setForwardSpeed(kmh)
+          return { y: +_p.y.toFixed(2), kmh: Math.round(kmh) }
+        }) as never,
+        'drop(height = 8, rollDeg = 0, pitchDeg = 0): lift the player into the air (keeping its speed), tilted - air control, landing and roof tests',
       ),
       registerDev(
         'setSpeed',
@@ -144,6 +167,7 @@ export function VehicleLayer() {
           })),
           surface: s.surface,
           onRoad: s.onRoad,
+          forces: { suspSum: Math.round(s.debugSuspSum), wheelY: Math.round(s.debugWheelForceY), weight: Math.round(s.speed >= 0 ? 9.81 * 1200 * s.tuning.mass : 0) },
           mag: { grip: s.magGrip, strength: +s.magStrength.toFixed(2) },
           boost: +s.boost.toFixed(2),
           frozen: s.frozen,

@@ -157,6 +157,15 @@ export const inputDebug = {
   padConnected: false,
   padId: '',
   keys,
+  /** The last few menu actions sent (newest last), e.g. 'down:keyboard'. */
+  recentMenu: [] as string[],
+}
+
+/** Every menu action goes out through here, so the inspector sees it too. */
+function sendMenu(action: MenuAction, dev: InputDevice): void {
+  inputDebug.recentMenu.push(`${action}:${dev}`)
+  if (inputDebug.recentMenu.length > 8) inputDebug.recentMenu.shift()
+  menuBus.emit(action, dev)
 }
 
 function setDevice(d: InputDevice): void {
@@ -240,7 +249,7 @@ function onKeyDown(e: KeyboardEvent): void {
     const action = menuActionForKey(code)
     if (action && (!e.repeat || REPEATABLE[action])) {
       setDevice('keyboard')
-      menuBus.emit(action, 'keyboard')
+      sendMenu(action, 'keyboard')
     }
     return
   }
@@ -424,10 +433,10 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
       if (rising(PAD.RB) && !padSuppressed[PAD.RB]) controlSignals.cameraCycle++
       if (rising(PAD.X)) controlSignals.race++
     } else if (ctx === 'menu') {
-      if (rising(PAD.A)) menuBus.emit('accept', 'gamepad')
-      if (rising(PAD.B)) menuBus.emit('back', 'gamepad')
-      if (rising(PAD.LB)) menuBus.emit('tabPrev', 'gamepad')
-      if (rising(PAD.RB)) menuBus.emit('tabNext', 'gamepad')
+      if (rising(PAD.A)) sendMenu('accept', 'gamepad')
+      if (rising(PAD.B)) sendMenu('back', 'gamepad')
+      if (rising(PAD.LB)) sendMenu('tabPrev', 'gamepad')
+      if (rising(PAD.RB)) sendMenu('tabNext', 'gamepad')
 
       // Directions with repeat: fire on press, again after 350 ms, then every 110 ms.
       const dir = padMenuDirection(pad)
@@ -437,11 +446,11 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
         menuDirLastFire = nowMs
         if (dir) {
           setDevice('gamepad')
-          menuBus.emit(dir, 'gamepad')
+          sendMenu(dir, 'gamepad')
         }
       } else if (dir && nowMs - menuDirSince >= MENU_REPEAT_DELAY_MS && nowMs - menuDirLastFire >= MENU_REPEAT_MS) {
         menuDirLastFire = nowMs
-        menuBus.emit(dir, 'gamepad')
+        sendMenu(dir, 'gamepad')
       }
     }
   }

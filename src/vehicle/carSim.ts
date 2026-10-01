@@ -218,6 +218,11 @@ export class CarSim {
   longAccel = 0
   /** Brake light level 0..1. */
   brakeLight = 0
+  /** No wheel down but the chassis is touching the world (on its roof or side): not flying. */
+  chassisTouching = false
+  /** Dev: world-vertical sum of this step's wheel forces (suspension + tyre), N. */
+  debugWheelForceY = 0
+  debugSuspSum = 0
   /** Physics steps since the car (re)spawned. */
   steps = 0
 
@@ -474,7 +479,7 @@ export class CarSim {
       const v = Math.max(vLongCar, 1)
       const traction = Math.min(DRIVE.maxForce, pMax / v)
       // Soft limiter across the last band before the (boost-raised) limit.
-      const lim = 1 - smoothstep(vLimit * (1 - DRIVE.limiterBand), vLimit, vLongCar)
+      const lim = 1 - smoothstep(vLimit * DRIVE.limiterLo, vLimit * DRIVE.limiterHi, vLongCar)
       engineTotal = throttle * power * traction * lim
     }
     this.reversing = reversing
@@ -535,13 +540,24 @@ export class CarSim {
       // Velocity of the chassis at the contact patch: v + w x r.
       _arm.set(this.contactPts[i].x - comX, this.contactPts[i].y - comY, this.contactPts[i].z - comZ)
       _pointVel.crossVectors(angvel, _arm).add(linvel)
-      const suspVel = _pointVel.dot(up) // + extending, - compressing
-      const f = k * this.compression[i] - (suspVel < 0 ? dC : dR) * suspVel
-      this.suspForce[i] = clamp(f, 0, fMax) // a suspension pushes, never pulls
+      // Compression rate = how fast the mount approaches the GROUND, measured along the ray.
+      // (Using v . carUp instead leaked forward speed into the damper whenever the car
+      // pitched against the road - 7 kN of phantom lift under throttle at 120 km/h.)
+      const suspVel = _pointVel.dot(n) / Math.max(up.dot(n), 0.5) // + extending, - compressing
+      let f = k * this.compression[i] - (suspVel < 0 ? dC : dR) * suspVel
+      let cap = fMax
+      const bump = this.compression[i] - SUSPENSION.bumpStart
+      if (bump > 0) {
+        f += SUSPENSION.bumpStiffness * massRatio * bump - (SUSPENSION.bumpDamp - 1) * (suspVel < 0 ? dC : dR) * suspVel
+        cap = fMax * SUSPENSION.bumpMaxScale
+      }
+      this.suspForce[i] = clamp(f, 0, cap) // a suspension pushes, never pulls
     }
     if (grounded > 0) this.groundNormal.normalize()
     else this.groundNormal.copy(WORLD_UP)
     this.wheelsDown = grounded
+    // Wheels up: is the body itself resting on something? (Only checked while no wheel is down.)
+    this.chassisTouching = grounded === 0 && chassis !== null && this.touchingWorld(world, chassis)
     const airborne = grounded === 0
     this.airTime = airborne ? this.airTime + DT : 0
 
@@ -571,6 +587,8 @@ export class CarSim {
     //  PASS B - tyres, friction circle, apply
     // =========================================================
     _tyreSum.set(0, 0, 0)
+    this.debugWheelForceY = 0
+    this.debugSuspSum = sf[0] + sf[1] + sf[2] + sf[3]
     const cosS = Math.cos(this.steerAngle)
     const sinS = Math.sin(this.steerAngle)
     let nanForce = false
@@ -648,6 +666,7 @@ export class CarSim {
         nanForce = true
         continue
       }
+      this.debugWheelForceY += _force.y
       _rv.x = _force.x
       _rv.y = _force.y
       _rv.z = _force.z
@@ -698,7 +717,9 @@ export class CarSim {
     if (!airborne) {
       // ---- yaw stability: a light hand, released for a slide, firmed up hands-off ----
       const yawRate = angvel.dot(up)
+      const hs = smoothstep(ASSIST.hsLo, ASSIST.hsHi, speed) // 0 slow .. 1 flat out (high-speed stability)
       let yawK = this.drifting ? ASSIST.yawDampDrift + (ASSIST.yawDampRecover * stab - ASSIST.yawDampDrift) * assistGain : ASSIST.yawDamp
+      yawK += ASSIST.hsYawDamp * stab * hs * assistGain
       // Brake stability: braking mid-corner adds yaw damping (never while handbraking).
       if (!handbrake && brakeCmd > 0.05) yawK += ASSIST.brakeYawDamp * stab * brakeCmd
       const yt = -yawRate * yawK * inertiaScale
@@ -707,10 +728,30 @@ export class CarSim {
       // ---- drift recovery: the missing spring that pulls the nose back onto the path ----
       if (!reversing && assistGain > 0.01 && speed > ASSIST.assistSpeedLo) {
         const m = Math.abs(beta)
-        if (m > ASSIST.driftDeadband) {
-          const over = Math.sign(beta) * Math.min(m - ASSIST.driftDeadband, 1.2)
+        const deadband = ASSIST.driftDeadband + (ASSIST.driftDeadbandFast - ASSIST.driftDeadband) * hs
+        if (m > deadband) {
+          const over = Math.sign(beta) * Math.min(m - deadband, 1.2)
           const ramp = smoothstep(ASSIST.assistSpeedLo, ASSIST.assistSpeedHi, speed)
-          const tq = clamp(-ASSIST.driftRestore * stab * over * assistGain * ramp, -ASSIST.driftRestoreMax * stab, ASSIST.driftRestoreMax * stab) * inertiaScale
+          const kHs = 1 + ASSIST.hsRestore * hs
+          const lim = ASSIST.driftRestoreMax * kHs * stab
+          const tq = clamp(-ASSIST.driftRestore * kHs * stab * over * assistGain * ramp, -lim, lim) * inertiaScale
+          this.addTorque(body, up.x * tq, up.y * tq, up.z * tq)
+        }
+      }
+
+      // ---- drift ceiling: a held drift stays a drift, never a spin ----
+      const ab = Math.abs(beta)
+      if (speed > ASSIST.assistSpeedHi && ab < ASSIST.ceilEnd) {
+        let tq = ab > ASSIST.ceilStart ? -Math.sign(beta) * ASSIST.ceilSpring * (ab - ASSIST.ceilStart) : 0
+        // Only rotation that makes the slide DEEPER is touched (beta and yaw rate share a sign then);
+        // a car rotating back toward its path is never slowed down.
+        if (Math.sign(yawRate) === Math.sign(beta) && ab > 0.02) {
+          tq -= yawRate * ASSIST.ceilDamp * smoothstep(ASSIST.ceilDampFrom, ASSIST.ceilStart, ab)
+          const over = Math.abs(yawRate) - ASSIST.maxDriftYaw
+          if (over > 0) tq -= Math.sign(yawRate) * over * ASSIST.yawCapK
+        }
+        if (tq !== 0) {
+          tq *= inertiaScale
           this.addTorque(body, up.x * tq, up.y * tq, up.z * tq)
         }
       }
@@ -725,16 +766,20 @@ export class CarSim {
         }
       }
     } else {
-      // ---- air control: generous but calm. Handbrake + steer rolls instead of yawing. ----
-      const pitchT = (throttle - brake) * ASSIST.airPitch * inertiaScale
-      const yawT = handbrake ? 0 : -steer * ASSIST.airYaw * inertiaScale
-      const rollT = handbrake ? steer * ASSIST.airRoll * inertiaScale : 0
+      // ---- air control: generous but calm (see ASSIST.airPitch). Handbrake = trick mode. ----
+      const trick = handbrake
+      const pitchT = (throttle - brake) * (trick ? ASSIST.airPitch : ASSIST.airPitchCalm) * inertiaScale
+      const yawT = -steer * ASSIST.airYaw * inertiaScale * (trick ? 0.35 : 1)
+      const rollT = trick ? steer * ASSIST.airRoll * inertiaScale : 0
       const damp = ASSIST.airAngularDamp * 100 * inertiaScale
+      // Self-levelling outside trick mode: rotate car-up toward world-up (no yaw component).
+      if (!trick) _tmp.crossVectors(up, WORLD_UP).multiplyScalar(ASSIST.airLevel * inertiaScale)
+      else _tmp.set(0, 0, 0)
       this.addTorque(
         body,
-        right.x * pitchT + WORLD_UP.x * yawT + fwd.x * rollT - angvel.x * damp,
-        right.y * pitchT + WORLD_UP.y * yawT + fwd.y * rollT - angvel.y * damp,
-        right.z * pitchT + WORLD_UP.z * yawT + fwd.z * rollT - angvel.z * damp,
+        right.x * pitchT + WORLD_UP.x * yawT + fwd.x * rollT - angvel.x * damp + _tmp.x,
+        right.y * pitchT + WORLD_UP.y * yawT + fwd.y * rollT - angvel.y * damp + _tmp.y,
+        right.z * pitchT + WORLD_UP.z * yawT + fwd.z * rollT - angvel.z * damp + _tmp.z,
       )
     }
 
@@ -1014,6 +1059,28 @@ export class CarSim {
     }
   }
 
+  // Preallocated callbacks for touchingWorld (no closures per step).
+  private probeWorld: RapierWorld | null = null
+  private probeChassis: RapierCollider | null = null
+  private probeHit = false
+  private readonly onManifold = (m: { numContacts(): number }) => {
+    if (m.numContacts() > 0) this.probeHit = true
+  }
+  private readonly onPair = (other: RapierCollider) => {
+    if (this.probeHit || !this.probeWorld || !this.probeChassis) return
+    if (ownerOf(other.handle)) return // other cars and props are not "the ground"
+    this.probeWorld.contactPair(this.probeChassis, other, this.onManifold)
+  }
+
+  /** True if the chassis box is in contact with a world collider right now. */
+  private touchingWorld(world: RapierWorld, chassis: RapierCollider): boolean {
+    this.probeWorld = world
+    this.probeChassis = chassis
+    this.probeHit = false
+    world.contactPairsWith(chassis, this.onPair)
+    return this.probeHit
+  }
+
   /** A hard hit: find what the chassis is touching, rank it, and report it. */
   private senseCrash(world: RapierWorld, chassis: RapierCollider, intensity: number): void {
     let rank = -1
@@ -1064,6 +1131,9 @@ export class CarSim {
       }
     })
     if (rank < 0) return // no chassis contact: a hard landing on the wheels, not a crash
+    // Upright with the wheels down and only the ground touching: a hard landing that
+    // bottomed out, not a crash (the bump stops already soaked it).
+    if (rank <= 1 && this.wheelsDown >= 3 && this.up.dot(this.groundNormal) > 0.8) return
     this.crashCooldown = STATE.crashCooldown
     this.news.crash = intensity
     this.news.crashWhat = what

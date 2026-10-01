@@ -208,7 +208,7 @@ export function SimulatedCar(props: SimulatedCarProps) {
         args={[CHASSIS.halfExtents.x, CHASSIS.halfExtents.y, CHASSIS.halfExtents.z]}
         position={[0, CHASSIS.offsetY, 0]}
         density={0}
-        friction={0.35}
+        friction={0.1}
         restitution={0.08}
         collisionGroups={GROUPS.car}
       />

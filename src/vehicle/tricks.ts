@@ -45,6 +45,12 @@ const AIR_START_S = 0.2
 const UPRIGHT_MIN = 0.5
 /** The two-wheel save: steps a scruffy landing gets to settle upright (~0.35 s). */
 const RECOVER_STEPS = 21
+/** After a reset or teleport, this many steps of falling are ignored (~0.75 s). */
+const QUIET_STEPS = 45
+/** ...and an air session that starts inside that window must last this long to count. */
+const QUIET_AIR_S = 1.0
+/** Wheels up with the body on the ground for this long (~0.15 s) = a wipeout, not air. */
+const RESTING_STEPS = 9
 
 /** Air tiers by hang time, highest first: [seconds, name, label]. */
 const AIR_TIERS: ReadonlyArray<readonly [number, TrickName, string]> = [
@@ -146,6 +152,8 @@ export interface TrickInput {
   onWall: boolean
   trackS: number
   hasTrackS: boolean
+  /** No wheel down but the body is touching the world (lying on the roof or side). */
+  chassisTouching: boolean
 }
 
 export class TrickDetector {
@@ -169,6 +177,14 @@ export class TrickDetector {
   private driftMaxAngle = 0
   // loops: index of the loop piece we entered, its entry s
   private loopIndex = -1
+  /** Steps after a reset / teleport during which a fall is not "air" (the 1 m settle drop). */
+  private quietSteps = 0
+  /** This air session began right after a reset: a short one is the settle drop, not air. */
+  private quietSession = false
+  /** Steps the car has spent wheels-up but not really flying (lying on its roof or side). */
+  private restingSteps = 0
+  /** Set after a resting wipeout: no new air session until a wheel touches down again. */
+  private grounded = true
 
   /**
    * Drop whatever is in flight (a reset or teleport is not a landing). A reset
@@ -184,6 +200,8 @@ export class TrickDetector {
     this.wallOffSteps = 0
     this.wallCarry = null
     this.loopIndex = -1
+    this.quietSteps = QUIET_STEPS
+    this.restingSteps = 0
   }
 
   /** Once per physics step. Ground: a handful of comparisons. Air: three dot products. */
@@ -200,6 +218,23 @@ export class TrickDetector {
     this.stepWall(c)
     if (track) this.stepLoop(c, track)
 
+    if (!c.airborne) this.grounded = true
+    if (this.quietSteps > 0) this.quietSteps-- // see quietSession
+    // Wheels up but the body is on the ground (roof or side): a wipeout, never "air".
+    if (c.airborne && c.chassisTouching) {
+      this.restingSteps++
+      if (this.restingSteps === RESTING_STEPS) {
+        if (this.active || this.pendingSteps > 0) this.wipeout()
+        this.settle()
+        this.grounded = false
+      }
+      if (this.restingSteps >= RESTING_STEPS) return
+    } else {
+      this.restingSteps = 0
+    }
+    // After a wipeout, nothing new starts until a wheel touches down again.
+    if (c.airborne && !this.active && !this.grounded) return
+
     if (c.airborne) {
       if (!this.active) {
         this.active = true
@@ -210,6 +245,7 @@ export class TrickDetector {
           this.pitch = 0
           this.roll = 0
           this.airStarted = false
+          this.quietSession = this.quietSteps > 0
         }
         this.pendingSteps = 0
       }
@@ -218,7 +254,7 @@ export class TrickDetector {
       this.pitch += c.angvel.dot(c.right) * DT
       this.roll += c.angvel.dot(c.fwd) * DT
       const airS = this.airSteps * DT
-      if (!this.airStarted && airS >= AIR_START_S) {
+      if (!this.airStarted && airS >= (this.quietSession ? QUIET_AIR_S : AIR_START_S)) {
         this.airStarted = true
         emit('air.start', { speedKmh: Math.round(c.speedKmh) })
       }
@@ -236,7 +272,7 @@ export class TrickDetector {
     if (this.active) {
       const airS = this.airSteps * DT
       this.active = false
-      if (airS < MIN_AIR_S) {
+      if (airS < MIN_AIR_S || (this.quietSession && airS < QUIET_AIR_S)) {
         this.settle()
         return
       }
@@ -296,6 +332,7 @@ export class TrickDetector {
     for (const t of tricks) lost += t.points
     if (tricks.length >= 2) lost += Math.round(lost * COMBO_RATE * (tricks.length - 1))
     this.wallCarry = null
+    this.grounded = false
     useGame.setState({ comboCount: 0 })
     emit('trick.wipeout', { lostPoints: lost })
   }

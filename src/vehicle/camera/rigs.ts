@@ -88,8 +88,9 @@ export const RIGS: Record<CameraMode, CameraRigSpec> = {
     kind: 'mount',
     distance: 0,
     height: 0,
-    mountY: 0.62,
-    mountZ: 0.35,
+    // Just above the nose: a sliver of bonnet, the road filling the frame.
+    mountY: 0.5,
+    mountZ: 1.55,
     velocityBlendBase: 0,
     velocityBlendSlip: 0,
     lookAhead: 14,

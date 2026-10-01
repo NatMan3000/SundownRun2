@@ -9,7 +9,7 @@
 //
 //    steering  pure pursuit: aim at a point on the racing line a
 //              speed-dependent distance ahead, turn the wheels to
-//              the arc that reaches it
+//              the arc that reaches it (low-passed, so it drives calmly)
 //    speed     the racing line's target speed, braking early for the
 //              slowest point inside the braking distance ahead
 //    unstick   stuck for 2 s: reverse out; stuck three times: reset
@@ -28,16 +28,20 @@ import { startPerfRecording } from '../core/perf'
 import { getGame } from '../core/store'
 import type { TrackFrame, TrackRuntime } from '../track/types'
 import type { CarSim } from '../vehicle/carSim'
-import { GRAVITY, STEERING } from '../vehicle/tuning'
+import { DT, GRAVITY, STEERING } from '../vehicle/tuning'
 
 const WARMUP_STEPS = 180 // 3 s
 const RECORD_SECONDS = 30
-const LOOK_BASE = 7
-const LOOK_PER_MS = 0.55
+const LOOK_BASE = 9
+const LOOK_PER_MS = 0.85
+/** Steering command low-pass, per second: a calm driver, not a twitchy one. */
+const STEER_RATE = 14
 /** Fraction of the racing line's pace the demo drives at (calm and repeatable). */
-const PACE = 0.92
+const PACE = 0.82
 /** Assumed braking for the look-ahead, m/s^2 (well inside the car's ~1.3 g). */
 const PLAN_DECEL = 8
+/** The aim point stays this far inside the road edge (car half-width ~1 m + room to cut a corner). */
+const EDGE_MARGIN = 3
 const STUCK_SPEED = 1.5
 const STUCK_STEPS = 120
 const REVERSE_STEPS = 72
@@ -110,7 +114,10 @@ export const demoDrive = {
     const look = LOOK_BASE + v * LOOK_PER_MS
     const sLook = sNow + look
     track.frameAt(track.wrapS(sLook), _frame)
-    const off = track.racingLine.offset[sampleIndex(track, sLook)] ?? 0
+    // The racing line, kept a car's width plus a margin inside the road edges
+    // (pure pursuit cuts corners, so the aim point needs room from any wall).
+    const edge = Math.max(0, _frame.halfWidth - EDGE_MARGIN)
+    const off = clamp(track.racingLine.offset[sampleIndex(track, sLook)] ?? 0, -edge, edge)
     _to.copy(_frame.position).addScaledVector(_frame.right, off).sub(sim.pos)
     const ahead = _to.dot(sim.fwd)
     const rightward = _to.dot(sim.right)
@@ -119,7 +126,8 @@ export const demoDrive = {
     // Arc through the target: curvature 2 sin(alpha) / L, wheel angle atan(k * wheelbase).
     const wheel = Math.atan((2 * STEERING.wheelbase * Math.sin(alpha)) / dist)
     const limit = Math.min(STEERING.maxAngleLow, Math.max(STEERING.minAngle, (STEERING.wheelbase * STEERING.latLimitG * GRAVITY) / Math.max(v * v, 1)))
-    driveOverride.steer = clamp(wheel / limit, -1, 1)
+    const want = clamp(wheel / limit, -1, 1)
+    driveOverride.steer += (want - driveOverride.steer) * (1 - Math.exp(-STEER_RATE * DT))
 
     // ---- speed: slowest racing-line target within braking distance ----
     const speeds = track.racingLine.speed
@@ -134,7 +142,8 @@ export const demoDrive = {
     if (!Number.isFinite(target)) target = 20
     this.targetKmh = target * 3.6
     driveOverride.throttle = v < 1 ? 1 : clamp((target - v) * 0.35 + 0.15, 0, 1)
-    driveOverride.brake = clamp((v - target - 1.0) * 0.3, 0, 1)
+    // Firm braking: 2 m/s over the target is already most of the pedal.
+    driveOverride.brake = clamp((v - target - 0.5) * 0.45, 0, 1)
     if (driveOverride.brake > 0) driveOverride.throttle = 0
     driveOverride.handbrake = false
   },

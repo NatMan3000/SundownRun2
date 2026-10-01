@@ -10,14 +10,14 @@
 //
 //  Channels: t (s), kmh, drift (deg), yaw (deg/s), steer, throttle,
 //  brake, hb, air, wheels, latG, up (car up . world up), rpm, mag,
-//  x, y, z, s, lat. Buffers are preallocated: recording costs a few
+//  x, y, z, s, lat, slip, drifting, hbBody (signed forward km/h). Buffers are preallocated: recording costs a few
 //  array writes per step and nothing at all when idle.
 // ============================================================
 
 import type { CarSim } from '../vehicle/carSim'
 import { DT, GRAVITY } from '../vehicle/tuning'
 
-const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat'] as const
+const CHANNELS = ['t', 'kmh', 'drift', 'yaw', 'steer', 'throttle', 'brake', 'hb', 'air', 'wheels', 'latG', 'up', 'rpm', 'mag', 'x', 'y', 'z', 's', 'lat', 'slip', 'drifting', 'hbBody'] as const
 const MAX_STEPS = 60 * 60
 const RAD2DEG = 180 / Math.PI
 
@@ -61,6 +61,9 @@ export const feelTrace = {
     buf[o + 16] = s.pos.z
     buf[o + 17] = s.trackS
     buf[o + 18] = s.lateral
+    buf[o + 19] = s.slip
+    buf[o + 20] = s.drifting ? 1 : 0
+    buf[o + 21] = s.forwardSpeed * 3.6
     count++
   },
 

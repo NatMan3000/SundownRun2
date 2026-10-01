@@ -60,6 +60,17 @@ export const SUSPENSION = {
   dampRebound: 4600,
   /** Never launch the car into orbit off a kerb. */
   maxForce: 26000,
+  /**
+   *  BUMP STOPS - forgiving landings. Past `bumpStart` metres of travel the
+   *  spring stiffens steeply and the force cap rises, so a big drop is caught by
+   *  the suspension instead of the chassis slamming the road (which scrubbed
+   *  40% of the car's speed off a 12 m drop).
+   */
+  bumpStart: 0.28,
+  bumpStiffness: 160000,
+  bumpMaxScale: 2.5,
+  /** Damping multiplier inside the bump zone: soak the hit, don't bounce it back. */
+  bumpDamp: 3,
   /** Anti-roll bars, N/m of left-right difference. Front stiffer: the limit is understeer, the safe failure. */
   antiRollFront: 22000,
   antiRollRear: 14000,
@@ -108,10 +119,12 @@ export const DRIVE = {
    */
   powerHeadroom: 1.8,
   /**
-   * Soft limiter: drive force fades out over the last `limiterBand` of the top
-   * speed, so the car settles AT the top speed instead of bouncing off a wall.
+   * Soft limiter: drive force fades out between these fractions of the top
+   * speed, so the car settles AT the top speed (within a couple of km/h)
+   * instead of bouncing off a wall. Measured: 260 setting -> ~260 on the flat.
    */
-  limiterBand: 0.08,
+  limiterLo: 0.98,
+  limiterHi: 1.03,
   /** Load-biased limited-slip rear diff: torque goes where the grip is. */
   torqueBiasMin: 0.2,
   torqueBiasMax: 0.8,
@@ -119,7 +132,7 @@ export const DRIVE = {
   reverseTopKmh: 45,
   /** Total brake force N (x the brakes setting) and how much of it the front takes. */
   brakeForce: 16000,
-  brakeFrontBias: 0.62,
+  brakeFrontBias: 0.68,
   /** Extra rear brake when the handbrake is pulled. */
   handbrakeForce: 5200,
 }
@@ -165,10 +178,26 @@ export const ASSIST = {
    *  a driver's hands would do - for a 12-year-old on a keyboard who has not
    *  learned to counter-steer yet.
    */
-  driftRestore: 2900,
-  driftRestoreMax: 3600,
+  driftRestore: 4200,
+  driftRestoreMax: 5200,
   /** Drift angle (rad) inside which nothing is applied: ordinary cornering is untouched. */
   driftDeadband: 0.09,
+  /**
+   *  HIGH-SPEED STABILITY. The assists above are absolute, so they fade exactly
+   *  where they matter: at 230 km/h a 1 g corner has a yaw rate of only
+   *  0.15 rad/s, and 5 deg of slide is already a big one. Measured: lifting off
+   *  mid-corner at 231 km/h grew a slide 3.6 -> 11.5 deg in one second. Between
+   *  hsLo and hsHi (m/s) the deadband narrows, the restore strengthens and extra
+   *  yaw damping comes in - all scaled by "hands off" (assistGain), so a
+   *  deliberate drift is never fought.
+   */
+  hsLo: 20,
+  hsHi: 60,
+  driftDeadbandFast: 0.035,
+  /** Restore multiplier added at full speed (x2.5 total). */
+  hsRestore: 1.5,
+  /** Yaw damping added at full speed, Nm per rad/s. */
+  hsYawDamp: 3000,
   /** The assist ramps in across this speed band (m/s). */
   assistSpeedLo: 2.5,
   assistSpeedHi: 8,
@@ -185,12 +214,38 @@ export const ASSIST = {
    *  carSim.ts), extra yaw damping comes in with the brake pedal, scaled by the
    *  stability setting. This is the "brake in a corner never spins" guarantee.
    */
-  brakeYawDamp: 1400,
-  /** Air control: enough to style a jump and straighten a landing, calm enough not to fly. */
-  airPitch: 3500,
+  brakeYawDamp: 2400,
+  /**
+   *  DRIFT CEILING. A held handbrake with full lock and full throttle spun the car
+   *  to backwards in 1.4 s, so there was nothing left to catch. Past `ceilStart`
+   *  a spring pulls the nose back toward the path and a damper brakes any rotation
+   *  that is making the slide deeper. It stays on even while the player asks for
+   *  a drift: a held drift lives at a big, steady angle instead of becoming a spin,
+   *  and a counter-steer can always catch it.
+   */
+  ceilStart: 0.5, //     rad (29 deg): the spring starts here
+  ceilSpring: 16000, //  Nm per rad past the start
+  ceilDampFrom: 0.2, //  rad (11 deg): the damper fades in from here to ceilStart
+  ceilDamp: 3000, //     Nm per rad/s of rotation deeper into the slide
+  /** Rotation deeper into a slide is capped near this rate (rad/s, ~92 deg/s): plenty for any drift entry. */
+  maxDriftYaw: 1.6,
+  yawCapK: 7000, //      Nm per rad/s over the cap
+  ceilEnd: 1.9, //       rad (109 deg): beyond this the car has really spun (a crash) - let it go
+  /**
+   *  AIR CONTROL - generous but calm.
+   *  A kid holds the throttle through every jump, so throttle / brake on their
+   *  own only lean the car gently (airPitchCalm) and a self-levelling torque
+   *  (airLevel) settles it for the landing. HOLD THE HANDBRAKE in the air for
+   *  trick mode: full pitch authority (flips) and steering rolls the car
+   *  (barrel rolls). Steering always spins it. Measured: a held throttle
+   *  through a 1.4 s drop used to pitch the car 65 deg and tumble it.
+   */
+  airPitch: 3500, //      trick mode pitch, Nm
+  airPitchCalm: 300, //   normal pitch lean, Nm (held throttle settles ~6 deg nose-up)
   airYaw: 4000,
-  airRoll: 1800,
-  airAngularDamp: 0.9,
+  airRoll: 3000, //       trick mode roll, Nm
+  airLevel: 3000, //      Nm per rad of tilt from upright (pitch and roll only, never yaw)
+  airAngularDamp: 6, //   x100 Nm per rad/s
   /** Extra lateral damping below walking pace so the car does not creep sideways. */
   lowSpeedLateral: 0.6,
 }

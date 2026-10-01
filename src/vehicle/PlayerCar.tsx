@@ -151,6 +151,7 @@ export function PlayerCar() {
       onWall: false,
       trackS: 0,
       hasTrackS: false,
+      chassisTouching: false,
     }),
     [sim],
   )
@@ -275,6 +276,7 @@ export function PlayerCar() {
     trickIn.onWall = s.magGrip && s.surface === 'wall'
     trickIn.trackS = s.trackS
     trickIn.hasTrackS = s.hasTrackS
+    trickIn.chassisTouching = s.chassisTouching
     const g = getGame()
     tricks.update(trickIn, t, getSettings().tricks && g.phase === 'playing')
 
