@@ -5,7 +5,8 @@
 //  is the ONLY file that listens to the keyboard and polls the
 //  Gamepad API for driving and menu navigation. It writes:
 //
-//    driveInput      smoothed throttle / brake / steer / handbrake
+//    driveInput      smoothed throttle / brake / steer / handbrake,
+//                    and rewind (held Backspace / LB)
 //                    (only in the 'drive' context; zero elsewhere)
 //    controlSignals  edge-triggered nonces: reset, restart, camera,
 //                    pause, screenshot, race
@@ -150,7 +151,7 @@ export function steeringGain(): number {
 // ---------------------------------------------------------------- state
 
 /** Driving keys. A key counts only if it went down while in the 'drive' context. */
-const keys = { fwd: false, back: false, left: false, right: false, hand: false }
+const keys = { fwd: false, back: false, left: false, right: false, hand: false, rewind: false }
 
 let device: InputDevice = 'keyboard'
 let lastContext: InputContext = inputState.context
@@ -160,6 +161,8 @@ const padNow = new Uint8Array(PAD_BUTTONS)
 /** Buttons held when we entered 'drive': ignored until released (no menu leak). */
 const padSuppressed = new Uint8Array(PAD_BUTTONS)
 let padConnected = false
+/** LB held in the 'drive' context (rewind), after the menu-leak rule. */
+let padRewind = false
 
 /** Pad menu direction currently held (from d-pad or stick) and its repeat clock. */
 let menuDir: MenuAction | null = null
@@ -195,7 +198,7 @@ function setDevice(d: InputDevice): void {
 }
 
 function clearDriveKeys(): void {
-  keys.fwd = keys.back = keys.left = keys.right = keys.hand = false
+  keys.fwd = keys.back = keys.left = keys.right = keys.hand = keys.rewind = false
 }
 
 function zeroDrive(): void {
@@ -203,6 +206,7 @@ function zeroDrive(): void {
   driveInput.brake = 0
   driveInput.steer = 0
   driveInput.handbrake = false
+  driveInput.rewind = false
 }
 
 // ---------------------------------------------------------------- keyboard
@@ -303,6 +307,10 @@ function onKeyDown(e: KeyboardEvent): void {
     case 'Space':
       keys.hand = true
       break
+    case 'Backspace':
+      keys.rewind = true
+      e.preventDefault()
+      break
     case 'KeyR':
       // One press, one meaning: Shift+R is the bigger hammer.
       if (e.shiftKey) controlSignals.restart++
@@ -342,6 +350,9 @@ function onKeyUp(e: KeyboardEvent): void {
       break
     case 'Space':
       keys.hand = false
+      break
+    case 'Backspace':
+      keys.rewind = false
       break
   }
 }
@@ -423,6 +434,7 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
       if (device === 'gamepad') setDevice('keyboard')
     }
     menuDir = null
+    padRewind = false
     return null
   }
   if (!padConnected) {
@@ -480,6 +492,7 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
     }
   }
   if (ctx !== 'menu') menuDir = null
+  padRewind = ctx === 'drive' && padNow[PAD.LB] === 1 && padSuppressed[PAD.LB] === 0
 
   // Analog driving (only while the pad owns the car and we are driving).
   if (ctx === 'drive' && device === 'gamepad') {
@@ -541,6 +554,8 @@ export function pollInput(nowMs: number): void {
     zeroDrive()
     return
   }
+  // Rewind is a held button from either device, whichever is driving.
+  driveInput.rewind = keys.rewind || padRewind
   if (device === 'gamepad' && padConnected) {
     sanitise()
     return // the pad path above already wrote driveInput

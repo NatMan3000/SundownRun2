@@ -58,6 +58,7 @@ export const CONFIG = {
   boostStrength: 1.0, // how hard the boost pads kick. 2 = silly
   smashKmh: 45, //       hit roadside stuff faster than this and it smashes (slower = solid)
   magGripKmh: 70, //     on loops and wall rides you stick above this speed, below it you fall off
+  rewindSeconds: 10, //  hold Backspace (or LB) to rewind time: how many seconds back it can go. 3 = a quick undo ... 20 = a long one
 
   // ---------- GRAPHICS ----------
   quality: 'auto' as 'auto' | 'low' | 'medium' | 'high', // lower it if the game stutters

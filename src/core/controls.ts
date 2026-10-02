@@ -24,6 +24,8 @@ export const driveInput = {
   brake: 0, //    0..1 (also reverse when stopped)
   steer: 0, //    -1..1, left negative
   handbrake: false,
+  /** Held: the world runs backwards (rewind). Backspace / LB, only in the 'drive' context. */
+  rewind: false,
   /** Whichever device was touched last (hot-swap, no config). */
   device: 'keyboard' as InputDevice,
 }

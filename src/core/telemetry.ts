@@ -203,6 +203,26 @@ export function getCar(id: string): CarState | undefined {
 }
 
 /**
+ * Rewind: hold Backspace (or LB) and the world runs backwards, up to the rewindSeconds setting.
+ * Writer: the vehicle's rewind recorder (src/vehicle/rewind.ts), once per physics step.
+ * Readers: the HUD (meter, REWIND tag, lap clock) and its screen tint, audio, play (props and cores ignore a rewinding car).
+ */
+export const rewind = {
+  /** True while the world is running backwards. */
+  active: false,
+  /** Seconds of rewind stored right now: how far back a hold can go. */
+  stored: 0,
+  /** The most it can store (the rewindSeconds setting). */
+  capacity: 10,
+  /** Seconds taken back so far in this hold (0 when not rewinding). */
+  rewound: 0,
+  /** While rewinding: the player's lap clock at the moment shown, ms (-1 = no lap being timed). */
+  lapMs: -1,
+  /** Rewind is held but not allowed right now, and why ('' = not refused). The HUD says so in one line. */
+  refused: '' as '' | 'multiplayer' | 'countdown',
+}
+
+/**
  * The world's light, per frame. Writer: world (its time-of-day clock).
  * Readers: look (headlights, road reflections, env map), audio (night mood),
  * ui. timeOfDay runs 0 (sundown) -> 1 (full night).

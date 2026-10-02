@@ -101,6 +101,11 @@ export interface GameEventMap {
 
   /** Settings / track parameter changed live (e.g. Hyperdrome bank angle). */
   'track.param': { trackId: string; param: string; value: number }
+
+  /** Rewind (hold Backspace / LB): the world started running backwards. stored = seconds it can go back. */
+  'rewind.start': { stored: number }
+  /** Rewind let go: everything carries on from here. seconds = game time taken back; heldSeconds = how long it was held (clocks that rewind with the world slide forward by both). */
+  'rewind.end': { seconds: number; heldSeconds: number }
 }
 
 export type GameEventType = keyof GameEventMap

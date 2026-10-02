@@ -57,6 +57,8 @@ export interface Settings {
   boostStrength: number
   smashKmh: number
   magGripKmh: number
+  /** How far back rewind can go, seconds (vehicle/rewind.ts). */
+  rewindSeconds: number
   quality: QualityChoice
   showFps: boolean
   multiplayerRam: boolean
@@ -86,6 +88,7 @@ export const SETTING_RANGES: Partial<Record<keyof Settings, { min: number; max: 
   boostStrength: { min: 0, max: 2.5, step: 0.1 },
   smashKmh: { min: 10, max: 150, step: 5 },
   magGripKmh: { min: 20, max: 160, step: 5 },
+  rewindSeconds: { min: 2, max: 20, step: 1 },
 }
 
 const STORAGE_KEY = 'sr2.settings.v1'
@@ -126,6 +129,7 @@ function defaultsFrom(cfg: typeof CONFIG): Settings {
     boostStrength: cfg.boostStrength,
     smashKmh: cfg.smashKmh,
     magGripKmh: cfg.magGripKmh,
+    rewindSeconds: cfg.rewindSeconds,
     quality: cfg.quality,
     showFps: cfg.showFps,
     multiplayerRam: cfg.multiplayerRam,
