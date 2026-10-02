@@ -6,11 +6,13 @@
 //  showroom camera). So the menu lives in a column on the left
 //  and leaves the car in view on the right.
 //
-//  The logotype "SUNDOWN RUN TWO" is pure CSS: sun-coloured
+//  The logotype "SUNDOWN RUN II" is an inline SVG: sun-coloured
 //  gradient letters cut by horizontal bands (like the synthwave
-//  sun), with a neon outline showing through the cuts.
+//  sun), with a neon outline showing through the cuts. SVG, not
+//  CSS background-clip text: some browsers drew those letters black.
 // ============================================================
 
+import { useId } from 'react'
 import { useGame } from '../../core/store'
 import { openEditor } from '../../core/session'
 import { useNet } from '../../net'
@@ -20,20 +22,67 @@ import { HintBar } from '../hints'
 import { openScreen, showNotice, useUi } from '../uiStore'
 import { SoundHint } from '../SoundHint'
 
+/** The sun's horizontal cuts down the letters, top to bottom: [from, to] as fractions of the letter height. */
+const LOGO_CUTS: [number, number][] = [
+  [0.49, 0.525],
+  [0.61, 0.655],
+  [0.725, 0.785],
+  [0.84, 0.915],
+]
+
 export function Logo(props: { compact?: boolean }) {
+  // ids must be unique per page; useId gives colons, which SVG url() references accept
+  const id = useId().replace(/:/g, '')
+  const sun = `${id}-sun`
+  const cuts = `${id}-cuts`
+  const pink = `${id}-pink`
+  const cyan = `${id}-cyan`
+  // 100 viewBox units = 1em of the logo's font size, so the SVG scales with the layout
   return (
-    <h1 className={`logo${props.compact ? ' logo--compact' : ''}`} aria-label="Sundown Run Two">
-      {/* Each word: a neon outline (the ::before) behind sun-gradient letters
-          that are cut by horizontal bands, so the outline shows through the cuts. */}
-      <span className="logo__word logo__word--top" data-text="SUNDOWN" aria-hidden="true">
-        <span className="logo__fill">SUNDOWN</span>
-      </span>
-      <span className="logo__row" aria-hidden="true">
-        <span className="logo__word" data-text="RUN">
-          <span className="logo__fill">RUN</span>
-        </span>
-        <span className="logo__two">TWO</span>
-      </span>
+    <h1 className={`logo${props.compact ? ' logo--compact' : ''}`} aria-label="Sundown Run II">
+      <svg className="logo__svg" viewBox="0 0 540 190" aria-hidden="true">
+        <defs>
+          <linearGradient id={sun} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0.08" style={{ stopColor: 'var(--sun-top)' }} />
+            <stop offset="0.5" style={{ stopColor: 'var(--sun-mid)' }} />
+            <stop offset="0.88" style={{ stopColor: 'var(--sun-bottom)' }} />
+          </linearGradient>
+          <mask id={cuts} maskContentUnits="objectBoundingBox">
+            <rect x="0" y="0" width="1" height="1" fill="#fff" />
+            {LOGO_CUTS.map(([a, b]) => (
+              <rect key={a} x="0" y={a} width="1" height={b - a} fill="#000" />
+            ))}
+          </mask>
+          <filter id={pink} x="-10%" y="-30%" width="120%" height="160%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="far" />
+            <feGaussianBlur in="SourceGraphic" stdDeviation="1.6" result="near" />
+            <feMerge>
+              <feMergeNode in="far" />
+              <feMergeNode in="near" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <filter id={cyan} x="-20%" y="-40%" width="140%" height="180%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="far" />
+            <feMerge>
+              <feMergeNode in="far" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        {/* each word: the neon outline behind, then the banded sun gradient on top,
+            so the outline shows through the cuts. textLength pins the widths whatever
+            condensed font the computer has. */}
+        <g className="logo__word">
+          <text className="logo__outline" x="6" y="86" textLength="500" lengthAdjust="spacingAndGlyphs" filter={`url(#${pink})`}>SUNDOWN</text>
+          <text x="6" y="86" textLength="500" lengthAdjust="spacingAndGlyphs" fill={`url(#${sun})`} mask={`url(#${cuts})`}>SUNDOWN</text>
+        </g>
+        <g className="logo__word">
+          <text className="logo__outline" x="6" y="172" textLength="196" lengthAdjust="spacingAndGlyphs" filter={`url(#${pink})`}>RUN</text>
+          <text x="6" y="172" textLength="196" lengthAdjust="spacingAndGlyphs" fill={`url(#${sun})`} mask={`url(#${cuts})`}>RUN</text>
+        </g>
+        <text className="logo__two" x="226" y="170" textLength="64" lengthAdjust="spacingAndGlyphs" filter={`url(#${cyan})`}>II</text>
+      </svg>
     </h1>
   )
 }
