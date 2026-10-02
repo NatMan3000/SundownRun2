@@ -170,6 +170,10 @@ export class Effects {
       case 'core.pickup':
         this.chime(k, t, e.found, e.total)
         break
+      case 'stunt.ring':
+        // The stunt park's rings: the pickup chime, climbing with each ring in the chain.
+        this.chime(k, t, Math.min(e.chain, 4), 4)
+        break
       case 'hunt.complete':
         this.fanfare(k, t, e.best ? 1 : 0.6)
         break

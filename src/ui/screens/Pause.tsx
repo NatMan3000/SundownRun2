@@ -2,7 +2,9 @@
 //  PAUSE MENU - Esc / Menu while driving
 // ------------------------------------------------------------
 //  Resume, Restart, Settings, Map (the editor's top-down world map;
-//  this menu hides while it's open), the current track's live sliders
+//  this menu hides while it's open), Stunt park / Back to the track
+//  (only on a walled track whose stunt park sits in the infield:
+//  play.parkHop), the current track's live sliders
 //  right here (the Hyperdrome's bank angle, so you can tilt the
 //  banking and watch the road change), Road Editor, Report a
 //  problem (screens/Report.tsx), Quit.
@@ -14,6 +16,7 @@
 
 import { useGame } from '../../core/store'
 import { openEditor, openMap, resumeGame } from '../../core/session'
+import { play } from '../../core/api'
 import { NavScreen } from '../nav'
 import { HelpLine, MenuButton } from '../widgets'
 import { HintBar } from '../hints'
@@ -36,6 +39,8 @@ export function PauseScreen() {
   const mp = useGame((s) => s.multiplayer)
   const trackName = useGame((s) => s.trackName)
   const mode = useGame((s) => s.mode)
+  // Asked when the menu opens: where the car is decides which way the hop goes.
+  const hop = play.parkHop()
   return (
     <NavScreen id="pause" onBack={resumeGame} initial="resume">
       <div className="screen screen--pause screen--over-game">
@@ -53,6 +58,18 @@ export function PauseScreen() {
             <MenuButton id="restart" label="Restart" help="Start this run again from the start line." onAccept={restartSession} acceptSound="start" />
             <MenuButton id="settings" label="Settings" help="Handling, camera, sound, time of day and more. Changes apply straight away." onAccept={() => openScreen('settings')} />
             {MAP_READY && <MenuButton id="map" label="Map" help="The whole world from above: where you are, the road and everything on it." onAccept={openMap} />}
+            {hop && (
+              <MenuButton
+                id="park-hop"
+                label={hop === 'park' ? 'Stunt park' : 'Back to the track'}
+                help={hop === 'park' ? 'Jump into the stunt park in the middle of the stadium: big ramps, gaps, rings and bullseyes.' : 'Back onto the road, right beside where you are.'}
+                onAccept={() => {
+                  play.doParkHop()
+                  resumeGame()
+                }}
+                acceptSound="start"
+              />
+            )}
             <div className="pause-params">
               <TrackParamRows idPrefix="pause-track" />
             </div>

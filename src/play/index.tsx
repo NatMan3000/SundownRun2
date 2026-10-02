@@ -10,6 +10,8 @@
 //    Smashables      roadside posts: solid when slow, smashed when fast
 //    EnergyCores     the free-roam core hunt with a clock
 //    SpeedTraps      top-speed readings on the straights
+//    StuntPark       ramps, gaps, pipes, rings and bullseyes off the
+//                    road (free roam and stunt attack only)
 //
 //  It also installs the play API (core/api.ts: newRound,
 //  restartSession) and the dev handles checkers use:
@@ -34,6 +36,8 @@ import { CrashProps } from './CrashProps'
 import { Smashables } from './Smashables'
 import { EnergyCores } from './EnergyCores'
 import { SpeedTraps } from './SpeedTraps'
+import { StuntPark } from './stunts/StuntPark'
+import { doParkHop, parkHop } from './stunts/parkReset'
 import { playFlags } from './modes'
 import { drivers, flow } from './flow'
 import { raceBook } from './raceBook'
@@ -118,7 +122,7 @@ function raceSummary(): string {
 
 export function PlayLayer() {
   useEffect(() => {
-    installPlay({ newRound, restartSession })
+    installPlay({ newRound, restartSession, parkHop, doParkHop })
     const offs = [
       registerDev('round', () => newRound(), 'new round of the current mode (props and cores re-scatter)'),
       registerDev('race', ((n: number) => devRace(n)) as never, 'race(n): start a race now with n Ai racers (0-5)'),
@@ -179,6 +183,7 @@ export function PlayLayer() {
       <Smashables />
       <EnergyCores />
       <SpeedTraps />
+      <StuntPark />
     </>
   )
 }

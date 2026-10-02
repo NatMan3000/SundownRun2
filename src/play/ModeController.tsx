@@ -10,7 +10,8 @@
 //                 frozen through 3-2-1-GO, positions a few times a
 //                 second, a finish line, a results table
 //    stunt        3-2-1-GO, then 90 seconds to bank the biggest
-//                 trick score you can (prop bursts count too)
+//                 trick score you can (prop bursts count too); on a
+//                 walled track it starts in the infield stunt park
 //
 //  Every clock here (race timer, stunt clock, hunt clock) is a
 //  performance.now() timestamp in the store. Pausing slides them all
@@ -56,6 +57,7 @@ import {
   updateRaceBook,
 } from './raceBook'
 import { addRewindPart } from '../vehicle'
+import { parkStartPose } from './stunts/parkReset'
 import type { RaceBookHooks, Racer } from './raceBook'
 import { COUNTDOWN_S, SETTLE_MS, STAGING_TIMEOUT_MS, STUNT_SECONDS, drivers, flow, useRoster } from './flow'
 
@@ -204,7 +206,11 @@ function tryStage(track: TrackRuntime, now: number): void {
     return
   }
 
-  placeOnGrid(track, 'player', playerSlot, true)
+  // Stunt Attack on a walled track starts in the infield stunt park (stunts/parkReset.ts).
+  if (flow.kind === 'stunt' && parkStartPose(_pos, _quat)) {
+    player.api.teleport(_pos, _quat)
+    player.api.setFrozen(true)
+  } else placeOnGrid(track, 'player', playerSlot, true)
   for (const r of roster.racers) {
     if (placeOnGrid(track, r.id, r.gridSlot, true)) {
       drivers.get(r.id)?.resetBrain()

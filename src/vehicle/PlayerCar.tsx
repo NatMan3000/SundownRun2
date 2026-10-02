@@ -217,6 +217,7 @@ export function PlayerCar() {
       chassisTouching: false,
       chassisSupportUp: 1,
       surfaceUp: sim.surfaceUp,
+      pos: sim.pos,
     }),
     [sim],
   )

@@ -25,6 +25,10 @@
 //  score. Settling wrong, or landing on the roof, is a wipeout.
 //  "Upright" is judged against the surface under the car, never
 //  world up, so a 60 deg bank or a wall ride is not "on its side".
+//
+//  The stunt park (src/play/stunts) adds to a jump through one
+//  AirJudge (setAirJudge): rings flown through and named gaps join
+//  the jump's tricks, a bullseye landing multiplies its points.
 // ============================================================
 
 import type * as THREE from 'three'
@@ -82,10 +86,43 @@ const DRIFT_GAP_STEPS = 24
 /** Drift points grow with the square of held time: 1 s = 15, 3 s = 135, 5 s = 375. */
 const DRIFT_PTS_PER_S2 = 15
 
-interface Trick {
+export interface Trick {
   name: TrickName
   label: string
   points: number
+}
+
+/**
+ * Things in the world that add to a jump's score (the stunt park, src/play/stunts: rings flown
+ * through, named gaps, bullseye landings). One judge at a time; it follows the jump through
+ * these calls, made from the player's physics step, and its tricks join the jump's own (same
+ * combo, lost on a wipeout).
+ */
+export interface AirJudge {
+  /** The car just left the ground: a new jump starts here. */
+  takeoff(c: TrickInput): void
+  /** Every physics step of the jump. */
+  air(c: TrickInput): void
+  /** The wheels touched down (the car may still be settling into the two-wheel save). */
+  touchdown(c: TrickInput): void
+  /** The jump scores: add its tricks to `tricks`; return the multiplier for its points (1 = none). */
+  land(tricks: Trick[], airS: number, clean: boolean): number
+  /** Points the judge's tricks would add right now (a wipeout's lostPoints counts them). */
+  pending(): number
+  /** The jump ended without scoring (too short, a wipeout, a reset). */
+  drop(): void
+}
+
+let airJudge: AirJudge | null = null
+
+/** Install (or with null, remove) the air judge. */
+export function setAirJudge(j: AirJudge | null): void {
+  airJudge = j
+}
+
+/** The bullseye bonus: a landing on a target multiplies the jump's points (outer ring x2, inner x3). */
+function multiplierTrick(total: number, mult: number): Trick {
+  return { name: 'target', label: mult >= 3 ? 'BULLSEYE x3' : `TARGET x${mult}`, points: Math.round(total * (mult - 1)) }
 }
 
 /** Live state for the dev inspector (watch rotation build mid-air). */
@@ -163,6 +200,8 @@ export interface TrickInput {
   chassisSupportUp: number
   /** Up of the surface under the car (ground normal, or the road's up when flying over it). */
   surfaceUp: THREE.Vector3
+  /** The car's position this physics step (the stunt park's rings, gaps and targets use it). */
+  pos: THREE.Vector3
 }
 
 export class TrickDetector {
@@ -326,9 +365,11 @@ export class TrickDetector {
           this.roll = 0
           this.airStarted = false
           this.quietSession = this.quietSteps > 0
+          airJudge?.takeoff(c)
         }
         this.pendingSteps = 0
       }
+      airJudge?.air(c)
       this.airSteps++
       this.yaw += c.angvel.dot(c.up) * DT
       this.pitch += c.angvel.dot(c.right) * DT
@@ -352,6 +393,7 @@ export class TrickDetector {
     if (this.active) {
       const airS = this.airSteps * DT
       this.active = false
+      airJudge?.touchdown(c)
       if (airS < MIN_AIR_S || (this.quietSession && airS < QUIET_AIR_S)) {
         this.settle()
         return
@@ -383,13 +425,15 @@ export class TrickDetector {
 
   private score(airS: number, clean: boolean): void {
     const tricks = classifyLanding(airS, this.yaw, this.pitch, this.roll, this.wallCarry)
+    // The stunt park adds its rings and gaps, and says if this landing was on a bullseye.
+    const mult = airJudge ? airJudge.land(tricks, airS, clean) : 1
     this.wallCarry = null
     this.settle()
-    this.bank(tricks, airS, clean)
+    this.bank(tricks, airS, clean, mult)
   }
 
-  /** Bank a set of tricks as one landing: combo bonus, store, event. */
-  private bank(tricks: Trick[], airS: number, clean: boolean): void {
+  /** Bank a set of tricks as one landing: combo bonus, a bullseye's multiplier, store, event. */
+  private bank(tricks: Trick[], airS: number, clean: boolean, mult = 1): void {
     if (tricks.length === 0) return
     const links = tricks.length
     let total = 0
@@ -398,6 +442,11 @@ export class TrickDetector {
       const bonus = Math.round(total * COMBO_RATE * (links - 1))
       tricks.push({ name: tricks[0].name, label: `COMBO x${links}`, points: bonus })
       total += bonus
+    }
+    if (mult > 1 && total > 0) {
+      const target = multiplierTrick(total, mult)
+      tricks.push(target)
+      total += target.points
     }
     const combo = links
     useGame.setState((s) => ({ trickScore: s.trickScore + total, comboCount: 0 }))
@@ -419,7 +468,10 @@ export class TrickDetector {
     const tricks = classifyLanding(airS >= MIN_AIR_S ? airS : 0, this.yaw, this.pitch, this.roll, this.wallCarry)
     let lost = 0
     for (const t of tricks) lost += t.points
-    if (tricks.length >= 2) lost += Math.round(lost * COMBO_RATE * (tricks.length - 1))
+    const parked = airJudge ? airJudge.pending() : 0
+    const links = tricks.length + (parked > 0 ? 1 : 0)
+    lost += parked
+    if (links >= 2) lost += Math.round(lost * COMBO_RATE * (links - 1))
     this.wallCarry = null
     this.grounded = false
     useGame.setState({ comboCount: 0 })
@@ -441,6 +493,7 @@ export class TrickDetector {
   }
 
   private settle(): void {
+    airJudge?.drop()
     this.active = false
     this.airSteps = 0
     this.airStarted = false

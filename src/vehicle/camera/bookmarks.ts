@@ -7,6 +7,7 @@
 //    aerial     a high three-quarter view of the whole track
 //    piece:<i>  looking at track piece i (loop, wall ride, boost ...)
 //    s:<m>      trackside at m metres along the road
+//    at:x,y,z,lx,ly,lz  from (x, y, z) looking at (lx, ly, lz)
 //    free       back to the normal driving camera
 //
 //  Every shot is computed from the track file's runtime, so it
@@ -48,6 +49,14 @@ export function computeShot(name: string, track: TrackRuntime, out: Shot): boole
     const f = frameAt(track, p.s0 - 32)
     out.position.copy(f.position).addScaledVector(f.right, f.halfWidth + 8).addScaledVector(f.up, 7)
     out.look.set(p.center.x, p.center.y, p.center.z)
+    return true
+  }
+  if (name.startsWith('at:')) {
+    // at:x,y,z,lookX,lookY,lookZ - any fixed shot (the stunt park's __dev.parkShot builds these).
+    const v = name.slice(3).split(',').map(Number)
+    if (v.length !== 6 || !v.every(Number.isFinite)) return false
+    out.position.set(v[0], v[1], v[2])
+    out.look.set(v[3], v[4], v[5])
     return true
   }
   if (name.startsWith('s:')) {

@@ -48,6 +48,16 @@ export function quatFromFrame(tangent: THREE.Vector3, up: THREE.Vector3, out: TH
 }
 
 /**
+ * Somewhere other than the road to put the PLAYER on a reset, when a system has one: the stunt
+ * park on a walled track (src/play/stunts/parkReset.ts) sends R inside the park to a park spot,
+ * and Shift+R in Stunt Attack to the park's start, because the road is behind barriers from
+ * there. It writes the pose and returns true, or returns false to leave the reset to the road.
+ */
+export const resetPoseHook: {
+  fn: ((kind: 'road' | 'start' | 'auto', x: number, y: number, z: number, outPos: THREE.Vector3, outQuat: THREE.Quaternion) => boolean) | null
+} = { fn: null }
+
+/**
  * Put a car back on the road near (x, y, z): the closest road sample that is
  * plain road (never upside down on a loop or halfway up a wall ride), facing
  * the driving direction, `lift` metres above the surface. Returns the s used.

@@ -37,7 +37,7 @@ import type { GameEventMap } from '../core/events'
 import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
 import type { BodyTuning } from './bodies/catalog'
 import { WALL_RAMP, WALL_SWEEP_DEG } from '../track/road'
-import { quatFromFrame, roadResetPose, startPose } from './trackNav'
+import { quatFromFrame, resetPoseHook, roadResetPose, startPose } from './trackNav'
 import {
   AERO,
   ASSIST,
@@ -962,7 +962,9 @@ export class CarSim {
       this.pendingReset = null
       const t = body.translation()
       let s: number
-      if (kind === 'start') s = startPose(track, this.gridSlot, _resetPos, _resetQuat)
+      // The player's reset can go somewhere else (resetPoseHook: the stunt park on a walled track).
+      if (this.id === 'player' && resetPoseHook.fn && resetPoseHook.fn(kind, t.x, t.y, t.z, _resetPos, _resetQuat)) s = -1
+      else if (kind === 'start') s = startPose(track, this.gridSlot, _resetPos, _resetQuat)
       else s = roadResetPose(track, t.x, t.y, t.z, this.hasTrackS ? this.trackS : undefined, HOLD.resetLift, _resetPos, _resetQuat)
       this.place(body, _resetPos, _resetQuat, s)
       this.parked = true // on its wheels and held there until the first pedal (HOLD.resetLift)
