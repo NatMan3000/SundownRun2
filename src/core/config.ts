@@ -59,6 +59,8 @@ export const CONFIG = {
   smashKmh: 45, //       hit roadside stuff faster than this and it smashes (slower = solid)
   magGripKmh: 70, //     on loops and wall rides you stick above this speed, below it you fall off
   rewindSeconds: 10, //  hold Backspace (or LB) to rewind time: how many seconds back it can go. 3 = a quick undo ... 20 = a long one
+  stuntPark: true, //    true = a stunt park off the road in Stunt Attack and Free Roam: big ramps, gap jumps, rings to fly through, bullseye landings
+  megaRampHeight: 16, // the mega ramp's height in metres (its landing grows to match). 10 = big ... 24 = terrifying
 
   // ---------- GRAPHICS ----------
   quality: 'auto' as 'auto' | 'low' | 'medium' | 'high', // lower it if the game stutters

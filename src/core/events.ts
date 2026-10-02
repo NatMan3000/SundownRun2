@@ -21,7 +21,7 @@
 //  Inspect live: window.__events.recent (last 200) in dev builds.
 // ============================================================
 
-export type TrickName = 'air' | 'bigAir' | 'hugeAir' | 'spin' | 'flip' | 'roll' | 'drift' | 'wallRide' | 'loop' | 'nearMiss'
+export type TrickName = 'air' | 'bigAir' | 'hugeAir' | 'spin' | 'flip' | 'roll' | 'drift' | 'wallRide' | 'loop' | 'nearMiss' | 'ring' | 'gap' | 'target'
 
 export interface GameEventMap {
   /** A driving session began (after the countdown in race modes). */
@@ -90,6 +90,12 @@ export interface GameEventMap {
   /** Stunt score attack. */
   'stunt.start': { seconds: number }
   'stunt.end': { score: number; best: boolean; previousBest: number | null }
+  /** Stunt park (Stunt Attack and Free Roam): flew through a stunt ring. chain = rings so far in this jump (1, 2, 3...). Its points are banked with the jump's landing (trick.land), lost on a wipeout. */
+  'stunt.ring': { ring: number; chain: number }
+  /** Stunt park: cleared a named gap (took off from its launch and landed on its landing, upright). Emitted at that landing, just before its trick.land. */
+  'stunt.gap': { name: string; points: number }
+  /** Stunt park: landed upright on a bullseye target, so the jump's trick points are multiplied (outer ring x2, inner x3). Emitted just before the landing's trick.land. */
+  'stunt.target': { multiplier: number; ring: 'outer' | 'inner' }
 
   /** Multiplayer. */
   'mp.join': { name: string; id: string }

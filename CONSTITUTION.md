@@ -151,3 +151,4 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 - 2026-10-02: the `crash` event's `what` gains `road` (the road, a ramp or a loop surface), so `terrain` means the ground off the road.
 - 2026-10-02: Settings gains `engineSound` (the engine voicing: `muscle`, `rally` or `hover`), defaulted from the new `config.ts` knob of the same name, so audio reads it through settings like every other knob.
 - 2026-10-02: rewind (GitHub #6, Josh's idea): `driveInput` gains `rewind` (held Backspace / LB, drive context only); events gain `rewind.start` and `rewind.end`; telemetry gains the `rewind` state block (writer: `src/vehicle/rewind.ts`); Settings gains `rewindSeconds`, defaulted from the new `config.ts` knob.
+- 2026-10-02: stunt park (Nathan): `TrickName` gains `ring`, `gap` and `target`; events gain `stunt.ring`, `stunt.gap` and `stunt.target`; `config.ts` gains `stuntPark` and `megaRampHeight` (read from CONFIG directly, not settings).
