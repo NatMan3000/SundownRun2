@@ -9,7 +9,11 @@
 //       Beams       every car's headlight beams at night, drawn as
 //                   soft volumes of light that fade into whatever
 //                   they meet (reads the depth buffer; free by day)
-//    2. Bloom       mipmap blur. Only light above 1.0 (the brightest
+//       Pools       every car's underglow pool and reverse glow, added
+//                   to whatever ground the picture shows near the car
+//                   (reads the depth buffer), so the light follows the
+//                   ground instead of a flat square being cut off by it
+//    2. Bloom      mipmap blur. Only light above 1.0 (the brightest
 //                   channel) blooms, so the glow tiers in palette.ts
 //                   decide what glows: T0 never, T1 a soft halo, T2
 //                   the hero glow, T3 a flash.
@@ -32,7 +36,8 @@
 //
 //  Dev:  __dev.lookPost({ exposure, toneMapping, bloom, intensity,
 //        threshold, knee, radius }),  __dev.previewBoost(0..1)  and
-//        __dev.lookBeams({ length, spread, intensity, ... })
+//        __dev.lookBeams({ length, spread, intensity, ... }),
+//        __dev.lookPools({ riseUnderCar, riseAway, dropBelow, ... })
 // ============================================================
 
 import { useEffect, useMemo, useState } from 'react'
@@ -60,6 +65,8 @@ import { lookState } from '../lookState'
 import { BoostLensEffect, GradeEffect, SpeedLinesEffect, applyTierThreshold } from './effects'
 import { HeadlightBeamsEffect } from './HeadlightBeamsEffect'
 import { BEAM_TUNE } from '../fx/beams'
+import { GroundPoolsEffect } from './GroundPoolsEffect'
+import { POOL_TUNE } from '../fx/groundPools'
 
 type ToneName = 'aces' | 'agx' | 'neutral'
 
@@ -95,6 +102,9 @@ const _shadowTint = new THREE.Color()
 const _streak = new THREE.Color()
 const _beamColor = new THREE.Color()
 
+/** Ground pools drawn last frame (for __dev.lookPools). */
+let poolsDrawn = 0
+
 /** Smoothed boost lens amount (eases in and out on its own spring). */
 let lens = 0
 let lensTime = 0
@@ -122,7 +132,8 @@ export function PostStack() {
     const boostLens = new BoostLensEffect()
     _beamColor.set(PALETTE.stars) // clean cool white: the light itself, not a neon colour
     const beams = new HeadlightBeamsEffect(_beamColor, preset.beamSteps)
-    const effects: Effect[] = [boostLens, beams]
+    const pools = new GroundPoolsEffect()
+    const effects: Effect[] = [boostLens, beams, pools]
 
     let bloom: BudgetBloomEffect | null = null
     if (preset.bloom && tune.bloom) {
@@ -166,7 +177,7 @@ export function PostStack() {
     lookState.post.smaa = !!smaa
     lookState.post.passes = composer.passes.length
 
-    return { composer, boostLens, beams, speedLines, effects, main, smaa, bloom }
+    return { composer, boostLens, beams, pools, speedLines, effects, main, smaa, bloom }
   }, [gl, scene, camera, level, version])
 
   // Size the buffers to the drawing buffer (CSS size x pixel ratio).
@@ -228,16 +239,30 @@ export function PostStack() {
       }) as (...args: never[]) => unknown,
       'lookBeams({ length, spread, startRadius, intensity, maxBrightness, nearFade, forwardScatter, softContact, aimDrop, fadeNear, fadeFar }) - tune the headlight beams live; no argument returns the current values',
     )
+    const offD = registerDev(
+      'lookPools',
+      ((opts?: Partial<typeof POOL_TUNE>) => {
+        if (opts && typeof opts === 'object') {
+          for (const key of Object.keys(opts) as (keyof typeof POOL_TUNE)[]) {
+            const v = opts[key]
+            if (key in POOL_TUNE && typeof v === 'number' && Number.isFinite(v)) POOL_TUNE[key] = v
+          }
+        }
+        return { ...POOL_TUNE, poolsDrawn }
+      }) as (...args: never[]) => unknown,
+      'lookPools({ bodyHalfWidth, bodyHalfLength, riseUnderCar, riseAway, dropBelow, fadeNear, fadeFar }) - tune how the underglow pools and reverse glows sit on the ground live; no argument returns the current values and how many are drawn',
+    )
     return () => {
       offA()
       offB()
       offC()
+      offD()
     }
   }, [])
 
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.1)
-    const { composer, boostLens, beams, speedLines, bloom } = stack
+    const { composer, boostLens, beams, pools, speedLines, bloom } = stack
 
     // Live tunables (cheap uniform writes).
     gl.toneMappingExposure = tune.exposure
@@ -262,6 +287,8 @@ export function PostStack() {
 
     // Headlight beams: this frame's lamps into camera space (after the camera has moved).
     lookState.post.beamLamps = beams.sync(camera)
+    // Ground pools: this frame's underglow pools and reverse glows, the same way.
+    poolsDrawn = pools.sync(camera)
 
     composer.render(dt)
   }, 1)

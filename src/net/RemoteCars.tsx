@@ -23,6 +23,8 @@
 //
 //  2. The VISUAL: the car body from the vehicle catalog
 //     (vehicle.buildModel), posed every render frame, with a name tag.
+//     Its reverse lights come on while it backs up, worked out from
+//     how it moves (the pose packet carries no reversing flag).
 //
 //  A car is only shown (and only solid) while its player is driving
 //  on the same track as us and packets keep arriving. When packets
@@ -68,6 +70,16 @@ const APPEAR_GHOST_MS = 1000
 /** Never turn solid while closer than this to our car (we'd be launched out of it). */
 const OVERLAP_M = 4.5
 
+/**
+ * Reverse lights. The pose packet doesn't say who is reversing, so they come
+ * from how the car moves: on while it rolls backward along its own nose
+ * faster than `onMs` (m/s) but slower than a car can reverse (`maxKmh`;
+ * faster than that it is sliding after a spin, not backing up); off once it
+ * has slowed under `offMs` or goes forward, after a short `holdS` so a
+ * jittery pose stream can't make them blink.
+ */
+const REMOTE_REVERSE = { onMs: 0.8, offMs: 0.3, maxKmh: 55, holdS: 0.25 }
+
 /** Used until the car model is built: roughly a sports car. */
 const DEFAULT_HALF = new THREE.Vector3(0.95, 0.5, 2.1)
 const DEFAULT_CENTER = new THREE.Vector3(0, 0.55, 0)
@@ -78,6 +90,7 @@ const _quat = new THREE.Quaternion()
 const _vpos = new THREE.Vector3()
 const _vquat = new THREE.Quaternion()
 const _vel = new THREE.Vector3()
+const _fwd = new THREE.Vector3()
 const _hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
 
 let warnedNaN = false
@@ -392,6 +405,7 @@ function RemoteCar({ peer }: { peer: PeerInfo }) {
   const alpha = useRef(0)
   const registered = useRef(false)
   const lastPos = useRef(new THREE.Vector3())
+  const reverse = useRef({ on: false, hold: 0 }).current
   useEffect(
     () => () => {
       if (registered.current) removeCar(car.id)
@@ -422,7 +436,11 @@ function RemoteCar({ peer }: { peer: PeerInfo }) {
       removeCar(car.id)
       registered.current = false
     }
-    if (!show || !buf) return
+    if (!show || !buf) {
+      if (reverse.on && model) vehicle.setReverse(model.group, 0)
+      reverse.on = false
+      return
+    }
 
     // Velocity from motion (skip on a teleport-sized jump).
     if (dt > 0 && registered.current && lastPos.current.distanceToSquared(_vpos) < TELEPORT_JUMP_M * TELEPORT_JUMP_M) {
@@ -432,6 +450,18 @@ function RemoteCar({ peer }: { peer: PeerInfo }) {
       car.velocity.set(0, 0, 0)
     }
     lastPos.current.copy(_vpos)
+
+    // Reverse lights from how it moves (see REMOTE_REVERSE).
+    const vFwd = car.velocity.dot(_fwd.set(0, 0, 1).applyQuaternion(_vquat))
+    const tooFast = -vFwd * 3.6 >= REMOTE_REVERSE.maxKmh
+    if (vFwd < -REMOTE_REVERSE.onMs && !tooFast && !car.airborne) {
+      reverse.on = true
+      reverse.hold = REMOTE_REVERSE.holdS
+    } else if (reverse.on) {
+      reverse.hold -= dt
+      if (reverse.hold <= 0 && (vFwd > -REMOTE_REVERSE.offMs || tooFast)) reverse.on = false
+    }
+    if (model) vehicle.setReverse(model.group, reverse.on ? 1 : 0)
 
     root.position.copy(_vpos)
     root.quaternion.copy(_vquat)

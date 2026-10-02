@@ -8,19 +8,23 @@
 //      driving, so a new trail colour shows the moment you pick it
 //      (same mesh: no extra draw)
 //    - underglow: a glowing strip along each side of the belly, plus
-//      a soft pool of coloured light on the road under the car
-//    - reversing: a soft pool of white light on the road behind the
+//      a soft pool of coloured light on the ground under the car
+//    - reversing: a soft pool of white light on the ground behind the
 //      car while its reverse lights are on (the model says how lit
 //      they are in userData.reverseLight), so you can see where you
-//      are backing at night. Same mesh as the underglow pools: no
-//      extra draw
+//      are backing at night
+//      Both pools are handed to fx/groundPools.ts, and the post stack
+//      adds them to whatever ground the picture shows there
+//      (post/GroundPoolsEffect.ts), so they follow the real road and
+//      hills instead of being flat squares the ground can cut through.
+//      No draw call at all.
 //    - headlight beams at night: this hands each lamp's position and
 //      aim to fx/beams.ts, and the post stack draws the beams as soft
 //      volumes of light (post/HeadlightBeamsEffect.ts). The player's
 //      real road lighting is HeadlightRig.tsx.
 //    - a pulsing aura on the car that is "it" in tag
 //
-//  Each of those is one instanced mesh shared by every car, so six
+//  The rest are each one instanced mesh shared by every car, so six
 //  racers cost the same handful of draw calls as one. Everything is
 //  placed from the car's render pose and its fx anchors (set by the
 //  vehicle system when it builds the body), with module-level temps:
@@ -39,9 +43,10 @@ import { lookState } from '../lookState'
 import { LightTrails, TRAIL_RATE } from './LightTrails'
 import { CONFIG } from '../../core/config'
 import { BEAM_TUNE, MAX_BEAM_LAMPS, beamLamps } from './beams'
+import { MAX_GROUND_POOLS, groundPools } from './groundPools'
 
 /** Live handles for dev inspection (the fx meshes of the mounted CarLights). */
-export const carLightsDebug: { trails: LightTrails | null; pools: THREE.InstancedMesh | null } = { trails: null, pools: null }
+export const carLightsDebug: { trails: LightTrails | null } = { trails: null }
 
 /** Most cars that get light at once (player + 5 Ai + ghost + remote players). */
 export const MAX_FX_CARS = 12
@@ -65,38 +70,6 @@ varying vec3 vColor;
 void main() {
   if (vGlow < 0.001) discard;
   gl_FragColor = vec4(vColor * vGlow, 1.0);
-}
-`
-
-/** The light pool: a soft oval of light on the road, fading out far from the camera. */
-const poolVertex = /* glsl */ `
-attribute float aGlow;
-varying float vGlow;
-varying vec3 vColor;
-varying vec2 vLocal;
-varying float vDist;
-void main() {
-  vGlow = aGlow;
-  vColor = instanceColor;
-  vLocal = position.xz;
-  vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
-  vDist = -mv.z;
-  gl_Position = projectionMatrix * mv;
-}
-`
-const poolFragment = /* glsl */ `
-varying float vGlow;
-varying vec3 vColor;
-varying vec2 vLocal;
-varying float vDist;
-void main() {
-  float r = length(vLocal);
-  // wide and soft: most of the light lands around the car, not hidden under it
-  float pool = 1.0 - smoothstep(0.1, 1.0, r);
-  pool *= 0.55 + 0.45 * pool;
-  float a = pool * vGlow * (1.0 - smoothstep(180.0, 320.0, vDist));
-  if (a < 0.002) discard;
-  gl_FragColor = vec4(vColor * a, 1.0);
 }
 `
 
@@ -229,6 +202,41 @@ function anchorToWorld(car: CarState, local: THREE.Vector3, out: THREE.Vector3):
   return out.copy(local).applyQuaternion(car.quaternion).add(car.position)
 }
 
+/**
+ * How lit a car's reverse lights are (0..1): the model says so in its
+ * userData; a multiplayer car registers the group its model hangs from.
+ */
+function reverseLightOf(car: CarState): number {
+  const obj = car.object
+  if (!obj) return 0
+  let v = obj.userData.reverseLight as number | undefined
+  if (v === undefined) {
+    const kids = obj.children
+    for (let k = 0; k < kids.length && v === undefined; k++) v = kids[k].userData.reverseLight as number | undefined
+  }
+  return v !== undefined && Number.isFinite(v) ? v : 0
+}
+
+/**
+ * Hand one soft pool of light to the post stack (fx/groundPools.ts): its
+ * middle at `local` (car space, at road level), `halfWidth` x `halfLength`
+ * metres, in `colour` x `strength`. False when the hand-over is full.
+ */
+function addPool(car: CarState, local: THREE.Vector3, halfWidth: number, halfLength: number, colour: THREE.Color, strength: number): boolean {
+  const n = groundPools.count
+  if (n >= MAX_GROUND_POOLS) return false
+  anchorToWorld(car, local, groundPools.centre[n])
+  groundPools.forward[n].set(0, 0, 1).applyQuaternion(car.quaternion)
+  groundPools.up[n].set(0, 1, 0).applyQuaternion(car.quaternion)
+  groundPools.halfWidth[n] = halfWidth
+  groundPools.halfLength[n] = halfLength
+  // the car's body sits round its own origin: that far ahead of this pool's middle
+  groundPools.bodyOffset[n] = -local.z
+  groundPools.colour[n].copy(colour).multiplyScalar(strength)
+  groundPools.count = n + 1
+  return true
+}
+
 export function CarLights() {
   const level = useGame((s) => s.qualityLevel)
 
@@ -239,17 +247,11 @@ export function CarLights() {
     const barGeo = new THREE.BoxGeometry(0.05, 0.035, 2)
     const bars = instanced(barGeo, barVertex, barFragment, MAX_FX_CARS * 2, false, 'fx-underglow-strips')
 
-    const poolGeo = new THREE.PlaneGeometry(2, 2)
-    poolGeo.rotateX(-Math.PI / 2)
-    // two per car: the underglow pool, and the white one behind it while it reverses
-    const pools = instanced(poolGeo, poolVertex, poolFragment, MAX_FX_CARS * 2, true, 'fx-underglow-pools')
-
     const auraGeo = new THREE.SphereGeometry(1, 20, 14)
     const auras = instanced(auraGeo, auraVertex, auraFragment, MAX_FX_CARS, true, 'fx-tag-aura')
 
     carLightsDebug.trails = trails
-    carLightsDebug.pools = pools.mesh
-    return { trails, bars, pools, auras }
+    return { trails, bars, auras }
   }, [])
 
   useEffect(() => {
@@ -261,13 +263,14 @@ export function CarLights() {
   useEffect(
     () => () => {
       fx.trails.dispose()
-      for (const k of [fx.bars, fx.pools, fx.auras]) {
+      for (const k of [fx.bars, fx.auras]) {
         k.mesh.geometry.dispose()
         ;(k.mesh.material as THREE.Material).dispose()
         k.mesh.dispose()
       }
       for (const c of fxCars) c.id = ''
       beamLamps.count = 0
+      groundPools.count = 0
     },
     [fx],
   )
@@ -282,9 +285,9 @@ export function CarLights() {
     for (let i = 0; i < MAX_FX_CARS; i++) fxCars[i].seen = false
 
     let bars = 0
-    let pools = 0
     let auras = 0
     beamLamps.count = 0
+    groundPools.count = 0
 
     for (let i = 0; i < cars.length; i++) {
       const car = cars[i]
@@ -363,35 +366,24 @@ export function CarLights() {
         bars++
       }
 
-      // ---- the light pool on the road (fades when the road is far below)
+      // ---- the light pool on the ground (fades when the ground is far below: in the air)
       const groundY = anchors.wheels.length ? anchors.wheels[0].y : ug.y - 0.12
       const poolTarget = car.airborne ? 0 : 1
       f.pool += (poolTarget - f.pool) * (1 - Math.exp(-(car.airborne ? 10 : 4) * dt))
       if (f.pool > 0.01) {
-        _v.set(0, groundY + 0.04, 0)
-        anchorToWorld(car, _v, _p)
-        _s.set(ug.halfWidth + 1.25, 1, ug.halfLength + 1.5)
-        _m.compose(_p, car.quaternion, _s)
-        fx.pools.mesh.setMatrixAt(pools, _m)
-        fx.pools.mesh.setColorAt(pools, f.glow)
-        fx.pools.glow[pools] = GLOW.T0 * (0.6 + 0.5 * environment.night) * f.pool
-        pools++
+        const night = Number.isFinite(environment.night) ? environment.night : 0
+        _v.set(0, groundY, 0)
+        addPool(car, _v, ug.halfWidth + 1.25, ug.halfLength + 1.5, f.glow, GLOW.T0 * (0.6 + 0.5 * night) * f.pool)
 
-        // ---- reversing: soft white light on the road behind the car
-        const rev = car.object ? (car.object.userData.reverseLight as number | undefined) : undefined
-        if (rev !== undefined && Number.isFinite(rev) && rev > 0.01 && tl.length > 0) {
+        // ---- reversing: soft white light on the ground behind the car
+        const rev = reverseLightOf(car)
+        if (rev > 0.01 && tl.length > 0) {
           let tailZ = 0
           for (let k = 0; k < tl.length; k++) tailZ += tl[k].z
           tailZ /= tl.length
-          _v.set(0, groundY + 0.05, tailZ - REVERSE_POOL.back)
-          anchorToWorld(car, _v, _p)
-          _s.set(ug.halfWidth + REVERSE_POOL.widen, 1, REVERSE_POOL.halfLength)
-          _m.compose(_p, car.quaternion, _s)
-          fx.pools.mesh.setMatrixAt(pools, _m)
-          fx.pools.mesh.setColorAt(pools, _reverse)
-          const night = Number.isFinite(environment.night) ? environment.night : 0
-          fx.pools.glow[pools] = GLOW.T0 * (REVERSE_POOL.dusk + (REVERSE_POOL.night - REVERSE_POOL.dusk) * night) * rev * f.pool
-          pools++
+          _v.set(0, groundY, tailZ - REVERSE_POOL.back)
+          const strength = GLOW.T0 * (REVERSE_POOL.dusk + (REVERSE_POOL.night - REVERSE_POOL.dusk) * night) * rev * f.pool
+          addPool(car, _v, ug.halfWidth + REVERSE_POOL.widen, REVERSE_POOL.halfLength, _reverse, strength)
         }
       }
 
@@ -434,7 +426,6 @@ export function CarLights() {
 
     fx.trails.update(dt)
     finish(fx.bars, bars)
-    finish(fx.pools, pools)
     finish(fx.auras, auras)
     lookState.fx.trails = fx.trails.activeCount()
   })
@@ -442,7 +433,6 @@ export function CarLights() {
   return (
     <>
       <primitive object={fx.bars.mesh} />
-      <primitive object={fx.pools.mesh} />
       <primitive object={fx.trails.mesh} />
       <primitive object={fx.auras.mesh} />
     </>
