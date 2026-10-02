@@ -223,6 +223,7 @@
   background: color-mix(in srgb, var(--panel-solid) 70%, transparent);
   outline: none;
   user-select: text;
+  font: inherit; /* a textarea doesn't take the page's font on its own */
 }
 .sre-input:focus {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
