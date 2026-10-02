@@ -12,7 +12,11 @@
 //       results orbit, or the driving rig (chase / close / bonnet)
 //    2. driving: sit behind the car's VELOCITY, not its nose, so a
 //       drift reads sideways across the screen; on loops, wall rides
-//       and steep banks the up vector springs toward the car's up
+//       and steep banks the up vector springs toward the car's up.
+//       The bonnet camera is the exception: it is bolted to the car,
+//       on its bonnet, and turns with it everywhere (a crest pitches
+//       the view, a bank leans it, a barrel roll rolls it), through
+//       a light filter that only soaks up suspension chatter
 //    3. never clip: a ray from the car to the camera pulls it in
 //       front of any road, wall or barrier, and it stays above the
 //       terrain. A slab (road, loop, wall, ramp) is never let inside:
@@ -78,6 +82,16 @@ const _pivotAhead = new THREE.Vector3()
 /** Where the camera stood relative to the clip pivot last frame (for its swing, see CAMERA.clipAhead). */
 const _prevRel = new THREE.Vector3()
 const _rise = new THREE.Vector3()
+/** The car's orientation through the bonnet camera's chatter filter, and the car's real one last frame. */
+const _carQf = new THREE.Quaternion()
+const _carQPrev = new THREE.Quaternion()
+/** The bonnet camera's own spot and view this frame. */
+const _bonnetPos = new THREE.Vector3()
+const _bonnetQ = new THREE.Quaternion()
+const _tiltQ = new THREE.Quaternion()
+const X_AXIS = new THREE.Vector3(1, 0, 0)
+/** A camera looks down its own -z and a car's nose is its +z: half a turn about up lines them up. */
+const FACE_NOSE = new THREE.Quaternion().setFromAxisAngle(WORLD_UP, Math.PI)
 /** The road frame under the car (is it on a bank, or tipped over off the road?). */
 const _carFrame: TrackFrame = {
   s: 0,
@@ -175,6 +189,125 @@ export const cameraState = {
   /** Where the camera really is this frame (after the clip and the kick). */
   rendered: _rendered,
   up: _up,
+  /** 0..1 how much of the view is the bonnet camera right now (eases across a mode change). */
+  bonnet: 0,
+  /** True this frame if the up vector follows the car's (a loop, a wall ride or a steep bank). */
+  followUp: false,
+}
+
+// ---------------------------------------------------------------- camLog (dev)
+// A per-frame record of the camera against the car, so a checker can prove the bonnet camera
+// rides with the car (its up stays on the car's up) and that nothing pops on a mode change:
+// __dev.camLog(seconds) starts it, __dev.camLogGet() reads it back. The buffer is made on the
+// first recording, never in a normal game, and filling it allocates nothing.
+const LOG_COLS = 24
+const LOG_ROWS = 120 * 60 // a minute at 120 fps
+const camLog = { on: false, t0: -1, seconds: 0, n: 0, rows: null as Float64Array | null }
+const _logUp = new THREE.Vector3()
+
+/** Write this frame's row: time, mode, blend, flags, speed, then camera and car quaternions and positions. */
+function recordCamLog(camera: THREE.PerspectiveCamera, t: number, dt: number, cut: boolean): void {
+  const rows = camLog.rows
+  if (!camLog.on || !rows) return
+  if (camLog.t0 < 0) camLog.t0 = t
+  if (t - camLog.t0 > camLog.seconds || camLog.n >= LOG_ROWS) {
+    camLog.on = false
+    return
+  }
+  const o = camLog.n * LOG_COLS
+  const q = camera.quaternion
+  const c = telemetry.carQuaternion
+  rows[o] = t - camLog.t0
+  rows[o + 1] = dt
+  rows[o + 2] = CAMERA_MODES.indexOf(cameraState.mode)
+  rows[o + 3] = cameraState.bonnet
+  rows[o + 4] = (telemetry.airborne ? 1 : 0) | (telemetry.magGrip ? 2 : 0) | (cameraState.followUp ? 4 : 0) | (cut ? 8 : 0)
+  rows[o + 5] = telemetry.speedKmh
+  rows[o + 6] = q.x
+  rows[o + 7] = q.y
+  rows[o + 8] = q.z
+  rows[o + 9] = q.w
+  rows[o + 10] = c.x
+  rows[o + 11] = c.y
+  rows[o + 12] = c.z
+  rows[o + 13] = c.w
+  rows[o + 14] = camera.position.x
+  rows[o + 15] = camera.position.y
+  rows[o + 16] = camera.position.z
+  rows[o + 17] = telemetry.carPosition.x
+  rows[o + 18] = telemetry.carPosition.y
+  rows[o + 19] = telemetry.carPosition.z
+  // the angle between the camera's up and the car's up, degrees (the number the bonnet camera keeps small)
+  _logUp.set(0, 1, 0).applyQuaternion(q)
+  rows[o + 20] = (Math.acos(Math.min(1, Math.max(-1, _logUp.dot(telemetry.carUp)))) * 180) / Math.PI
+  rows[o + 21] = telemetry.wheelsDown
+  rows[o + 22] = cameraState.transition
+  rows[o + 23] = telemetry.trackS
+  camLog.n++
+}
+
+/** The camLog as readable rows (dev only, so this one may allocate). */
+function readCamLog(every: number, raw: boolean): Record<string, number | string | boolean | number[]>[] {
+  const rows = camLog.rows
+  const out: Record<string, number | string | boolean | number[]>[] = []
+  if (!rows) return out
+  const camQ = new THREE.Quaternion()
+  const carQ = new THREE.Quaternion()
+  const prevCamQ = new THREE.Quaternion()
+  const prevCarQ = new THREE.Quaternion()
+  const inv = new THREE.Quaternion()
+  const up = new THREE.Vector3()
+  const fwd = new THREE.Vector3()
+  const carUp = new THREE.Vector3()
+  const carFwd = new THREE.Vector3()
+  const rel = new THREE.Vector3()
+  const prevRel = new THREE.Vector3()
+  const deg = (r: number) => (r * 180) / Math.PI
+  const r2 = (v: number) => Math.round(v * 100) / 100
+  for (let i = 0; i < camLog.n; i++) {
+    const o = i * LOG_COLS
+    camQ.set(rows[o + 6], rows[o + 7], rows[o + 8], rows[o + 9])
+    carQ.set(rows[o + 10], rows[o + 11], rows[o + 12], rows[o + 13])
+    up.set(0, 1, 0).applyQuaternion(camQ)
+    fwd.set(0, 0, -1).applyQuaternion(camQ) // a camera looks down its own -z
+    carUp.set(0, 1, 0).applyQuaternion(carQ)
+    carFwd.set(0, 0, 1).applyQuaternion(carQ)
+    // the camera's up and its offset from the car, in the car's own frame
+    inv.copy(carQ).invert()
+    const upLocal = up.clone().applyQuaternion(inv)
+    rel.set(rows[o + 14] - rows[o + 17], rows[o + 15] - rows[o + 18], rows[o + 16] - rows[o + 19]).applyQuaternion(inv)
+    const first = i === 0
+    if (i % every === 0) {
+      const flags = rows[o + 4]
+      out.push({
+        t: r2(rows[o]),
+        mode: CAMERA_MODES[rows[o + 2]] ?? '?',
+        bonnet: r2(rows[o + 3]),
+        transition: r2(rows[o + 22]),
+        air: (flags & 1) !== 0,
+        mag: (flags & 2) !== 0,
+        follow: (flags & 4) !== 0,
+        cut: (flags & 8) !== 0,
+        kmh: Math.round(rows[o + 5]),
+        wheels: rows[o + 21],
+        s: Math.round(rows[o + 23]),
+        upGap: r2(rows[o + 20]),
+        rollGap: r2(deg(Math.atan2(-upLocal.x, upLocal.y))),
+        pitchGap: r2(deg(Math.atan2(upLocal.z, upLocal.y))),
+        fwdGap: r2(deg(Math.acos(Math.min(1, Math.max(-1, fwd.dot(carFwd)))))),
+        tilt: r2(deg(Math.acos(Math.min(1, Math.max(-1, carUp.y))))),
+        camTurn: first ? 0 : r2(deg(camQ.angleTo(prevCamQ))),
+        carTurn: first ? 0 : r2(deg(carQ.angleTo(prevCarQ))),
+        relMove: first ? 0 : Math.round(rel.distanceTo(prevRel) * 1000) / 1000,
+        dtMs: r2(rows[o + 1] * 1000),
+        ...(raw ? { camQ: camQ.toArray(), carQ: carQ.toArray(), dt: rows[o + 1] } : {}),
+      })
+    }
+    prevCamQ.copy(camQ)
+    prevCarQ.copy(carQ)
+    prevRel.copy(rel)
+  }
+  return out
 }
 
 /** Critically damped smoothing (Unity's SmoothDamp): stable at any dt, never overshoots. */
@@ -211,15 +344,45 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t
 }
 
+/** Where the bonnet camera sits right now: each body says (CarAnchors.bonnet); the rig's numbers are the fallback. */
+function bonnetMount(rig: CameraRigSpec, out: THREE.Vector3): THREE.Vector3 {
+  const mount = getCar('player')?.anchors?.bonnet
+  _tmp.set(0, mount ? mount.y : rig.mountY, mount ? mount.z : rig.mountZ).applyQuaternion(telemetry.carQuaternion)
+  return out.copy(telemetry.carPosition).add(_tmp)
+}
+
+/** How far a smoothing step moves toward its target so that wobbles faster than `cutoffHz` fade (a first-order low-pass). */
+function lowPassAlpha(cutoffHz: number, dt: number): number {
+  return 1 / (1 + 1 / (2 * Math.PI * cutoffHz * Math.max(dt, 1e-4)))
+}
+
+/**
+ * One step of the bonnet camera's chatter filter (a "one euro" filter, on the car's orientation).
+ * It eases _carQf toward the car's real orientation, and the quicker the car is turning, the less it
+ * holds back: suspension jiggle (small, quick, going nowhere) is smoothed, while a flip, a roll or a
+ * landing (a real turn) goes straight through. `restart` starts it again on the car itself (a cut).
+ */
+function filterCarTurn(state: { turnRate: number }, restart: boolean, dt: number): void {
+  const q = telemetry.carQuaternion
+  if (!restart) {
+    const rate = q.angleTo(_carQPrev) / Math.max(dt, 1e-3) // rad/s the car turned since last frame
+    state.turnRate += (rate - state.turnRate) * lowPassAlpha(CAMERA.bonnetTurnCutoff, dt)
+    _carQf.slerp(q, lowPassAlpha(CAMERA.bonnetCutoff + CAMERA.bonnetCutoffPerTurn * state.turnRate, dt))
+  }
+  // a cut, or anything non-finite: sit exactly on the car again
+  if (restart || !Number.isFinite(state.turnRate + _carQf.x + _carQf.y + _carQf.z + _carQf.w)) {
+    _carQf.copy(q)
+    state.turnRate = 0
+  }
+  _carQPrev.copy(q)
+}
+
 /** Where a rig wants the camera and its look target right now (U = the camera's up). */
 function rigTarget(rig: CameraRigSpec, mode: CameraMode, speed: number, outPos: THREE.Vector3, outLook: THREE.Vector3): void {
   const set = getSettings()
   const carPos = telemetry.carPosition
   if (rig.kind === 'mount') {
-    // each body says where its bonnet camera sits (CarAnchors.bonnet); the rig's numbers are the fallback
-    const mount = getCar('player')?.anchors?.bonnet
-    _tmp.set(0, mount ? mount.y : rig.mountY, mount ? mount.z : rig.mountZ).applyQuaternion(telemetry.carQuaternion)
-    outPos.copy(carPos).add(_tmp)
+    bonnetMount(rig, outPos)
     outLook.copy(outPos).addScaledVector(telemetry.carForward, rig.lookAhead + speed * rig.lookAheadSpeedGain).addScaledVector(telemetry.carUp, rig.lookHeight)
     return
   }
@@ -273,6 +436,10 @@ export function CameraRig() {
     snapping: false,
     /** links.playerStepAt when the reset was seen. */
     snapStep: 0,
+    /** How far the view has eased to the bonnet camera, 0..1 before the ease curve (see bonnetW below). */
+    bonnetBlend: 0,
+    /** The chatter filter's sense of how fast the car is turning, rad/s (see filterCarTurn). */
+    turnRate: 0,
   }).current
   const camera = useThree((st) => st.camera) as THREE.PerspectiveCamera
   const ray = useRef<InstanceType<NonNullable<typeof links.rapier>['Ray']> | null>(null)
@@ -384,6 +551,26 @@ export function CameraRig() {
     )
   }, [s])
 
+  // camLog: record the camera against the car every frame (see recordCamLog), read it back.
+  useEffect(() => {
+    const off = [
+      registerDev(
+        'camLog',
+        ((seconds = 10) => {
+          camLog.rows ??= new Float64Array(LOG_COLS * LOG_ROWS)
+          camLog.seconds = Math.max(0.1, Number(seconds) || 10)
+          camLog.t0 = -1
+          camLog.n = 0
+          camLog.on = true
+          return `recording ${camLog.seconds}s`
+        }) as never,
+        'camLog(seconds = 10): record the camera against the car every frame (read with camLogGet)',
+      ),
+      registerDev('camLogGet', ((every = 1, raw = false) => readCamLog(Math.max(1, Math.floor(Number(every) || 1)), raw === true)) as never, 'camLogGet(every = 1, raw = false): the last camLog, one row every N frames (raw adds both quaternions): upGap = degrees between the camera up and the car up, rollGap / pitchGap its parts in the car frame, tilt = the car off level, camTurn / carTurn = degrees turned since the last frame, relMove = metres the camera moved against the car since the last frame'),
+    ]
+    return () => off.forEach((f) => f())
+  }, [])
+
   // The settings menu can change the mode too; follow it with an eased transition.
   const settingsMode = useSettings((st) => st.camera)
   useEffect(() => {
@@ -422,6 +609,8 @@ export function CameraRig() {
         _lookPos.sub(seat.from).applyQuaternion(seat.rotate).add(seat.to)
         _up.applyQuaternion(seat.rotate)
         _airFwd.applyQuaternion(seat.rotate)
+        _carQf.premultiply(seat.rotate) // the bonnet camera's filter turns with the car too
+        _carQPrev.premultiply(seat.rotate)
         for (let k = 0; k < 9; k += 3) {
           _carry.set(springVel[k], springVel[k + 1], springVel[k + 2]).applyQuaternion(seat.rotate)
           springVel[k] = _carry.x
@@ -448,6 +637,17 @@ export function CameraRig() {
       s.ready = false
       return
     }
+
+    // ---- the bonnet blend: how much of the view is the bonnet camera, 0..1 ----
+    // It eases over TRANSITION_S like a mode change, but on its own clock, so pressing C twice
+    // quickly, or the results coming up halfway through a change, can never make it jump. Only
+    // the driving shot has a bonnet camera: the showroom, garage and results always frame the car.
+    const driving = !(g.phase === 'title' || g.phase === 'results' || g.phase === 'loading')
+    const bonnetWant = driving && cameraState.mode === 'bonnet' ? 1 : 0
+    if (!s.ready) s.bonnetBlend = bonnetWant
+    else if (s.bonnetBlend < bonnetWant) s.bonnetBlend = Math.min(bonnetWant, s.bonnetBlend + dt / TRANSITION_S)
+    else s.bonnetBlend = Math.max(bonnetWant, s.bonnetBlend - dt / TRANSITION_S)
+    const bonnetW = smoothstep01(s.bonnetBlend)
 
     // ---- 2. the target for this frame ----
     let posSmooth = 0.2
@@ -577,7 +777,7 @@ export function CameraRig() {
       // before the springs, and the camera glides down as the car goes under. Measured from the
       // car itself only: a probe further ahead read a loop's own climb as a ceiling.
       cameraState.ceiling = Infinity
-      const clipW = cameraState.mode === 'bonnet' ? 1 - ease : cameraState.from === 'bonnet' ? ease : 1
+      const clipW = 1 - bonnetW
       if (clipW > 0.001) {
         setPivot()
         const hT = _tmp.subVectors(_targetPos, _pivot).dot(_up)
@@ -671,7 +871,7 @@ export function CameraRig() {
     const outPos = camera.position
     outPos.copy(_camPos)
     cameraState.clipped = false
-    const clipWeight = cameraState.mode === 'bonnet' ? 1 - ease : cameraState.from === 'bonnet' ? ease : 1
+    const clipWeight = 1 - bonnetW
     if (clipWeight > 0.001) {
       setPivot()
       _armDir.subVectors(outPos, _pivot)
@@ -819,7 +1019,14 @@ export function CameraRig() {
       s.softHold = 0
     }
 
-    // ---- 5. impact kick, aim, speed shake ----
+    // ---- 5. the bonnet camera, impact kick, aim, speed shake ----
+    // The bonnet camera is bolted to the car (Josh, GitHub #7: "the camera angle should stay aligned
+    // with the bonnet"). It sits exactly on the body's bonnet mount, with no spring to fall behind
+    // (a spring there dropped back through the cabin on a frame hitch), and looks along the nose of
+    // the car's filtered orientation, so it pitches over a crest, leans in a bank and rolls with a
+    // barrel roll. Across a mode change it is blended in and out by bonnetW, so C never pops.
+    filterCarTurn(s, cut, dt)
+    if (bonnetW > 0.001) outPos.lerp(bonnetMount(RIGS.bonnet, _bonnetPos), bonnetW)
     const kick = telemetry.impact * shakeScale
     if (kick > 0.001) {
       outPos.addScaledVector(_up, kick * CAMERA.kickPos * Math.sin(t * 34))
@@ -828,6 +1035,13 @@ export function CameraRig() {
     _rendered.copy(outPos)
     camera.up.copy(_up)
     camera.lookAt(_lookPos)
+    if (bonnetW > 0.001) {
+      // along the nose, tipped up toward the rig's look point the way the old sprung aim was
+      const lookDist = RIGS.bonnet.lookAhead + speed * RIGS.bonnet.lookAheadSpeedGain
+      _tiltQ.setFromAxisAngle(X_AXIS, Math.atan2(RIGS.bonnet.lookHeight, lookDist))
+      _bonnetQ.copy(_carQf).multiply(FACE_NOSE).multiply(_tiltQ)
+      camera.quaternion.slerp(_bonnetQ, bonnetW)
+    }
     const shake = (CAMERA.shakeAmp * speedFrac * speedFrac + kick * CAMERA.kickRot) * shakeScale
     if (shake > 1e-5) {
       camera.rotateZ(shake * Math.sin(t * 31.7) * Math.sin(t * 9.1))
@@ -838,6 +1052,9 @@ export function CameraRig() {
     const fovTarget = set.fov + CAMERA.fovSpeed * speedFrac * speedFrac + set.fovBoost * telemetry.boost + fovOffset
     cameraState.fov = smoothDamp(cameraState.fov, fovTarget, 9, CAMERA.fovSmooth, dt)
     setFov(camera, cameraState.fov)
+    cameraState.followUp = followUp
+    cameraState.bonnet = bonnetW
+    recordCamLog(camera, t, dt, cut)
   })
 
   return null

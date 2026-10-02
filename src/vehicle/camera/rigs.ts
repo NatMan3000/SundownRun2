@@ -126,6 +126,17 @@ export const CAMERA = {
   upLeadMax: 1.1,
   /** Car tilted more than this from world up (on the ground) = follow the car's up. ~25 deg. */
   steepCos: 0.9,
+  /**
+   * The bonnet camera is bolted to the car: it turns with it on every axis, everywhere. The car's
+   * turning reaches it through a light filter that soaks up suspension chatter: the filter lets
+   * through slow wobbles up to bonnetCutoff (Hz), and bonnetCutoffPerTurn more Hz for every rad/s
+   * the car is turning, so a jiggle is smoothed but a flip, a barrel roll or a landing goes
+   * straight through (measured: at most about 2.5 deg behind the car, even in a 935 deg/s roll).
+   */
+  bonnetCutoff: 2,
+  bonnetCutoffPerTurn: 6,
+  /** How quickly the filter's sense of how fast the car is turning catches up, Hz. */
+  bonnetTurnCutoff: 2,
   /** Rotational speed shake - tiny. Nausea is a bug. */
   shakeAmp: 0.0016,
   kickRot: 0.05,
