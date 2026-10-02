@@ -77,7 +77,7 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 
 - Physics at a fixed 60 Hz with interpolated rendering, so it is smooth at 165 Hz. Nothing snaps except an explicit reset.
 - Springs and damping on everything that moves: camera position, look target, up vector and FOV; car body roll and pitch; HUD numbers and panels.
-- A quick handbrake tap with hands off self-straightens: drift angle peaks under 25 degrees and decays below 5 degrees within 3 s. A held handbrake drift stays alive and is catchable with countersteer.
+- A quick handbrake tap with hands off at speed self-straightens: drift angle peaks under 25 degrees and decays below 5 degrees within 3 s. A bigger handbrake slide keeps its momentum when the handbrake is let go: past about 30-40 degrees the nose does not swing back, the car keeps its spin and slides on to a stop, and counter-steer still catches it. Below about 55-85 km/h the handbrake swings the car right round, so a handbrake 180 and driving off the other way works; above that the drift ceiling still stops a spin to backwards. A held handbrake drift stays alive and is catchable with countersteer.
 - Braking mid-corner never spins the car (brake balance plus the `stability` setting).
 - Steering is speed-sensitive; keyboard steering is attack/release smoothed so it never twitches; sensitivity is a setting.
 - Landings are forgiving: a short two-wheel recovery window (about 0.35 s) saves near-misses. Landing on the roof is a wipeout.
@@ -159,3 +159,4 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 - 2026-10-02: `config.ts` gains `musicStyle` ('classic' default, 'house' opt-in), read from CONFIG directly (Nathan preferred the original band's sound for every mood but the title).
 - 2026-10-02: stunt park round 2: events gain `stunt.lineup` (the launch you're lined up on and your speed against its sign); `PlayApi` gains `parkZones()` with the `ParkZoneMark` type, so the HUD and the maps read the park without importing play.
 - 2026-10-03: reverse lights (Nathan): `VehicleApi` gains `setReverse(model, amount)`, so multiplayer cars light their reverse lights from how they move (the pose packet is unchanged).
+- 2026-10-03: feel standard, handbrake (Nathan: "That way I can do a 180 and then keep going back the other way"). A released handbrake slide keeps its momentum and handbrake 180s work below about 55-85 km/h; the tap rule now says "at speed" (the battery measures it at 100 km/h). Knobs: `ASSIST.carryLo/carryHi`, `ASSIST.spinFreeLo/spinFreeHi` in `src/vehicle/tuning.ts`.

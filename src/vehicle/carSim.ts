@@ -153,7 +153,7 @@ const REWIND_POSE = 13
 /** Boost pads whose cooldown a snapshot keeps: more than any track has (the rest come back ready). */
 const REWIND_PADS = 24
 /** The sim's own memory after the pose (counted in saveRewindState; a mismatch is reported once). */
-const REWIND_STATE = 116 + 1 + REWIND_PADS
+const REWIND_STATE = 117 + 1 + REWIND_PADS
 /** Surface kinds as numbers, for the snapshot. */
 const SURFACE_KINDS: readonly SurfaceKind[] = ['road', 'loop', 'wall', 'ramp', 'barrier', 'skirt', 'terrain', 'floor']
 function surfaceIndex(s: SurfaceKind): number {
@@ -542,6 +542,12 @@ export class CarSim {
   /** This step's brake balance: the front axle's share of the brake force (DRIVE.brakeRearShare). */
   brakeFront = 0
   /**
+   * A slide this car's person started with the handbrake is still going (ASSIST.carryLo): letting
+   * go of the handbrake doesn't swing the nose back while it lasts. It ends once the car is back
+   * near straight with the handbrake off (or stopped), and on any reset or teleport.
+   */
+  hbSlide = false
+  /**
    * The roll-back catch is for a person on keys or a pad (S is brake AND reverse). An Ai brain
    * or the demo autopilot coasts backwards on purpose (backing up for a loop run-up), so its
    * owner switches the catch off.
@@ -713,6 +719,7 @@ export class CarSim {
     out[_ro++] = this.rollbackBrake
     out[_ro++] = this.brakePressure
     out[_ro++] = this.brakeFront
+    out[_ro++] = this.hbSlide ? 1 : 0
     const h = this.hit
     out[_ro++] = h.s
     out[_ro++] = h.index
@@ -882,6 +889,7 @@ export class CarSim {
     this.rollbackBrake = take(src, 0)
     this.brakePressure = take(src, 0)
     this.brakeFront = take(src, DRIVE.brakeFrontBias)
+    this.hbSlide = takeB(src)
     const h = this.hit
     h.s = take(src, this.trackS)
     h.index = take(src, 0) | 0
@@ -1595,6 +1603,22 @@ export class CarSim {
     const stab = clamp(Number.isFinite(h.stability) ? h.stability : 1, 0.4, 2)
     const inertiaScale = massRatio
 
+    // ---- a handbrake slide keeps going (see ASSIST.carryLo) ----
+    // A person's handbrake starts one. It is over once the car is back near straight with the
+    // handbrake off (a stopped car reads 0 degrees, so stopping ends it too). While it lasts:
+    // carry (0..1) = how much of the swing-back help stands down once the handbrake is let go,
+    // spinFree (0..1, 1 = slow) = how much of the drift ceiling is off, so the car can come right round.
+    const absBeta = Math.abs(beta)
+    if (handbrake && !airborne && this.personDriving) this.hbSlide = true
+    else if (!handbrake && absBeta < ASSIST.carryEnd) this.hbSlide = false
+    const carryAt = ASSIST.carryLo + ASSIST.carryPerStab * (stab - 1)
+    // Counter-steering means "catch it": the help comes back as the counter-steer goes on.
+    const catching = counterSteer ? steerMag : 0
+    const carry = this.hbSlide && !handbrake ? smoothstep(carryAt, carryAt + ASSIST.carryHi - ASSIST.carryLo, absBeta) * (1 - catching) : 0
+    const carryHelp = clamp(ASSIST.carryStabHelp * (stab - 1), 0, 1)
+    const spinBand = clamp(1 - ASSIST.spinFreePerStab * (stab - 1), 0.5, 1)
+    const spinFree = this.hbSlide ? (1 - smoothstep(ASSIST.spinFreeLo * spinBand, ASSIST.spinFreeHi * spinBand, speed)) * (1 - catching) : 0
+
     if (!airborne) {
       // ---- yaw stability: a light hand, released for a slide, firmed up hands-off ----
       const yawRate = angvel.dot(up)
@@ -1602,7 +1626,10 @@ export class CarSim {
       // corner: at full lock 5 deg of slip is just hard cornering, not a slide (it was pulling a
       // 200 km/h car straight, 1.27 g at full lock). Lift-off slides on a light wheel keep it.
       const hs = smoothstep(ASSIST.hsLo, ASSIST.hsHi, speed) * (1 - ASSIST.hsSteerRelief * (counterSteer ? 0 : steerMag))
-      let yawK = this.drifting ? ASSIST.yawDampDrift + (ASSIST.yawDampRecover * stab - ASSIST.yawDampDrift) * assistGain : ASSIST.yawDamp
+      // A handbrake slide that keeps going keeps its spin: no hands-off damping, except the part
+      // a stability over 1 keeps on (carryHelp).
+      const recoverGain = assistGain * (1 - carry * (1 - carryHelp))
+      let yawK = this.drifting ? ASSIST.yawDampDrift + (ASSIST.yawDampRecover * stab - ASSIST.yawDampDrift) * recoverGain : ASSIST.yawDamp
       yawK += ASSIST.hsYawDamp * stab * hs * assistGain
       // Brake stability: braking mid-corner adds yaw damping (never while handbraking).
       if (!handbrake && brakeCmd > 0.05) yawK += ASSIST.brakeYawDamp * stab * brakeCmd
@@ -1629,7 +1656,9 @@ export class CarSim {
       }
 
       // ---- drift recovery: the missing spring that pulls the nose back onto the path ----
-      if (!reversing && assistGain > 0.01 && speed > ASSIST.assistSpeedLo) {
+      // Never on a handbrake slide that keeps going (carry): that is the swing back.
+      const restoreGain = assistGain * (1 - carry)
+      if (!reversing && restoreGain > 0.01 && speed > ASSIST.assistSpeedLo) {
         const m = Math.abs(beta)
         const deadband = ASSIST.driftDeadband + (ASSIST.driftDeadbandFast - ASSIST.driftDeadband) * hs
         if (m > deadband) {
@@ -1637,15 +1666,17 @@ export class CarSim {
           const ramp = smoothstep(ASSIST.assistSpeedLo, ASSIST.assistSpeedHi, speed)
           const kHs = 1 + ASSIST.hsRestore * hs
           const lim = ASSIST.driftRestoreMax * kHs * stab
-          const tq = clamp(-ASSIST.driftRestore * kHs * stab * over * assistGain * ramp, -lim, lim) * inertiaScale
+          const tq = clamp(-ASSIST.driftRestore * kHs * stab * over * restoreGain * ramp, -lim, lim) * inertiaScale
           this.addTorque(body, up.x * tq, up.y * tq, up.z * tq)
         }
       }
 
       // ---- drift ceiling: a held drift stays a drift, never a spin ----
-      const ab = Math.abs(beta)
-      if (speed > ASSIST.assistSpeedHi && ab < ASSIST.ceilEnd) {
-        let tq = ab > ASSIST.ceilStart ? -Math.sign(beta) * ASSIST.ceilSpring * (ab - ASSIST.ceilStart) : 0
+      // A slow handbrake slide has none (spinFree: handbrake turns), and once the handbrake is let
+      // go its spring no longer pulls the nose back (carry); the damper and the yaw cap stay.
+      const ab = absBeta
+      if (speed > ASSIST.assistSpeedHi && ab < ASSIST.ceilEnd && spinFree < 1) {
+        let tq = ab > ASSIST.ceilStart ? -Math.sign(beta) * ASSIST.ceilSpring * (ab - ASSIST.ceilStart) * (1 - carry) : 0
         // Only rotation that makes the slide DEEPER is touched (beta and yaw rate share a sign then);
         // a car rotating back toward its path is never slowed down.
         if (Math.sign(yawRate) === Math.sign(beta) && ab > 0.02) {
@@ -1654,7 +1685,7 @@ export class CarSim {
           if (over > 0) tq -= Math.sign(yawRate) * over * ASSIST.yawCapK
         }
         if (tq !== 0) {
-          tq *= inertiaScale
+          tq *= inertiaScale * (1 - spinFree)
           this.addTorque(body, up.x * tq, up.y * tq, up.z * tq)
         }
       }
@@ -2201,6 +2232,7 @@ export class CarSim {
     this.holding = false
     this.parked = false
     this.launch = 0
+    this.hbSlide = false
     if (s >= 0) {
       this.trackS = s
       this.hasTrackS = true
