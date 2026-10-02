@@ -31,7 +31,8 @@ import type { CarState } from '../../core/telemetry'
 import { getGame, useGame } from '../../core/store'
 import { QUALITY_PRESETS } from '../quality'
 import { lookState } from '../lookState'
-import { LightTrails } from './LightTrails'
+import { LightTrails, TRAIL_RATE } from './LightTrails'
+import { CONFIG } from '../../core/config'
 import { BEAM_TUNE, MAX_BEAM_LAMPS, beamLamps } from './beams'
 
 /** Live handles for dev inspection (the fx meshes of the mounted CarLights). */
@@ -234,7 +235,8 @@ export function CarLights() {
   }, [])
 
   useEffect(() => {
-    fx.trails.setLength(QUALITY_PRESETS[level].trailSegments)
+    // config.ts trailSeconds sets how long a trail lasts; the quality preset caps how many points it may use
+    fx.trails.setLength(Math.min(QUALITY_PRESETS[level].trailSegments, Math.round(CONFIG.trailSeconds * TRAIL_RATE)))
     lookState.fx.trailSegments = fx.trails.length
   }, [fx, level])
 
