@@ -285,9 +285,12 @@ export class EngineVoice {
     const windWobbleDepth = gain(90)
     windWobble.connect(windWobbleDepth)
     windWobbleDepth.connect(windBp.frequency)
+    // A soft top filter after the band, so fast driving sounds like rushing air, not hiss.
+    const windTop = filter('lowpass', 1400, 0.7)
     const wind = gain(0)
     noiseLoop(0.53).connect(windBp)
-    windBp.connect(wind)
+    windBp.connect(windTop)
+    windTop.connect(wind)
     wind.connect(out)
 
     // ================= road: smooth, wet hiss =================
@@ -512,8 +515,9 @@ export class EngineVoice {
     k.boost.to(0.14 * boostNow * boostNow, t)
 
     // ---------- wind: rises with the square of speed, a bit more in the air ----------
+    // The band stays low (about 670 Hz at 190 km/h): a rush of air, not a hiss.
     const wind = 0.15 * speedN * speedN * (grounded ? 1 : 1.35)
-    k.windHz.to(260 + 900 * Math.min(speedN, 1.3), t)
+    k.windHz.to(220 + 620 * Math.min(speedN, 1.3), t)
     k.wind.to(wind, t)
 
     // ---------- surface ----------

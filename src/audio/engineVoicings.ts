@@ -147,12 +147,14 @@ const MUSCLE: EngineVoicing = {
     mufflerOpenHz: 750,
     drive: 1.7,
     crackle: 0.45,
-    level: 1.8,
+    level: 1.88,
   },
+  // No turbo and no intake hiss: a muscle V8 breathes on its own, and the hiss
+  // (rising with the revs) was the "high pitch wind" Nathan heard. All growl.
   layers: {
-    spool: 0.2,
+    spool: 0,
     spoolHz: [300, 650],
-    whoosh: 0.7,
+    whoosh: 0,
     blowOff: 0,
     flutter: false,
     jet: 0,
@@ -195,13 +197,13 @@ const RALLY: EngineVoicing = {
     mufflerOpenHz: 900,
     drive: 2.0,
     crackle: 0.9,
-    level: 1.0,
+    level: 1.04,
     nodeLevel: 1.6,
   },
   layers: {
     spool: 1,
     spoolHz: [380, 1050],
-    whoosh: 0.9,
+    whoosh: 0.45,
     blowOff: 1,
     flutter: true,
     jet: 0,
@@ -250,7 +252,7 @@ const HOVER: EngineVoicing = {
   layers: {
     spool: 0.35,
     spoolHz: [320, 760],
-    whoosh: 0.8,
+    whoosh: 0.4,
     blowOff: 0,
     flutter: false,
     jet: 1,
