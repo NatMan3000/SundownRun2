@@ -22,7 +22,7 @@ import { useFrame } from '@react-three/fiber'
 import { PALETTE } from '../core/palette'
 import { getSettings } from '../core/settings'
 import { getGame, useGame } from '../core/store'
-import { addCar, makeCarState, removeCar } from '../core/telemetry'
+import { addCar, makeCarState, removeCar, rewind } from '../core/telemetry'
 import { buildCarModel, disposeCarModel, poseCarModel, WHEEL_REST_Y } from './carModel'
 import { getGhost, sampleGhost } from './ghost'
 import { links } from './links'
@@ -80,9 +80,10 @@ export function GhostCar() {
       setShown(false)
       return
     }
-    // The player's car renders one interpolated step behind physics; match it.
+    // The player's car renders one interpolated step behind physics; match it. While rewinding
+    // the lap clock steps BACK each step, so the in-between moment runs the other way.
     const alpha = Math.min(1, Math.max(0, (performance.now() - links.playerStepAt) / (DT * 1000)))
-    const t = (lap.stepsThisLap - 1 + alpha) * DT
+    const t = (rewind.active ? lap.stepsThisLap + 1 - alpha : lap.stepsThisLap - 1 + alpha) * DT
     _prev.copy(model.position)
     if (!sampleGhost(trace, t, model.position, model.quaternion, _qa, _qb)) {
       setShown(false) // the ghost has finished its lap

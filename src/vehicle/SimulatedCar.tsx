@@ -14,6 +14,10 @@
 //  The owner (PlayerCar or SimCar) supplies the brain through two
 //  hooks that run inside every fixed physics step: beforeStep
 //  (write sim.controls) and afterStep (read what happened).
+//
+//  Every car also joins the rewind recorder (rewind.ts): it saves
+//  a snapshot each step, and while rewind is held it is SHOWN at an
+//  older snapshot instead of being simulated.
 // ============================================================
 
 import { useEffect, useMemo, useRef } from 'react'
@@ -33,6 +37,7 @@ import { buildCarModel, disposeCarModel, poseCarModel, setCarBrake, setCarColors
 import type { LapTracker } from './lapTracker'
 import { startPose } from './trackNav'
 import { CHASSIS, VISUAL } from './tuning'
+import { addRewindCar, rewindAfterCarStep, rewindBeforeCarStep, rewindPlaying, rewindShowCar } from './rewind'
 
 export interface SimulatedCarProps {
   id: string
@@ -51,6 +56,10 @@ export interface SimulatedCarProps {
   afterStep?: (sim: CarSim, car: CarState) => void
   /** Every rendered frame, after the interpolated pose is read (priority -40). */
   onFrame?: (sim: CarSim, car: CarState, dt: number) => void
+  /** Rewind held: instead of beforeStep / afterStep, after the car was put at an older moment (rewind.ts). */
+  onRewindFrame?: (sim: CarSim, car: CarState) => void
+  /** Rewind let go: the car was put back at the moment on screen and drives on from there. */
+  onRewindResume?: (sim: CarSim, car: CarState) => void
   onBody?: (body: RapierRigidBody | null) => void
   shadows?: boolean
   children?: ReactNode
@@ -145,6 +154,21 @@ export function SimulatedCar(props: SimulatedCarProps) {
     return () => untagCollider(handle)
   }, [id])
 
+  // Join the rewind recorder for as long as this car exists.
+  useEffect(
+    () =>
+      addRewindCar({
+        id,
+        sim,
+        lap,
+        car,
+        body: () => bodyRef.current,
+        collider: () => colliderRef.current,
+        onResume: () => hooks.current.onRewindResume?.(sim, car),
+      }),
+    [id, sim, lap, car],
+  )
+
   useEffect(() => {
     props.onBody?.(bodyRef.current)
     return () => props.onBody?.(null)
@@ -183,6 +207,14 @@ export function SimulatedCar(props: SimulatedCarProps) {
     if (!b) return
     const h = hooks.current
     const track = getTrack()
+    if (rewindPlaying()) {
+      // Rewind held: no brain, no physics, no laps. The car is put where it was a step earlier.
+      rewindShowCar(sim, car, b, colliderRef.current)
+      if (track) car.progress = lap.progress(track, sim.trackS)
+      h.onRewindFrame?.(sim, car)
+      return
+    }
+    rewindBeforeCarStep(sim)
     h.beforeStep(sim, car)
     sim.step(b, world, ray, colliderRef.current, track)
 
@@ -199,6 +231,7 @@ export function SimulatedCar(props: SimulatedCarProps) {
       car.lastLapDirty = lap.lastLapDirty
       car.progress = lap.progress(track, sim.trackS)
     }
+    rewindAfterCarStep(sim)
     car.speedKmh = sim.speedKmh
     car.boost = sim.boost
     car.slip = sim.slip

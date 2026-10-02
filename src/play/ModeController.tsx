@@ -15,6 +15,11 @@
 //  Every clock here (race timer, stunt clock, hunt clock) is a
 //  performance.now() timestamp in the store. Pausing slides them all
 //  forward by the paused time, so a pause never costs you a second.
+//  A rewind (vehicle/rewind.ts) slides the race clock by the time it
+//  was held plus the time it took back, because every car went back
+//  too; the stunt and hunt clocks keep running (a rewind costs time
+//  there, so it can't be farmed for a record), and a race you
+//  rewound in can't set a race record.
 //
 //  Multiplayer: the net layer owns races and tag there, so this file
 //  stays out of race flow completely and only keeps the props,
@@ -28,7 +33,7 @@ import { useGame, getGame } from '../core/store'
 import type { GameState } from '../core/store'
 import { getSettings, getDefaults } from '../core/settings'
 import { getCar } from '../core/telemetry'
-import { emit } from '../core/events'
+import { emit, on } from '../core/events'
 import { getRecord, offerRecord } from '../core/records'
 import { showResults, startSession } from '../core/session'
 import { propsSignal } from '../core/propsSignal'
@@ -41,12 +46,16 @@ import {
   armRaceBook,
   buildResults,
   clearRaceBook,
+  loadRaceBook,
+  RACE_BOOK_REWIND_FLOATS,
   raceBook,
   racerById,
   resetRaceBook,
+  saveRaceBook,
   sortRaceBook,
   updateRaceBook,
 } from './raceBook'
+import { addRewindPart } from '../vehicle'
 import type { RaceBookHooks, Racer } from './raceBook'
 import { COUNTDOWN_S, SETTLE_MS, STAGING_TIMEOUT_MS, STUNT_SECONDS, drivers, flow, useRoster } from './flow'
 
@@ -151,6 +160,7 @@ function setupRace(track: TrackRuntime, g: GameState): void {
   playerSlot = n
   flow.kind = 'race'
   flow.stage = 'staging'
+  flow.rewound = false
   flow.version++
   flow.stagingSince = performance.now()
   useRoster.setState({ racers: roster, version: flow.version })
@@ -255,7 +265,7 @@ function finishRace(now: number): void {
   useGame.setState({ raceState: 'finished', raceResults: results, racePosition: me?.position ?? 1 })
   // A race record only means something at the track's standard distance.
   const standardLaps = track.file.laps ?? getDefaults().raceLaps
-  if (player?.finished && raceBook.laps === standardLaps) offerRecord(track.key, 'raceBestMs', ms)
+  if (player?.finished && raceBook.laps === standardLaps && !flow.rewound) offerRecord(track.key, 'raceBestMs', ms)
   emit('race.finish', {
     position: me?.position ?? 1,
     of: results.length,
@@ -280,6 +290,18 @@ function endStunt(): void {
   })
   emit('stunt.end', { score, best, previousBest: previous })
   showResults()
+}
+
+/**
+ * Rewind support: the race went back in time, so its clock does too. Only the race's clocks:
+ * the stunt and hunt clocks keep running through a rewind.
+ */
+function slideRaceClocks(ms: number): void {
+  if (!(ms > 0) || flow.kind !== 'race') return
+  flow.goAt += ms
+  for (const r of raceBook.racers) r.lapStartAt += ms
+  const g = getGame()
+  if (g.raceGoAt > 0) useGame.setState({ raceGoAt: g.raceGoAt + ms })
 }
 
 /** Pause support: slide every running clock forward by the time spent paused. */
@@ -369,6 +391,21 @@ export function ModeController() {
     return () => {
       unsub()
       teardownFlow(true)
+    }
+  }, [])
+
+  // Rewind: the race book goes back with the cars; the race clock slides by the time held plus
+  // the time taken back; and a race the player rewound in can't be a record.
+  useEffect(() => {
+    const offPart = addRewindPart({ size: RACE_BOOK_REWIND_FLOATS, save: saveRaceBook, load: loadRaceBook })
+    const offEnd = on('rewind.end', (e) => {
+      if (flow.kind !== 'race' || flow.stage !== 'running') return
+      flow.rewound = true
+      slideRaceClocks((e.seconds + e.heldSeconds) * 1000)
+    })
+    return () => {
+      offPart()
+      offEnd()
     }
   }, [])
 

@@ -16,6 +16,10 @@
 //    renderMix(stem)       everything together on a 32 s scripted drive
 //                          (engine, race music, effects), or one stem of it,
 //                          for checking the balance between them
+//    renderRewind(stem)    a cruise with rewind held from 2 s to 5 s: the
+//                          rewind sound, the music muffle and the engine dip
+//                          (rewindNumbers() measures it: levels, how much is
+//                          high, how long it lasts)
 //
 //  encodeWav() turns a recording into a 16-bit .wav file, and
 //  toBase64() makes it a string the probe can carry out of the page.
@@ -23,7 +27,7 @@
 
 import type { AnyGameEvent, GameEventType } from '../core/events'
 import type { UiSound } from '../core/api'
-import { buildMix, duck, updateMix } from './mixer'
+import { REWIND_ENGINE_LEVEL, buildMix, duck, updateMix } from './mixer'
 import type { MixTargets } from './mixer'
 import { EngineVoice, makeEngineInput } from './engine'
 import { DEFAULT_ENGINE_SOUND, ENGINE_VOICINGS } from './engineVoicings'
@@ -42,7 +46,7 @@ import type { MoodId } from './music/score'
 const RATE = 48000
 
 function fullMix(): MixTargets {
-  return { musicVolume: 0.7, sfxVolume: 0.85, musicMuted: false, engineLevel: 1, paused: false, silent: false, engineLoad: 0 }
+  return { musicVolume: 0.7, sfxVolume: 0.85, musicMuted: false, engineLevel: 1, paused: false, silent: false, engineLoad: 0, rewinding: false }
 }
 
 /**
@@ -273,6 +277,128 @@ export async function renderMusic(mood: MoodId | 'title', night = 0, seed = hash
   log.progression = music.readout.progression
   music.dispose()
   return { buf, log }
+}
+
+// ---------------------------------------------------------------- rewind
+
+/** The rewind render: 8 s of cruising with the race music, rewind held from 2 s to 5 s. */
+export const REWIND_RENDER_SECONDS = 8
+const REWIND_FROM_S = 2
+const REWIND_TO_S = 5
+
+/**
+ * A cruise at 140 km/h with the race music playing, rewind held from 2 s to 5 s, exactly as the
+ * game plays it: rewind.start and rewind.end through the effects, the music muffled and the
+ * engine stepped back by the mixer while held. stem 'fx' is the rewind sound on its own.
+ */
+export async function renderRewind(stem: 'all' | 'fx'): Promise<AudioBuffer> {
+  const ctx = new OfflineAudioContext(2, Math.ceil(RATE * REWIND_RENDER_SECONDS), RATE)
+  const mix = buildMix(ctx)
+  const noise = makeNoiseBuffer(ctx)
+  const { engine } = await offlineEngine(ctx, mix.engine, noise, DEFAULT_ENGINE_SOUND, 'worklet')
+  const effects = new Effects(makeKit(ctx, mix.fx, noise), makeKit(ctx, mix.ui, noise), (d, h) => duck(mix, d, h, ctx.currentTime))
+  const music = new MusicSystem(ctx, mix.music, noise)
+  music.scene.phase = 'playing'
+  music.newSession('race', undefined, hashString('rewind'))
+  const targets = fullMix()
+  if (stem === 'fx') targets.musicMuted = true
+  const input = makeEngineInput()
+  input.rpm = 0.55
+  input.throttle = 0.5
+  input.speedKmh = 140
+  input.gear = 4
+  let started = false
+  let ended = false
+  const buf = await stepRender(ctx, 1 / 60, (t) => {
+    const held = t >= REWIND_FROM_S && t < REWIND_TO_S
+    if (!started && held) {
+      started = true
+      effects.handleEvent({ type: 'rewind.start', t: 0, stored: 10 } as unknown as AnyGameEvent)
+    }
+    if (!ended && t >= REWIND_TO_S) {
+      ended = true
+      effects.handleEvent({ type: 'rewind.end', t: 0, seconds: 3, heldSeconds: 3 } as unknown as AnyGameEvent)
+    }
+    targets.rewinding = held
+    targets.engineLevel = stem === 'fx' ? 0 : held ? REWIND_ENGINE_LEVEL : 1
+    engine.update(input, t)
+    updateMix(mix, targets, t)
+    music.scene.intensity = 0.5
+    music.tick(t)
+  })
+  engine.dispose()
+  music.dispose()
+  return buf
+}
+
+/** Energy of a stretch of a recording at or above `hz` (two passes of a 12 dB/octave highpass). */
+function energyAbove(d: Float32Array, from: number, to: number, hz: number, rate: number): number {
+  const w0 = (2 * Math.PI * hz) / rate
+  const cw = Math.cos(w0)
+  const alpha = Math.sin(w0) / (2 * Math.SQRT1_2)
+  const a0 = 1 + alpha
+  const b0 = (1 + cw) / 2 / a0
+  const b1 = -(1 + cw) / a0
+  const b2 = b0
+  const a1 = (-2 * cw) / a0
+  const a2 = (1 - alpha) / a0
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0, u1 = 0, u2 = 0, z1 = 0, z2 = 0
+  let sum = 0
+  for (let i = Math.max(0, from - 2000); i < to; i++) {
+    const x = d[i]
+    const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+    x2 = x1
+    x1 = x
+    y2 = y1
+    y1 = y
+    const z = b0 * y + b1 * u1 + b2 * u2 - a1 * z1 - a2 * z2
+    u2 = u1
+    u1 = y
+    z2 = z1
+    z1 = z
+    if (i >= from) sum += z * z
+  }
+  return sum
+}
+
+/**
+ * The rewind render in numbers: the whole mix before, during and after the hold (dBFS), and the
+ * rewind sound on its own: how loud, how much of it is above 1 kHz and 4 kHz (it should be
+ * almost none: no whine, no hiss), and how long it lasts before it is quieter than -50 dBFS.
+ */
+export function rewindNumbers(all: AudioBuffer, fx: AudioBuffer): Record<string, unknown> {
+  const rate = all.sampleRate
+  const db = (x: number) => (x > 0 ? Math.round(10 * Math.log10(x) * 10) / 10 : -100)
+  const rms = (b: AudioBuffer, a: number, z: number) => {
+    const d = b.getChannelData(0)
+    let s = 0
+    for (let i = Math.floor(a * rate); i < Math.floor(z * rate); i++) s += d[i] * d[i]
+    return s / Math.max(1, (z - a) * rate)
+  }
+  const share = (b: AudioBuffer, a: number, z: number, hz: number) => {
+    const d = b.getChannelData(0)
+    const from = Math.floor(a * rate)
+    const to = Math.floor(z * rate)
+    let tot = 0
+    for (let i = from; i < to; i++) tot += d[i] * d[i]
+    return tot > 0 ? Math.round((energyAbove(d, from, to, hz, rate) / tot) * 1000) / 10 : 0
+  }
+  // how long the rewind sound lasts: the last 50 ms window after the start still louder than -50 dBFS
+  let lastLoud = REWIND_FROM_S
+  for (let t = REWIND_FROM_S; t < REWIND_TO_S - 0.05; t += 0.05) if (rms(fx, t, t + 0.05) > 1e-5) lastLoud = t + 0.05
+  return {
+    mixRmsDb: { before: db(rms(all, 0.8, 1.95)), held: db(rms(all, 2.6, 4.9)), after: db(rms(all, 5.6, 7.6)) },
+    mixAbove1kHzPct: { before: share(all, 0.8, 1.95, 1000), held: share(all, 2.6, 4.9, 1000), after: share(all, 5.6, 7.6, 1000) },
+    rewindSound: {
+      startRmsDb: db(rms(fx, REWIND_FROM_S, REWIND_FROM_S + 0.6)),
+      startAbove1kHzPct: share(fx, REWIND_FROM_S, REWIND_FROM_S + 1.5, 1000),
+      startAbove4kHzPct: share(fx, REWIND_FROM_S, REWIND_FROM_S + 1.5, 4000),
+      lastsS: Math.round((lastLoud - REWIND_FROM_S) * 100) / 100,
+      heldTailRmsDb: db(rms(fx, 3.8, 4.9)),
+      clunkRmsDb: db(rms(fx, REWIND_TO_S, REWIND_TO_S + 0.15)),
+      clunkAbove1kHzPct: share(fx, REWIND_TO_S, REWIND_TO_S + 0.2, 1000),
+    },
+  }
 }
 
 export type MixStem = 'all' | 'engine' | 'music' | 'fx'

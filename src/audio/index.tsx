@@ -26,7 +26,7 @@ import type { AnyGameEvent, GameEventType } from '../core/events'
 import { createRig, destroyRig } from './system'
 import type { AudioRig } from './system'
 import type { EngineInput } from './engine'
-import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMix, renderMusic, toBase64 } from './render'
+import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMix, renderMusic, renderRewind, rewindNumbers, toBase64 } from './render'
 import type { MixStem, MotorChoice } from './render'
 import { ENGINE_SOUND_IDS, isEngineSound, resolveEngineSound } from './engineVoicings'
 import { isTestDrive } from './sweep'
@@ -46,7 +46,7 @@ const DEV_HELP = [
   "audio('sweep')                      18 s scripted test drive: idle, blips, gears, cruise, lift-off, jump (free-rev), landing, drift, boost, off-road, mag grip",
   "audio('sweep', 'drift')             19 s tyre test drive: a long drift at 60 km/h, a big one at 120, a small slide, a slide on the grass",
   "audio('sweep', 'speed')             19 s top speed test drive: every gear to 250 km/h, held, a boost pad, a lift",
-  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed (the engine, tyre or top speed test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1) | mix (arg: all | engine | music | fx)",
+  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed (the engine, tyre or top speed test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1) | mix (arg: all | engine | music | fx) | rewind (rewind held 2-5 s over a cruise: adds the rewind sound's numbers)",
 ].join('\n')
 
 export function AudioSystem() {
@@ -131,6 +131,11 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
   // 'engine' records the engine test drive (named 'sweep'); 'drift' and 'speed' the others.
   const drive = what === 'engine' ? 'sweep' : what
   if (isTestDrive(drive)) return renderDrive(drive, arg)
+  if (what === 'rewind') {
+    const all = await renderRewind('all')
+    const fx = await renderRewind('fx')
+    return { ...measure(all), ...rewindNumbers(all, fx), wav: toBase64(encodeWav(all)) }
+  }
   if (what === 'effects') {
     const buf = await renderEffectsReel()
     return { ...measure(buf), wav: toBase64(encodeWav(buf)) }
@@ -139,7 +144,7 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const { buf, log } = await renderMusic(what as MoodId | 'title', Number.isFinite(night) ? night : 0)
     return { ...measure(buf), log, wav: toBase64(encodeWav(buf)) }
   }
-  return `unknown render "${what}" (engine | drift | speed | effects | mix | ${MUSIC_RENDERS.join(' | ')})`
+  return `unknown render "${what}" (engine | drift | speed | effects | mix | rewind | ${MUSIC_RENDERS.join(' | ')})`
 }
 
 /** Record one of the scripted drives through the engine. arg: 'rally' or 'rally:nodes'. */

@@ -41,6 +41,13 @@ export type LapEvent =
 /** Receives what happened (the player's car turns these into events and store writes). */
 export type LapListener = (e: LapEvent) => void
 
+/** Rewind snapshots keep up to 30 x this many sectors (240: a 36 km track at the tightest spacing). */
+const REWIND_SECTOR_WORDS = 8
+
+function finiteOr(v: number, fallback: number): number {
+  return Number.isFinite(v) ? v : fallback
+}
+
 export class LapTracker {
   /** Completed race laps (all sectors passed). Dirty laps count; skipped-sector crossings don't. */
   lap = 0
@@ -113,6 +120,74 @@ export class LapTracker {
     this.crossedOnce = false
     this.clearLap()
     this.lastS = s
+  }
+
+  // ---------------------------------------------------------------- rewind (src/vehicle/rewind.ts)
+
+  /** Numbers in one rewind snapshot of a lap tracker. */
+  static readonly REWIND_FLOATS = 11 + 1 + REWIND_SECTOR_WORDS
+
+  /** Rewind: save where this lap is (laps, sectors, the stopwatch, off-road time). */
+  saveRewind(out: Float64Array, at: number): void {
+    out[at] = this.lap
+    out[at + 1] = this.crossedOnce ? 1 : 0
+    out[at + 2] = this.timing ? 1 : 0
+    out[at + 3] = this.stepsThisLap
+    out[at + 4] = this.offRoadSteps
+    out[at + 5] = this.dirty ? 1 : 0
+    out[at + 6] = this.sectorsPassed
+    out[at + 7] = this.sectorCount
+    out[at + 8] = this.lastS
+    out[at + 9] = this.lastLapMs === null ? -1 : this.lastLapMs
+    out[at + 10] = this.lastLapDirty ? 1 : 0
+    // Which sectors are passed, 30 to a number (exact in a float64).
+    const n = this.passed.length
+    out[at + 11] = n
+    for (let w = 0; w < REWIND_SECTOR_WORDS; w++) {
+      let bits = 0
+      for (let b = 0; b < 30; b++) {
+        const k = w * 30 + b
+        if (k < n && this.passed[k]) bits += 2 ** b
+      }
+      out[at + 12 + w] = bits
+    }
+  }
+
+  /** Rewind: put the lap back exactly as it was saved. Nothing is announced (no events). */
+  loadRewind(src: Float64Array, at: number): void {
+    this.lap = finiteOr(src[at], this.lap)
+    this.crossedOnce = src[at + 1] === 1
+    this.timing = src[at + 2] === 1
+    this.stepsThisLap = finiteOr(src[at + 3], 0)
+    this.offRoadSteps = finiteOr(src[at + 4], 0)
+    this.dirty = src[at + 5] === 1
+    this.sectorsPassed = finiteOr(src[at + 6], 0)
+    this.sectorCount = finiteOr(src[at + 7], this.sectorCount)
+    this.lastS = finiteOr(src[at + 8], -1)
+    this.lastLapMs = src[at + 9] >= 0 ? src[at + 9] : null
+    this.lastLapDirty = src[at + 10] === 1
+    const n = src[at + 11]
+    if (n === this.passed.length) {
+      for (let w = 0; w < REWIND_SECTOR_WORDS; w++) {
+        let bits = src[at + 12 + w]
+        for (let b = 0; b < 30; b++) {
+          const k = w * 30 + b
+          if (k < n) this.passed[k] = bits % 2
+          bits = Math.floor(bits / 2)
+        }
+      }
+    }
+  }
+
+  /**
+   * The lap being timed can no longer be a record or a ghost (the player rewound in it): it
+   * goes dirty through the same rule as too much off-road time, so it still counts and shows
+   * its time, but never as a best.
+   */
+  markDirty(): void {
+    if (!this.timing || this.dirty) return
+    this.dirty = true
+    this.emit({ kind: 'dirty' })
   }
 
   /** Feed once per physics step with the car's track position. */

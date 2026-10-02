@@ -1339,6 +1339,134 @@
 .hud-hint--air { bottom: 4.4em; font-size: 0.95em; opacity: 1; transition: opacity 180ms ease-out; }
 .hint__plus { font-family: var(--font-display); font-weight: 700; color: var(--dim); }
 
+/* ---------------------------------------------------------------- rewind (hud/Rewind.tsx) */
+
+/* the stored-rewind meter, tucked under the speed dial, the same width as it. No backdrop blur:
+   every blurred panel is its own GPU pass, and the dense glass keeps this one legible without it. */
+.hud-rewind {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  width: 13.5em;
+  box-sizing: border-box;
+  margin-top: -0.35em;
+  padding: 0.35em 0.8em 0.35em 0.45em;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--hud-glass);
+  text-shadow: var(--legible);
+}
+.hud-rewind .glyphs { flex: none; font-size: 0.85em; }
+.hud-rewind__icon { flex: none; width: 1.1em; height: 0.65em; fill: var(--accent); filter: drop-shadow(0 0 0.2em color-mix(in srgb, var(--accent) 70%, transparent)); }
+.hud-rewind__bar { position: relative; flex: 1; height: 0.36em; border-radius: 0.18em; background: color-mix(in srgb, var(--text) 14%, transparent); overflow: hidden; }
+.hud-rewind__bar i {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  transform: scaleX(var(--fill, 0));
+  background: var(--accent);
+  box-shadow: 0 0 0.5em color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.hud-rewind__secs { flex: none; min-width: 2.9em; text-align: right; font-family: var(--font-display); font-size: 0.95em; font-weight: 600; color: var(--dim); }
+
+/* while rewinding: the view washes out and cools, scan lines roll, a band of tape noise climbs
+   the screen. backdrop-filter, not a blend mode: blend modes stay inside the UI's own layer and
+   would never reach the game picture under it. */
+.hud-rewindfx {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 200ms ease-out, visibility 0s linear 200ms;
+}
+.hud-rewindfx.is-on { opacity: 1; visibility: visible; transition: opacity 90ms ease-out; }
+.hud-rewindfx__wash { position: absolute; inset: 0; backdrop-filter: saturate(0.35) contrast(1.06); }
+.hud-rewindfx__tint {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 80% 75% at 50% 46%, color-mix(in srgb, var(--accent) 5%, transparent) 0%, color-mix(in srgb, var(--accent) 10%, transparent) 55%, color-mix(in srgb, var(--accent) 26%, transparent) 100%);
+}
+.hud-rewindfx__lines {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  bottom: 0;
+  background: repeating-linear-gradient(to bottom, transparent 0 2px, color-mix(in srgb, var(--panel-solid) 38%, transparent) 2px 4px);
+}
+.hud-rewindfx__band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 7%;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 12%, transparent) 40%, color-mix(in srgb, var(--text) 9%, transparent) 55%, transparent);
+}
+/* the motion exists only while rewind is held: nothing loops on screen the rest of the time */
+.hud-rewindfx.is-on .hud-rewindfx__lines { animation: rewind-lines 0.45s linear infinite; }
+.hud-rewindfx.is-on .hud-rewindfx__band { animation: rewind-band 1.3s linear infinite; }
+.hud-rewindfx.is-on .hud-rewindtag__icon { animation: rewind-blink 0.8s steps(2, jump-none) infinite; }
+@keyframes rewind-lines { from { transform: translateY(0); } to { transform: translateY(4px); } }
+@keyframes rewind-band { from { transform: translateY(1450%); } to { transform: translateY(-100%); } }
+
+/* the REWIND tag, top centre (the one time the HUD may sit over the road: you aren't driving) */
+.hud-rewindtag {
+  position: absolute;
+  left: 50%;
+  top: 11%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0.4em 1.2em 0.45em 1em;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--hud-glass);
+  box-shadow: 0 0 1.6em color-mix(in srgb, var(--accent) 28%, transparent);
+  text-shadow: var(--legible);
+  white-space: nowrap;
+}
+.hud-rewindtag__icon { width: 1.9em; height: 1.1em; fill: var(--accent); filter: drop-shadow(0 0 0.3em var(--accent)); }
+@keyframes rewind-blink { from { opacity: 1; } to { opacity: 0.35; } }
+.hud-rewindtag__word { font-family: var(--font-display); font-size: 2em; font-weight: 800; letter-spacing: 0.22em; text-transform: uppercase; color: var(--accent); }
+.hud-rewindtag__left { font-family: var(--font-display); font-size: 1.3em; font-weight: 600; min-width: 3.4em; text-align: right; color: var(--text); }
+
+/* "Rewind is off in multiplayer", while it's held */
+.hud-rewindno {
+  position: absolute;
+  left: 50%;
+  top: 11%;
+  transform: translate(-50%, -0.4em);
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.45em 1.2em;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  background: var(--hud-glass);
+  backdrop-filter: blur(10px);
+  color: var(--warn);
+  font-family: var(--font-display);
+  font-size: 1.15em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow: var(--legible);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 180ms ease-out, transform 180ms var(--ease);
+}
+.hud-rewindno.is-on { opacity: 1; transform: translate(-50%, 0); }
+.hud-rewindno__icon { width: 1.3em; height: 0.75em; fill: currentColor; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-rewindfx.is-on .hud-rewindfx__lines,
+  .hud-rewindfx.is-on .hud-rewindfx__band,
+  .hud-rewindfx.is-on .hud-rewindtag__icon { animation: none; }
+}
+
 .glyph--stick {
   width: 1.75em;
   border-radius: 50%;

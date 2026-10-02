@@ -19,7 +19,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
-import { telemetry, getCar } from '../core/telemetry'
+import { telemetry, getCar, rewind } from '../core/telemetry'
 import { getGame, useGame } from '../core/store'
 import { emit } from '../core/events'
 import { fx } from '../core/api'
@@ -253,9 +253,10 @@ function CoreField({ track }: { track: TrackRuntime }) {
     res.beamMat.uniforms.uTime.value = st.time
     const time = st.time
 
-    // pickup test: the core's distance to the player's car box (only while driving)
+    // pickup test: the core's distance to the player's car box (only while driving, never while
+    // rewinding: a core you passed on the way stays where it is)
     const player = getCar('player')
-    const canPick = getGame().phase === 'playing' && !!player
+    const canPick = getGame().phase === 'playing' && !!player && !rewind.active
     if (canPick) _invQ.copy(telemetry.carQuaternion).invert()
     const hw = player ? carHalfWidth(player) : 1
     const hl = player ? carHalfLength(player) : 2.2

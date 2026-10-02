@@ -131,6 +131,7 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
     { kind: 'slider', key: 'boostStrength', label: 'Boost strength', help: 'How hard the boost pads kick. 2 is silly.', format: (v) => `${v.toFixed(1)}x` },
     { kind: 'slider', key: 'smashKmh', label: 'Smash speed', help: 'Hit roadside stuff faster than this and it smashes. Slower, it is solid.', format: kmh },
     { kind: 'slider', key: 'magGripKmh', label: 'Magnet speed', help: 'On loops and wall rides you stick above this speed. Below it you fall off.', format: kmh },
+    { kind: 'slider', key: 'rewindSeconds', label: 'Rewind', help: 'Hold Backspace (or LB) to run time backwards. This is how many seconds back it can go.', format: (v) => `${Math.round(v)} s` },
   ],
   multiplayer: [
     { kind: 'toggle', key: 'multiplayerRam', label: 'Ramming', help: 'On: you can shove each other. Off: cars pass through like ghosts.' },

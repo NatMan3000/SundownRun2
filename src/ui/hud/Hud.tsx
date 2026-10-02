@@ -9,6 +9,9 @@
 //    bottom-left   the trick feed and trick score
 //    bottom-right  speed trap readout, speed, gear, rpm arc, boost glow
 //    top-centre    short toasts (best lap, lap void, player joined)
+//    rewind        a meter under the speed (how much is stored), and
+//                  while it's held the whole view tints with a
+//                  REWIND tag (Rewind.tsx)
 //  The 3-2-1-GO countdown is the one thing allowed in the middle,
 //  and only while the cars are still on the grid.
 //
@@ -24,7 +27,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { useGame, getGame } from '../../core/store'
 import { useSettings } from '../../core/settings'
-import { cars, getCar, telemetry } from '../../core/telemetry'
+import { cars, getCar, rewind, telemetry } from '../../core/telemetry'
 import type { CarState } from '../../core/telemetry'
 import { frameStats } from '../../core/perf'
 import { getTrack } from '../../track/current'
@@ -35,6 +38,8 @@ import { getRaceOrder } from '../../net'
 import { SoundHint } from '../SoundHint'
 import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
+import { RewindMeter, RewindRefused, RewindScreen, resetRewindShown, writeRewind } from './Rewind'
+import { useFeed } from './feed'
 
 /** Text writes per second for numbers. The eye can't read a 60 Hz speedo anyway. */
 const TEXT_MS = 1000 / 20
@@ -69,6 +74,7 @@ function LapPanel() {
   const sectors = useGame((s) => s.sectorCount)
   const passed = useGame((s) => s.sectorsPassed)
   const armed = useGame((s) => s.lapStartedAt > 0)
+  const rewound = useFeed((s) => s.dirtyWhy) === 'rewind'
   const ticks: number[] = []
   for (let i = 0; i < sectors; i++) ticks.push(i)
   return (
@@ -76,7 +82,7 @@ function LapPanel() {
       <div className="hud-lap__top">
         <span className="hud-label">Lap {lapCount + 1}</span>
         <span className={`hud-tag${dirty ? ' is-on' : ''}`} aria-hidden={!dirty}>
-          Off road
+          {rewound ? 'Rewound' : 'Off road'}
         </span>
       </div>
       <div className={`hud-lap__clock${dirty ? ' is-dirty' : ''}${armed ? '' : ' is-idle'}`} data-hud="clock">
@@ -194,11 +200,17 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
       tagMine: null as HTMLElement | null,
       countdown: null as HTMLElement | null,
       raceLap: null as HTMLElement | null,
+      rewindFx: null as HTMLElement | null,
+      rewindLeft: null as HTMLElement | null,
+      rewindFill: null as HTMLElement | null,
+      rewindSecs: null as HTMLElement | null,
+      rewindNo: null as HTMLElement | null,
     }
     // Panels come and go with the mode and settings; look the nodes up again after a render.
     let seenLayout = -1
     const find = () => {
       seenLayout = layout.v
+      resetRewindShown()
       for (const k of Object.keys(refs) as (keyof typeof refs)[]) (refs as Record<string, Element | null>)[k] = q(k)
     }
 
@@ -260,6 +272,9 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
         refs.cluster.style.setProperty('--boost', BOOST_STR[boost])
       }
 
+      // Rewind: the screen tint, the REWIND tag and the stored meter (numbers at the text rate).
+      writeRewind(refs, now - lastText >= TEXT_MS)
+
       // 3 - 2 - 1 - GO (race and stunt both use raceGoAt): every frame, so the
       // numbers land on the beat. Visual only: audio plays the beeps from the
       // race.countdown event.
@@ -295,7 +310,8 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
           lastGear = gear
           refs.gear.textContent = gear < 0 ? 'R' : num(gear)
         }
-        const lapMs = g.lapStartedAt > 0 ? now - g.lapStartedAt : 0
+        // While rewinding, the clock shows the lap time of the moment on screen (it runs back).
+        const lapMs = rewind.active ? Math.max(0, rewind.lapMs) : g.lapStartedAt > 0 ? now - g.lapStartedAt : 0
         // Only the shown digits matter: compare whole milliseconds.
         const shown = Math.floor(lapMs)
         if (refs.clock && shown !== lastClockMs) {
@@ -397,6 +413,7 @@ export function Hud() {
   const visible = phase === 'playing'
   return (
     <div ref={root} className={`hud${visible ? ' is-visible' : ''}${mp && phase === 'paused' ? ' is-behind-menu' : ''}`} aria-hidden={!visible}>
+      <RewindScreen />
       <div className="hud-stack hud-stack--tl">
         {showFps && <FpsMeter />}
         {panels.race && <RacePanel />}
@@ -414,8 +431,10 @@ export function Hud() {
       <div className="hud-stack hud-stack--br">
         <SpeedTrap />
         <SpeedCluster />
+        <RewindMeter />
       </div>
       <Toasts />
+      <RewindRefused />
       <Countdown />
       {visible && <DriveHint />}
       {visible && <AirTrickHint />}

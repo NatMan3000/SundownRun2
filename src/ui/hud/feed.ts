@@ -53,9 +53,14 @@ interface FeedState {
   toasts: Toast[]
   pops: TrickPop[]
   trap: TrapReadout | null
+  /** Why the lap in progress went dirty: too long off the road, or you rewound in it. */
+  dirtyWhy: 'offroad' | 'rewind'
 }
 
-export const useFeed = create<FeedState>(() => ({ toasts: [], pops: [], trap: null }))
+export const useFeed = create<FeedState>(() => ({ toasts: [], pops: [], trap: null, dirtyWhy: 'offroad' }))
+
+/** When the last rewind ended (event time): a lap that goes dirty in the same moment went dirty because of it. */
+let rewindEndedAt = -1
 
 const TOAST_MS = 2600
 const POP_MS = 2400
@@ -105,20 +110,33 @@ function onEvent(e: AnyGameEvent): void {
   const g = getGame()
   if (g.phase !== 'playing' && !(g.multiplayer && g.phase === 'paused')) return
   switch (e.type) {
-    case 'lap.complete':
+    case 'lap.complete': {
+      const rewound = useFeed.getState().dirtyWhy === 'rewind'
       if (e.best && !e.dirty) {
         pushToast(`Best lap ${formatLap(e.ms)}`, 'gold', e.previousBestMs !== null ? `${((e.previousBestMs - e.ms) / 1000).toFixed(3)} s faster` : 'New record')
       } else if (e.dirty) {
-        pushToast(`Lap ${e.lap} ${formatLap(e.ms)}`, 'warn', 'Off road too long, so it can\'t be a record')
+        pushToast(`Lap ${e.lap} ${formatLap(e.ms)}`, 'warn', rewound ? 'You rewound in this lap, so it can\'t be a record' : 'Off road too long, so it can\'t be a record')
       } else if (g.mode !== 'race') {
         pushToast(`Lap ${e.lap} ${formatLap(e.ms)}`, 'info')
       }
+      if (rewound) useFeed.setState({ dirtyWhy: 'offroad' })
       return
+    }
     case 'lap.void':
       if (e.reason !== 'restart') pushToast('Lap void', 'warn', VOID_WHY[e.reason])
+      if (useFeed.getState().dirtyWhy !== 'offroad') useFeed.setState({ dirtyWhy: 'offroad' })
       return
     case 'lap.dirty':
-      pushToast('Off road', 'warn', 'This lap still counts, but it can\'t set a record')
+      if (e.t - rewindEndedAt < 1) {
+        useFeed.setState({ dirtyWhy: 'rewind' })
+        pushToast('Rewound', 'warn', 'This lap still counts, but it can\'t set a record')
+      } else {
+        if (useFeed.getState().dirtyWhy !== 'offroad') useFeed.setState({ dirtyWhy: 'offroad' })
+        pushToast('Off road', 'warn', 'This lap still counts, but it can\'t set a record')
+      }
+      return
+    case 'rewind.end':
+      rewindEndedAt = e.t
       return
     case 'trick.land': {
       if (!getSettings().tricks || e.tricks.length === 0) return

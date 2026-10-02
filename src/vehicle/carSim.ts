@@ -98,6 +98,7 @@ const _rv = { x: 0, y: 0, z: 0 }
 const _rp = { x: 0, y: 0, z: 0 }
 const _rq = { x: 0, y: 0, z: 0, w: 1 }
 const WORLD_UP = new THREE.Vector3(0, 1, 0)
+const _zero = new THREE.Vector3()
 /** Landing catch (stepLandingCatch): ground normal, pitch + roll spin, axle plane point / normal, a body corner. */
 const _lcN = new THREE.Vector3()
 const _lcW = new THREE.Vector3()
@@ -145,6 +146,52 @@ function manifoldTouches(m: Manifold): boolean {
 const WHEELS = 4
 /** Numbers per CarSim.bodyLog record (dev). */
 export const BODY_LOG_FIELDS = 16
+
+// ---- rewind snapshots (saveRewindState / saveRewindPose / loadRewind) ----
+/** The pose part of a snapshot: position 3, rotation 4, velocity 3, spin 3. */
+const REWIND_POSE = 13
+/** Boost pads whose cooldown a snapshot keeps: more than any track has (the rest come back ready). */
+const REWIND_PADS = 24
+/** The sim's own memory after the pose (counted in saveRewindState; a mismatch is reported once). */
+const REWIND_STATE = 116 + 1 + REWIND_PADS
+/** Surface kinds as numbers, for the snapshot. */
+const SURFACE_KINDS: readonly SurfaceKind[] = ['road', 'loop', 'wall', 'ramp', 'barrier', 'skirt', 'terrain', 'floor']
+function surfaceIndex(s: SurfaceKind): number {
+  const i = SURFACE_KINDS.indexOf(s)
+  return i < 0 ? 6 : i
+}
+function surfaceAt(code: number): SurfaceKind {
+  return SURFACE_KINDS[code | 0] ?? 'terrain'
+}
+/** A saved number back out, or `fallback` if it is not a real number. */
+function finiteOr(v: number, fallback: number): number {
+  return Number.isFinite(v) ? v : fallback
+}
+/**
+ * Where saveRewindState / loadRewind are in the snapshot. One shared cursor (cars save and load
+ * one after another, never at once), so walking a snapshot allocates nothing.
+ */
+let _ro = 0
+function putV(out: Float64Array, v: THREE.Vector3): void {
+  out[_ro++] = v.x
+  out[_ro++] = v.y
+  out[_ro++] = v.z
+}
+function take(src: Float64Array, fallback: number): number {
+  return finiteOr(src[_ro++], fallback)
+}
+function takeB(src: Float64Array): boolean {
+  return src[_ro++] === 1
+}
+/** Read a saved vector into v; a broken one becomes `fallback` instead. */
+function takeV(src: Float64Array, v: THREE.Vector3, fallback: THREE.Vector3): void {
+  const x = src[_ro]
+  const y = src[_ro + 1]
+  const z = src[_ro + 2]
+  _ro += 3
+  if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) v.set(x, y, z)
+  else v.copy(fallback)
+}
 /** Mount points, chassis-local: FL, FR, RL, RR (+X is the car's left). */
 const ANCHORS: readonly THREE.Vector3[] = [
   new THREE.Vector3(WHEEL.halfTrack, WHEEL.anchorY, WHEEL.halfBase),
@@ -530,6 +577,8 @@ export class CarSim {
   /** Dev: the wall ride this step as [angle deg, lip deg, press m/s^2, guard m/s^2, clear m, up-wall m/s]. */
   readonly debugWall = new Float32Array(6)
   private nanReported = false
+  /** The rewind snapshot size check has complained once (saveRewindState). */
+  private rewindSizeReported = false
   private pendingReset: ResetKind | null = null
   private pendingReason = ''
   private pendingTeleport = false
@@ -580,6 +629,307 @@ export class CarSim {
     const moved = this.reseats.moved
     this.reseat(body, old, track)
     return this.reseats.moved > moved
+  }
+
+  // ------------------------------------------------------------ rewind (src/vehicle/rewind.ts)
+
+  /** Numbers in one rewind snapshot of this car: the body's pose and motion, then the sim's memory. */
+  static readonly REWIND_FLOATS = REWIND_POSE + REWIND_STATE
+
+  /**
+   * Rewind, part 1 of a snapshot: everything the sim REMEMBERS from one step to the next, the
+   * things that change how the next step behaves (the gearbox, the wheels, boost and pad
+   * cooldowns, the magnet, the wall and loop state, the hold, every timer). Saved just before
+   * step(); part 2 (saveRewindPose) is saved just after it. Both describe the same moment: the
+   * start of this step. Order matters: loadRewind reads them back in exactly this order.
+   */
+  saveRewindState(out: Float64Array, at: number): void {
+    _ro = at + REWIND_POSE
+    putV(out, this.prevLinvel)
+    putV(out, this.turnDv)
+    out[_ro++] = this.speed
+    out[_ro++] = this.speedKmh
+    out[_ro++] = this.forwardSpeed
+    out[_ro++] = this.driftAngle
+    out[_ro++] = this.upright
+    out[_ro++] = this.rpm
+    out[_ro++] = this.gear
+    out[_ro++] = this.reversing ? 1 : 0
+    out[_ro++] = this.shiftTimer
+    out[_ro++] = this.rpmKmh
+    out[_ro++] = this.slip
+    out[_ro++] = this.drifting ? 1 : 0
+    out[_ro++] = this.airborne ? 1 : 0
+    out[_ro++] = this.airTime
+    out[_ro++] = this.sinceAir
+    out[_ro++] = this.wheelsDown
+    out[_ro++] = surfaceIndex(this.surface)
+    out[_ro++] = this.onRoad ? 1 : 0
+    out[_ro++] = this.magGrip ? 1 : 0
+    out[_ro++] = this.magStrength
+    out[_ro++] = surfaceIndex(this.magSurface)
+    out[_ro++] = this.magLevel
+    out[_ro++] = this.magGrace
+    putV(out, this.magNormal)
+    out[_ro++] = this.boost
+    out[_ro++] = this.boostAge
+    out[_ro++] = this.boostPower
+    out[_ro++] = this.impact
+    out[_ro++] = this.crashCooldown
+    out[_ro++] = this.settleSteps
+    out[_ro++] = this.trackS
+    out[_ro++] = this.lateral
+    out[_ro++] = this.hasTrackS ? 1 : 0
+    out[_ro++] = this.latAccel
+    out[_ro++] = this.longAccel
+    out[_ro++] = this.brakeLight
+    out[_ro++] = this.steerAngle
+    out[_ro++] = this.chassisTouching ? 1 : 0
+    out[_ro++] = this.chassisSupportUp
+    out[_ro++] = this.beached ? 1 : 0
+    out[_ro++] = this.loopSlide ? 1 : 0
+    putV(out, this.surfaceUp)
+    putV(out, this.groundNormal)
+    out[_ro++] = this.barrierTimer
+    out[_ro++] = this.barrierTouch ? 1 : 0
+    out[_ro++] = this.barrierScrub
+    out[_ro++] = this.steps
+    out[_ro++] = this.uprightTimer
+    out[_ro++] = this.buriedTimer
+    out[_ro++] = this.wallGuard
+    out[_ro++] = this.wallLevelTimer
+    out[_ro++] = this.wallSlideAccel
+    out[_ro++] = this.wallOn ? 1 : 0
+    out[_ro++] = this.wallR
+    out[_ro++] = this.wallPhi
+    out[_ro++] = this.wallPhiMax
+    out[_ro++] = this.wallInto
+    out[_ro++] = this.wallLen
+    out[_ro++] = this.loopAccel
+    out[_ro++] = this.wallAccel
+    out[_ro++] = this.holding ? 1 : 0
+    out[_ro++] = this.parked ? 1 : 0
+    out[_ro++] = this.launch
+    out[_ro++] = this.rollbackBrake
+    out[_ro++] = this.brakePressure
+    out[_ro++] = this.brakeFront
+    const h = this.hit
+    out[_ro++] = h.s
+    out[_ro++] = h.index
+    out[_ro++] = h.lateral
+    out[_ro++] = h.height
+    out[_ro++] = h.distance
+    out[_ro++] = h.onRoad ? 1 : 0
+    for (let i = 0; i < WHEELS; i++) {
+      out[_ro++] = this.wheelContact[i] ? 1 : 0
+      out[_ro++] = surfaceIndex(this.wheelSurface[i])
+      out[_ro++] = this.wheelCompression[i]
+      out[_ro++] = this.wheelHubY[i]
+      out[_ro++] = this.wheelSpin[i]
+      out[_ro++] = this.wheelSlip[i]
+      out[_ro++] = this.prevToi[i]
+      out[_ro++] = this.wheelOmega[i]
+    }
+    const pads = Math.min(this.boostCooldown.length, REWIND_PADS)
+    out[_ro++] = this.boostCooldown.length
+    for (let z = 0; z < REWIND_PADS; z++) out[_ro++] = z < pads ? this.boostCooldown[z] : 0
+    if (_ro !== at + CarSim.REWIND_FLOATS && !this.rewindSizeReported) {
+      this.rewindSizeReported = true
+      console.error(`[vehicle] rewind snapshot wrote ${_ro - at} numbers, expected ${CarSim.REWIND_FLOATS}: saveRewindState and REWIND_STATE disagree`)
+    }
+  }
+
+  /**
+   * Rewind, part 2 of a snapshot: the body's pose and motion at the start of this step. Saved
+   * just after step(), from pos / quat / linvel / angvel, which step() reads from the body first
+   * thing and never changes afterwards (so no rapier getter is called, nothing is allocated).
+   */
+  saveRewindPose(out: Float64Array, at: number): void {
+    out[at] = this.pos.x
+    out[at + 1] = this.pos.y
+    out[at + 2] = this.pos.z
+    out[at + 3] = this.quat.x
+    out[at + 4] = this.quat.y
+    out[at + 5] = this.quat.z
+    out[at + 6] = this.quat.w
+    out[at + 7] = this.linvel.x
+    out[at + 8] = this.linvel.y
+    out[at + 9] = this.linvel.z
+    out[at + 10] = this.angvel.x
+    out[at + 11] = this.angvel.y
+    out[at + 12] = this.angvel.z
+  }
+
+  /**
+   * Put the car back to a saved moment. While rewinding (`resume` false) the body is placed
+   * there and held still, and everything the car LOOKS like comes back (wheels, steering, body
+   * roll, brake lights, the gauges). On letting go (`resume` true) the body gets its motion back
+   * too and anything queued is dropped, so the next step() carries on exactly from that moment.
+   * The NaN firewall: every number that reaches rapier is checked first; a bad snapshot is
+   * refused (false) and nothing is touched.
+   */
+  loadRewind(src: Float64Array, at: number, body: RapierRigidBody, chassis: RapierCollider | null, resume: boolean): boolean {
+    for (let i = 0; i < REWIND_POSE; i++) {
+      if (!Number.isFinite(src[at + i])) {
+        this.reportNaN('rewind snapshot')
+        return false
+      }
+    }
+    _qNew.set(src[at + 3], src[at + 4], src[at + 5], src[at + 6])
+    if (_qNew.lengthSq() < 0.25) {
+      this.reportNaN('rewind snapshot rotation')
+      return false
+    }
+    _qNew.normalize()
+    this.pos.set(src[at], src[at + 1], src[at + 2])
+    this.quat.copy(_qNew)
+    this.linvel.set(src[at + 7], src[at + 8], src[at + 9])
+    this.angvel.set(src[at + 10], src[at + 11], src[at + 12])
+    this.fwd.set(0, 0, 1).applyQuaternion(this.quat)
+    this.up.set(0, 1, 0).applyQuaternion(this.quat)
+    this.right.set(-1, 0, 0).applyQuaternion(this.quat)
+    _rp.x = this.pos.x
+    _rp.y = this.pos.y
+    _rp.z = this.pos.z
+    body.setTranslation(_rp, true)
+    _rq.x = this.quat.x
+    _rq.y = this.quat.y
+    _rq.z = this.quat.z
+    _rq.w = this.quat.w
+    body.setRotation(_rq, true)
+    _rq.x = 0
+    _rq.y = 0
+    _rq.z = 0
+    _rq.w = 1
+    _rv.x = resume ? this.linvel.x : 0
+    _rv.y = resume ? this.linvel.y : 0
+    _rv.z = resume ? this.linvel.z : 0
+    body.setLinvel(_rv, true)
+    _rv.x = resume ? this.angvel.x : 0
+    _rv.y = resume ? this.angvel.y : 0
+    _rv.z = resume ? this.angvel.z : 0
+    body.setAngvel(_rv, true)
+    // rapier keeps added forces until they are reset: none of the last step's may carry over.
+    body.resetForces(true)
+    body.resetTorques(true)
+
+    _ro = at + REWIND_POSE
+    takeV(src, this.prevLinvel, this.linvel)
+    takeV(src, this.turnDv, _zero)
+    this.speed = take(src, this.linvel.length())
+    this.speedKmh = take(src, this.speed * 3.6)
+    this.forwardSpeed = take(src, 0)
+    this.driftAngle = take(src, 0)
+    this.upright = take(src, this.up.y)
+    this.rpm = take(src, RPM.idle)
+    this.gear = take(src, 1)
+    this.reversing = takeB(src)
+    this.shiftTimer = take(src, 0)
+    this.rpmKmh = take(src, 0)
+    this.slip = take(src, 0)
+    this.drifting = takeB(src)
+    this.airborne = takeB(src)
+    this.airTime = take(src, 0)
+    this.sinceAir = take(src, 99)
+    this.wheelsDown = take(src, 0)
+    this.surface = surfaceAt(src[_ro++])
+    this.onRoad = takeB(src)
+    this.magGrip = takeB(src)
+    this.magStrength = take(src, 0)
+    this.magSurface = surfaceAt(src[_ro++])
+    this.magLevel = take(src, 0)
+    this.magGrace = take(src, 0)
+    takeV(src, this.magNormal, WORLD_UP)
+    this.boost = take(src, 0)
+    this.boostAge = take(src, 99)
+    this.boostPower = take(src, 0)
+    this.impact = take(src, 0)
+    this.crashCooldown = take(src, 0)
+    this.settleSteps = take(src, 2)
+    this.trackS = take(src, this.trackS)
+    this.lateral = take(src, 0)
+    this.hasTrackS = takeB(src)
+    this.latAccel = take(src, 0)
+    this.longAccel = take(src, 0)
+    this.brakeLight = take(src, 0)
+    this.steerAngle = take(src, 0)
+    this.chassisTouching = takeB(src)
+    this.chassisSupportUp = take(src, 1)
+    const beached = takeB(src)
+    this.loopSlide = takeB(src)
+    takeV(src, this.surfaceUp, WORLD_UP)
+    takeV(src, this.groundNormal, WORLD_UP)
+    this.barrierTimer = take(src, 0)
+    this.barrierTouch = takeB(src)
+    this.barrierScrub = take(src, 0)
+    this.steps = take(src, 0)
+    this.uprightTimer = take(src, 0)
+    this.buriedTimer = take(src, 0)
+    this.wallGuard = take(src, 0)
+    this.wallLevelTimer = take(src, 0)
+    this.wallSlideAccel = take(src, 0)
+    this.wallOn = takeB(src)
+    this.wallR = take(src, 9)
+    this.wallPhi = take(src, 0)
+    this.wallPhiMax = take(src, 0)
+    this.wallInto = take(src, 0)
+    this.wallLen = take(src, 0)
+    this.loopAccel = take(src, 0)
+    this.wallAccel = take(src, 0)
+    this.holding = takeB(src)
+    this.parked = takeB(src)
+    this.launch = take(src, 0)
+    this.rollbackBrake = take(src, 0)
+    this.brakePressure = take(src, 0)
+    this.brakeFront = take(src, DRIVE.brakeFrontBias)
+    const h = this.hit
+    h.s = take(src, this.trackS)
+    h.index = take(src, 0) | 0
+    h.lateral = take(src, 0)
+    h.height = take(src, 0)
+    h.distance = take(src, 0)
+    h.onRoad = takeB(src)
+    for (let i = 0; i < WHEELS; i++) {
+      this.wheelContact[i] = takeB(src)
+      this.wheelSurface[i] = surfaceAt(src[_ro++])
+      this.wheelCompression[i] = take(src, 0)
+      this.wheelHubY[i] = take(src, this.wheelHubY[i])
+      this.wheelSpin[i] = take(src, 0)
+      this.wheelSlip[i] = take(src, 0)
+      this.prevToi[i] = take(src, -1)
+      this.wheelOmega[i] = take(src, 0)
+    }
+    // Pad cooldowns: only if this track has the same pads as when they were saved.
+    if (src[_ro] === this.boostCooldown.length) {
+      const pads = Math.min(this.boostCooldown.length, REWIND_PADS)
+      for (let z = 0; z < pads; z++) this.boostCooldown[z] = finiteOr(src[_ro + 1 + z], 0)
+    }
+
+    // One-shot news from the step being left behind must not be announced again.
+    const news = this.news
+    news.boosted = 0
+    news.magOn = null
+    news.magOff = null
+    news.magFell = false
+    news.crash = 0
+    news.crashCarId = null
+    news.reset = null
+    news.teleported = false
+    if (resume) {
+      // Anything queued belonged to the moment we left (an auto-reset for a fall that has now
+      // not happened): the restored moment decides for itself.
+      this.pendingReset = null
+      this.pendingReason = ''
+      this.pendingTeleport = false
+      this.pendingSpeed = -1
+      // Beached changes how the body's friction combines: setBeached sets the rule to match
+      // (told it was the other way, so it always writes the rule).
+      this.beached = !beached
+      this.setBeached(chassis, beached)
+    } else {
+      this.beached = beached
+    }
+    return true
   }
 
   // ------------------------------------------------------------ the step

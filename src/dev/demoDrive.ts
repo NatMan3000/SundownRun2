@@ -27,7 +27,9 @@ import type { Driver } from '../core/api'
 import type { CarState } from '../core/telemetry'
 import { createAiDriver } from '../play/aiDriver'
 import type { CarSim } from '../vehicle/carSim'
+import { addRewindPart } from '../vehicle/rewind'
 import { DT } from '../vehicle/tuning'
+import { registerDev } from '../core/devHandles'
 
 const WARMUP_STEPS = 180 // 3 s
 const RECORD_SECONDS = 30
@@ -42,6 +44,8 @@ export const demoDrive = {
   unsticks: 0,
   brain: null as Driver | null,
   brainTrack: '',
+  /** Leaves the rewind recorder (the brain goes back in time with the car it drives). */
+  rewindOff: null as (() => void) | null,
 
   /** Once per physics step while the demo runs: writes driveOverride. */
   update(sim: CarSim, track: TrackRuntime, car: CarState): void {
@@ -53,8 +57,11 @@ export const demoDrive = {
     }
     // One brain per demo session and track.
     if (!this.brain || this.brainTrack !== track.key) {
-      this.brain = createAiDriver({ id: 'player', difficulty: 1, catchUp: false })
+      const brain = createAiDriver({ id: 'player', difficulty: 1, catchUp: false })
+      this.brain = brain
       this.brainTrack = track.key
+      this.rewindOff?.()
+      this.rewindOff = addRewindPart({ size: brain.REWIND_SIZE, save: (out, at) => brain.saveRewind(out, at), load: (src, at) => brain.loadRewind(src, at) })
     }
     // Backstop: the brain recovers on its own; this only catches a car stuck for good.
     if (!sim.frozen && sim.speed < STUCK_SPEED && this.steps > WARMUP_STEPS) this.stuckSteps++
@@ -73,3 +80,14 @@ export const demoDrive = {
     sim.controls.powerScale = b.powerScale ?? 1
   },
 }
+
+/** Tests: hand the car back to the keys and pad mid-run (or give it to the autopilot again). */
+registerDev(
+  'demoDrive',
+  ((on = true) => {
+    demoDrive.active = on !== false
+    if (!demoDrive.active) driveOverride.active = false
+    return demoDrive.active
+  }) as never,
+  'demoDrive(on = true): switch the ?demo=1 autopilot on or off mid-run (off = the keys and pad drive again)',
+)

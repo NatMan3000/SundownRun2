@@ -17,6 +17,7 @@
 //    SimCar.tsx       an Ai car's brain: a Driver from the play worker
 //    SimulatedCar.tsx a physics car in the scene (shared by both)
 //    lapTracker.ts    laps, sectors, dirty laps
+//    rewind.ts        hold Backspace / LB: every car goes back in time
 //    tricks.ts        air, spins, flips, rolls, loops, wall rides, drifts
 //    ghost.ts         best-lap recording; GhostCar.tsx replays it
 //    bodies/          the five car shapes; carModel.ts draws them
@@ -25,7 +26,7 @@
 
 import { useEffect } from 'react'
 import { addEffect } from '@react-three/fiber'
-import { useRapier } from '@react-three/rapier'
+import { useAfterPhysicsStep, useRapier } from '@react-three/rapier'
 import * as THREE from 'three'
 import { installVehicle } from '../core/api'
 import { registerDev, registerInspector } from '../core/devHandles'
@@ -44,12 +45,15 @@ import { cameraState } from './camera/CameraRig'
 import { GhostCar } from './GhostCar'
 import { links } from './links'
 import { PlayerCar } from './PlayerCar'
+import { rewindAfterStep, rewindDebug, rewindFrames, rewindHoldFor, rewindPeek, rewindPoison } from './rewind'
 import { BODY_LOG_FIELDS } from './carSim'
 import { trickState, wipeoutLog } from './tricks'
 import { frameAt, quatFromFrame, RIDE_HEIGHT } from './trackNav'
 
 export { CameraRig } from './camera/CameraRig'
 export { SimCar } from './SimCar'
+export { addRewindPart } from './rewind'
+export type { RewindPart } from './rewind'
 
 // The garage catalog is plain data + a model builder: install it straight away,
 // so the title screen can list the cars before any track or physics exists.
@@ -81,6 +85,8 @@ const _e = new THREE.Euler()
 /** Everything vehicle that lives inside <Physics>. */
 export function VehicleLayer() {
   const { world, rapier } = useRapier()
+  // Rewind's clock: after every physics step, close this step's snapshot and decide the next step.
+  useAfterPhysicsStep(rewindAfterStep)
 
   useEffect(() => {
     links.world = world
@@ -206,6 +212,27 @@ export function VehicleLayer() {
         }) as never,
         "resetCar('road' | 'start'): same as R / Shift+R",
       ),
+      registerDev(
+        'rewind',
+        ((seconds = 3) => rewindHoldFor(Number(seconds))) as never,
+        'rewind(seconds = 3): hold rewind for this long, as if Backspace / LB were held, then let go',
+      ),
+      registerDev(
+        'rewindPeek',
+        ((seconds = 3, carId = 'player') => rewindPeek(String(carId), Number(seconds))) as never,
+        "rewindPeek(seconds = 3, carId = 'player'): where a car goes back to if rewind is held that long now (x y z, km/h, lap)",
+      ),
+      registerDev(
+        'rewindFrames',
+        ((carId = 'player', from = 0, to = 1e9) => rewindFrames(String(carId), Number(from), Number(to))) as never,
+        "rewindFrames(carId = 'player', from, to): a car's snapshots on the rewind tape (snapshot number, x y z, km/h, lap)",
+      ),
+      registerDev(
+        'rewindPoison',
+        ((carId = 'player') => rewindPoison(String(carId))) as never,
+        "rewindPoison(carId = 'player'): test the NaN firewall: every rewind snapshot of that car gets a NaN position",
+      ),
+      registerInspector('rewind', rewindDebug),
       registerInspector('vehicle', () => {
         const s = links.playerSim
         if (!s) return null

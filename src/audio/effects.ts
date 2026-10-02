@@ -12,6 +12,10 @@
 //
 //  Loudness guide (peak gain): menu ticks ~0.05, pickups ~0.2,
 //  big crashes up to ~0.6. The limiter in mixer.ts catches pile-ups.
+//
+//  Rewind (rewindStart / rewindStop) is low and short on purpose: a
+//  swoop, a reversed whoosh and a flutter that dies away, then a soft
+//  clunk on letting go. The mixer muffles the music while it is held.
 // ============================================================
 
 import type { AnyGameEvent } from '../core/events'
@@ -19,7 +23,7 @@ import { getCar } from '../core/telemetry'
 import { getGame } from '../core/store'
 import type { UiSound } from '../core/api'
 import { brightPentaMidi, musicKey } from './theory'
-import { clamp01, midiToHz, mulberry32 } from './synth'
+import { SILENT, clamp01, holdParam, midiToHz, mulberry32 } from './synth'
 import { bell, hasRoom, noiseHit, sweep, thump, tone } from './voices'
 import type { VoiceKit } from './voices'
 
@@ -28,6 +32,8 @@ export type DuckFn = (depth: number, holdS: number) => void
 
 /** A short gap on the audio clock between parts of one sound (seconds). */
 const LEAD_IN = 0.004
+/** How long the rewind's low flutter lasts before it has died away (seconds). */
+const REWIND_FLUTTER_S = 1.4
 
 export class Effects {
   /** How many times each sound has played since sound started (inspector: proves a sound fired). */
@@ -43,6 +49,8 @@ export class Effects {
   private countdownBus: GainNode | null = null
   /** The last aborted countdown's bus, kept only so the inspector can show it went silent. */
   private abortedBus: GainNode | null = null
+  /** The rewind flutter while it is still sounding (null when it isn't): its sources and its level. */
+  private rewindVoice: { noise: AudioBufferSourceNode; flutter: OscillatorNode; amp: GainNode; nodes: AudioNode[] } | null = null
 
   constructor(
     private readonly fx: VoiceKit,
@@ -251,10 +259,89 @@ export class Effects {
         sweep(k, 'triangle', 380, 1500, t, 0.28, 0.06, 0.02)
         noiseHit(k, t, 0.05, 'highpass', 2500, 0.8, 0.12, 0.2, 7000)
         break
+      case 'rewind.start':
+        this.rewindStart(k, t)
+        break
+      case 'rewind.end':
+        this.rewindStop(k, t)
+        break
       default:
         return
     }
     this.count(e.type)
+  }
+
+  // ================================================================ rewind
+
+  /**
+   * Time running backwards, kept low and short (no whine, no hiss): a low swoop gliding down as
+   * the "tape" reverses, a reversed whoosh that swells and cuts off, and a low fluttering rumble
+   * underneath that dies away within about a second and a half. A long hold is then carried by
+   * the muffled music and the engine replaying backwards (mixer.ts, system.ts).
+   */
+  private rewindStart(k: VoiceKit, t: number): void {
+    if (this.rewindVoice) this.stopRewindVoice(t)
+    // the reels reversing: a low glide, lowpassed so it is felt more than heard
+    sweep(k, 'triangle', 210, 68, t, 0.42, 0.11, 0.012, 380)
+    // a reversed whoosh: swells over a quarter second, then cuts, its filter closing as it goes
+    noiseHit(k, t, 0.045, 'lowpass', 1000, 0.7, 0.24, 0.12, 240)
+    // the low flutter under it: rumble below 300 Hz, wobbling 6 times a second, fading out
+    const ctx = k.ctx
+    const noise = ctx.createBufferSource()
+    noise.buffer = k.noise
+    noise.loop = true
+    const low = ctx.createBiquadFilter()
+    low.type = 'lowpass'
+    low.frequency.value = 300
+    low.Q.value = 0.8
+    const wobble = ctx.createGain()
+    wobble.gain.value = 0.6
+    const flutter = ctx.createOscillator()
+    flutter.frequency.value = 6
+    const depth = ctx.createGain()
+    depth.gain.value = 0.4 // wobble = 0.6 +- 0.4
+    flutter.connect(depth)
+    depth.connect(wobble.gain)
+    const amp = ctx.createGain()
+    amp.gain.setValueAtTime(SILENT, t)
+    amp.gain.exponentialRampToValueAtTime(0.09, t + 0.1)
+    amp.gain.exponentialRampToValueAtTime(SILENT, t + REWIND_FLUTTER_S)
+    noise.connect(low)
+    low.connect(wobble)
+    wobble.connect(amp)
+    amp.connect(k.out)
+    k.noiseCursor = (k.noiseCursor + 0.377) % 1.5
+    noise.start(t, k.noiseCursor)
+    flutter.start(t)
+    const end = t + REWIND_FLUTTER_S + 0.05
+    noise.stop(end)
+    flutter.stop(end)
+    const v = { noise, flutter, amp, nodes: [low, wobble, depth, amp] as AudioNode[] }
+    flutter.onended = () => {
+      noise.disconnect()
+      flutter.disconnect()
+      for (let i = 0; i < v.nodes.length; i++) v.nodes[i].disconnect()
+      if (this.rewindVoice === v) this.rewindVoice = null
+    }
+    this.rewindVoice = v
+  }
+
+  /** Cut the flutter short (a quick tap of rewind lets go before it has died away). */
+  private stopRewindVoice(t: number): void {
+    const v = this.rewindVoice
+    this.rewindVoice = null
+    if (!v) return
+    holdParam(v.amp.gain, t)
+    v.amp.gain.exponentialRampToValueAtTime(SILENT, t + 0.06)
+    v.noise.stop(t + 0.08)
+    v.flutter.stop(t + 0.08)
+  }
+
+  /** Let go: anything still fluttering stops, and the transport catches with a soft low clunk. */
+  private rewindStop(k: VoiceKit, t: number): void {
+    this.stopRewindVoice(t)
+    thump(k, t + 0.01, 0.15, 130, 58, 0.12)
+    noiseHit(k, t + 0.01, 0.035, 'lowpass', 520, 0.7, 0.002, 0.05)
   }
 
   /** The car came down from a jump. airS = seconds in the air. Driven by the telemetry edge, not an event. */

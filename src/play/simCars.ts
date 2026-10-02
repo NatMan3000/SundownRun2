@@ -19,13 +19,17 @@
 
 import type { RapierContext, RapierRigidBody } from '@react-three/rapier'
 import type { CarState } from '../core/telemetry'
+import { rewind } from '../core/telemetry'
 import { ownerOf } from '../core/physics'
 
 export type PhysicsWorld = RapierContext['world']
 
-/** True for cars this machine simulates (player and Ai racers). */
+/**
+ * True for cars this machine simulates (player and Ai racers). While rewind is held nothing is
+ * simulated (every car is sliding back along its own path), so no car knocks anything over.
+ */
 export function isLocalSimCar(c: CarState): boolean {
-  return c.kind === 'player' || c.kind === 'ai'
+  return !rewind.active && (c.kind === 'player' || c.kind === 'ai')
 }
 
 /** Physics steps since the last rendered frame (counted by <StepClock /> in index.tsx, reset per frame). */

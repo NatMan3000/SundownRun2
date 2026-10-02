@@ -213,6 +213,71 @@ export class TrickDetector {
     this.restingSteps = 0
   }
 
+  // ---------------------------------------------------------------- rewind (src/vehicle/rewind.ts)
+
+  /** Numbers in one rewind snapshot of the trick detector. */
+  static readonly REWIND_FLOATS = 21
+
+  /** Rewind: save the trick in progress (the air session, its spin so far, a wall ride, a drift, a loop). */
+  saveRewind(out: Float64Array, at: number): void {
+    out[at] = this.active ? 1 : 0
+    out[at + 1] = this.airSteps
+    out[at + 2] = this.airStarted ? 1 : 0
+    out[at + 3] = this.yaw
+    out[at + 4] = this.pitch
+    out[at + 5] = this.roll
+    out[at + 6] = this.pendingSteps
+    out[at + 7] = this.pendingAir
+    out[at + 8] = this.lastUp
+    out[at + 9] = this.links
+    out[at + 10] = this.wallSteps
+    out[at + 11] = this.wallOffSteps
+    // A wall ride carried into a jump is kept as its points (its seconds are points / WALL_PTS_PER_S).
+    out[at + 12] = this.wallCarry ? this.wallCarry.points : -1
+    out[at + 13] = this.driftSteps
+    out[at + 14] = this.driftGap
+    out[at + 15] = this.driftMaxAngle
+    out[at + 16] = this.loopIndex
+    out[at + 17] = this.quietSteps
+    out[at + 18] = this.quietSession ? 1 : 0
+    out[at + 19] = this.restingSteps
+    out[at + 20] = this.grounded ? 1 : 0
+  }
+
+  /**
+   * Rewind: carry on from a saved moment, mid-air included: land after letting go and the
+   * jump scores as one jump. Nothing is announced here; the HUD's combo count follows the
+   * next step. (Points already banked are put back by the rewind recorder, not here.)
+   */
+  loadRewind(src: Float64Array, at: number): void {
+    this.active = src[at] === 1
+    this.airSteps = src[at + 1] | 0
+    this.airStarted = src[at + 2] === 1
+    this.yaw = Number.isFinite(src[at + 3]) ? src[at + 3] : 0
+    this.pitch = Number.isFinite(src[at + 4]) ? src[at + 4] : 0
+    this.roll = Number.isFinite(src[at + 5]) ? src[at + 5] : 0
+    this.pendingSteps = src[at + 6] | 0
+    this.pendingAir = Number.isFinite(src[at + 7]) ? src[at + 7] : 0
+    this.lastUp = Number.isFinite(src[at + 8]) ? src[at + 8] : 1
+    this.links = src[at + 9] | 0
+    this.wallSteps = src[at + 10] | 0
+    this.wallOffSteps = src[at + 11] | 0
+    const carry = src[at + 12]
+    // Rare (a wall ride flowing into a jump), so building the trick here is fine.
+    this.wallCarry = carry >= 0 ? this.wallTrick(carry / WALL_PTS_PER_S) : null
+    this.driftSteps = src[at + 13] | 0
+    this.driftGap = src[at + 14] | 0
+    this.driftMaxAngle = Number.isFinite(src[at + 15]) ? src[at + 15] : 0
+    this.loopIndex = src[at + 16] | 0
+    this.quietSteps = src[at + 17] | 0
+    this.quietSession = src[at + 18] === 1
+    this.restingSteps = src[at + 19] | 0
+    this.grounded = src[at + 20] === 1
+    trickState.airborne = this.active
+    trickState.airSeconds = this.airSteps * DT
+    trickState.wallSeconds = this.wallSteps * DT
+  }
+
   /** Once per physics step. Ground: a handful of comparisons. Air: three dot products. */
   update(c: TrickInput, track: TrackRuntime | null, enabled: boolean): void {
     if (!enabled) {

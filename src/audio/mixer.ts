@@ -16,8 +16,11 @@
 //  carve dips the music's low-mids (where the engine's note lives)
 //  as the throttle opens, so the bass line never buries the engine.
 //  duck() pulls the music down under a big crash and lets it swell
-//  back, so the hit lands. The same mixer is built inside the
-//  offline renderer, so a render sounds like the game.
+//  back, so the hit lands. While rewind is held the music goes
+//  muffled and quieter, like a tape heard through the deck, and the
+//  engine steps back a little so the rewind whir is heard. The same
+//  mixer is built inside the offline renderer, so a render sounds
+//  like the game.
 // ============================================================
 
 import { Knob, SILENT, clamp01, holdParam } from './synth'
@@ -73,6 +76,11 @@ export interface Mix {
 
 /** How far the music's low-mids dip at full throttle (dB, negative). */
 const CARVE_DB = -5
+/** While rewinding: the music's level (0.5 = -6 dB) and its muffle (lowpass, Hz). */
+const REWIND_MUSIC = 0.5
+const REWIND_MUSIC_HZ = 1100
+/** While rewinding the engine steps back to this much of its level, so the rewind is heard (system.ts, render.ts). */
+export const REWIND_ENGINE_LEVEL = 0.6
 
 export function buildMix(ctx: BaseAudioContext): Mix {
   // Glue: a gentle compressor that holds the mix together.
@@ -183,14 +191,16 @@ export interface MixTargets {
   silent: boolean
   /** 0..1 how hard the engine is working (throttle): carves room for it in the music. */
   engineLoad: number
+  /** True while rewind is held: the music goes muffled and quieter. */
+  rewinding: boolean
 }
 
 /** Called every frame with where the faders should be. Cheap: Knob skips unchanged values. */
 export function updateMix(mix: Mix, m: MixTargets, t: number): void {
-  mix.knobs.musicVol.to(m.musicMuted ? 0 : sliderToGain(m.musicVolume) * MUSIC_LEVEL, t)
+  mix.knobs.musicVol.to(m.musicMuted ? 0 : sliderToGain(m.musicVolume) * MUSIC_LEVEL * (m.rewinding ? REWIND_MUSIC : 1), t)
   mix.knobs.sfxVol.to(sliderToGain(m.sfxVolume) * SFX_LEVEL, t)
   mix.knobs.engineVol.to(m.engineLevel, t)
-  mix.knobs.musicTone.to(m.paused ? 650 : 20000, t)
+  mix.knobs.musicTone.to(m.paused ? 650 : m.rewinding ? REWIND_MUSIC_HZ : 20000, t)
   mix.knobs.musicCarve.to(CARVE_DB * clamp01(m.engineLoad) * clamp01(m.engineLevel), t)
   mix.knobs.master.to(m.silent ? 0 : MASTER_LEVEL, t, m.silent ? 0.04 : 0.09)
 }

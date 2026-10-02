@@ -17,6 +17,10 @@
 //  spot on the road (s, lateral, speed) for the Ai overtaking logic.
 //
 //  A mutable singleton. No allocation while a race runs.
+//
+//  Rewind: the book goes back in time with the cars (saveRaceBook /
+//  loadRaceBook, registered by the mode controller), so a lap or a
+//  finish that happened in the rewound time happens again, once.
 // ============================================================
 
 import type { NearestHit, TrackRuntime } from '../track/types'
@@ -224,4 +228,57 @@ export function buildResults(now: number, goAt: number): RaceResult[] {
     bestLapMs: row.r.bestLapMs === null ? null : Math.round(row.r.bestLapMs),
     isPlayer: row.r.isPlayer,
   }))
+}
+
+// ---------------------------------------------------------------- rewind (src/vehicle/rewind.ts)
+
+/** Racers a rewind snapshot holds (you and five Ai), and the numbers kept for each. */
+const REWIND_RACERS = 6
+const RACER_FLOATS = 8
+/** Numbers in one rewind snapshot of the race book. */
+export const RACE_BOOK_REWIND_FLOATS = 1 + REWIND_RACERS * RACER_FLOATS
+
+/** Rewind: save each racer's laps, best lap, finish and spot on the road. */
+export function saveRaceBook(out: Float64Array, at: number): void {
+  const list = raceBook.racers
+  out[at] = list.length
+  for (let i = 0; i < REWIND_RACERS; i++) {
+    const o = at + 1 + i * RACER_FLOATS
+    const r = list[i]
+    if (!r) continue
+    out[o] = r.lapsDone
+    out[o + 1] = r.bestLapMs === null ? -1 : r.bestLapMs
+    out[o + 2] = r.finished ? 1 : 0
+    out[o + 3] = r.finishMs
+    out[o + 4] = r.s
+    out[o + 5] = r.lateral
+    out[o + 6] = r.dist
+    out[o + 7] = r.speed
+  }
+}
+
+/**
+ * Rewind: put the book back. A racer that crossed the line in the rewound time is racing
+ * again (its car's finish too), and its lap count and best lap go back with it.
+ */
+export function loadRaceBook(src: Float64Array, at: number): void {
+  const list = raceBook.racers
+  if (src[at] !== list.length) return // a different race: nothing to put back
+  for (let i = 0; i < list.length && i < REWIND_RACERS; i++) {
+    const o = at + 1 + i * RACER_FLOATS
+    const r = list[i]
+    if (Number.isFinite(src[o])) r.lapsDone = src[o]
+    r.bestLapMs = src[o + 1] >= 0 ? src[o + 1] : null
+    r.finished = src[o + 2] === 1
+    r.finishMs = Number.isFinite(src[o + 3]) ? src[o + 3] : 0
+    if (Number.isFinite(src[o + 4])) r.s = src[o + 4]
+    if (Number.isFinite(src[o + 5])) r.lateral = src[o + 5]
+    if (Number.isFinite(src[o + 6])) r.dist = src[o + 6]
+    if (Number.isFinite(src[o + 7])) r.speed = src[o + 7]
+    const car = getCar(r.id)
+    if (car) {
+      car.finished = r.finished
+      car.finishMs = r.finishMs
+    }
+  }
 }

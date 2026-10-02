@@ -34,7 +34,7 @@ import * as THREE from 'three'
 import { useFrame, useThree } from '@react-three/fiber'
 import { controlSignals } from '../../core/controls'
 import { urlParam, registerDev } from '../../core/devHandles'
-import { environment, getCar, telemetry } from '../../core/telemetry'
+import { environment, getCar, rewind, telemetry } from '../../core/telemetry'
 import { getSettings, useSettings } from '../../core/settings'
 import type { CameraMode } from '../../core/settings'
 import { getGame } from '../../core/store'
@@ -394,8 +394,10 @@ function rigTarget(rig: CameraRigSpec, mode: CameraMode, speed: number, outPos: 
 
   _dir.copy(_fwd)
   if (speed > 3 && !telemetry.airborne) {
-    // Swing toward where the car is GOING (never whip round when reversing).
+    // Swing toward where the car is GOING (never whip round when reversing). Rewinding, it is
+    // going backwards along its old path: swing toward the way it was going then.
     _vel.copy(telemetry.carVelocity).addScaledVector(_up, -telemetry.carVelocity.dot(_up))
+    if (rewind.active) _vel.negate()
     if (_vel.lengthSq() > 1e-4) {
       _vel.normalize()
       if (_vel.dot(_fwd) > 0) {
@@ -739,7 +741,9 @@ export function CameraRig() {
       // Airborne: the orbit keeps its own heading (a spinning car must not spin the world).
       if (telemetry.airborne && !followUp) {
         if (speed > 3) {
+          // Rewinding, the car moves backwards: follow the way it was going when it flew there.
           _vel.copy(telemetry.carVelocity)
+          if (rewind.active) _vel.negate()
           _vel.y = 0
           if (_vel.lengthSq() > 1e-4) _airFwd.lerp(_vel.normalize(), Math.min(1, dt * 1.2)).normalize()
         }
@@ -761,7 +765,11 @@ export function CameraRig() {
       lookSmooth = lerp(rigA.lookSmooth, rigB.lookSmooth, ease)
       shakeScale = lerp(rigA.shakeScale, rigB.shakeScale, ease)
       fovOffset = lerp(rigA.fovOffset, rigB.fovOffset, ease)
-      const lead = lerp(rigA.velocityLead, rigB.velocityLead, ease)
+      // Rewinding, the car moves backwards, so the springs' lag flips side: the chase camera
+      // would sit right on the car. Leading by (2 - lead) of the motion puts it exactly where it
+      // was when the car drove there (no jump when the rewind starts or ends).
+      const lead0 = lerp(rigA.velocityLead, rigB.velocityLead, ease)
+      const lead = rewind.active ? 2 - lead0 : lead0
       if (lead > 0.001) {
         // The discrete spring lags a moving target by v x (smooth - dt/2), not v x smooth, so lead
         // by that: a full v x smooth over-led the bonnet camera by half a frame of travel (0.46 m

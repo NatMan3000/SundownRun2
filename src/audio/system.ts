@@ -10,7 +10,8 @@
 //     works out the music's intensity, and moves the mixer faders
 //     (volumes, pause, title screen);
 //   - runs the music's lookahead timer (music/index.ts);
-//   - turns game events into sound effects;
+//   - turns game events into sound effects (rewind's whir included:
+//     rewind.start / rewind.end, with the music muffled while held);
 //   - fades out and parks the context when the tab is hidden;
 //   - closes everything on unmount and on a hot reload (Vite HMR
 //     would otherwise leave the old context playing underneath).
@@ -25,12 +26,12 @@
 
 import type { AnyGameEvent } from '../core/events'
 import { subscribe } from '../core/events'
-import { environment, telemetry } from '../core/telemetry'
+import { environment, rewind, telemetry } from '../core/telemetry'
 import { getGame } from '../core/store'
 import { getSettings } from '../core/settings'
 import type { UiSound } from '../core/api'
 import { urlParam } from '../core/devHandles'
-import { ENGINE_PHASE_LEVEL, buildMix, duck, readLevelDb, updateMix } from './mixer'
+import { ENGINE_PHASE_LEVEL, REWIND_ENGINE_LEVEL, buildMix, duck, readLevelDb, updateMix } from './mixer'
 import type { Mix } from './mixer'
 import { EngineVoice, makeEngineInput } from './engine'
 import type { EngineInput } from './engine'
@@ -277,8 +278,11 @@ export class AudioRig {
     if (wanted !== g.engine.voicingId) g.engine.setVoicing(ENGINE_VOICINGS[wanted])
     g.engine.update(e, t)
 
-    // Landing: the frame the car goes from airborne to grounded.
-    if (e.airborne) {
+    // Landing: the frame the car goes from airborne to grounded. Never while rewinding: going
+    // back through a jump passes the take-off, and that is not a landing.
+    if (rewind.active) {
+      this.airMax = 0
+    } else if (e.airborne) {
       if (telemetry.airTime > this.airMax) this.airMax = telemetry.airTime
     } else if (this.wasAirborne) {
       if (this.airMax >= LANDING_MIN_AIR_S) g.effects.landing(this.airMax)
@@ -337,10 +341,11 @@ export class AudioRig {
     this.mixScratch.musicVolume = s.musicVolume
     this.mixScratch.sfxVolume = s.sfxVolume
     this.mixScratch.musicMuted = this.musicMuted
-    this.mixScratch.engineLevel = ENGINE_PHASE_LEVEL[phase] ?? 0
+    this.mixScratch.engineLevel = (ENGINE_PHASE_LEVEL[phase] ?? 0) * (rewind.active ? REWIND_ENGINE_LEVEL : 1)
     this.mixScratch.paused = phase === 'paused'
     this.mixScratch.silent = silent || this.hidden
     this.mixScratch.engineLoad = this.lastInput ? this.lastInput.throttle : 0
+    this.mixScratch.rewinding = rewind.active
     return this.mixScratch
   }
 
@@ -352,6 +357,7 @@ export class AudioRig {
     paused: false,
     silent: false,
     engineLoad: 0,
+    rewinding: false,
   }
   private lastInput: EngineInput | null = null
 

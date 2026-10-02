@@ -26,6 +26,7 @@ Then open **http://localhost:5201**. On Windows, just double-click **`Sundown Ru
 | Handbrake (drift) | Space | A |
 | Tricks in the air | hold Space, then W/S to flip, A/D to roll | hold A, then the left stick |
 | Camera (chase, close, bonnet) | C | RB |
+| Rewind time (hold it: up to 10 seconds back) | Backspace | LB |
 | Back to the road | R | Y |
 | Restart at the start line | Shift + R | View |
 | Menu | Esc | Menu |
@@ -39,6 +40,7 @@ Sound starts after your first key press or click (that's the browser's rule; a c
 
 - **Three tracks.** *Afterglow Valley*: a figure-eight through an open neon valley with a loop into the sun, a wall ride, ramps, a crossover bridge and the big-air hill. *The Hyperdrome*: an enclosed stadium oval for top speed, with a speed trap and banked ends you can tilt from flat to steep with a live slider (pause menu or Settings > Track). *Neon Pocket*: a twisty little circuit, written as a single file to prove that a track is just a file.
 - **Modes.** Free Roam (tricks, crash props, smashable posts and the energy-core hunt), Time Trial against your ghost, Race against 0 to 5 Ai racers, and Stunt Attack (90 seconds for the biggest trick score). In multiplayer: Race, Free Roam and Tag.
+- **Rewind** (Josh's idea). Crashed? Hold Backspace (or LB) and time runs backwards: your car slides back along the way it came, and in a race every Ai car goes back with you. Let go and you drive on from there. It remembers 10 seconds (`rewindSeconds` in `src/core/config.ts`). A lap you rewound in can't be a record, trick points from the rewound bit are taken back, and it's off in multiplayer.
 - **The garage.** Five cars (Dart, Blade, Brick, Manta, Pulse), with your own paint, underglow and light-trail colours.
 - **The road editor.** Draw a road with the mouse like a pencil and the game turns it into a proper track: it smooths it, opens up corners that are too tight, banks the corners, closes the loop and turns crossings into bridges. Then place boost pads, ramps, loops, wall rides, crash props, energy cores and the start line, and press Test drive. Or try *drive to draw*: the car lays road behind it as you drive. Your tracks save in the browser, and Export / Import moves them between computers as the same `.json` file the built-in tracks use.
 - **The world map.** Pause, then Map, for a top-down view of the track you're on.

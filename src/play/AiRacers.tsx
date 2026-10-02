@@ -10,10 +10,13 @@
 //  unmount and the new ones mount; once they exist this component
 //  tells the mode controller (roster.committed) so it can line them
 //  up on the grid and start the countdown.
+//
+//  Each brain also joins the rewind recorder, so a rewind puts its
+//  plans and its stuck watchdog back with its car.
 // ============================================================
 
 import { useEffect, useMemo } from 'react'
-import { SimCar } from '../vehicle'
+import { addRewindPart, SimCar } from '../vehicle'
 import { AiDriver } from './aiDriver'
 import { drivers, useRoster } from './flow'
 
@@ -27,6 +30,13 @@ export function AiRacers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [racers, version],
   )
+
+  useEffect(() => {
+    const offs = brains.map((b) =>
+      addRewindPart({ size: AiDriver.REWIND_FLOATS, save: (out, at) => b.saveRewind(out, at), load: (src, at) => b.loadRewind(src, at) }),
+    )
+    return () => offs.forEach((off) => off())
+  }, [brains])
 
   useEffect(() => {
     drivers.clear()

@@ -12,6 +12,10 @@
 //    tricks     the trick detector (tricks.ts)
 //    telemetry  everything the camera, HUD, audio and fx read
 //    events     boost, mag.on / mag.off, crash, reset
+//    rewind     while held, the gauges replay the car's past; on
+//               letting go the lap goes dirty (no record, no
+//               ghost) and the lap panel, trick score and combo
+//               follow the moment you went back to (rewind.ts)
 //
 //  Phase rules: on the title screen the car waits on the grid,
 //  frozen (it is the showroom backdrop); it is released when a
@@ -26,7 +30,7 @@ import { steeringGain } from '../core/input'
 import { getRecord, offerRecord } from '../core/records'
 import { getSettings, useSettings } from '../core/settings'
 import { getGame, useGame } from '../core/store'
-import { telemetry } from '../core/telemetry'
+import { rewind, telemetry } from '../core/telemetry'
 import type { CarState } from '../core/telemetry'
 import { getTrack, useTrack } from '../track/current'
 import { demoDrive } from '../dev/demoDrive'
@@ -34,6 +38,7 @@ import { feelTrace } from '../dev/feelTrace'
 import { CarSim } from './carSim'
 import { ghostRecorder, loadGhost } from './ghost'
 import { LapTracker } from './lapTracker'
+import { addRewindPart } from './rewind'
 import type { LapEvent } from './lapTracker'
 import { links } from './links'
 import { SimulatedCar } from './SimulatedCar'
@@ -46,6 +51,36 @@ const _pos = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
 /** How fast the autopilot channel's values are smoothed (same as an analog stick). */
 const OVERRIDE_RATE = 26
+
+// Telemetry: everything about the player's car except the render pose (written per frame).
+function writeTelemetry(s: CarSim): void {
+  telemetry.speedKmh = s.speedKmh
+  telemetry.forwardSpeed = s.forwardSpeed
+  telemetry.rpm = s.rpm
+  telemetry.gear = s.reversing ? -1 : s.gear
+  if (s.speedKmh > telemetry.topSpeedKmh) telemetry.topSpeedKmh = s.speedKmh
+  telemetry.throttle = s.controls.throttle
+  telemetry.brake = s.controls.brake
+  telemetry.steer = s.controls.steer
+  telemetry.handbrake = s.controls.handbrake
+  telemetry.slip = s.slip
+  telemetry.drifting = s.drifting
+  telemetry.driftAngle = s.driftAngle
+  telemetry.airborne = s.airborne
+  telemetry.airTime = s.airTime
+  telemetry.wheelsDown = s.wheelsDown
+  telemetry.surface = s.surface
+  telemetry.onRoad = s.onRoad
+  telemetry.magGrip = s.magGrip
+  telemetry.magStrength = s.magStrength
+  telemetry.boost = s.boost
+  telemetry.impact = s.impact // the sim decays it
+  telemetry.upright = s.upright
+  telemetry.trackS = s.trackS
+  telemetry.lateral = s.lateral
+  telemetry.carVelocity.copy(s.linvel)
+  telemetry.carAngularVelocity.copy(s.angvel)
+}
 
 export function PlayerCar() {
   const body = useSettings((s) => s.carBody)
@@ -138,6 +173,31 @@ export function PlayerCar() {
   useEffect(() => {
     tricks.cancel()
   }, [round, tricks])
+
+  // Rewind takes back the trick in progress and the points banked in the rewound time:
+  // the trick detector's state plus the store's trick score and combo, every step.
+  useEffect(
+    () =>
+      addRewindPart({
+        size: TrickDetector.REWIND_FLOATS + 2,
+        save: (out, at) => {
+          tricks.saveRewind(out, at)
+          const g = getGame()
+          out[at + TrickDetector.REWIND_FLOATS] = g.trickScore
+          out[at + TrickDetector.REWIND_FLOATS + 1] = g.comboCount
+        },
+        load: (src, at) => {
+          tricks.loadRewind(src, at)
+          const score = src[at + TrickDetector.REWIND_FLOATS]
+          const combo = src[at + TrickDetector.REWIND_FLOATS + 1]
+          const g = getGame()
+          if (Number.isFinite(score) && Number.isFinite(combo) && (score !== g.trickScore || combo !== g.comboCount)) {
+            useGame.setState({ trickScore: score, comboCount: combo })
+          }
+        },
+      }),
+    [tricks],
+  )
 
   const trickIn = useMemo<TrickInput>(
     () => ({
@@ -246,33 +306,7 @@ export function PlayerCar() {
       emit('crash', news.crashCarId ? { ...payload, otherCarId: news.crashCarId } : payload)
     }
 
-    // Telemetry: everything except the render pose (that is written per frame).
-    telemetry.speedKmh = s.speedKmh
-    telemetry.forwardSpeed = s.forwardSpeed
-    telemetry.rpm = s.rpm
-    telemetry.gear = s.reversing ? -1 : s.gear
-    if (s.speedKmh > telemetry.topSpeedKmh) telemetry.topSpeedKmh = s.speedKmh
-    telemetry.throttle = s.controls.throttle
-    telemetry.brake = s.controls.brake
-    telemetry.steer = s.controls.steer
-    telemetry.handbrake = s.controls.handbrake
-    telemetry.slip = s.slip
-    telemetry.drifting = s.drifting
-    telemetry.driftAngle = s.driftAngle
-    telemetry.airborne = s.airborne
-    telemetry.airTime = s.airTime
-    telemetry.wheelsDown = s.wheelsDown
-    telemetry.surface = s.surface
-    telemetry.onRoad = s.onRoad
-    telemetry.magGrip = s.magGrip
-    telemetry.magStrength = s.magStrength
-    telemetry.boost = s.boost
-    telemetry.impact = s.impact // the sim decays it
-    telemetry.upright = s.upright
-    telemetry.trackS = s.trackS
-    telemetry.lateral = s.lateral
-    telemetry.carVelocity.copy(s.linvel)
-    telemetry.carAngularVelocity.copy(s.angvel)
+    writeTelemetry(s)
 
     // Tricks (player only, when the setting is on).
     trickIn.airborne = s.airborne
@@ -300,6 +334,34 @@ export function PlayerCar() {
     feelTrace.sample(s)
   }
 
+  // ---------------------------------------------------------------- rewind
+  // Held: the car was just put one step further back. The gauges replay that moment (speed,
+  // rpm, the gear) while the car really moves backwards: the camera reads that motion, so it
+  // stays behind the car instead of swinging round to face where it is going.
+  const onRewindFrame = (s: CarSim) => {
+    links.playerStepAt = performance.now()
+    writeTelemetry(s)
+    telemetry.carVelocity.copy(s.linvel).negate()
+    telemetry.carAngularVelocity.copy(s.angvel).negate()
+    telemetry.impact = 0 // no camera shake replayed from an old crash
+    rewind.lapMs = lap.timing ? lap.elapsedMs : -1
+  }
+
+  // Let go: the lap you rewound in can't be a record or a ghost, and the lap panel follows
+  // the moment you went back to (lap count, sectors, the clock, the last lap).
+  const onRewindResume = () => {
+    lap.markDirty()
+    const g = getGame()
+    useGame.setState({
+      lapCount: lap.lap,
+      sectorsPassed: lap.sectorsPassed,
+      lapStartedAt: lap.timing ? performance.now() - lap.elapsedMs : 0,
+      currentLapDirty: lap.timing && lap.dirty,
+      lastLapMs: lap.lastLapMs !== null ? Math.round(lap.lastLapMs) : g.lastLapMs,
+      lastLapDirty: lap.lastLapMs !== null ? lap.lastLapDirty : g.lastLapDirty,
+    })
+  }
+
   // ---------------------------------------------------------------- every frame
   const onFrame = (_s: CarSim, car: CarState) => {
     telemetry.carPosition.copy(car.position)
@@ -323,6 +385,8 @@ export function PlayerCar() {
       beforeStep={beforeStep}
       afterStep={afterStep}
       onFrame={onFrame}
+      onRewindFrame={onRewindFrame}
+      onRewindResume={onRewindResume}
       onBody={(b) => {
         links.playerBody = b
       }}

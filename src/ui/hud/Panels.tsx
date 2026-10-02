@@ -11,6 +11,7 @@
 //  Countdown   3 - 2 - 1 - GO
 //  SpeedTrap   a big amber readout after a speed trap
 //  DriveHint   the controls for your device, until you're driving
+//  (the rewind meter, screen tint and REWIND tag are in Rewind.tsx)
 //  AirTrickHint  how to flip and roll, only while you're in the air
 //
 //  Anything that ticks every frame (clocks, the gap, the countdown)
@@ -214,6 +215,7 @@ const PAD_HINTS: [string, string][] = [
   ['LT', 'Brake'],
   ['A', 'Handbrake'],
   ['RB', 'Camera'],
+  ['LB', 'Rewind'],
   ['Y', 'Reset'],
   ['VIEW', 'Restart'],
   ['MENU', 'Menu'],
@@ -223,6 +225,7 @@ const KEY_HINTS: [string, string][] = [
   ['W A S D', 'Drive'],
   ['Space', 'Handbrake'],
   ['C', 'Camera'],
+  ['Backspace', 'Rewind'],
   ['R', 'Reset'],
   ['Shift+R', 'Restart'],
   ['Esc', 'Menu'],
@@ -254,7 +257,8 @@ export function DriveHint() {
     }, 500)
     return () => clearInterval(t)
   }, [round])
-  const items = pad ? PAD_HINTS : KEY_HINTS
+  // Rewind is off in multiplayer, so its hint is too.
+  const items = (pad ? PAD_HINTS : KEY_HINTS).filter(([, label]) => !(mp && label === 'Rewind'))
   const race: [string, string] | null = mp ? [pad ? 'X' : 'G', 'Start a race'] : null
   return (
     <div className={`hud-hint${gone ? ' is-gone' : ''}`} aria-hidden={gone}>

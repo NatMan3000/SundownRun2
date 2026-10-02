@@ -15,7 +15,7 @@ import { useUi } from './uiStore'
 import { focusedHandlers } from './nav'
 
 /** Something a hint can name. */
-export type HintAction = 'accept' | 'back' | 'tabs' | 'move' | 'adjust' | 'pause' | 'reset' | 'camera' | 'restart'
+export type HintAction = 'accept' | 'back' | 'tabs' | 'move' | 'adjust' | 'pause' | 'reset' | 'camera' | 'restart' | 'rewind'
 
 const PAD: Record<HintAction, string[]> = {
   accept: ['A'],
@@ -27,6 +27,7 @@ const PAD: Record<HintAction, string[]> = {
   reset: ['Y'],
   camera: ['RB'],
   restart: ['VIEW'],
+  rewind: ['LB'],
 }
 
 const KEYS: Record<HintAction, string[]> = {
@@ -39,6 +40,7 @@ const KEYS: Record<HintAction, string[]> = {
   reset: ['R'],
   camera: ['C'],
   restart: ['Shift+R'],
+  rewind: ['Backspace'],
 }
 
 /** One glyph: an Xbox button or a keyboard key. */

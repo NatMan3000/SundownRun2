@@ -214,6 +214,14 @@ const HINT_LOST_M = 25
 const MAG_MARGIN = 1.3
 
 export type AiMode = 'grid' | 'drive' | 'pass' | 'reverse' | 'reset' | 'cooldown'
+/** The modes as numbers, for rewind snapshots. */
+const AI_MODES: readonly AiMode[] = ['grid', 'drive', 'pass', 'reverse', 'reset', 'cooldown']
+/** Where saveRewind / loadRewind are in a snapshot (brains save one after another; no allocation). */
+let _ro = 0
+/** A saved number back out, or the current value if the saved one is broken. */
+function keep(v: number, current: number): number {
+  return Number.isFinite(v) ? v : current
+}
 
 // ---- module temps: update() never allocates ----
 const _fwd = new THREE.Vector3()
@@ -493,6 +501,118 @@ export class AiDriver implements Driver {
     this.watchProgress = 0
     this.resetCooldown = 0
     this.prevAlpha = 0
+  }
+
+  // ---- rewind (src/vehicle/rewind.ts) ----
+
+  /** Numbers in one rewind snapshot of this brain. */
+  static readonly REWIND_FLOATS = 46
+  /** The same, on the instance (for code that only holds a brain). */
+  readonly REWIND_SIZE = AiDriver.REWIND_FLOATS
+
+  /**
+   * Rewind: save what this brain remembers from one step to the next (its plan, its lane, its
+   * timers, above all the stuck and progress watchdogs). Put back on letting go, so a car that
+   * was stuck against a wall before the rewind doesn't think it still is and back up or reset.
+   * Its tallies (resets, loops) and learned steering are not put back: they are history.
+   */
+  saveRewind(out: Float64Array, at: number): void {
+    _ro = at
+    out[_ro++] = this.throttle
+    out[_ro++] = this.brake
+    out[_ro++] = this.steer
+    out[_ro++] = this.powerScale
+    out[_ro++] = this.s
+    out[_ro++] = this.targetKmh
+    out[_ro++] = this.aimLateral
+    out[_ro++] = this.yawDt
+    out[_ro++] = this.loopIn
+    out[_ro++] = this.prevAlpha
+    out[_ro++] = this.time
+    out[_ro++] = this.passOffset
+    out[_ro++] = this.dodgeFor
+    out[_ro++] = this.padKickAhead
+    out[_ro++] = this.prevLaneErr
+    out[_ro++] = this.runUpT
+    out[_ro++] = this.runUpStillT
+    out[_ro++] = this.runUpTries
+    out[_ro++] = this.runUpBanFor
+    out[_ro++] = this.lineupFor
+    out[_ro++] = this.lineupLane
+    out[_ro++] = this.sideShove
+    out[_ro++] = this.passTarget
+    out[_ro++] = this.passTimer
+    out[_ro++] = this.laneNow
+    out[_ro++] = this.stuckT
+    out[_ro++] = this.reverseT
+    out[_ro++] = this.reverseSteer
+    out[_ro++] = this.flippedT
+    out[_ro++] = this.watchT
+    out[_ro++] = this.watchProgress
+    out[_ro++] = this.resetCooldown
+    out[_ro++] = this.airT
+    out[_ro++] = this.settleT
+    out[_ro++] = this.airLandS
+    out[_ro++] = this.prevHeadErr
+    out[_ro++] = this.rampVTake
+    out[_ro++] = this.handbrake ? 1 : 0
+    out[_ro++] = this.hasPrevFwd ? 1 : 0
+    out[_ro++] = this.loopInverted ? 1 : 0
+    out[_ro++] = this.dodgingPad ? 1 : 0
+    out[_ro++] = this.dodgeLeft ? 1 : 0
+    out[_ro++] = AI_MODES.indexOf(this.mode)
+    out[_ro++] = this.prevFwd.x
+    out[_ro++] = this.prevFwd.y
+    out[_ro++] = this.prevFwd.z
+  }
+
+  /** Rewind: carry on from a saved moment. */
+  loadRewind(src: Float64Array, at: number): void {
+    _ro = at
+    this.throttle = keep(src[_ro++], this.throttle)
+    this.brake = keep(src[_ro++], this.brake)
+    this.steer = keep(src[_ro++], this.steer)
+    this.powerScale = keep(src[_ro++], this.powerScale)
+    this.s = keep(src[_ro++], this.s)
+    this.targetKmh = keep(src[_ro++], this.targetKmh)
+    this.aimLateral = keep(src[_ro++], this.aimLateral)
+    this.yawDt = keep(src[_ro++], this.yawDt)
+    this.loopIn = keep(src[_ro++], this.loopIn)
+    this.prevAlpha = keep(src[_ro++], this.prevAlpha)
+    this.time = keep(src[_ro++], this.time)
+    this.passOffset = keep(src[_ro++], this.passOffset)
+    this.dodgeFor = keep(src[_ro++], this.dodgeFor)
+    this.padKickAhead = keep(src[_ro++], this.padKickAhead)
+    this.prevLaneErr = keep(src[_ro++], this.prevLaneErr)
+    this.runUpT = keep(src[_ro++], this.runUpT)
+    this.runUpStillT = keep(src[_ro++], this.runUpStillT)
+    this.runUpTries = keep(src[_ro++], this.runUpTries)
+    this.runUpBanFor = keep(src[_ro++], this.runUpBanFor)
+    this.lineupFor = keep(src[_ro++], this.lineupFor)
+    this.lineupLane = keep(src[_ro++], this.lineupLane)
+    this.sideShove = keep(src[_ro++], this.sideShove)
+    this.passTarget = keep(src[_ro++], this.passTarget)
+    this.passTimer = keep(src[_ro++], this.passTimer)
+    this.laneNow = keep(src[_ro++], this.laneNow)
+    this.stuckT = keep(src[_ro++], this.stuckT)
+    this.reverseT = keep(src[_ro++], this.reverseT)
+    this.reverseSteer = keep(src[_ro++], this.reverseSteer)
+    this.flippedT = keep(src[_ro++], this.flippedT)
+    this.watchT = keep(src[_ro++], this.watchT)
+    this.watchProgress = keep(src[_ro++], this.watchProgress)
+    this.resetCooldown = keep(src[_ro++], this.resetCooldown)
+    this.airT = keep(src[_ro++], this.airT)
+    this.settleT = keep(src[_ro++], this.settleT)
+    this.airLandS = keep(src[_ro++], this.airLandS)
+    this.prevHeadErr = src[_ro++]
+    this.rampVTake = keep(src[_ro++], this.rampVTake)
+    this.handbrake = src[_ro++] === 1
+    this.hasPrevFwd = src[_ro++] === 1
+    this.loopInverted = src[_ro++] === 1
+    this.dodgingPad = src[_ro++] === 1
+    this.dodgeLeft = src[_ro++] === 1
+    this.mode = AI_MODES[src[_ro++] | 0] ?? 'drive'
+    this.prevFwd.set(keep(src[_ro], 0), keep(src[_ro + 1], 0), keep(src[_ro + 2], 1))
   }
 
   update(car: CarState, dt: number): void {

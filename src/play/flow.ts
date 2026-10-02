@@ -43,6 +43,8 @@ export const flow = {
   restartToGrid: false,
   /** Position sort / store sync timer. */
   positionTimer: 0,
+  /** The player rewound in this race: its time can't be a race record (like a rewound lap). */
+  rewound: false,
 }
 
 interface RosterState {
