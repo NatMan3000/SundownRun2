@@ -34,6 +34,9 @@ import { ENGINE_PHASE_LEVEL, buildMix, duck, readLevelDb, updateMix } from './mi
 import type { Mix } from './mixer'
 import { EngineVoice, makeEngineInput } from './engine'
 import type { EngineInput } from './engine'
+import { ENGINE_SOUND_IDS, ENGINE_VOICINGS, isEngineSound, resolveEngineSound } from './engineVoicings'
+import type { EngineSoundId } from './engineVoicings'
+import { loadMotorWorklet } from './motorDsp'
 import { Effects } from './effects'
 import { makeKit } from './voices'
 import type { VoiceKit } from './voices'
@@ -98,6 +101,12 @@ export class AudioRig {
   private unsubscribe: (() => void) | null = null
   private disposed = false
   private readonly musicMuted = urlParam('nomusic') === '1'
+  /** ?engine=muscle|rally|hover picks the engine for this page load (beats config.ts). */
+  private readonly urlEngine = urlParam('engine')
+  /** ?motor=nodes forces the node motor (what a LAN guest on plain http hears). */
+  private readonly forceNodeMotor = urlParam('motor') === 'nodes'
+  /** Dev override from __dev.audio('engine-sound', id); null = follow the URL / config. */
+  private devEngine: EngineSoundId | null = null
 
   // engine input: a copy of telemetry, or the dev override
   private readonly input: EngineInput = makeEngineInput()
@@ -205,7 +214,12 @@ export class AudioRig {
     const ctx = new Ctor({ latencyHint: 'interactive' })
     const mix = buildMix(ctx)
     const noise = makeNoiseBuffer(ctx)
-    const engine = new EngineVoice(ctx, mix.engine, noise)
+    const engine = new EngineVoice(ctx, mix.engine, noise, ENGINE_VOICINGS[this.wantedEngine()])
+    // The motor loads onto the audio thread in the background (a few ms) and plugs in when ready.
+    void loadMotorWorklet(ctx).then((load) => {
+      if (this.g?.engine !== engine) return
+      engine.attachMotor(this.forceNodeMotor ? { ok: false, reason: 'forced by ?motor=nodes' } : load)
+    })
     const fxKit = makeKit(ctx, mix.fx, noise)
     const uiKit = makeKit(ctx, mix.ui, noise)
     const effects = new Effects(fxKit, uiKit, (depth, holdS) => duck(mix, depth, holdS, ctx.currentTime))
@@ -255,6 +269,9 @@ export class AudioRig {
     const e = this.readInput(t)
     this.lastInput = e
 
+    // Josh changed engineSound in config.ts (or a dev switch): swap the voicing live.
+    const wanted = this.wantedEngine()
+    if (wanted !== g.engine.voicingId) g.engine.setVoicing(ENGINE_VOICINGS[wanted])
     g.engine.update(e, t)
 
     // Landing: the frame the car goes from airborne to grounded.
@@ -295,6 +312,20 @@ export class AudioRig {
 
     updateMix(g.mix, this.mixTargets(false), t)
     this.frameMs += (performance.now() - c0 - this.frameMs) * 0.05
+  }
+
+  /** Which engine to play: the dev switch, then ?engine=, then config.ts (via settings). */
+  private wantedEngine(): EngineSoundId {
+    if (this.devEngine) return this.devEngine
+    if (isEngineSound(this.urlEngine)) return this.urlEngine
+    return resolveEngineSound(getSettings().engineSound)
+  }
+
+  /** Where the engine choice came from (inspector). */
+  private engineSource(): string {
+    if (this.devEngine) return 'dev'
+    if (isEngineSound(this.urlEngine)) return 'url'
+    return isEngineSound(getSettings().engineSound) ? 'config' : 'default'
   }
 
   private mixTargets(silent: boolean) {
@@ -400,6 +431,17 @@ export class AudioRig {
     return SWEEP_SECONDS
   }
 
+  /** Dev: play another engine voicing now ('auto' = back to the URL / config.ts choice). */
+  setEngineSound(id: string): string {
+    if (id === 'auto') {
+      this.devEngine = null
+      return `engine from ${this.engineSource()}: ${this.wantedEngine()}`
+    }
+    if (!isEngineSound(id)) return `unknown engine "${id}" (${ENGINE_SOUND_IDS.join(' | ')} | auto)`
+    this.devEngine = id
+    return `engine ${id}`
+  }
+
   /** Dev: switch the music to a mood (a fresh seed), from the next bar. */
   setMood(mood: string): string {
     const music = this.g?.music
@@ -449,6 +491,15 @@ export class AudioRig {
           ? 'muted (?nomusic=1)'
           : null,
       engineSource: this.sweepStart >= 0 ? 'sweep' : this.overrideActive ? 'override' : 'telemetry',
+      engineSound: g
+        ? {
+            voicing: g.engine.voicingId,
+            label: ENGINE_VOICINGS[g.engine.voicingId].label,
+            from: this.engineSource(),
+            motor: g.engine.motorKind,
+            motorReason: g.engine.motorReason,
+          }
+        : null,
       input: {
         rpm: round3(e.rpm),
         throttle: round3(e.throttle),

@@ -13,6 +13,8 @@
 //                                      engine readout, sounds played
 //    window.__dev.audio('help')        list the test commands
 //    ?nomusic=1                        mute the music
+//    ?engine=muscle|rally|hover        pick the engine sound for this visit
+//    ?motor=nodes                      force the node motor (what a LAN guest hears)
 // ============================================================
 
 import { useEffect, useRef } from 'react'
@@ -25,7 +27,8 @@ import { createRig, destroyRig } from './system'
 import type { AudioRig } from './system'
 import type { EngineInput } from './engine'
 import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMix, renderMusic, toBase64 } from './render'
-import type { MixStem } from './render'
+import type { MixStem, MotorChoice } from './render'
+import { ENGINE_SOUND_IDS, isEngineSound, resolveEngineSound } from './engineVoicings'
 import type { MoodId } from './music/score'
 
 const DEV_HELP = [
@@ -37,8 +40,9 @@ const DEV_HELP = [
   "audio('engine', 'live')             back to live telemetry",
   "audio('mood', m)                   switch the music mood (fresh seed) from the next bar: cruise drive race hyper",
   "audio('section', s)                hold a music section: title intro groove build drop breakdown, or 'auto'",
-  "audio('sweep')                      13 s scripted test drive: idle, gears, jump (free-rev), landing, drift, boost, off-road, mag grip",
-  "audio('render', what, night?)      record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | effects | title | cruise | drive | race | hyper (arg: night 0..1) | mix (arg: all | engine | music | fx)",
+  "audio('engine-sound', id)          play another engine now: muscle rally hover, or 'auto' (back to ?engine= / config.ts)",
+  "audio('sweep')                      18 s scripted test drive: idle, blips, gears, cruise, lift-off, jump (free-rev), landing, drift, boost, off-road, mag grip",
+  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine (arg: muscle | rally | hover, add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1) | mix (arg: all | engine | music | fx)",
 ].join('\n')
 
 export function AudioSystem() {
@@ -93,6 +97,8 @@ function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unkn
     case 'engine':
       rig.setOverride(a === 'live' ? null : (a as Partial<EngineInput>))
       return true
+    case 'engine-sound':
+      return rig.setEngineSound(String(a))
     case 'sweep':
       return rig.startSweep()
     case 'mood':
@@ -115,8 +121,17 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const buf = await renderMix(stem)
     return { ...measure(buf), stem, wav: toBase64(encodeWav(buf)) }
   }
-  if (what === 'engine' || what === 'effects') {
-    const buf = what === 'engine' ? await renderEngineSweep() : await renderEffectsReel()
+  if (what === 'engine') {
+    // 'rally' or 'rally:nodes'
+    const [name, how] = String(arg ?? '').split(':')
+    if (name && !isEngineSound(name)) return `unknown engine "${name}" (${ENGINE_SOUND_IDS.join(' | ')})`
+    const id = resolveEngineSound(name)
+    const motor: MotorChoice = how === 'nodes' ? 'nodes' : 'worklet'
+    const { buf, log } = await renderEngineSweep(id, motor)
+    return { ...measure(buf), engine: id, motor, log, wav: toBase64(encodeWav(buf)) }
+  }
+  if (what === 'effects') {
+    const buf = await renderEffectsReel()
     return { ...measure(buf), wav: toBase64(encodeWav(buf)) }
   }
   if (MUSIC_RENDERS.includes(what)) {

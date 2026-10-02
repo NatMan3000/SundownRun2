@@ -25,6 +25,10 @@ import type { UiSound } from '../core/api'
 import { buildMix, duck, updateMix } from './mixer'
 import type { MixTargets } from './mixer'
 import { EngineVoice, makeEngineInput } from './engine'
+import { DEFAULT_ENGINE_SOUND, ENGINE_VOICINGS } from './engineVoicings'
+import type { EngineSoundId } from './engineVoicings'
+import { loadMotorWorklet } from './motorDsp'
+import type { MotorLoad } from './motorDsp'
 import { Effects } from './effects'
 import { makeKit } from './voices'
 import { hashString, makeNoiseBuffer } from './synth'
@@ -60,12 +64,43 @@ export function stepRender(ctx: OfflineAudioContext, stepS: number, onStep: (t: 
   return ctx.startRendering()
 }
 
-/** The engine test drive (idle, gears, jump with free-rev, landing, drift, boost, off-road, mag grip). */
-export async function renderEngineSweep(): Promise<AudioBuffer> {
+/** Which motor an engine render uses: the audio-thread one (as the game), or the node one (a LAN guest's). */
+export type MotorChoice = 'worklet' | 'nodes'
+
+/** Build an engine voice on an offline context with its motor already plugged in. */
+async function offlineEngine(ctx: OfflineAudioContext, out: AudioNode, noise: AudioBuffer, id: EngineSoundId, motor: MotorChoice): Promise<{ engine: EngineVoice; load: MotorLoad }> {
+  const engine = new EngineVoice(ctx, out, noise, ENGINE_VOICINGS[id])
+  const load: MotorLoad = motor === 'nodes' ? { ok: false, reason: 'forced (render)' } : await loadMotorWorklet(ctx)
+  engine.attachMotor(load)
+  return { engine, load }
+}
+
+/** What happened during an engine render: proof the gear-change cuts, blow-offs and pops were asked for. */
+export interface EngineRenderLog {
+  engine: EngineSoundId
+  /** 'worklet' or 'nodes', and why. */
+  motor: string
+  motorReason: string
+  shifts: number
+  blowOffs: number
+  /** Highest overrun-pop chance asked of the motor (0..1). */
+  maxCrackle: number
+  /** Highest turbo spool reached (0..1). */
+  maxSpool: number
+}
+
+/**
+ * The engine test drive (idle, revs, gears, cruise, lift-off, jump with free-rev,
+ * landing, drift, boost, off-road, mag grip), for one engine voicing.
+ */
+export async function renderEngineSweep(
+  id: EngineSoundId = DEFAULT_ENGINE_SOUND,
+  motor: MotorChoice = 'worklet',
+): Promise<{ buf: AudioBuffer; log: EngineRenderLog }> {
   const ctx = new OfflineAudioContext(2, Math.ceil(RATE * SWEEP_SECONDS), RATE)
   const mix = buildMix(ctx)
   const noise = makeNoiseBuffer(ctx)
-  const engine = new EngineVoice(ctx, mix.engine, noise)
+  const { engine } = await offlineEngine(ctx, mix.engine, noise, id, motor)
   const fxKit = makeKit(ctx, mix.fx, noise)
   const effects = new Effects(fxKit, makeKit(ctx, mix.ui, noise), (d, h) => duck(mix, d, h, ctx.currentTime))
   const input = makeEngineInput()
@@ -74,10 +109,14 @@ export async function renderEngineSweep(): Promise<AudioBuffer> {
   // be laid out up front at 60 updates a second, like 60 fps.
   let wasAir = false
   let airStart = 0
+  let maxCrackle = 0
+  let maxSpool = 0
   for (let f = 0; f <= SWEEP_SECONDS * 60; f++) {
     const t = f / 60
     sweepInput(t, input)
     engine.update(input, t)
+    maxCrackle = Math.max(maxCrackle, engine.readout.crackle)
+    maxSpool = Math.max(maxSpool, engine.readout.spool)
     if (input.airborne && !wasAir) airStart = t
     if (!input.airborne && wasAir) {
       const at = t
@@ -89,7 +128,18 @@ export async function renderEngineSweep(): Promise<AudioBuffer> {
     }
     wasAir = input.airborne
   }
-  return ctx.startRendering()
+  const log: EngineRenderLog = {
+    engine: id,
+    motor: engine.motorKind,
+    motorReason: engine.motorReason,
+    shifts: engine.readout.shifts,
+    blowOffs: engine.readout.blowOffs,
+    maxCrackle: Math.round(maxCrackle * 1000) / 1000,
+    maxSpool: Math.round(maxSpool * 1000) / 1000,
+  }
+  const buf = await ctx.startRendering()
+  engine.dispose()
+  return { buf, log }
 }
 
 type ReelItem = [number, 'ui', UiSound] | [number, GameEventType, Record<string, unknown>] | [number, 'landing', number]
@@ -239,11 +289,11 @@ export const MIX_SECONDS = 32
  * the default volume settings. Stems are the same render with the other
  * groups muted, so their levels can be compared directly.
  */
-export async function renderMix(stem: MixStem): Promise<AudioBuffer> {
+export async function renderMix(stem: MixStem, id: EngineSoundId = DEFAULT_ENGINE_SOUND): Promise<AudioBuffer> {
   const ctx = new OfflineAudioContext(2, Math.ceil(RATE * MIX_SECONDS), RATE)
   const mix = buildMix(ctx)
   const noise = makeNoiseBuffer(ctx)
-  const engine = new EngineVoice(ctx, mix.engine, noise)
+  const { engine } = await offlineEngine(ctx, mix.engine, noise, id, 'worklet')
   const effects = new Effects(makeKit(ctx, mix.fx, noise), makeKit(ctx, mix.ui, noise), (d, h) => duck(mix, d, h, ctx.currentTime))
   const music = new MusicSystem(ctx, mix.music, noise)
   music.scene.phase = 'playing'

@@ -34,7 +34,8 @@ Ports: 5201 dev server, 5202 multiplayer relay, 5203 Nathan's stable copy (`vite
 - `window.__game`: read-only getters (telemetry, cars, frame stats, `renderInfo()`, settings, `get('<inspector>')`, `inspectors()`).
 - `window.__dev`: commands each system registers; `__dev.help()` lists them (teleport, camera bookmarks, finish a race, hide a look layer, and so on).
 - `window.__perf`: the frame report from the last `?demo=1` recording. `window.__events`: recent game events.
-- URL switches: `?track=`, `?mode=free|timetrial|race|stunt`, `?demo=1`, `?time=0..1`, `?quality=low|medium|high`, `?cam=<bookmark>`, `?ai=<n>`, `?nomusic=1`, `?mp=1&name=&color=`, `?editor=1`.
+- URL switches: `?track=`, `?mode=free|timetrial|race|stunt`, `?demo=1`, `?time=0..1`, `?quality=low|medium|high`, `?cam=<bookmark>`, `?ai=<n>`, `?nomusic=1`, `?mp=1&name=&color=`, `?editor=1`, `?engine=muscle|rally|hover`, `?motor=nodes`.
+- `/api/report` on the dev and preview servers (`server/issues.ts`, the Report a problem screen's post office): `GET` says whether a GitHub key is set up, the version and commit, and how many reports wait in `reports/pending/`; `POST` files one. `__dev.ui('report')` opens the screen. Test only against a fake GitHub (`SR2_ISSUES_API=http://127.0.0.1:<port>`, plus `SR2_REPORTS_DIR` to keep saved reports out of the folder); never the real repository, which is public.
 
 Checking a change: a production build (`bunx vite build`, then `bunx vite preview` on a 5220-5239 port) is what counts, not the dev server. Frame cost is measured as max(CPU, GPU) with a GPU timer query, over a `?demo=1` drive at the high preset; the budget table is in `CONSTITUTION.md` section 2. The GPU is shared with anything else probing, so measure perf with nothing else running.
 
@@ -60,9 +61,9 @@ Contracts in `src/core/` and `src/track/{schema,types,registry,current}.ts` are 
 | `src/look/` | road surface and pieces, car fx, particles, post stack, quality presets |
 | `src/audio/` | engine, effects, procedural synthwave music, mixer |
 | `src/play/` | game modes, Ai racers, props, smashables, energy cores, speed traps |
-| `src/ui/` | title, garage, settings, pause, HUD, results |
+| `src/ui/` | title, garage, settings, pause, HUD, results, report a problem |
 | `src/editor/` | the road editor and world map |
-| `src/net/`, `server/` | LAN multiplayer client and relay |
+| `src/net/`, `server/` | LAN multiplayer client and relay; `server/issues.ts` posts reports as GitHub issues |
 
 ## Gotchas
 
@@ -86,4 +87,5 @@ Inherited from v1 (each cost a rework there):
 - The car's soft CCD looks a whole step ahead (1.4 m at 300 km/h), so a feature that ends ahead of a car sliding past it becomes a wall across the road: the end of the next box in a chain, or the tip of a long thin triangle. Static walls a car slides along must be one continuous triangle mesh (FIX_INTERNAL_EDGES) cut into roughly car-sized triangles, never a chain of boxes or full-height slivers (`src/track/colliders.ts` addBarrierSolids; `tracks:check --physics` case 10 slides a car body along every barrier).
 - Hard CCD (`ccd` on a RigidBody) on rapier 0.19.2 halves a body's travel while it slides in contact with a trimesh, and can stop it dead. Car bodies use `softCcdPrediction` instead.
 - r3f v9 on three 0.186 logs a `THREE.Clock` deprecation warning from inside the library; it is not ours.
+- `AudioWorklet` only exists on secure pages (https or localhost). LAN multiplayer guests load the game over plain `http://<ip>:5201`, so the engine's firing-pulse worklet (`src/audio/motorDsp.ts`) can't run for them; they get the node-built copy of the same voicing (`src/audio/motorNodes.ts`). Test it with `?motor=nodes`.
 - The road material (`src/look/road/roadMaterial.ts`) splits the key light's highlight from the headlights' by matching the text of three's `lights_fragment_begin` shader chunk. After a three.js upgrade, check the console: if the chunk changed, it logs an error and falls back to scaling every highlight together (the night road streak gets hot again).
