@@ -25,7 +25,7 @@ import { freeTrackId, getTrackSource, listDrawnTracks, saveDrawnTrack } from '..
 import { validateTrack } from '../track/validate'
 import { startSession } from '../core/session'
 import { audio } from '../core/api'
-import { BASE_WORLDS, DEFAULT_BASE_WORLD, cloneJson, draftFile, roadBound } from './draftFile'
+import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFile, isBlankDraft, roadBound, starterRoad } from './draftFile'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import { checkBuiltTrack } from './checks'
 import type { P } from './geom'
@@ -103,17 +103,7 @@ export type Selection =
 const WORKING_KEY = 'sr2.editor.working.v1'
 const HISTORY_MAX = 120
 
-/** A gentle starter oval, so a brand new track always has a road to look at (draw over it to replace it). */
-function starterPoints(): RoadPoint[] {
-  const pts: RoadPoint[] = []
-  const count = 40
-  for (let i = 0; i < count; i++) {
-    const t = (i / count) * Math.PI * 2
-    pts.push({ x: Math.round(220 * Math.sin(t) * 10) / 10, z: Math.round(-140 * Math.cos(t) * 10) / 10 })
-  }
-  return pts
-}
-
+/** A brand new track: the starter oval (so there is always a road to look at; draw over it to replace it). */
 export function newDraft(baseWorldId = DEFAULT_BASE_WORLD.id): Draft {
   const base = BASE_WORLDS.find((b) => b.id === baseWorldId) ?? DEFAULT_BASE_WORLD
   return {
@@ -121,7 +111,7 @@ export function newDraft(baseWorldId = DEFAULT_BASE_WORLD.id): Draft {
     name: 'My Track',
     author: '',
     description: '',
-    points: starterPoints(),
+    points: starterRoad(base.environment),
     width: 14,
     baseWorld: base.id,
     environment: cloneJson(base.environment),
@@ -695,6 +685,33 @@ export function smoothRoad(): void {
     }
   })
   say('Smoothed the road a little. Press it again for more, or Undo.', 'good')
+}
+
+/**
+ * Clear all: wipe the map back to a blank track (the starter oval, no
+ * pieces, props, cores or start line; see clearedDraft) so Josh can start
+ * again. It is ONE commit, so one Undo brings the whole track back exactly.
+ *
+ * Only the open draft changes. Tracks saved in the library and the built-in
+ * tracks are never touched; a saved track only changes if he presses Save
+ * (or Test drive) afterwards, like any other edit. The working copy kept in
+ * this browser follows along: commit() writes the cleared draft, and Undo
+ * writes the old one back. Returns false if there was nothing to clear.
+ */
+export function clearAll(): boolean {
+  const s = useEditor.getState()
+  if (s.mode !== 'edit') return false
+  if (isBlankDraft(s.draft)) {
+    say('Already clear. Draw a loop with the pencil to make a road.', 'info')
+    return false
+  }
+  commit((d) => {
+    Object.assign(d, clearedDraft(d))
+  })
+  useEditor.setState({ selection: null, tool: 'pencil' })
+  say('Cleared. Draw a loop with the pencil to make your new road, or Undo to bring the old one back.', 'good')
+  audio.ui('back')
+  return true
 }
 
 // ---------------------------------------------------------------- sections: bank and width

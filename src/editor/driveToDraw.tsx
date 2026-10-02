@@ -13,8 +13,9 @@
 //    <EditorDrive />     inside the 3D scene: records the car every few
 //                        metres and draws the glowing line (one mesh,
 //                        allocated once, no garbage per frame)
-//    <EditorDriveUi />   the bar on top: how much road is laid, Finish
-//                        and Cancel
+//    <EditorDriveUi />   the bar on top: how much road is laid, Finish,
+//                        Clear (rub out what is laid and keep driving,
+//                        after asking) and Cancel
 //    finish / cancel     clean up, delete the temporary track, back to
 //                        the editor
 // ============================================================
@@ -61,8 +62,8 @@ const rec = {
   maxFromStart: 0,
 }
 
-/** What the bar shows (changes a few times a second at most). */
-const useDrive = create<{ active: boolean; metres: number; note: string | null }>(() => ({ active: false, metres: 0, note: null }))
+/** What the bar shows (changes a few times a second at most). `asking`: the bar is asking "Clear the road you laid?". */
+const useDrive = create<{ active: boolean; metres: number; note: string | null; asking: boolean }>(() => ({ active: false, metres: 0, note: null, asking: false }))
 
 function starterLoop(): RoadPoint[] {
   const pts: RoadPoint[] = []
@@ -94,7 +95,7 @@ export function startDriveToDraw(): boolean {
   rec.maxFromStart = 0
   rec.draft = draft
   rec.version++
-  useDrive.setState({ active: true, metres: 0, note: null })
+  useDrive.setState({ active: true, metres: 0, note: null, asking: false })
   audio.ui('start')
   if (!startSession({ mode: 'free', trackId: DRIVE_TRACK_ID })) {
     stop()
@@ -106,7 +107,7 @@ export function startDriveToDraw(): boolean {
 
 function stop(): void {
   rec.active = false
-  useDrive.setState({ active: false, metres: 0, note: null })
+  useDrive.setState({ active: false, metres: 0, note: null, asking: false })
   deleteDrawnTrack(DRIVE_TRACK_ID)
 }
 
@@ -131,6 +132,21 @@ export function finishDriveToDraw(): boolean {
   say(`Your drive became a ${(res.length / 1000).toFixed(2)} km road. Save it to keep it.`, 'good')
   audio.ui('select')
   return true
+}
+
+/**
+ * Clear: rub out the road laid so far and keep driving. The new line starts
+ * where the car is now, and the loop closes when you come back to there.
+ * (The editor's own track isn't touched: it is put aside until Finish or Cancel.)
+ */
+export function clearLaidRoad(): void {
+  if (!rec.active) return
+  rec.count = 0
+  rec.length = 0
+  rec.maxFromStart = 0
+  rec.version++
+  useDrive.setState({ metres: 0, note: null, asking: false })
+  audio.ui('back')
 }
 
 /** Stop without making a road; back to the editor and the track you had before. */
@@ -294,15 +310,35 @@ export function EditorDriveUi() {
   }, [s.active])
   if (!s.active || phase !== 'playing') return null
   const enough = s.metres >= CLEANUP.minLength
+  if (s.asking) {
+    // Clear asks first: there is no Undo while driving.
+    return (
+      <div role="alertdialog" aria-label="Clear the road you laid?" style={driveBarStyle}>
+        <span style={kickerStyle}>Drive to draw</span>
+        <span style={textStyle}>Clear the {s.metres} m of road you laid and start again from here? This can't be undone.</span>
+        <button type="button" style={buttonStyle('danger')} onClick={clearLaidRoad}>
+          Clear it
+        </button>
+        <button type="button" style={buttonStyle('plain')} onClick={() => useDrive.setState({ asking: false })}>
+          Keep it
+        </button>
+      </div>
+    )
+  }
   return (
     <div role="status" style={driveBarStyle}>
       <span style={kickerStyle}>Drive to draw</span>
       <span style={metresStyle}>{s.metres} m laid</span>
       <span style={textStyle}>{s.note ?? (enough ? 'Drive back to where you started to close the loop, or press Finish.' : `Drive anywhere! Lay at least ${CLEANUP.minLength} m of road.`)}</span>
-      <button type="button" style={buttonStyle(true)} onClick={() => finishDriveToDraw()}>
+      <button type="button" style={buttonStyle('primary')} onClick={() => finishDriveToDraw()}>
         Finish
       </button>
-      <button type="button" style={buttonStyle(false)} onClick={cancelDriveToDraw}>
+      {s.metres > 0 && (
+        <button type="button" style={buttonStyle('plain')} onClick={() => useDrive.setState({ asking: true })}>
+          Clear
+        </button>
+      )}
+      <button type="button" style={buttonStyle('plain')} onClick={cancelDriveToDraw}>
         Cancel
       </button>
     </div>
@@ -331,13 +367,14 @@ const driveBarStyle: React.CSSProperties = {
 const kickerStyle: React.CSSProperties = { color: PALETTE.uiAccent, letterSpacing: '0.18em', textTransform: 'uppercase', fontSize: 12, fontWeight: 600 }
 const metresStyle: React.CSSProperties = { fontVariantNumeric: 'tabular-nums', fontWeight: 600 }
 const textStyle: React.CSSProperties = { color: PALETTE.uiDim }
-function buttonStyle(primary: boolean): React.CSSProperties {
+function buttonStyle(kind: 'primary' | 'plain' | 'danger'): React.CSSProperties {
+  const primary = kind === 'primary'
   return {
     padding: '7px 14px',
     borderRadius: 999,
-    border: `1px solid ${primary ? PALETTE.uiAccent : PALETTE.uiLine}`,
+    border: `1px solid ${primary ? PALETTE.uiAccent : kind === 'danger' ? PALETTE.uiBad : PALETTE.uiLine}`,
     background: primary ? PALETTE.uiAccent : 'transparent',
-    color: primary ? PALETTE.uiPanelSolid : PALETTE.uiText,
+    color: primary ? PALETTE.uiPanelSolid : kind === 'danger' ? PALETTE.uiBad : PALETTE.uiText,
     font: 'inherit',
     fontWeight: 600,
     cursor: 'pointer',

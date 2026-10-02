@@ -24,6 +24,7 @@
 //    EditorUi.tsx   tool rail, piece palette, status line
 //    Panel.tsx      this track, the selected thing, checks, map key
 //    Library.tsx    open, new, copy, import, export
+//    ClearAll.tsx   "Clear the whole track?" (the rail's eraser, pad B)
 //    fields.tsx     the panel's sliders and boxes; icons.tsx its icons
 //    dev.ts         __dev.editor(...) for checkers, ?editor=1
 //    selfTest.ts    proves the maths works (bun src/editor/selfTest.ts)

@@ -51,6 +51,14 @@ export const UndoIcon = (p: { flip?: boolean }) => (
     <path d="M4 9h10a6 6 0 010 12h-3" />
   </Svg>
 )
+/** An eraser rubbing out a line: Clear all. */
+export const ClearIcon = () => (
+  <Svg>
+    <path d="M8.5 19.5L4 15a1.6 1.6 0 010-2.3l8.7-8.7a1.6 1.6 0 012.3 0l5 5a1.6 1.6 0 010 2.3l-8 8.2" />
+    <path d="M8.5 9.2l6.3 6.3" />
+    <path d="M8.5 19.5H20" />
+  </Svg>
+)
 export const FitIcon = () => (
   <Svg>
     <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />

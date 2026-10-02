@@ -8,10 +8,12 @@
 //    left        the tool rail, and the piece palette when placing
 //    right       Panel.tsx (this track, the selected thing, checks)
 //    bottom      one status line in plain words
-//    dialog      Library.tsx (open, new, copy, import, export)
+//    dialog      Library.tsx (open, new, copy, import, export), and
+//                ClearAll.tsx ("Clear the whole track?")
 //
-//  Esc (or the pad's Menu button): first clears a selection, then
-//  leaves the editor. Work is never lost: the draft is kept.
+//  Esc (or the pad's Menu button): first closes a dialog, then clears
+//  a selection, then leaves the editor. Work is never lost: the draft
+//  is kept.
 // ============================================================
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
@@ -26,7 +28,8 @@ import { Library } from './Library'
 import { closeWorldMap } from './worldMap'
 import { PLACE_TOOLS, type PlaceKind } from './pieces'
 import { setView, view, zoomAt } from './view'
-import { FitIcon, GlobeIcon, HandIcon, LibraryIcon, MinusIcon, PencilIcon, PlaceIcon, PlusIcon, SectionIcon, SelectIcon, UndoIcon } from './icons'
+import { ClearAllDialog, askClearAll, clearAllTakesPause, setClearAllBlocked } from './ClearAll'
+import { ClearIcon, FitIcon, GlobeIcon, HandIcon, LibraryIcon, MinusIcon, PencilIcon, PlaceIcon, PlusIcon, SectionIcon, SelectIcon, UndoIcon } from './icons'
 import './editor.css'
 
 /** CSS custom properties from the palette, so the stylesheet never holds a colour of its own. */
@@ -66,14 +69,17 @@ export function EditorUi() {
   const mode = useEditor((s) => s.mode)
   const [library, setLibrary] = useState(false)
 
-  // Esc / the pad's Menu button: close the library, then clear the selection, then leave.
+  // Esc / the pad's Menu button: close a dialog, then clear the selection, then leave.
   useEffect(() => {
+    setClearAllBlocked(library)
     let seen = controlSignals.pause
     let raf = 0
     const tick = () => {
       if (controlSignals.pause !== seen) {
         seen = controlSignals.pause
-        if (library) setLibrary(false)
+        if (clearAllTakesPause(seen)) {
+          // The "Clear the whole track?" box used this press to close.
+        } else if (library) setLibrary(false)
         else if (useEditor.getState().selection) useEditor.setState({ selection: null })
         else leaveEditor()
       }
@@ -95,6 +101,7 @@ export function EditorUi() {
       <Panel onLibrary={() => setLibrary(true)} onExit={leaveEditor} />
       <StatusLine />
       {library && <Library onClose={() => setLibrary(false)} />}
+      <ClearAllDialog />
     </div>
   )
 }
@@ -135,6 +142,7 @@ function Toolbar(props: { onLibrary: () => void }) {
           <div className="sre-tools-gap" />
           <ToolButton label="Undo" keyHint="Ctrl+Z" disabled={!canUndo} onClick={undo} icon={<UndoIcon />} />
           <ToolButton label="Redo" keyHint="Ctrl+Shift+Z" disabled={!canRedo} onClick={redo} icon={<UndoIcon flip />} />
+          <ToolButton label="Clear all" keyHint="controller B" onClick={askClearAll} icon={<ClearIcon />} />
           <div className="sre-tools-gap" />
         </>
       )}

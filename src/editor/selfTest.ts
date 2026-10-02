@@ -6,8 +6,9 @@
 //  figure-eight, a square with sharp corners, a road off the edge
 //  of the world, a line that never comes back - and checks that
 //  every result is a road a car can drive. It also checks the
-//  editing maths, and that the Checks panel's verdict (checks.ts)
-//  agrees with the game's own track gates.
+//  editing maths, that the Checks panel's verdict (checks.ts)
+//  agrees with the game's own track gates, and that Clear all
+//  leaves a blank track that builds in every kind of world.
 //
 //  Run it two ways:
 //    bun src/editor/selfTest.ts          (prints a pass/fail table)
@@ -18,7 +19,7 @@ import { CLEANUP, cleanStroke, type CleanResult, type CleanupOptions } from './c
 import { type P, catmullRomClosed, dist, minRadius } from './geom'
 import { validateTrack } from '../track/validate'
 import { buildTrack } from '../track/build'
-import { DEFAULT_BASE_WORLD, draftFile, roadBound } from './draftFile'
+import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, draftFile, isBlankDraft, roadBound } from './draftFile'
 import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, roadCurve, sectionRedraw } from './road'
 import type { Piece, RoadPoint } from '../track/schema'
 import { checkBuiltTrack, checkVerdict, gateItems } from './checks'
@@ -412,6 +413,64 @@ export function runEditorSelfTest(): CheckResult[] {
     const pts = ring(60, 250)
     const stroke = shaky((t) => ({ x: 250 * Math.sin(t * TAU), z: -250 * Math.cos(t * TAU) }), 300, 2, 9, 0, 1.02)
     return sectionRedraw(stroke, pts, 14) ? ['treated a full loop as a section'] : []
+  })
+
+  // ---------------------------------------------------------------- clear all
+
+  check('clear all leaves a blank, valid track in the same world', () => {
+    // A busy track (pieces, props, cores, a moved start line, a banked stretch) in
+    // every base world plus a small hilly world and a walled stadium: clearing must
+    // empty the map, keep what the track IS, and give a road that builds and stays
+    // inside that world.
+    const stroke = shaky((t) => ({ x: 260 * Math.sin(t * TAU), z: 130 * Math.sin(2 * t * TAU) }), 600, 3, 2, 0.1, 1.1)
+    const res = cleanStroke(stroke, opts)
+    if (!res.ok) return ['clean-up failed']
+    const worlds = [
+      ...BASE_WORLDS.map((b) => ({ id: b.id, env: b.environment })),
+      { id: 'small-hills', env: { size: 1000, terrain: { kind: 'hills' as const, relief: 10, edge: 'ridge' as const } } },
+      // Too small for the full-size oval: it has to shrink to stay off the mountains.
+      { id: 'tiny-hills', env: { size: 800, terrain: { kind: 'hills' as const, relief: 10, edge: 'ridge' as const } } },
+      { id: 'stadium', env: { size: 1300, terrain: { kind: 'flat' as const, edge: 'wall' as const } } },
+    ]
+    const bad: string[] = []
+    for (const w of worlds) {
+      const busy: Draft = {
+        id: 'busy-track',
+        name: 'Busy Track',
+        author: 'Josh',
+        description: 'Lots of stuff on it',
+        points: res.points.map((p, i) => (i < 4 ? { ...p, bank: 12, width: 18 } : { ...p })),
+        width: 16,
+        baseWorld: w.id,
+        environment: w.env,
+        pieces: [{ type: 'boost', at: 3 }, { type: 'ramp', at: 9 }],
+        props: [{ x: 40, z: 40 }],
+        cores: [{ x: -30, z: 20 }],
+        startAt: 5.3,
+      }
+      const before = JSON.stringify(busy)
+      const c = clearedDraft(busy)
+      const tag = (m: string) => bad.push(`${w.id}: ${m}`)
+      if (JSON.stringify(busy) !== before) tag('clearing changed the track it was given')
+      if (c.pieces.length || c.props.length || c.cores.length || c.startAt !== 0) tag('pieces, props, cores or the start line were left behind')
+      if (c.points.some((p) => p.bank !== undefined || p.width !== undefined || p.lift !== undefined)) tag('per-stretch bank, width or lift were left behind')
+      for (const k of ['id', 'name', 'author', 'description', 'width', 'baseWorld'] as const) if (c[k] !== busy[k]) tag(`${k} changed`)
+      if (JSON.stringify(c.environment) !== JSON.stringify(busy.environment)) tag('the world changed')
+      if (!isBlankDraft(c) || isBlankDraft(busy)) tag('isBlankDraft is wrong')
+      if (JSON.stringify(clearedDraft(c)) !== JSON.stringify(c)) tag('clearing twice is not the same as once')
+      const limit = roadBound(w.env)
+      const reach = Math.max(...c.points.map((p) => Math.max(Math.abs(p.x), Math.abs(p.z))))
+      if (reach > limit) tag(`the starter road reaches ${reach.toFixed(0)} m, past the ${limit.toFixed(0)} m edge limit`)
+      const v = validateTrack(draftFile({ id: 'selftest-cleared', name: c.name, points: c.points, width: c.width, environment: c.environment }))
+      if (!v.ok || !v.track) {
+        tag(`does not validate: ${v.errors.map((e) => `${e.path}: ${e.message}`).join(' / ')}`)
+        continue
+      }
+      const gates = checkBuiltTrack(buildTrack(v.track, {})).gates.filter((g) => g.level === 'fail')
+      if (gates.length) tag(`gates fail: ${gates.map((g) => `${g.name}: ${g.message}`).join(' / ')}`)
+    }
+    info = `${worlds.length} worlds cleared to a valid starter road`
+    return bad
   })
 
   return results

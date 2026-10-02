@@ -26,6 +26,8 @@
 import { useEffect, useRef } from 'react'
 import { inputState } from '../core/controls'
 import { closeMap } from '../core/session'
+import { audio } from '../core/api'
+import { askClearAll, clearAskVersion } from './ClearAll'
 import { PLACE_TOOLS, toolFor } from './pieces'
 import {
   type EditorTool,
@@ -80,7 +82,8 @@ export function fitToDraft(): void {
  */
 function typing(e: KeyboardEvent): boolean {
   const t = e.target
-  if (inputState.context === 'text' || t instanceof HTMLTextAreaElement) return true
+  // 'menu': a question box (Clear all) is up and owns the keys until it closes.
+  if (inputState.context === 'text' || inputState.context === 'menu' || t instanceof HTMLTextAreaElement) return true
   if (t instanceof HTMLInputElement) return t.type !== 'range' || e.key.startsWith('Arrow')
   if (t instanceof HTMLSelectElement) return e.key.startsWith('Arrow') || e.key === 'Enter' || e.key === ' '
   return false
@@ -455,15 +458,27 @@ export function Overlay() {
         setCursor()
       }
     })
-    // ---- controller: left stick pans, triggers zoom, X undo, Y redo, hold View to test drive ----
+    // ---- controller: left stick pans, triggers zoom, X undo, Y redo, B clear all, hold View to test drive ----
     const padWas: boolean[] = []
     let padHinted = false
     let viewHeldFor = 0
+    /** B went down on the map: the Clear all question opens when it comes back up. */
+    let clearArmed = false
+    let askSeen = clearAskVersion()
     const pollPad = (dt: number) => {
       const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : []
       let pad: Gamepad | null = null
       for (const p of pads) if (p && p.connected) pad = pad ?? p
       if (!pad) return
+      if (inputState.context === 'menu' || askSeen !== clearAskVersion()) {
+        // A question box is up (or just opened or closed): the menu controls drive it, not
+        // the map. Whatever is held now counts as already down, so the B (or A) that closed
+        // it can't also act on the map, or open it again, when it comes back up.
+        askSeen = clearAskVersion()
+        clearArmed = false
+        for (let i = 0; i < pad.buttons.length; i++) padWas[i] = pad.buttons[i].pressed
+        return
+      }
       const dead = (v: number) => (Math.abs(v) < 0.18 ? 0 : (v - Math.sign(v) * 0.18) / 0.82)
       const lx = dead(pad.axes[0] ?? 0)
       const ly = dead(pad.axes[1] ?? 0)
@@ -477,7 +492,7 @@ export function Overlay() {
         say(
           useEditor.getState().mode === 'map'
             ? 'Controller: left stick moves the map, triggers zoom. B or Menu: back to the pause menu.'
-            : 'Controller: left stick moves the map, triggers zoom, X undo, Y redo, hold View to test drive. Menu leaves.',
+            : 'Controller: left stick moves the map, triggers zoom, X undo, Y redo, B clear all, hold View to test drive. Menu leaves.',
           'info',
         )
       }
@@ -488,6 +503,13 @@ export function Overlay() {
       if (useEditor.getState().mode === 'edit') {
         if (edge(2)) undo()
         if (edge(3)) redo()
+        // B asks "Clear the whole track?" when it is let go, so the same press can't
+        // also reach the question as its own "back" (cancel) the moment it opens.
+        if (edge(1)) clearArmed = true
+        if (clearArmed && !pressed(1)) {
+          clearArmed = false
+          if (askClearAll()) audio.ui('move')
+        }
         if (pressed(8)) {
           viewHeldFor += dt
           if (viewHeldFor > 0.8) {

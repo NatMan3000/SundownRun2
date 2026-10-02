@@ -8,10 +8,14 @@
 //
 //  A base world is just an `environment` block: the ground, the sky,
 //  the city, the music. Pick one and the draft gets a copy of it.
+//
+//  It also knows what a blank track looks like (the starter oval) and
+//  what "Clear all" leaves behind.
 // ============================================================
 
 import { roadBound as trackRoadBound } from '../track/validate'
 import { TRACK_FORMAT, TRACK_VERSION, type EnvironmentSpec, type Piece, type PropSpot, type CoreSpot, type RoadPoint, type TrackFile } from '../track/schema'
+import type { Draft } from './draft'
 
 export interface BaseWorld {
   id: string
@@ -129,4 +133,51 @@ export function draftFile(parts: DraftParts): TrackFile {
  */
 export function roadBound(environment: EnvironmentSpec): number {
   return trackRoadBound(environment).limit
+}
+
+// ---------------------------------------------------------------- a blank track
+
+/** The starter oval's size, metres from the centre: across (x) and up and down (z). */
+const STARTER_HALF_X = 220
+const STARTER_HALF_Z = 140
+
+/**
+ * The gentle starter oval every new or cleared track begins with. The game
+ * can't build a world with no road at all (there would be nothing to stand
+ * on), so "blank" means this plain oval: draw a loop with the pencil and it
+ * is replaced. In a small world the oval shrinks to stay off the edge.
+ */
+export function starterRoad(environment?: EnvironmentSpec): RoadPoint[] {
+  const limit = environment ? roadBound(environment) : Infinity
+  const scale = Math.min(1, Math.max(0.3, (limit - 20) / STARTER_HALF_X))
+  const pts: RoadPoint[] = []
+  const count = 40
+  for (let i = 0; i < count; i++) {
+    const t = (i / count) * Math.PI * 2
+    pts.push({ x: Math.round(STARTER_HALF_X * scale * Math.sin(t) * 10) / 10, z: Math.round(-STARTER_HALF_Z * scale * Math.cos(t) * 10) / 10 })
+  }
+  return pts
+}
+
+/**
+ * "Clear all": the same track with nothing on the map. The road goes back to
+ * the starter oval, and every piece, crash-prop pile, energy core and the
+ * start line go too (per-stretch bank and width live on the road points, so
+ * they go with the road). What the track IS stays: its name, maker, blurb,
+ * world, time of day, edge lights and road width.
+ */
+export function clearedDraft(d: Draft): Draft {
+  return {
+    ...cloneJson(d),
+    points: starterRoad(d.environment),
+    pieces: [],
+    props: [],
+    cores: [],
+    startAt: 0,
+  }
+}
+
+/** True when "Clear all" would change nothing (the map is already blank). */
+export function isBlankDraft(d: Draft): boolean {
+  return JSON.stringify(clearedDraft(d)) === JSON.stringify(d)
 }

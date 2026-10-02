@@ -15,6 +15,9 @@
 //    __dev.editor('new', 'grid-flats')     start a new track in a base world
 //    __dev.editor('open', id)              open a saved drawn track
 //    __dev.editor('undo') / ('redo')
+//    __dev.editor('clear')                 ask "Clear the whole track?" (the rail's
+//                                          eraser); answer with ('clearYes') / ('clearNo')
+//    __dev.editor('clearNow')              clear all without asking (one undo step)
 //    __dev.editor('fit')                   frame the track
 //    __dev.editor('view', [cx, cz, mpp])   look somewhere (or pass a road point index)
 //    __dev.editor('selftest')              run the clean-up self-test
@@ -34,6 +37,7 @@ import { getTrack } from '../track/current'
 import type { P } from './geom'
 import {
   applyStroke,
+  clearAll,
   draftFromFile,
   draftId,
   fileFromDraft,
@@ -49,7 +53,8 @@ import {
 import { fitToDraft } from './Overlay'
 import { runEditorSelfTest } from './selfTest'
 import { checkVerdict } from './checks'
-import { cancelDriveToDraw, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
+import { cancelDriveToDraw, clearLaidRoad, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
+import { answerClearAll, askClearAll, useClearAsk } from './ClearAll'
 import { closeWorldMap, isMapOpen, openWorldMap } from './worldMap'
 import { setView, view } from './view'
 
@@ -130,7 +135,7 @@ function strokeResult(raw: P[]) {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | map | mapClose | selftest | checks | state'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -158,6 +163,14 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     case 'redo':
       redo()
       return useEditor.getState().future.length
+    case 'clear':
+      return askClearAll()
+    case 'clearYes':
+    case 'clearNo':
+      answerClearAll(cmd === 'clearYes')
+      return { undoSteps: useEditor.getState().past.length, points: useEditor.getState().draft.points.length }
+    case 'clearNow':
+      return clearAll()
     case 'view': {
       // [cx, cz, metresPerPixel], or a road point index to look at closely.
       if (Array.isArray(arg)) setView(Number(arg[0]), Number(arg[1]), Number(arg[2] ?? view.mpp))
@@ -184,6 +197,10 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     case 'driveCancel':
       cancelDriveToDraw()
       return true
+    case 'driveClear':
+      // The drive bar's Clear, already confirmed: wipe the road laid so far and keep driving.
+      clearLaidRoad()
+      return { active: driveRecorder.active, points: driveRecorder.count, metres: driveRecorder.metres }
     case 'map':
       openWorldMap()
       return isMapOpen()
@@ -231,6 +248,11 @@ function summary() {
     dirty: s.dirty,
     savedId: s.savedId,
     tool: s.tool,
+    clearAsk: useClearAsk.getState().open,
+    pieces: s.draft.pieces.length,
+    props: s.draft.props.length,
+    cores: s.draft.cores.length,
+    startAt: s.draft.startAt,
     undoSteps: s.past.length,
     redoSteps: s.future.length,
     preview: s.preview,
