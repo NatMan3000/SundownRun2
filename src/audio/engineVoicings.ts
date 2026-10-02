@@ -78,7 +78,7 @@ export interface MotorSpec {
   nodeLevel?: number
 }
 
-/** The layers around the motor: turbo, intake, jet. */
+/** The layers around the motor: turbo, intake, jet, and how loud the tyres are next to it. */
 export interface LayerSpec {
   /** Turbo spool: a soft rising whoosh-tone as boost builds (0 = no turbo). */
   spool: number
@@ -94,6 +94,11 @@ export interface LayerSpec {
   jet: number
   /** Turbine pitch, as a multiple of the motor's firing note (1.5 = a fifth above, so it blends in). */
   jetRatio: number
+  /**
+   * How loud the tyre scrub is next to this motor (1 = standard). A louder, raspier
+   * motor covers up more of the scrub, so it needs more to be heard sliding.
+   */
+  tyres: number
 }
 
 export interface EngineVoicing {
@@ -159,6 +164,7 @@ const MUSCLE: EngineVoicing = {
     flutter: false,
     jet: 0,
     jetRatio: 1.5,
+    tyres: 1,
   },
 }
 
@@ -208,6 +214,7 @@ const RALLY: EngineVoicing = {
     flutter: true,
     jet: 0,
     jetRatio: 1.5,
+    tyres: 1.8,
   },
 }
 
@@ -257,6 +264,7 @@ const HOVER: EngineVoicing = {
     flutter: false,
     jet: 1,
     jetRatio: 1.5,
+    tyres: 1.25,
   },
 }
 

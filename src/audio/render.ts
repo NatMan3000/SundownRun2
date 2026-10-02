@@ -8,6 +8,7 @@
 //  a reel, look at it (spectrogram, peak levels) and play it back.
 //
 //    renderEngineSweep()   the scripted test drive through the engine
+//                          (or the tyre test drive: long drifts and slides)
 //    renderEffectsReel()   every sound effect, one after another
 //    renderMusic(mood)     a mood's soundtrack driven through a scripted
 //                          drive (intro, groove, build, drop, breakdown),
@@ -32,7 +33,8 @@ import type { MotorLoad } from './motorDsp'
 import { Effects } from './effects'
 import { makeKit } from './voices'
 import { hashString, makeNoiseBuffer } from './synth'
-import { SWEEP_SECONDS, sweepInput } from './sweep'
+import { SWEEP_SECONDS, TEST_DRIVES, sweepInput } from './sweep'
+import type { TestDriveId } from './sweep'
 import { MusicSystem, LOOKAHEAD_S } from './music'
 import { MOODS, TITLE_BPM } from './music/score'
 import type { MoodId } from './music/score'
@@ -87,17 +89,22 @@ export interface EngineRenderLog {
   maxCrackle: number
   /** Highest turbo spool reached (0..1). */
   maxSpool: number
+  /** Tyre barks (grip breaking or catching). */
+  tyreBarks: number
 }
 
 /**
  * The engine test drive (idle, revs, gears, cruise, lift-off, jump with free-rev,
  * landing, drift, boost, off-road, mag grip), for one engine voicing.
+ * drive 'drift' records the tyre test drive instead (see driftInput in sweep.ts).
  */
 export async function renderEngineSweep(
   id: EngineSoundId = DEFAULT_ENGINE_SOUND,
   motor: MotorChoice = 'worklet',
+  drive: TestDriveId = 'sweep',
 ): Promise<{ buf: AudioBuffer; log: EngineRenderLog }> {
-  const ctx = new OfflineAudioContext(2, Math.ceil(RATE * SWEEP_SECONDS), RATE)
+  const run = TEST_DRIVES[drive]
+  const ctx = new OfflineAudioContext(2, Math.ceil(RATE * run.seconds), RATE)
   const mix = buildMix(ctx)
   const noise = makeNoiseBuffer(ctx)
   const { engine } = await offlineEngine(ctx, mix.engine, noise, id, motor)
@@ -111,9 +118,9 @@ export async function renderEngineSweep(
   let airStart = 0
   let maxCrackle = 0
   let maxSpool = 0
-  for (let f = 0; f <= SWEEP_SECONDS * 60; f++) {
+  for (let f = 0; f <= run.seconds * 60; f++) {
     const t = f / 60
-    sweepInput(t, input)
+    run.input(t, input)
     engine.update(input, t)
     maxCrackle = Math.max(maxCrackle, engine.readout.crackle)
     maxSpool = Math.max(maxSpool, engine.readout.spool)
@@ -136,6 +143,7 @@ export async function renderEngineSweep(
     blowOffs: engine.readout.blowOffs,
     maxCrackle: Math.round(maxCrackle * 1000) / 1000,
     maxSpool: Math.round(maxSpool * 1000) / 1000,
+    tyreBarks: engine.readout.tyreBarks,
   }
   const buf = await ctx.startRendering()
   engine.dispose()

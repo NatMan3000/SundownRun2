@@ -25,12 +25,15 @@
 //      road hiss       smooth wet-glass hiss on the road
 //      terrain rumble  low, lumpy noise off-road
 //      mag hum         a deep electric thrum while magnetic grip holds you
-//      tyre squeal     a narrow singing band + a wobbling tone from slip
+//      tyres           a broad, rough scrub of rubber that grows with slip,
+//                      plus a short bark when grip breaks or catches
 //
 //  Everything high and thin was taken out on purpose: the old engine's
 //  turbine whine (a thin sine at 1.6-2.5 kHz with a wobble) is what made
-//  it sound like a mosquito. Nothing here holds a loud note above about
-//  1.2 kHz; the bright sounds (blow-off, squeal) only come and go.
+//  it sound like a mosquito, and the old tyre squeal (a narrow band and a
+//  wobbling tone at 1-1.8 kHz) sounded like a whistle. Nothing here holds
+//  a loud note above about 1.2 kHz; the bright sounds (blow-off, the tyre
+//  bark) only come and go.
 // ============================================================
 
 import { Knob, clamp01, holdParam, smoothstep } from './synth'
@@ -86,6 +89,30 @@ const CRACKLE_S = 1.6
 /** Shortest gap between two blow-offs (seconds). */
 const BLOWOFF_GAP_S = 0.8
 
+/**
+ * The tyres. All noise, never a note: a note up high is what made the old
+ * squeal sound like a whistle. scrubHz and scrubQ are [small slide, full drift].
+ */
+const TYRE = {
+  /** Loudness of the scrub (a wide band of noise) in a full slide. */
+  scrub: 0.112,
+  /** Loudness of the low "body" that joins in on a big, fast drift. */
+  body: 0.12,
+  /** Middle of the scrub's band, Hz. Lower = deeper. */
+  scrubHz: [900, 600],
+  /** How narrow the scrub's band is. Lower = wider. Kept under 1: a narrow band starts to sing. */
+  scrubQ: [0.8, 0.5],
+  /** How many times a second the tread grabs and lets go: crawling, and at 150 km/h. */
+  grainHz: [60, 140],
+  /** How much that grabbing shakes the volume (0 = a smooth hiss, 1 = chopped up). */
+  roughness: 0.85,
+  /** The bark when grip breaks (the catch is quieter): loudness, and the Hz its pitch falls from and to. */
+  bark: 0.11,
+  barkHz: [850, 500],
+  /** Shortest gap between two barks (seconds). */
+  barkGapS: 0.5,
+} as const
+
 /** Where the motor is running: on the audio thread, built from nodes, or still loading. */
 export type MotorKind = 'loading' | 'worklet' | 'nodes'
 
@@ -100,11 +127,14 @@ export interface EngineReadout {
   wind: number
   road: number
   rumble: number
-  squeal: number
+  /** How hard the tyres are scrubbing, 0..1. */
+  tyres: number
   mag: number
   boostJet: number
   shifts: number
   blowOffs: number
+  /** Tyre barks so far (grip breaking or catching). */
+  tyreBarks: number
 }
 
 /** A fixed seed per voicing, so a render of the same drive always sounds the same. */
@@ -138,6 +168,12 @@ export class EngineVoice {
   private lastBlowOff = -100
   private readonly blowGain: GainNode
   private readonly blowBand: BiquadFilterNode
+  /** The tyres: are they sliding, the biggest slide since grip broke, the last bark. */
+  private sliding = false
+  private slidePeak = 0
+  private lastBark = -100
+  private readonly barkGain: GainNode
+  private readonly barkBand: BiquadFilterNode
 
   // knobs moved every frame
   private readonly k: {
@@ -154,10 +190,11 @@ export class EngineVoice {
     wind: Knob
     road: Knob
     rumble: Knob
-    squealHz: Knob
-    squealOscHz: Knob
-    squealTone: Knob
-    squealNoise: Knob
+    scrubHz: Knob
+    scrubQ: Knob
+    scrub: Knob
+    body: Knob
+    grain: Knob
     magHz: Knob
     magBHz: Knob
     mag: Knob
@@ -180,11 +217,12 @@ export class EngineVoice {
       wind: 0,
       road: 0,
       rumble: 0,
-      squeal: 0,
+      tyres: 0,
       mag: 0,
       boostJet: 0,
       shifts: 0,
       blowOffs: 0,
+      tyreBarks: 0,
     }
     const t0 = ctx.currentTime
     const src = <T extends AudioScheduledSourceNode>(n: T): T => {
@@ -322,25 +360,48 @@ export class EngineVoice {
     rumbleAmp.connect(rumble)
     rumble.connect(out)
 
-    // ================= tyre squeal: a narrow singing noise band plus a wobbling triangle =================
-    const squealBp = filter('bandpass', 1200, 9)
-    const squealNoise = gain(0)
-    noiseLoop(1.71).connect(squealBp)
-    squealBp.connect(squealNoise)
-    const squealOsc = src(ctx.createOscillator())
-    squealOsc.type = 'triangle'
-    squealOsc.frequency.value = 1200
-    const squealWobble = lfo(6.7)
-    const squealWobbleDepth = gain(22)
-    squealWobble.connect(squealWobbleDepth)
-    squealWobbleDepth.connect(squealOsc.frequency)
-    squealOsc.start(t0)
-    const squealTone = gain(0)
-    squealOsc.connect(squealTone)
-    const squealHp = filter('highpass', 600, 0.7)
-    squealNoise.connect(squealHp)
-    squealTone.connect(squealHp)
-    squealHp.connect(out)
+    // ================= tyres: rubber scrubbing sideways across a wet road =================
+    // Noise only, never a note. A wide band (the scrub) and a low band (the body of a
+    // big drift) are both made rough by a fast, random shake in their volume: the tread
+    // grabbing the road and letting go, many times a second. That roughness is what
+    // makes it sound like rubber instead of wind.
+    const tyreNoise = noiseLoop(1.71)
+    const scrubBp = filter('bandpass', TYRE.scrubHz[0], TYRE.scrubQ[0])
+    // A soft top at 2 kHz (Q -3 means no bump at the corner): rubber, not hiss.
+    const scrubLp = filter('lowpass', 2000, -3)
+    const scrub = gain(0)
+    tyreNoise.connect(scrubBp)
+    scrubBp.connect(scrubLp)
+    scrubLp.connect(scrub)
+    const bodyLp = filter('lowpass', 360, 0.7)
+    const body = gain(0)
+    tyreNoise.connect(bodyLp)
+    bodyLp.connect(body)
+    // The shake: white noise played back very slowly turns into a random wobble
+    // (a new random value grainHz times a second), and the wobble moves the volume.
+    const grain = src(ctx.createBufferSource())
+    grain.buffer = noise
+    grain.loop = true
+    grain.playbackRate.value = TYRE.grainHz[0] / noise.sampleRate
+    grain.start(t0, 0.29)
+    const rough = gain(1)
+    const roughDepth = gain(TYRE.roughness)
+    grain.connect(roughDepth)
+    roughDepth.connect(rough.gain)
+    scrub.connect(rough)
+    body.connect(rough)
+    const tyreHp = filter('highpass', 90, 0.7)
+    rough.connect(tyreHp)
+    tyreHp.connect(out)
+    // The bark: silent until grip breaks (or catches), then a short "khh" falling in pitch.
+    // (A soft top at 1.6 kHz keeps the fizz of the band's edges out of it.)
+    this.barkBand = filter('bandpass', TYRE.barkHz[0], 1.8)
+    const barkTop = filter('lowpass', 1600, -3)
+    this.barkGain = gain(0)
+    noiseLoop(0.83).connect(this.barkBand)
+    this.barkBand.connect(barkTop)
+    barkTop.connect(this.barkGain)
+    this.barkGain.connect(out)
 
     // ================= mag hum: a deep, round electric thrum =================
     // Soft wave shapes (a triangle and a sine) under a gentle filter: a hum you feel,
@@ -382,10 +443,11 @@ export class EngineVoice {
       wind: new Knob(wind.gain, 0.12, 0.0005),
       road: new Knob(road.gain, 0.08, 0.0005),
       rumble: new Knob(rumble.gain, 0.06, 0.0005),
-      squealHz: new Knob(squealBp.frequency, 0.08, 4),
-      squealOscHz: new Knob(squealOsc.frequency, 0.08, 4),
-      squealTone: new Knob(squealTone.gain, 0.05, 0.0003),
-      squealNoise: new Knob(squealNoise.gain, 0.05, 0.0003),
+      scrubHz: new Knob(scrubBp.frequency, 0.1, 4),
+      scrubQ: new Knob(scrubBp.Q, 0.1, 0.01),
+      scrub: new Knob(scrub.gain, 0.06, 0.0003),
+      body: new Knob(body.gain, 0.08, 0.0003),
+      grain: new Knob(grain.playbackRate, 0.2, 0.5 / noise.sampleRate),
       magHz: new Knob(magA.frequency, 0.2, 0.3),
       magBHz: new Knob(magB.frequency, 0.2, 0.3),
       mag: new Knob(mag.gain, 0.1, 0.0005),
@@ -527,14 +589,20 @@ export class EngineVoice {
     k.road.to(roadLevel, t)
     k.rumble.to(rumbleLevel, t)
 
-    // ---------- tyre squeal from slip ----------
-    // Only on the ground and moving. A held drift sits lower and steadier.
+    // ---------- tyres: a rough scrub from slip, never a whistle ----------
+    // Only on the ground and moving. A bigger slide is louder, and a drift (the back
+    // stepping out) also gets deeper and wider; a small slide or the front tyres
+    // pushing wide is a lighter scrub. Quieter on grass and dirt.
     const slipAmt = grounded && speed > 12 ? smoothstep(0.18, 0.8, e.slip) * Math.min(1, speed / 45) : 0
-    const squealHz = (e.drifting ? 950 : 1150) + 600 * e.slip
-    k.squealHz.to(squealHz, t)
-    k.squealOscHz.to(squealHz, t)
-    k.squealNoise.to(slipAmt * 0.07 * (e.offRoad ? 0.3 : 1), t)
-    k.squealTone.to(slipAmt * 0.018 * (e.offRoad ? 0 : 1), t)
+    const depth = e.drifting ? slipAmt : 0.3 * slipAmt
+    const fast = smoothstep(30, 130, speed)
+    const surface = (e.offRoad ? 0.3 : 1) * L.tyres
+    k.scrubHz.to(TYRE.scrubHz[0] + (TYRE.scrubHz[1] - TYRE.scrubHz[0]) * depth, t)
+    k.scrubQ.to(TYRE.scrubQ[0] + (TYRE.scrubQ[1] - TYRE.scrubQ[0]) * depth, t)
+    k.scrub.to(TYRE.scrub * slipAmt * (0.8 + 0.2 * fast) * surface, t)
+    k.body.to(TYRE.body * depth * depth * (0.35 + 0.65 * fast) * surface, t)
+    k.grain.to((TYRE.grainHz[0] + (TYRE.grainHz[1] - TYRE.grainHz[0]) * Math.min(speed / 150, 1)) / this.noise.sampleRate, t)
+    this.watchGrip(t, slipAmt, speed, grounded && !e.offRoad)
 
     // ---------- mag hum ----------
     const mag = clamp01(e.magStrength)
@@ -550,7 +618,7 @@ export class EngineVoice {
     r.wind = wind
     r.road = roadLevel
     r.rumble = rumbleLevel
-    r.squeal = slipAmt
+    r.tyres = slipAmt
     r.mag = mag
     r.boostJet = boostNow
   }
@@ -600,6 +668,43 @@ export class EngineVoice {
     }
     this.lastBlowOff = t
     this.readout.blowOffs++
+  }
+
+  /**
+   * Grip breaking and catching. Hysteresis (a slide starts above 0.45 and ends below
+   * 0.15) stops a wobbling slip from barking again and again. barkable is false in
+   * the air (the slide "ending" on take-off is not grip coming back) and off-road.
+   */
+  private watchGrip(t: number, amt: number, speed: number, barkable: boolean): void {
+    const canBark = barkable && speed > 25 && t - this.lastBark > TYRE.barkGapS
+    const strength = Math.min(1, speed / 70)
+    if (!this.sliding) {
+      if (amt > 0.45) {
+        this.sliding = true
+        this.slidePeak = amt
+        if (canBark) this.bark(t, strength)
+      }
+    } else {
+      if (amt > this.slidePeak) this.slidePeak = amt
+      if (amt < 0.15) {
+        this.sliding = false
+        if (canBark && this.slidePeak > 0.7) this.bark(t, 0.55 * strength)
+      }
+    }
+  }
+
+  /** A short, low "khh" from the tyres, its pitch falling. Not a note: filtered noise. */
+  private bark(t: number, amount: number): void {
+    const g = this.barkGain.gain
+    const f = this.barkBand.frequency
+    holdParam(g, t)
+    holdParam(f, t)
+    f.setValueAtTime(TYRE.barkHz[0], t)
+    f.exponentialRampToValueAtTime(TYRE.barkHz[1], t + 0.14)
+    g.setTargetAtTime(TYRE.bark * this.voicing.layers.tyres * amount, t, 0.006)
+    g.setTargetAtTime(0, t + 0.03, 0.045)
+    this.lastBark = t
+    this.readout.tyreBarks++
   }
 
   dispose(): void {

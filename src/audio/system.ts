@@ -41,7 +41,8 @@ import { Effects } from './effects'
 import { makeKit } from './voices'
 import type { VoiceKit } from './voices'
 import { hashString, makeNoiseBuffer } from './synth'
-import { SWEEP_SECONDS, sweepInput } from './sweep'
+import { TEST_DRIVES } from './sweep'
+import type { TestDriveId } from './sweep'
 import { MusicSystem, SECTIONS, TICK_MS } from './music'
 import type { Section } from './music'
 import { MOODS } from './music/score'
@@ -113,6 +114,8 @@ export class AudioRig {
   private readonly override: EngineInput = makeEngineInput()
   private overrideActive = false
   private sweepStart = -1
+  /** Which scripted drive startSweep() is playing. */
+  private sweepDrive: TestDriveId = 'sweep'
 
   // landing detector
   private wasAirborne = false
@@ -356,11 +359,12 @@ export class AudioRig {
   private readInput(t: number): EngineInput {
     if (this.sweepStart >= 0) {
       const s = t - this.sweepStart
-      if (s > SWEEP_SECONDS) {
+      const run = TEST_DRIVES[this.sweepDrive]
+      if (s > run.seconds) {
         this.sweepStart = -1
         this.overrideActive = false
       } else {
-        sweepInput(s, this.override)
+        run.input(s, this.override)
         return this.override
       }
     }
@@ -422,13 +426,17 @@ export class AudioRig {
     this.overrideActive = true
   }
 
-  /** Run the scripted engine test drive (idle, gears, jump, drift, boost, off-road, mag). */
-  startSweep(): number {
+  /**
+   * Run a scripted test drive: 'sweep' (idle, gears, jump, drift, boost, off-road, mag)
+   * or 'drift' (the tyres: long drifts, a small slide, off-road). Returns its length in seconds.
+   */
+  startSweep(drive: TestDriveId = 'sweep'): number {
     const g = this.g
     if (!g) return 0
+    this.sweepDrive = drive
     this.sweepStart = g.ctx.currentTime
     this.overrideActive = true
-    return SWEEP_SECONDS
+    return TEST_DRIVES[drive].seconds
   }
 
   /** Dev: play another engine voicing now ('auto' = back to the URL / config.ts choice). */
@@ -490,7 +498,7 @@ export class AudioRig {
         : this.musicMuted
           ? 'muted (?nomusic=1)'
           : null,
-      engineSource: this.sweepStart >= 0 ? 'sweep' : this.overrideActive ? 'override' : 'telemetry',
+      engineSource: this.sweepStart >= 0 ? this.sweepDrive : this.overrideActive ? 'override' : 'telemetry',
       engineSound: g
         ? {
             voicing: g.engine.voicingId,

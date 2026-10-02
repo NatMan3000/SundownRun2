@@ -1,5 +1,5 @@
 // ============================================================
-//  ENGINE TEST DRIVE - a scripted run for hearing the engine
+//  ENGINE TEST DRIVES - scripted runs for hearing the engine
 // ------------------------------------------------------------
 //  Lets anyone hear (or render) every engine layer without a car:
 //  __dev.audio('sweep') plays it live, and render.ts records it.
@@ -7,6 +7,9 @@
 //  moment of the 18-second run. The rpm follows what the real
 //  gearbox does (src/vehicle/carSim.ts): after an upshift it drops
 //  to about 0.2 and climbs back to about 0.97 before the next one.
+//
+//  driftInput() further down is a second run, all about the tyres:
+//  long drifts, a big one, a small slide and a slide on the grass.
 // ============================================================
 
 import type { EngineInput } from './engine'
@@ -141,4 +144,114 @@ export function sweepInput(s: number, out: EngineInput): void {
   out.magStrength = 1
   out.speedKmh = 160
   out.rpm = 0.8
+}
+
+// ============================================================
+//  TYRE TEST DRIVE - 19 seconds of sliding, for hearing the tyres
+// ------------------------------------------------------------
+//  __dev.audio('sweep', 'drift') plays it live and
+//  __dev.audio('render', 'drift', 'muscle') records it. The slip
+//  rises and falls the way the real car's does (logged from a
+//  handbrake drift on Afterglow): about 0.4 s to break grip, flat
+//  at 1 through a big drift, about 0.5 s to catch it again.
+// ============================================================
+
+/** How long the tyre test drive lasts, seconds. */
+export const DRIFT_SECONDS = 19
+
+/** Where each part of the tyre test drive starts (seconds). */
+export const DRIFT_MARKS = {
+  cruise: 0, //      60 km/h in 2nd, tyres gripping
+  break60: 1.2, //   the back steps out
+  drift60: 1.6, //   a long drift at 60 km/h (what Josh was doing)
+  catch60: 6.6, //   grip comes back
+  pull: 7.1, //      full throttle up to 120 km/h
+  break120: 9.2, //  the back steps out again
+  drift120: 9.55, // a big drift at 120 km/h
+  catch120: 13.55,
+  straight: 14.05,
+  slide: 15.0, //    a small slide through a fast bend
+  offRoad: 17.0, //  sliding on the grass and dirt
+  end: 18.5,
+} as const
+
+/** Driver feathering the throttle in a drift: a slow, uneven wobble (two sines). */
+function feather(s: number): number {
+  return 0.6 * Math.sin(s * 2 * Math.PI * 1.3) + 0.4 * Math.sin(s * 2 * Math.PI * 0.55 + 1)
+}
+
+/**
+ * The tyre test drive, as a function of seconds since start.
+ * Writes into `out` (no allocation). See DRIFT_MARKS for the timeline.
+ */
+export function driftInput(s: number, out: EngineInput): void {
+  const M = DRIFT_MARKS
+  out.airborne = false
+  out.onRoad = true
+  out.offRoad = false
+  out.magStrength = 0
+  out.boost = 0
+  out.slip = 0
+  out.gear = 2
+  if (s < M.break60) {
+    out.speedKmh = 60
+    out.throttle = 0.45
+    out.rpm = 0.55
+  } else if (s < M.pull) {
+    // Break, hold a long drift at about 60 km/h, then catch it.
+    out.speedKmh = 60 + 3 * Math.sin(s * 1.7)
+    out.throttle = 0.72 + 0.15 * feather(s)
+    out.rpm = 0.72 + 0.05 * feather(s + 0.2)
+    if (s < M.drift60) out.slip = smoothstep(M.break60, M.drift60, s)
+    else if (s < M.catch60) out.slip = 0.92 + 0.08 * Math.sin(s * 2 * Math.PI * 0.7)
+    else out.slip = 0.92 * (1 - smoothstep(M.catch60, M.pull, s))
+  } else if (s < M.break120) {
+    // Full throttle from 60 to 120 km/h: the top of 2nd, then 3rd.
+    const u = (s - M.pull) / (M.break120 - M.pull)
+    out.throttle = 1
+    out.speedKmh = 60 + 60 * u
+    if (u < 0.4) {
+      out.rpm = 0.62 + 0.35 * (u / 0.4)
+    } else {
+      out.gear = 3
+      out.rpm = 0.45 + 0.35 * ((u - 0.4) / 0.6)
+    }
+  } else if (s < M.straight) {
+    // A big drift at 120 km/h, scrubbing speed off, then the catch.
+    out.gear = 3
+    out.speedKmh = 120 - 15 * smoothstep(M.break120, M.catch120, s)
+    out.throttle = 0.75 + 0.15 * feather(s)
+    out.rpm = 0.76 + 0.05 * feather(s + 0.2)
+    if (s < M.drift120) out.slip = smoothstep(M.break120, M.drift120, s)
+    else if (s < M.catch120) out.slip = 1
+    else out.slip = 1 - smoothstep(M.catch120, M.straight, s)
+  } else if (s < M.offRoad) {
+    // Straight, then a small slide (a bend taken a little too fast).
+    out.gear = 3
+    out.speedKmh = 105 - 10 * smoothstep(M.straight, M.slide + 1, s)
+    out.throttle = 0.6
+    out.rpm = 0.66
+    if (s >= M.slide) out.slip = 0.36 * Math.sin((Math.PI * (s - M.slide)) / (M.offRoad - M.slide))
+  } else {
+    // Sliding off the road onto the grass, then rolling to a stop.
+    out.onRoad = false
+    out.offRoad = true
+    out.speedKmh = 70 * (1 - smoothstep(M.offRoad, DRIFT_SECONDS, s))
+    out.throttle = s < M.end ? 0.5 : 0
+    out.rpm = s < M.end ? 0.6 : 0.3
+    out.slip = s < M.end ? 0.8 * smoothstep(M.offRoad, M.offRoad + 0.3, s) : 0.8 * (1 - smoothstep(M.end, M.end + 0.4, s))
+  }
+  out.drifting = out.slip > 0.25
+}
+
+/** The scripted drives, by name: the engine test drive and the tyre test drive. */
+export const TEST_DRIVES = {
+  sweep: { seconds: SWEEP_SECONDS, input: sweepInput },
+  drift: { seconds: DRIFT_SECONDS, input: driftInput },
+} as const
+
+export type TestDriveId = keyof typeof TEST_DRIVES
+
+export function isTestDrive(id: string): id is TestDriveId {
+  return id in TEST_DRIVES
 }
