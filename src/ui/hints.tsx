@@ -55,8 +55,9 @@ export function Glyph(props: { name: string; pad: boolean }) {
   if (name === 'ARROWS') {
     return (
       <span className="glyph glyph--key glyph--arrows" aria-label="arrow keys">
-        <span className="glyph__arrow glyph__arrow--up" />
-        <span className="glyph__arrow glyph__arrow--down" />
+        <svg className="glyph__arrows" viewBox="0 0 20 10" aria-hidden="true">
+          <path d="M1 7.5 L5 2.5 L9 7.5 Z M11 2.5 L19 2.5 L15 7.5 Z" />
+        </svg>
       </span>
     )
   }
@@ -68,8 +69,9 @@ export function Glyph(props: { name: string; pad: boolean }) {
       </span>
     ) : (
       <span className="glyph glyph--key glyph--arrows" aria-label="left and right arrow keys">
-        <span className="glyph__arrow glyph__arrow--left" />
-        <span className="glyph__arrow glyph__arrow--right" />
+        <svg className="glyph__arrows" viewBox="0 0 20 10" aria-hidden="true">
+          <path d="M7 1 L2 5 L7 9 Z M13 1 L18 5 L13 9 Z" />
+        </svg>
       </span>
     )
   }

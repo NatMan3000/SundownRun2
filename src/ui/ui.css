@@ -950,11 +950,8 @@
 .glyph--dpad-h i:first-child { background: color-mix(in srgb, var(--text) 35%, transparent); }
 .glyph--dpad-h i:last-child { background: color-mix(in srgb, var(--text) 75%, transparent); }
 .glyph--arrows { gap: 0.18em; display: inline-flex; padding: 0 0.4em; }
-.glyph__arrow { width: 0; height: 0; border: 0.3em solid transparent; }
-.glyph__arrow--up { border-bottom-color: var(--text); margin-top: -0.3em; }
-.glyph__arrow--down { border-top-color: var(--text); margin-bottom: -0.3em; }
-.glyph__arrow--left { border-right-color: var(--text); margin-left: -0.3em; }
-.glyph__arrow--right { border-left-color: var(--text); margin-right: -0.3em; }
+/* the arrow keys: an SVG filled with the glyph's own text colour, the same white as "Enter" and "Esc" */
+.glyph__arrows { display: block; width: 1.3em; height: 0.65em; fill: currentColor; }
 
 /* ---------------------------------------------------------------- veil + notice */
 
