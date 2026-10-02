@@ -36,7 +36,6 @@ export function Logo(props: { compact?: boolean }) {
   const sun = `${id}-sun`
   const cuts = `${id}-cuts`
   const pink = `${id}-pink`
-  const cyan = `${id}-cyan`
   // 100 viewBox units = 1em of the logo's font size, so the SVG scales with the layout
   return (
     <h1 className={`logo${props.compact ? ' logo--compact' : ''}`} aria-label="Sundown Run II">
@@ -62,13 +61,6 @@ export function Logo(props: { compact?: boolean }) {
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
-          <filter id={cyan} x="-20%" y="-40%" width="140%" height="180%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="far" />
-            <feMerge>
-              <feMergeNode in="far" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
         </defs>
         {/* each word: the neon outline behind, then the banded sun gradient on top,
             so the outline shows through the cuts. textLength pins the widths whatever
@@ -81,7 +73,10 @@ export function Logo(props: { compact?: boolean }) {
           <text className="logo__outline" x="6" y="172" textLength="196" lengthAdjust="spacingAndGlyphs" filter={`url(#${pink})`}>RUN</text>
           <text x="6" y="172" textLength="196" lengthAdjust="spacingAndGlyphs" fill={`url(#${sun})`} mask={`url(#${cuts})`}>RUN</text>
         </g>
-        <text className="logo__two" x="226" y="170" textLength="64" lengthAdjust="spacingAndGlyphs" filter={`url(#${cyan})`}>II</text>
+        <g className="logo__word">
+          <text className="logo__outline" x="222" y="172" textLength="62" lengthAdjust="spacingAndGlyphs" filter={`url(#${pink})`}>II</text>
+          <text x="222" y="172" textLength="62" lengthAdjust="spacingAndGlyphs" fill={`url(#${sun})`} mask={`url(#${cuts})`}>II</text>
+        </g>
       </svg>
     </h1>
   )

@@ -273,15 +273,6 @@
 }
 /* the neon outline, behind the letters: it shows where the bands cut through */
 .logo__outline { fill: none; stroke: var(--accent2); stroke-width: 2.4px; stroke-linejoin: round; }
-.logo__two {
-  font-size: 92px;
-  font-weight: 700;
-  fill: var(--accent);
-  fill-opacity: 0.22;
-  stroke: var(--accent);
-  stroke-width: 3.2px;
-  stroke-linejoin: round;
-}
 .logo--compact { font-size: 2.6em; }
 
 .tagline {
