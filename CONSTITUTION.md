@@ -149,3 +149,4 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 - 2026-10-02: `CarAnchors` gains an optional `bonnet` point (each body's bonnet camera mount), so a body can cover the physics box without swallowing the camera.
 - 2026-10-02: store gains `garageOpen` (ui writes while the Garage screen is mounted; the camera frames the car as the hero).
 - 2026-10-02: the `crash` event's `what` gains `road` (the road, a ramp or a loop surface), so `terrain` means the ground off the road.
+- 2026-10-02: Settings gains `engineSound` (the engine voicing: `muscle`, `rally` or `hover`), defaulted from the new `config.ts` knob of the same name, so audio reads it through settings like every other knob.

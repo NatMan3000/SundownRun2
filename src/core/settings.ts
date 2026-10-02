@@ -46,6 +46,8 @@ export interface Settings {
   sunsetMinutes: number
   musicVolume: number
   sfxVolume: number
+  /** Engine voicing: 'muscle' | 'rally' | 'hover' (audio/engineVoicings.ts). */
+  engineSound: string
   aiRacers: number
   aiDifficulty: number
   catchUp: boolean
@@ -114,6 +116,7 @@ function defaultsFrom(cfg: typeof CONFIG): Settings {
     sunsetMinutes: cfg.sunsetMinutes,
     musicVolume: cfg.musicVolume,
     sfxVolume: cfg.sfxVolume,
+    engineSound: cfg.engineSound,
     aiRacers: cfg.aiRacers,
     aiDifficulty: cfg.aiDifficulty,
     catchUp: cfg.catchUp,
