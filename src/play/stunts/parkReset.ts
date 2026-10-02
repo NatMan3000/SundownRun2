@@ -11,8 +11,11 @@
 //                   run-in start (the road is behind a barrier)
 //    Shift+R        in Stunt Attack: back to the park's start
 //    pause menu     Free Roam starts on the road as usual; the pause
-//                   menu offers "Stunt park" to hop in and "Back to
-//                   the track" to hop out (core/api.ts play.parkHop)
+//                   menu offers "Stunt park" to hop in (to the park's
+//                   start) and "Back to the track" to hop out (to the
+//                   start line). Both go through the car's ordinary
+//                   reset, so the lap tracker and rewind treat a hop
+//                   like any reset (core/api.ts play.parkHop)
 //
 //  On an open track none of this applies: the park is beside the
 //  road and every reset works as normal.
@@ -22,8 +25,8 @@ import * as THREE from 'three'
 import { getGame } from '../../core/store'
 import { getCar } from '../../core/telemetry'
 import { getTrack } from '../../track/current'
-import type { TrackFrame, TrackRuntime } from '../../track/types'
-import { resetPoseHook } from '../../vehicle/trackNav'
+import type { TrackRuntime } from '../../track/types'
+import { resetPoseHook, startPose } from '../../vehicle/trackNav'
 import { parkLive } from './parkLive'
 
 /** The car's middle sits this far above the ground when it is put down. */
@@ -35,20 +38,7 @@ const _up = new THREE.Vector3(0, 1, 0)
 const _fwd = new THREE.Vector3()
 const _left = new THREE.Vector3()
 const _basis = new THREE.Matrix4()
-const _pos = new THREE.Vector3()
-const _quat = new THREE.Quaternion()
 const _hit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
-const _frame: TrackFrame = {
-  s: 0,
-  position: new THREE.Vector3(),
-  tangent: new THREE.Vector3(),
-  up: new THREE.Vector3(),
-  right: new THREE.Vector3(),
-  halfWidth: 0,
-  bank: 0,
-  curvature: 0,
-  surface: 'road',
-}
 
 /** A pose standing on the ground at (x, z), facing (dx, dz). */
 function groundPose(t: TrackRuntime, x: number, z: number, dx: number, dz: number, outPos: THREE.Vector3, outQuat: THREE.Quaternion): void {
@@ -110,19 +100,36 @@ function nearestSpot(t: TrackRuntime, x: number, z: number, outPos: THREE.Vector
   return true
 }
 
+/** A pause-menu hop waiting for the car's next reset (doParkHop asks for one). */
+let pendingHop: 'park' | 'track' | null = null
+
+/** NaN firewall: only a finite pose ever goes to the car (else the ordinary road reset runs). */
+function finitePose(p: THREE.Vector3, q: THREE.Quaternion): boolean {
+  return Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) && Number.isFinite(q.x) && Number.isFinite(q.y) && Number.isFinite(q.z) && Number.isFinite(q.w)
+}
+
 /** The vehicle's reset hook (trackNav.ts resetPoseHook): only on a walled track's park. */
 function resetHook(kind: 'road' | 'start' | 'auto', x: number, y: number, z: number, outPos: THREE.Vector3, outQuat: THREE.Quaternion): boolean {
   const t = getTrack()
+  const hop = pendingHop
+  pendingHop = null
   if (!t || !enclosedPark()) return false
-  if (kind === 'start') return getGame().mode === 'stunt' ? parkStartPose(outPos, outQuat) : false
-  if (!inPark(t, x, y, z)) return false
-  return nearestSpot(t, x, z, outPos, outQuat)
+  let placed = false
+  if (hop === 'park') placed = parkStartPose(outPos, outQuat)
+  else if (hop === 'track') {
+    startPose(t, 0, outPos, outQuat)
+    placed = true
+  } else if (kind === 'start') placed = getGame().mode === 'stunt' && parkStartPose(outPos, outQuat)
+  else if (inPark(t, x, y, z)) placed = nearestSpot(t, x, z, outPos, outQuat)
+  return placed && finitePose(outPos, outQuat)
 }
 
-/** Install the reset hook while a park is in the world. Returns the uninstall. */
+/** Install the reset hook while a park is in the world (it goes when the mode or the track changes). Returns the uninstall. */
 export function installParkResets(): () => void {
+  pendingHop = null
   resetPoseHook.fn = resetHook
   return () => {
+    pendingHop = null
     if (resetPoseHook.fn === resetHook) resetPoseHook.fn = null
   }
 }
@@ -136,24 +143,14 @@ export function parkHop(): 'park' | 'track' | null {
   return inPark(t, p.x, p.y, p.z) ? 'track' : 'park'
 }
 
-/** Do the hop: into the park's start, or back onto the road beside the park. */
+/**
+ * Do the hop through the car's ordinary reset (R's path): into the park's start, or back to the
+ * start line. The lap tracker and rewind see it as any other reset.
+ */
 export function doParkHop(): void {
-  const t = getTrack()
   const car = getCar('player')
   const hop = parkHop()
-  if (!t || !car?.api || !hop) return
-  if (hop === 'park') {
-    if (parkStartPose(_pos, _quat)) car.api.teleport(_pos, _quat)
-    return
-  }
-  // Back to the track: the nearest plain road, facing the way the lap runs.
-  const p = car.position
-  t.nearest(p.x, p.y, p.z, _hit)
-  t.frameAt(_hit.s, _frame)
-  _pos.copy(_frame.position).addScaledVector(_frame.up, LIFT)
-  _fwd.copy(_frame.tangent)
-  _left.crossVectors(_frame.up, _fwd).normalize()
-  _basis.makeBasis(_left, _frame.up, _fwd)
-  _quat.setFromRotationMatrix(_basis)
-  car.api.teleport(_pos, _quat)
+  if (!car?.api || !hop) return
+  pendingHop = hop
+  car.api.resetToRoad()
 }

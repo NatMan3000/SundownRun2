@@ -62,7 +62,7 @@ export function PauseScreen() {
               <MenuButton
                 id="park-hop"
                 label={hop === 'park' ? 'Stunt park' : 'Back to the track'}
-                help={hop === 'park' ? 'Jump into the stunt park in the middle of the stadium: big ramps, gaps, rings and bullseyes.' : 'Back onto the road, right beside where you are.'}
+                help={hop === 'park' ? 'Jump into the stunt park in the middle of the stadium: big ramps, gaps, rings and bullseyes.' : 'Back onto the road, at the start line.'}
                 onAccept={() => {
                   play.doParkHop()
                   resumeGame()
