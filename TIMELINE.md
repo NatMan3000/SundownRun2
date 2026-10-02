@@ -10,3 +10,4 @@ created: 2026-10-02
 | Date | Event | Details |
 |------|-------|---------|
 | 2026-10-01 | [**Sundown Run Two orchestrated build**](sessions/2026-10-01-sundown-run-two-orchestrated-build.md) | Clean-room rebuild from empty repo: lead + 9 owned-area workers + hands-off checkers; all systems playable, ~198 commits; Rocket League style cars; car physics on loops/banks still in flight. |
+| 2026-10-02 | [Playtest fixes and overnight polish](sessions/2026-10-02-playtest-fixes-overnight-polish.md) | Josh issues #1-#8 closed, rewind, Windows flicker fix, reverse lights, stunts 2, handbrake; done criteria pass; music on unmerged branch |
