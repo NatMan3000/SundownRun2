@@ -156,7 +156,9 @@ if (!flag('no-vite')) {
     cwd = SNAPSHOT
     rmSync(SNAPSHOT, { recursive: true, force: true })
     mkdirSync(SNAPSHOT, { recursive: true })
-    for (const entry of ['src', 'tracks', 'public', 'index.html', 'vite.config.ts', 'tsconfig.json', 'package.json']) {
+    // server/ too: vite.config.ts loads the Report a problem plugin (server/issues.ts). No github-token.txt
+    // is copied, so the snapshot can never post a real issue.
+    for (const entry of ['src', 'server', 'tracks', 'public', 'index.html', 'vite.config.ts', 'tsconfig.json', 'package.json']) {
       if (existsSync(join(ROOT, entry))) cpSync(join(ROOT, entry), join(SNAPSHOT, entry), { recursive: true })
     }
     symlinkSync(join(ROOT, 'node_modules'), join(SNAPSHOT, 'node_modules'))
