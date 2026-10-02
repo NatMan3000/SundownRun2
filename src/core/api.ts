@@ -136,6 +136,17 @@ export interface SimCarProps {
 
 // ---------------------------------------------------------------- play (owner: play)
 
+/** One stunt-park zone, for the maps: a lane from (x, z), heading (dx, dz), `length` metres long, `halfWidth` either side. */
+export interface ParkZoneMark {
+  name: string
+  x: number
+  z: number
+  dx: number
+  dz: number
+  length: number
+  halfWidth: number
+}
+
 export interface PlayApi {
   /** Start a fresh round of the current mode (re-scatter props/cores, reset clocks). */
   newRound: () => void
@@ -145,6 +156,8 @@ export interface PlayApi {
   parkHop: () => 'park' | 'track' | null
   /** Do that hop: the player's car is placed there, stopped (the one sanctioned snap). */
   doParkHop: () => void
+  /** The stunt park's zones for the minimap and the world map; empty when there is no park (races, time trials, ?park=0). The same array until the park changes. */
+  parkZones: () => readonly ParkZoneMark[]
 }
 
 // ---------------------------------------------------------------- registry
@@ -169,7 +182,8 @@ export const vehicle: VehicleApi = {
   },
   disposeModel: noop,
 }
-export const play: PlayApi = { newRound: noop, restartSession: noop, parkHop: () => null, doParkHop: noop }
+const NO_ZONES: readonly ParkZoneMark[] = []
+export const play: PlayApi = { newRound: noop, restartSession: noop, parkHop: () => null, doParkHop: noop, parkZones: () => NO_ZONES }
 
 const installed = { fx: false, audio: false, vehicle: false, play: false }
 

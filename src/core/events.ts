@@ -96,6 +96,8 @@ export interface GameEventMap {
   'stunt.gap': { name: string; points: number }
   /** Stunt park: landed upright on a bullseye target, so the jump's trick points are multiplied (outer ring x2, inner x3). Emitted just before the landing's trick.land. */
   'stunt.target': { multiplier: number; ring: 'outer' | 'inner' }
+  /** Stunt park: the launch you're lined up on, sent only when it changes (a few times a run). `kmh` = the speed on its sign; `band` = your speed against it ('on' = within a few km/h). 'none' = no launch ahead (label '' and kmh 0). */
+  'stunt.lineup': { label: string; kmh: number; band: 'slow' | 'on' | 'fast' | 'none' }
 
   /** Multiplayer. */
   'mp.join': { name: string; id: string }
