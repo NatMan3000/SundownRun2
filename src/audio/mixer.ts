@@ -6,7 +6,7 @@
 //  feed the master fader and a safety limiter before the speakers.
 //
 //    music ─ carve ─ musicTone (lowpass, closes on pause) ─ duck ─ musicVol ─┐
-//    engine ─ engineVol (quiet on the title screen, off on pause) ─┐ │
+//    engine ─ engineVol (only while driving; off in menus) ───────┐ │
 //    fx (crashes, pickups, tricks) ───────────────────────────────┤ │
 //    ui (menu clicks) ────────────────────────────────────────────┴ sfxVol
 //                                                                    │
@@ -27,13 +27,17 @@ const MUSIC_LEVEL = 0.45
 const SFX_LEVEL = 1.0
 const MASTER_LEVEL = 0.9
 
-/** How loud the engine sits in each game phase (it idles quietly behind the title screen). */
+/**
+ * How loud the engine sits in each game phase. Menus are quiet: a parked
+ * engine's idle note is a steady buzz, so behind the title screen and the
+ * results it fades out and only the music and menu clicks play.
+ */
 export const ENGINE_PHASE_LEVEL = {
-  title: 0.32,
+  title: 0,
   loading: 0,
   playing: 1,
   paused: 0,
-  results: 0.55,
+  results: 0,
   editor: 0,
 } as const
 
