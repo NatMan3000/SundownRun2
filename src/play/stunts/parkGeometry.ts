@@ -80,6 +80,8 @@ export interface ExtrudeSpec {
   lips: number[]
   /** Arc lengths where a cyan "land here" line is drawn (the top of a landing). */
   catches: number[]
+  /** A launch's speed sign (km/h to leave its lip at; 0 or missing = none), painted on its face before the first lip. */
+  signKmh?: number
 }
 
 export interface PadSpec {
@@ -114,21 +116,26 @@ const CREASE_COS = Math.cos((28 * Math.PI) / 180)
 
 /**
  * The park's render mesh, grown piece by piece. Attributes:
- *   aPark  (4)  role, metres to the nearest side edge (pads: radius), arc metres along the top, metres to the nearest lip line
+ *   aPark  (4)  role, metres to the nearest side edge (walls: metres down from their top; pads: radius), arc metres
+ *               along the top (end faces: metres across), metres to the nearest lip line
  *   aPark2 (2)  zone, metres to the nearest catch line
+ *   aPark3 (4)  a launch face's speed sign: metres right of the centre line, the number (0 = none),
+ *               the digits' height and how far before the lip they end (metres along the face)
  */
 export class ParkMeshBuilder {
   pos: number[] = []
   nrm: number[] = []
   park: number[] = []
   park2: number[] = []
+  park3: number[] = []
   idx: number[] = []
 
-  vertex(x: number, y: number, z: number, nx: number, ny: number, nz: number, role: number, edge: number, arc: number, lip: number, zone: number, katch: number): number {
+  vertex(x: number, y: number, z: number, nx: number, ny: number, nz: number, role: number, edge: number, arc: number, lip: number, zone: number, katch: number, lateral = 0, sign = 0, signH = 0, signGap = 0): number {
     this.pos.push(x, y, z)
     this.nrm.push(nx, ny, nz)
     this.park.push(role, edge, arc, lip)
     this.park2.push(zone, katch)
+    this.park3.push(lateral, sign, signH, signGap)
     return this.pos.length / 3 - 1
   }
 
@@ -155,6 +162,7 @@ export class ParkMeshBuilder {
     normals: Float32Array
     park: Float32Array
     park2: Float32Array
+    park3: Float32Array
     indices: Uint32Array
   } {
     return {
@@ -162,6 +170,7 @@ export class ParkMeshBuilder {
       normals: Float32Array.from(this.nrm),
       park: Float32Array.from(this.park),
       park2: Float32Array.from(this.park2),
+      park3: Float32Array.from(this.park3),
       indices: Uint32Array.from(this.idx),
     }
   }
@@ -370,6 +379,11 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
   }
   const nv = [0, 0, 0]
   const solid = new SolidBuilder()
+  // The speed sign: digits signH metres tall (along the face), ending signGap metres before the lip.
+  const sign = spec.signKmh && spec.signKmh > 0 && spec.lips.length > 0 ? spec.signKmh : 0
+  const faceArc = spec.lips[0] ?? 0
+  const signH = Math.min(13, Math.max(2.6, faceArc * 0.42))
+  const signGap = Math.max(1.2, faceArc * 0.1)
 
   // ---- top: per strip, rows x across ----
   for (const rows of strips) {
@@ -382,7 +396,7 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
       for (let k = 0; k <= nAcross; k++) {
         const l = -hw + (2 * hw * k) / nAcross
         const edge = hw - Math.abs(l)
-        mesh.vertex(wx(f, r.a, l), topY(r.a, l, r.h, k), wz(f, r.a, l), nv[0], nv[1], nv[2], ROLE.top, edge, r.arc, lip, zone, katch)
+        mesh.vertex(wx(f, r.a, l), topY(r.a, l, r.h, k), wz(f, r.a, l), nv[0], nv[1], nv[2], ROLE.top, edge, r.arc, lip, zone, katch, l, sign, signH, signGap)
       }
     }
     for (let j = 0; j < rows.length - 1; j++) {
@@ -491,7 +505,12 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
       bandsDown(col[0], [wx(f, r.a, lb), botY(r.a, lb), wz(f, r.a, lb)], col)
       cols.push(col)
     }
-    for (let k = 0; k < nAcross; k++) zipWall(cols[k], cols[k + 1], r.arc, r.arc, ox, 0, oz, ox, 0, oz, ROLE.end, mesh, solid, end === 1)
+    // An end face's "arc" for the shader is its distance across (metres right of the centre), for its panel seams.
+    for (let k = 0; k < nAcross; k++) {
+      const l0 = -hw + (2 * hw * k) / nAcross
+      const l1 = -hw + (2 * hw * (k + 1)) / nAcross
+      zipWall(cols[k], cols[k + 1], l0, l1, ox, 0, oz, ox, 0, oz, ROLE.end, mesh, solid, end === 1)
+    }
   }
 
   // ---- bottom (physics only: never seen) ----

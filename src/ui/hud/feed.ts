@@ -9,6 +9,9 @@
 //  Two lists, both tiny and short-lived:
 //    toasts  top-centre pills (best lap, lap void, player joined)
 //    pops    the trick feed in the bottom-left corner
+//  plus the speed-trap readout and the stunt park's speed cue
+//  (stunt.lineup: which launch you're lined up on, and your speed
+//  against its sign), each one at a time.
 //  They change a few times a lap, so plain React state is fine.
 // ============================================================
 
@@ -49,15 +52,24 @@ export interface TrapReadout {
   angle: string | null
 }
 
+/** The stunt park's speed cue: the launch you're lined up on and your speed against its sign. */
+export interface LineupCue {
+  label: string
+  kmh: number
+  band: 'slow' | 'on' | 'fast'
+}
+
 interface FeedState {
   toasts: Toast[]
   pops: TrickPop[]
   trap: TrapReadout | null
+  /** Set while you're lined up on a stunt-park launch (stunt.lineup), else null. */
+  lineup: LineupCue | null
   /** Why the lap in progress went dirty: too long off the road, or you rewound in it. */
   dirtyWhy: 'offroad' | 'rewind'
 }
 
-export const useFeed = create<FeedState>(() => ({ toasts: [], pops: [], trap: null, dirtyWhy: 'offroad' }))
+export const useFeed = create<FeedState>(() => ({ toasts: [], pops: [], trap: null, lineup: null, dirtyWhy: 'offroad' }))
 
 /** When the last rewind ended (event time): a lap that goes dirty in the same moment went dirty because of it. */
 let rewindEndedAt = -1
@@ -107,6 +119,11 @@ const VOID_WHY = {
 
 /** Turn one game event into HUD messages. */
 function onEvent(e: AnyGameEvent): void {
+  // The speed cue is state, not a message: keep it even while paused, so it is never left stale.
+  if (e.type === 'stunt.lineup') {
+    useFeed.setState({ lineup: e.band === 'none' ? null : { label: e.label, kmh: e.kmh, band: e.band } })
+    return
+  }
   const g = getGame()
   if (g.phase !== 'playing' && !(g.multiplayer && g.phase === 'paused')) return
   switch (e.type) {

@@ -12,6 +12,8 @@
 //    rewind        a meter under the speed (how much is stored), and
 //                  while it's held the whole view tints with a
 //                  REWIND tag (Rewind.tsx)
+//    speed cue     in the stunt park, above the speed: the launch
+//                  you're lined up on and its speed (ParkCue.tsx)
 //  The 3-2-1-GO countdown is the one thing allowed in the middle,
 //  and only while the cars are still on the grid.
 //
@@ -39,6 +41,7 @@ import { SoundHint } from '../SoundHint'
 import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
 import { RewindMeter, RewindRefused, RewindScreen, resetRewindShown, writeRewind } from './Rewind'
+import { ParkCue } from './ParkCue'
 import { useFeed } from './feed'
 
 /** Text writes per second for numbers. The eye can't read a 60 Hz speedo anyway. */
@@ -429,6 +432,7 @@ export function Hud() {
         {panels.tricks && <TrickBoard />}
       </div>
       <div className="hud-stack hud-stack--br">
+        <ParkCue />
         <SpeedTrap />
         <SpeedCluster />
         <RewindMeter />

@@ -1290,6 +1290,34 @@
 .hud-trap.is-best .hud-trap__best { color: var(--sun-top); font-weight: 600; }
 @keyframes trap-in { from { opacity: 0; transform: translateY(0.6em) scale(0.94); } to { opacity: 1; transform: none; } }
 
+/* stunt park speed cue (ParkCue.tsx): the launch ahead, the speed on its face, and how you compare.
+   Amber while you're off the number (caution), cyan once you're on it (guidance). */
+.hud-cue {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15em;
+  padding: 0.55em 1em 0.6em;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: var(--hud-glass);
+  backdrop-filter: blur(10px);
+  text-shadow: var(--legible);
+  transition: border-color 200ms var(--ease), box-shadow 200ms var(--ease);
+  animation: trap-in 220ms var(--ease) both;
+}
+.hud-cue .hud-label { color: var(--dim); }
+.hud-cue__row { display: flex; align-items: baseline; gap: 0.75em; }
+.hud-cue__kmh { font-family: var(--font-display); font-size: 2.2em; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; color: var(--text); transition: color 200ms var(--ease); }
+.hud-cue__kmh i { font-style: normal; font-size: 0.36em; margin-left: 0.25em; letter-spacing: 0.18em; text-transform: uppercase; color: var(--dim); }
+.hud-cue__band { font-size: 0.95em; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--warn); transition: color 200ms var(--ease); }
+.hud-cue.is-on { border-color: color-mix(in srgb, var(--accent) 70%, transparent); box-shadow: 0 0 1.4em color-mix(in srgb, var(--accent) 26%, transparent); }
+.hud-cue.is-on .hud-cue__band,
+.hud-cue.is-on .hud-cue__kmh { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) {
+  .hud-cue { animation: none; }
+}
+
 /* 3 - 2 - 1 - GO (the one centre element, only on the grid) */
 .hud-count {
   position: absolute;

@@ -19,6 +19,7 @@
 //    - gives every piece its own solid triangle-mesh collider,
 //      tagged 'ramp' (the car treats it like the road's kickers)
 //    - flashes a ring when you fly through it
+//    - works out the HUD's speed cue for the launch ahead (parkCue.ts)
 //    - dev handles: __dev.park(), __dev.parkGo(item, kmh) and the
 //      'stunts' section of window.__game.get('play')
 //
@@ -37,7 +38,7 @@ import { useRapier } from '@react-three/rapier'
 import { PALETTE } from '../../core/palette'
 import { CONFIG } from '../../core/config'
 import { useGame } from '../../core/store'
-import { getCar } from '../../core/telemetry'
+import { environment, getCar } from '../../core/telemetry'
 import { registerDev, urlParam } from '../../core/devHandles'
 import { useTrack } from '../../track/current'
 import { add, removeColliderSet } from '../../track/colliders'
@@ -53,6 +54,7 @@ import { makeParkMaterial, makeRingMaterial } from './stuntMaterial'
 import { parkLive } from './parkLive'
 import { loadParkJudge, PARK_REWIND_FLOATS, parkJudge, resetParkJudge, saveParkJudge } from './parkScoring'
 import { installParkResets } from './parkReset'
+import { clearParkCue, cueLaunches, parkCueShown, stepParkCue } from './parkCue'
 import { setAirJudge } from '../../vehicle/tricks'
 import { addRewindPart } from '../../vehicle'
 /** A ring's flash after you fly through it, seconds (T3 must stay under half a second). */
@@ -111,6 +113,7 @@ function ParkField({ track }: { track: TrackRuntime }) {
     geo.setAttribute('normal', new THREE.BufferAttribute(g.normals, 3))
     geo.setAttribute('aPark', new THREE.BufferAttribute(g.park, 4))
     geo.setAttribute('aPark2', new THREE.BufferAttribute(g.park2, 2))
+    geo.setAttribute('aPark3', new THREE.BufferAttribute(g.park3, 4))
     geo.setIndex(new THREE.BufferAttribute(g.indices, 1))
     geo.computeBoundingSphere()
     return { geo, solids, triangles: g.indices.length / 3 }
@@ -120,8 +123,10 @@ function ParkField({ track }: { track: TrackRuntime }) {
   useEffect(() => () => built.geo.dispose(), [built])
 
   const time = useMemo(() => ({ value: 0 }), [])
+  // The sky's horizon colour, copied in every frame: the walls catch it as a sheen.
+  const horizon = useMemo(() => ({ value: new THREE.Color().copy(environment.horizon) }), [])
   const edge = track.file.environment.palette?.edge ?? PALETTE.roadEdge
-  const material = useMemo(() => makeParkMaterial(time, { edge }), [time, edge])
+  const material = useMemo(() => makeParkMaterial(time, { edge, horizon }), [time, edge, horizon])
   useEffect(() => () => material.dispose(), [material])
 
   // ---- rings: one instanced torus, each with its own flash ----
@@ -156,6 +161,10 @@ function ParkField({ track }: { track: TrackRuntime }) {
     mesh.computeBoundingSphere()
   }, [layout, rings])
 
+  // ---- the speed cue: the launches with a sign, and the HUD told nothing when the park goes ----
+  const launches = useMemo(() => cueLaunches(layout), [layout])
+  useEffect(() => () => clearParkCue(), [launches])
+
   // ---- physics: one closed triangle mesh per piece, on its own fixed body ----
   useEffect(() => {
     const set: ColliderSet = { body: world.createRigidBody(rapier.RigidBodyDesc.fixed()), handles: [] }
@@ -188,7 +197,7 @@ function ParkField({ track }: { track: TrackRuntime }) {
         'park',
         (() => ({
           zones: layout.zones.map((z) => `${z.id} ${z.name} (${Math.round(z.x)}, ${Math.round(z.z)}) ${Math.round(z.length)} m`),
-          items: layout.items.map((it) => `${it.id} ${it.kind} ${it.label} @(${Math.round(it.x)}, ${it.y.toFixed(1)}, ${Math.round(it.z)}) zone ${it.zone}${it.designKmh ? ` ${it.designKmh} km/h` : ''}`),
+          items: layout.items.map((it) => `${it.id} ${it.kind} ${it.label} @(${Math.round(it.x)}, ${it.y.toFixed(1)}, ${Math.round(it.z)}) zone ${it.zone}${it.designKmh ? ` ${it.designKmh} km/h` : ''}${it.signKmh ? ` sign ${it.signKmh}` : ''}`),
           jumps: layout.jumps.map((j) => `${j.name} ${j.points}`),
           triangles: built.triangles,
           colliders: built.solids.length,
@@ -264,6 +273,30 @@ function ParkField({ track }: { track: TrackRuntime }) {
         }) as never,
         "parkShot(zone, view = 'side' | 'run' | 'top'): point the camera at a stunt-park zone ( __dev.cam('free') to go back)",
       ),
+      registerDev(
+        'parkLook',
+        ((item: number, dist = 30, angleDeg = 60, up = 4, ahead = 0) => {
+          const it = layout.items[Number(item)]
+          if (!it) return `no item ${item} (0..${layout.items.length - 1})`
+          // Look at the item's reference point (a lip, a ring, a target), moved `ahead` metres along its lane.
+          const lx = it.x + it.dx * (Number(ahead) || 0)
+          const lz = it.z + it.dz * (Number(ahead) || 0)
+          const ly = it.y
+          // From `dist` metres away: angle 0 = from behind (down the run-in), 90 = from its right, 180 = from beyond.
+          const ang = ((Number(angleDeg) || 0) * Math.PI) / 180
+          const bx = -it.dx * Math.cos(ang) - it.dz * Math.sin(ang)
+          const bz = -it.dz * Math.cos(ang) + it.dx * Math.sin(ang)
+          const d = Number(dist) || 30
+          const cx = lx + bx * d
+          const cz = lz + bz * d
+          const cy = Math.max(track.terrainHeight(cx, cz) + 1.5, ly + (Number(up) || 0))
+          const name = `at:${[cx, cy, cz, lx, ly, lz].map((v) => v.toFixed(1)).join(',')}`
+          const dev = (window as unknown as { __dev?: Record<string, (v: string) => unknown> }).__dev
+          dev?.cam?.(name)
+          return name
+        }) as never,
+        'parkLook(item, dist = 30, angleDeg = 60, up = 4, ahead = 0): camera on one stunt-park item (0 = from behind, 90 = its right side, 180 = from beyond), looking at its lip / ring / target moved `ahead` m along the lane',
+      ),
       registerPlayInspector('stunts', () => ({
         zones: layout.zones.length,
         items: layout.items.length,
@@ -274,16 +307,20 @@ function ParkField({ track }: { track: TrackRuntime }) {
         colliders: built.solids.length,
         layoutMs: Math.round(layout.buildMs),
         skipped: layout.skipped,
+        signs: launches.map((l) => `${l.label} ${l.kmh}`),
+        lineup: { ...parkCueShown() },
       })),
     ]
     return () => {
       for (const off of offs) off()
     }
-  }, [layout, built, track])
+  }, [layout, built, track, launches])
 
-  // ---- per frame: the shader clock and the ring flashes (no allocation) ----
+  // ---- per frame: the shader clock, the sky's colour, the speed cue and the ring flashes (no allocation) ----
   useFrame((_, delta) => {
     time.value = (time.value + Math.min(delta, 0.1)) % 600
+    horizon.value.copy(environment.horizon)
+    stepParkCue(launches)
     const mesh = ringRef.current
     if (!mesh) return
     let dirty = false

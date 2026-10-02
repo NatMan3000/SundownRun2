@@ -28,12 +28,11 @@ import { fx } from '../../core/api'
 import { PALETTE } from '../../core/palette'
 import type { AirJudge, Trick, TrickInput } from '../../vehicle/tricks'
 import { parkLive } from './parkLive'
+import { RING_MARGIN } from './parkLayout'
 import type { FrameBox, ParkLayout } from './parkLayout'
 
 /** Points for one ring; a chain of n rings in one jump scores RING_POINTS x (1 + 2 + ... + n). */
 export const RING_POINTS = 150
-/** The car's middle must pass this far inside a ring's tube to count (metres). */
-const RING_MARGIN = 0.35
 /** Most rings one jump can chain (more than any zone has). */
 const MAX_CHAIN = 8
 /** A target counts a touchdown this far above or below its top (metres). */
@@ -190,6 +189,11 @@ export const parkJudge: AirJudge = {
 
   pending(): number {
     return jump.open ? ringPoints(jump.chain) : 0
+  },
+
+  links(): number {
+    // A chain of rings is one trick at the landing (RING, 2 RING CHAIN...), so one link.
+    return jump.open && jump.chain > 0 ? 1 : 0
   },
 
   drop(): void {

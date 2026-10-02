@@ -36,8 +36,8 @@
 import type { TrackRuntime } from '../../track/types'
 import { BIGAIR_LAYOUT } from '../../track/terrain'
 import { hashString, mulberry32, shuffleInPlace } from '../random'
-import { apexIndex, directionAt, flightFrom, landingIndex } from './flight'
-import type { FlightPath } from './flight'
+import { apexIndex, directionAt, flightFrom, KICKER_POP, landingIndex, lipSpeedFor, scoringBand, speedAtLip } from './flight'
+import type { FlightPath, FlightTarget } from './flight'
 import { ZONE } from './parkGeometry'
 import type { ExtrudeSpec, PadSpec, PieceFrame, ProfilePoint } from './parkGeometry'
 
@@ -58,8 +58,16 @@ export interface ParkItem {
   dz: number
   /** How far (metres) from that point to the piece's front (or the ring / target). */
   runIn: number
-  /** The speed it was designed around, km/h (0 = any). */
+  /** The speed it was designed around, km/h (0 = any): how fast you reach the foot of the ramp, coasting up it. */
   designKmh: number
+  /**
+   * A launch's speed sign, km/h (0 = none): the speed to LEAVE its lip at, painted on its face and
+   * used by the HUD's speed cue. It is a lip speed (worked out from where the launch and its
+   * targets really stand: fitSigns), so it holds however you drive up the ramp: with the throttle
+   * down a small kicker speeds you up and the mega ramp's climb slows you, so keep the speedo on
+   * this number up the face.
+   */
+  signKmh: number
   /** A reference point on the piece (its lip, the ring's centre, the target's centre). */
   x: number
   y: number
@@ -171,6 +179,13 @@ interface PlanSolid {
   lips: number[]
   catches: number[]
   designKmh: number
+  /** Its speed sign (km/h to leave the lip at, 0 = none): see ParkItem.signKmh. */
+  signKmh: number
+  /**
+   * The bullseye pad (index into the plan's pads) the sign aims at, -1 = none. Once placed, the
+   * pad sits on its own patch of ground, so the sign is worked out again from where it really is.
+   */
+  signPad: number
   /** Reference point for the item list (lane a, height above the piece's base). */
   refA: number
   refH: number
@@ -320,11 +335,18 @@ function solid(p: Partial<PlanSolid> & Pick<PlanSolid, 'kind' | 'label' | 'a0' |
     lips: [],
     catches: [],
     designKmh: 0,
+    signKmh: 0,
+    signPad: -1,
     refA: p.a0,
     refH: 0,
     item: true,
     ...p,
   }
+}
+
+/** A launch's first speed sign: the speed (km/h, whole) a car built for `kmh` at the ramp's foot leaves its `H` metre lip at (fitSigns refines it once placed). */
+function signFor(kmh: number, H: number): number {
+  return Math.round(speedAtLip(kmh, H) * 3.6)
 }
 
 /** Where a flight off a lip at lane a=lipA first meets the flat ground (lane a). */
@@ -352,7 +374,7 @@ function kickerPlan(short: boolean): LanePlan {
   const kick = (L: number, H: number, hw: number, label: string, kmh: number) => {
     const p = 1.6
     const top = launchCurve(L, H, p)
-    solids.push(solid({ kind: 'kicker', label, a0: a, top, zones: top.slice(1).map(() => ZONE.launch), halfWidth: hw, sideRun: 1.4, drapeFront: 3, lips: [arcOf(top)], designKmh: kmh, refA: a + L, refH: H }))
+    solids.push(solid({ kind: 'kicker', label, a0: a, top, zones: top.slice(1).map(() => ZONE.launch), halfWidth: hw, sideRun: 1.4, drapeFront: 3, lips: [arcOf(top)], designKmh: kmh, signKmh: signFor(kmh, H), refA: a + L, refH: H }))
     const lipA = a + L
     return { lipA, f: flightFrom(kmh, H, lipSlope(L, H, p)), H }
   }
@@ -360,6 +382,7 @@ function kickerPlan(short: boolean): LanePlan {
   const k1 = kick(8, 1.3, 4, 'KICKER', 90)
   const t1 = flatLanding(k1.f, k1.lipA)
   pads.push({ a: t1, l: 0, radius: 6.5, inner: 2.6, designKmh: 90 })
+  solids[solids.length - 1].signPad = pads.length - 1
   a = t1 + 6.5 + 22
   // Kicker 2 with a ring at the top of a 100 km/h flight.
   const k2 = kick(10, 1.8, 4.5, 'KICKER', 100)
@@ -374,6 +397,7 @@ function kickerPlan(short: boolean): LanePlan {
     const k3 = kick(11, 2.3, 5, 'BIG KICKER', 110)
     const t3 = flatLanding(k3.f, k3.lipA)
     pads.push({ a: t3, l: 0, radius: 6.5, inner: 2.6, designKmh: 110 })
+    solids[solids.length - 1].signPad = pads.length - 1
     a = t3 + 6.5 + 32
     const qp = pipeWall(7, 64, 1.5, 9, 24)
     solids.push(solid({ kind: 'quarter', label: 'QUARTER PIPE', a0: a, top: qp.top, zones: qp.zones, halfWidth: 8, drapeFront: 3, drapeBack: 3, lips: [qp.coping], designKmh: 0, refA: a + 7, refH: qp.height }))
@@ -401,7 +425,7 @@ function tablePlan(): LanePlan {
   const end = deckAndLanding(L, H, deck, 8, 22, top)
   const catchArc = arcTo(top, n0) // the deck's far end, where the landing begins
   for (let i = n0; i < top.length; i++) zones.push(i === n0 ? ZONE.deck : ZONE.landing)
-  const solids = [solid({ kind: 'table', label: 'SKY TABLE', a0: runIn, top, zones, halfWidth: 6.5, drapeFront: 3, drapeBack: 3, lips: [lipArc], catches: [catchArc], designKmh: kmhRings, refA: runIn + L, refH: H })]
+  const solids = [solid({ kind: 'table', label: 'SKY TABLE', a0: runIn, top, zones, halfWidth: 6.5, drapeFront: 3, drapeBack: 3, lips: [lipArc], catches: [catchArc], designKmh: kmhRings, signKmh: signFor(kmhRings, H), refA: runIn + L, refH: H })]
   const f = flightFrom(kmhRings, H, lipSlope(L, H, p))
   const lipA = runIn + L
   const rings = [ringOn(f, lipA, 0.3, 0, 4.2, kmhRings), ringOn(f, lipA, 0.62, 0, 4.2, kmhRings)]
@@ -427,7 +451,9 @@ function gapsPlan(names: string[]): LanePlan {
   const gap = (L: number, H: number, gapLen: number, landH: number, name: string, points: number, ring: boolean) => {
     const p = 1.6
     const top = launchCurve(L, H, p)
-    solids.push(solid({ kind: 'gap', label: name, a0: a, top, zones: top.slice(1).map(() => ZONE.launch), halfWidth: 5, drapeFront: 3, lips: [arcOf(top)], designKmh: 100, refA: a + L, refH: H }))
+    // Its sign: the ring's speed when there is one over the gap, else the speed the landing is built for.
+    const sign = signFor(ring ? 110 : 100, H)
+    solids.push(solid({ kind: 'gap', label: name, a0: a, top, zones: top.slice(1).map(() => ZONE.launch), halfWidth: 5, drapeFront: 3, lips: [arcOf(top)], designKmh: ring ? 110 : 100, signKmh: sign, refA: a + L, refH: H }))
     const launch = solids.length - 1
     const lipA = a + L
     // The landing: its back is a wall facing the gap, then a short deck and the slope down.
@@ -460,7 +486,7 @@ function megaPlan(height: number, name: string, runIn = 160): LanePlan {
   const top = launchCurve(L, H, p)
   const lipA = runIn + L
   const slope = lipSlope(L, H, p)
-  const solids: PlanSolid[] = [solid({ kind: 'mega', label: name, a0: runIn, top, zones: top.slice(1).map(() => ZONE.launch), halfWidth: 7, drapeFront: 4, lips: [arcOf(top)], designKmh: kmh, refA: lipA, refH: H })]
+  const solids: PlanSolid[] = [solid({ kind: 'mega', label: name, a0: runIn, top, zones: top.slice(1).map(() => ZONE.launch), halfWidth: 7, drapeFront: 4, lips: [arcOf(top)], designKmh: kmh, signKmh: signFor(kmh, H), refA: lipA, refH: H })]
   // The landing hill: a gentle back (so falling short still lands on something you can drive),
   // a deck, a knuckle, and the slope you are meant to land on.
   const LH = 0.5 * H
@@ -538,6 +564,8 @@ function pipesPlan(): LanePlan {
 // ---------------------------------------------------------------- placing a lane
 
 const GAP_NAMES = ['NEON CANYON GAP', 'SUNSET LEAP', 'STARFALL GAP', 'LASER LEAP', 'HORIZON HOP', 'CHROME CANYON', 'MIDNIGHT GAP', 'VOID HOP', 'GRID JUMP', 'AFTERBURN GAP']
+/** The car's middle must pass this far inside a ring's tube to count (metres; the scoring uses it too). */
+export const RING_MARGIN = 0.35
 /** Clearance from the road's edge: built pieces, and a lane's run-in. */
 const CLEAR_ITEMS = 24
 const CLEAR_RUNIN = 7
@@ -729,6 +757,7 @@ function tryLane(c: PlaceContext, plan: LanePlan, x: number, z: number, dx: numb
         drapeBack: s.drapeBack,
         lips: s.lips,
         catches: s.catches,
+        signKmh: s.signKmh,
         item: -1,
       },
     })
@@ -953,6 +982,7 @@ function emitLane(out: ParkLayout, plan: LanePlan, placed: PlacedLane): void {
         dz,
         runIn: s.kind === 'halfpipe' ? plan.runIn : s.a0 - runA,
         designKmh: s.designKmh,
+        signKmh: s.signKmh,
         x: rxw,
         y: f.y0 + f.sa * refLocal + s.refH,
         z: rzw,
@@ -971,11 +1001,12 @@ function emitLane(out: ParkLayout, plan: LanePlan, placed: PlacedLane): void {
     const item = out.items.length
     const [px, pz] = W(p.a, p.l)
     const y = spec.frame.y0 + spec.height
-    out.items.push({ id: item, kind: 'target', zone: zoneId, label: 'BULLSEYE', runX: x, runZ: z, dx, dz, runIn: p.a, designKmh: p.designKmh, x: px, y, z: pz })
+    out.items.push({ id: item, kind: 'target', zone: zoneId, label: 'BULLSEYE', runX: x, runZ: z, dx, dz, runIn: p.a, designKmh: p.designKmh, signKmh: 0, x: px, y, z: pz })
     out.pads.push({ ...spec, item })
     out.targets.push({ id: out.targets.length, item, zone: zoneId, x: px, y, z: pz, outer: p.radius, inner: p.inner })
   }
   // Rings, in the air above their launch piece's plane.
+  const ringStart = out.rings.length
   for (const r of plan.rings) {
     const base = placed.solids[r.solid].spec.frame
     const local = r.a - plan.solids[r.solid].a0
@@ -990,7 +1021,7 @@ function emitLane(out: ParkLayout, plan: LanePlan, placed: PlacedLane): void {
     ny /= L
     nz /= L
     const item = out.items.length
-    out.items.push({ id: item, kind: 'ring', zone: zoneId, label: 'RING', runX: x, runZ: z, dx, dz, runIn: plan.solids[r.solid].a0, designKmh: r.designKmh, x: px, y, z: pz })
+    out.items.push({ id: item, kind: 'ring', zone: zoneId, label: 'RING', runX: x, runZ: z, dx, dz, runIn: plan.solids[r.solid].a0, designKmh: r.designKmh, signKmh: 0, x: px, y, z: pz })
     out.rings.push({ id: out.rings.length, item, zone: zoneId, x: px, y, z: pz, nx, ny, nz, radius: r.radius })
   }
   // Named jumps.
@@ -1007,5 +1038,79 @@ function emitLane(out: ParkLayout, plan: LanePlan, placed: PlacedLane): void {
       launch: { frame: L, a0: j.launchA0, a1: j.launchA1, hw: j.launchHw },
       landing: { frame: D, a0: j.landA0, a1: j.landA1, hw: j.landHw },
     })
+  }
+  fitSigns(out, plan, placed, solidItem, ringStart)
+}
+
+/** Height of a side view at `a` (straight between its points). */
+function profileAt(top: ProfilePoint[], a: number): number {
+  if (a <= top[0].a) return top[0].h
+  for (let i = 0; i < top.length - 1; i++) {
+    if (a <= top[i + 1].a) return top[i].h + ((top[i + 1].h - top[i].h) * (a - top[i].a)) / Math.max(1e-6, top[i + 1].a - top[i].a)
+  }
+  return top[top.length - 1].h
+}
+
+/** The fastest speed the sign search looks at (km/h): a range still open there has no middle. */
+const SIGN_SCAN_TOP = 220
+
+/**
+ * Paint each launch's sign for where it really stands. The plan worked its speeds out on level
+ * ground; once placed, a launch can tilt a little and its pad or landing can sit a little higher
+ * or lower, which moves the right speed by several km/h. So, from the placed pieces:
+ *   - a kicker aimed at a bullseye: the lip speed that lands on the pad's middle
+ *   - a launch whose rings and landing all score only inside a range of speeds (the mega ramp,
+ *     a sky table): the middle of that range
+ *   - anything else (one big ring, a plain gap: a very wide range): the plan's own number
+ * Checked against the real car on 2026-10-03 (Afterglow): kicker bullseyes, the sky table's rings
+ * and the mega ramp's rings plus landing all score when you leave the lip at the sign.
+ */
+function fitSigns(out: ParkLayout, plan: LanePlan, placed: PlacedLane, solidItem: number[], ringStart: number): void {
+  for (let i = 0; i < plan.solids.length; i++) {
+    const s = plan.solids[i]
+    if (!s.item || s.signKmh <= 0) continue
+    const spec = placed.solids[i].spec
+    const f = spec.frame
+    const top = s.top
+    // The lip: the end of the launch face (a sky table's side view runs on into its deck).
+    let n = 0
+    while (n < s.zones.length && s.zones[n] === ZONE.launch) n++
+    if (n < 1) continue
+    const lipA = top[n].a
+    const lipX = f.ox + f.dx * lipA
+    const lipZ = f.oz + f.dz * lipA
+    const lipY = f.y0 + f.sa * lipA + top[n].h
+    const fwd = (x: number, z: number) => (x - lipX) * f.dx + (z - lipZ) * f.dz
+    // The car leaves along the last stretch of the face; the base plane's tilt adds to it.
+    const slope = (top[n].h - top[n - 1].h) / Math.max(1e-6, top[n].a - top[n - 1].a) + f.sa
+    let kmh = s.signKmh
+    if (s.signPad >= 0) {
+      const pad = placed.pads[s.signPad]
+      kmh = lipSpeedFor(fwd(pad.frame.ox, pad.frame.oz), slope + KICKER_POP, lipY - (pad.frame.y0 + pad.height)) * 3.6
+    } else {
+      const targets: FlightTarget[] = []
+      for (let k = 0; k < plan.rings.length; k++) {
+        if (plan.rings[k].solid !== i) continue
+        const r = out.rings[ringStart + k]
+        targets.push({ kind: 'ring', dist: fwd(r.x, r.z), rise: r.y - lipY, radius: r.radius - RING_MARGIN, na: r.nx * f.dx + r.nz * f.dz, nh: r.ny })
+      }
+      for (const j of plan.jumps) {
+        if (j.launch !== i) continue
+        // Its landing's near edge (where the named jump starts to count): clear it.
+        const D = placed.solids[j.landing].spec.frame
+        const lt = plan.solids[j.landing].top
+        const a = Math.max(j.landA0, lt[0].a)
+        const y = D.y0 + D.sa * a + profileAt(lt, a)
+        targets.push({ kind: 'clear', dist: fwd(D.ox + D.dx * a, D.oz + D.dz * a), rise: y - lipY, radius: 0, na: 1, nh: 0 })
+      }
+      const band = targets.length > 0 ? scoringBand(slope, targets, 40, SIGN_SCAN_TOP) : null
+      // Only a range that closes at both ends has a middle worth aiming at.
+      if (band && band[1] < SIGN_SCAN_TOP) kmh = (band[0] + band[1]) / 2
+    }
+    const v = Math.round(kmh)
+    if (!Number.isFinite(v) || v <= 0) continue
+    spec.signKmh = v
+    const item = out.items[solidItem[i]]
+    if (item) item.signKmh = v
   }
 }
