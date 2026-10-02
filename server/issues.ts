@@ -140,6 +140,11 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
   let gitCache: { at: number; commit: string; changed: string[] } | null = null
   let gitMissingLogged = false
 
+  // Reports saved before the key was there go out as soon as it is: a few
+  // seconds after the server starts, and whenever the Report screen opens.
+  const startCheck = setTimeout(() => sendWaiting('the game server started'), 5000)
+  startCheck.unref?.()
+
   return (req, res, next) => {
     const path = (req.url ?? '').split('?')[0]
     if (path !== REPORT_ENDPOINT) {
@@ -173,6 +178,7 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
         waiting: (await listPending()).length,
       }
       reply(res, 200, info)
+      if (info.ready && info.waiting > 0) sendWaiting('the Report screen opened')
       return
     }
     if (req.method !== 'POST') {
@@ -242,6 +248,18 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
   }
 
   // ---------------------------------------------------------------- saving and retrying
+
+  /** Send any waiting reports now if there is a key (in the background; never throws). */
+  function sendWaiting(why: string): void {
+    const run = async () => {
+      if (flushing) return
+      const token = await readToken()
+      if (!token || (await listPending()).length === 0) return
+      const n = await flushPending(token)
+      if (n > 0) log(`sent ${n} waiting ${n === 1 ? 'report' : 'reports'} (${why})`)
+    }
+    run().catch((err) => warn(`could not send the waiting reports (${why}): ${errText(err)}`))
+  }
 
   async function saveAndReply(res: ServerResponse, issue: Issue, reason: SavedReason, detail: string): Promise<void> {
     const before = (await listPending()).length
