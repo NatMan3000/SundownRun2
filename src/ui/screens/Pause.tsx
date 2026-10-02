@@ -4,7 +4,8 @@
 //  Resume, Restart, Settings, Map (the editor's top-down world map;
 //  this menu hides while it's open), the current track's live sliders
 //  right here (the Hyperdrome's bank angle, so you can tilt the
-//  banking and watch the road change), Road Editor, Quit.
+//  banking and watch the road change), Road Editor, Report a
+//  problem (screens/Report.tsx), Quit.
 //
 //  Single player: the world is frozen behind this. Multiplayer:
 //  the world can't stop for one player, so it keeps running and
@@ -56,6 +57,7 @@ export function PauseScreen() {
               <TrackParamRows idPrefix="pause-track" />
             </div>
             <MenuButton id="editor" label="Road Editor" help="Draw your own track. This run ends." onAccept={openEditor} />
+            <MenuButton id="report" label="Report a problem" help="Something broken, or got an idea? Send it to the game's GitHub page. Your car stays right here." onAccept={() => openScreen('report')} />
             <MenuButton id="quit" label="Quit to title" help="Leave this run and go back to the title screen." onAccept={quitToTitle} acceptSound="back" />
           </nav>
           <HelpLine />

@@ -208,6 +208,20 @@ function LearnLink() {
   )
 }
 
+/** "Report a problem": a quiet link like Learn to code, so the main menu stays about playing. */
+function ReportLink() {
+  const nav = useNavItem<HTMLButtonElement>('report', {
+    onAccept: () => openScreen('report'),
+    acceptHint: 'Open',
+    help: "Something broken, or got an idea? Send it to the game's GitHub page.",
+  })
+  return (
+    <button type="button" tabIndex={-1} ref={nav.ref} {...nav.props} className={`learn-link${nav.focused ? ' is-focused' : ''}`}>
+      Report a problem
+    </button>
+  )
+}
+
 export function TitleScreen() {
   const mp = useGame((s) => s.multiplayer)
   return (
@@ -231,7 +245,10 @@ export function TitleScreen() {
             <MenuButton id="editor" label="Road Editor" help="Draw your own track, drop in loops and boost pads, then test drive it." onAccept={openEditor} />
             <MenuButton id="settings" label="Settings" help="Handling, camera, sound, time of day, graphics and more." onAccept={() => openScreen('settings')} />
           </nav>
-          {import.meta.env.DEV && <LearnLink />}
+          <div className="title-links">
+            {import.meta.env.DEV && <LearnLink />}
+            <ReportLink />
+          </div>
           <HelpLine />
           {mp && <MpStatus />}
         </div>

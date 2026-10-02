@@ -19,7 +19,8 @@
 //    nav.tsx        the focus model (controller, keyboard, mouse)
 //    widgets.tsx    buttons, sliders, toggles, colour pickers
 //    hints.tsx      device-aware button glyphs
-//    screens/       title, mode, track, garage, settings, pause, results
+//    screens/       title, mode, track, garage, settings, pause, results, report
+//    report/        what "Report a problem" sends and how (server/issues.ts posts it)
 //    hud/           the driving HUD and minimap
 // ============================================================
 
@@ -47,6 +48,7 @@ import { SettingsScreen } from './screens/Settings'
 import { PauseScreen } from './screens/Pause'
 import { GarageScreen } from './screens/Garage'
 import { ResultsScreen } from './screens/Results'
+import { ReportScreen } from './screens/Report'
 
 // ---------------------------------------------------------------- palette -> CSS variables
 
@@ -170,6 +172,7 @@ function devOpen(screen: string, arg?: string): string {
     case 'mode':
     case 'track':
     case 'garage':
+    case 'report':
     case 'settings': {
       if (g.phase === 'playing') pauseGame()
       const now = getGame().phase
@@ -196,7 +199,7 @@ function devOpen(screen: string, arg?: string): string {
       if (!ensureDriving()) return 'no track loaded'
       return 'hud'
     default:
-      return `unknown screen "${screen}". Try: title, mode, track, garage, settings [tab], pause, results, hud`
+      return `unknown screen "${screen}". Try: title, mode, track, garage, settings [tab], report, pause, results, hud`
   }
 }
 
@@ -206,7 +209,7 @@ function useDevHandles(): void {
       registerDev(
         'ui',
         ((screen: string, arg?: string) => devOpen(screen, arg)) as never,
-        "ui(screen, tab?) - open a screen: title, mode, track, garage, settings ['car'|'handling'|...], pause, results, hud",
+        "ui(screen, tab?) - open a screen: title, mode, track, garage, settings ['car'|'handling'|...], report, pause, results, hud",
       ),
       registerDev(
         'uiNav',
@@ -266,7 +269,9 @@ function useInputContext(root: RefObject<HTMLDivElement | null>): void {
     }
     const onOut = (e: FocusEvent) => {
       if (!isText(e.target) || before === null) return
-      setInputContext(before)
+      // Only undo our own 'text': if the game moved on meanwhile (a session started
+      // and set 'drive'), putting the old context back would leave the car dead.
+      if (inputState.context === 'text') setInputContext(before)
       before = null
     }
     document.addEventListener('focusin', onIn)
@@ -313,6 +318,7 @@ const SCREENS: Record<ScreenId, () => JSX.Element> = {
   settings: SettingsScreen,
   pause: PauseScreen,
   results: ResultsScreen,
+  report: ReportScreen,
 }
 
 export function UiRoot() {

@@ -7,3 +7,9 @@ dist/
 
 # Kai working files - not part of the game
 scratchpad/
+
+# Report a problem (server/issues.ts): the GitHub key and reports waiting to
+# send stay on this computer. Ignored files are never uploaded, and the Update
+# .bat's "git clean -fd" leaves them alone.
+github-token*
+reports/

@@ -51,6 +51,28 @@ Sound starts after your first key press or click (that's the browser's rule; a c
 - **`bun run learn`** makes **`Learn To Code.html`**: a workshop written for you, with little programs you can run right in the page and missions in the real game files.
 - **`src/core/palette.ts`** holds every colour in the game.
 
+## Report a problem
+
+Something broken, or got an idea? Pick **Report a problem** on the title screen (just under the main menu) or in the pause menu. Choose what kind it is, give it a short title, say what happened (what you were doing, what went wrong, what you expected), and press **Send**.
+
+- It goes on the game's **public** GitHub page, where anyone can read it. So use a first name or a nickname only, and never put your address, school or anything private.
+- The game adds the details that help fix it: the track, your car, where you were and how fast, how smoothly the game was running and your graphics chip. **See what gets sent** shows every one before you send.
+- To type, press **Enter** on a box or click it. While you type, your keys only go into the box, so nothing drives the car. **Esc** stops typing, **Tab** jumps to the next box, **Ctrl+Enter** sends. The controller does everything else, but typing needs a keyboard.
+- If it says **Saved on this computer**, nothing is lost: it sends by itself with a later report, once reporting is switched on and the internet works.
+
+### Turn on reporting (for Dad)
+
+The game's own server posts the reports with a GitHub key that lives only on this computer (GitHub accounts start at 13, so Josh can't use one of his own). Until there's a key, reports wait in `reports/pending/`.
+
+1. On github.com, signed in as NatMan3000, open https://github.com/settings/personal-access-tokens and click **Generate new token** (a fine-grained token).
+2. Name it something like "Sundown Run II reports", set **Resource owner** to NatMan3000, and pick an **Expiration** date.
+3. **Repository access:** Only select repositories, then **SundownRun2**.
+4. **Permissions:** Repository permissions, **Issues: Read and write**. Nothing else.
+5. Generate it and copy it (it starts with `github_pat_`).
+6. In the game folder on Josh's computer, save the key as the only line of a file called **`github-token.txt`**.
+
+No restart needed: **Report a problem** now says "Reporting is on", and anything waiting goes out with the next report. The file is gitignored, so it's never uploaded, and the Update .bat leaves it alone. Reports arrive as issues labelled `from the game` plus `bug` or `idea`. When the key expires, reports save again and the game's black window says GitHub turned the key down: make a new one the same way. (The key can also come from the `SR2_GITHUB_TOKEN` environment variable instead of the file.)
+
 ## Multiplayer: race, tag and smash on the same wifi
 
 ONE computer is the **host**. Everyone needs to be on the same wifi.
@@ -113,6 +135,8 @@ Pair it with Windows over Bluetooth (Settings > Bluetooth & devices > Add device
 | `bun run mp:check` / `bun run test:relay` | Two-client multiplayer proof / relay unit tests |
 | `bun run probe -- --url <u> ...` | Drive the game in a private headless Chrome: screenshots, evals, perf |
 | `bun run learn` | Generate `Learn To Code.html` |
+
+Report a problem (`server/issues.ts`, served at `/api/report` by the dev and preview servers): test it against a fake GitHub with `SR2_ISSUES_API=http://127.0.0.1:<port>` and keep waiting reports out of the folder with `SR2_REPORTS_DIR=<dir>`. Never test against the real repository.
 
 URL switches for testing: `?track=<id>`, `?mode=free|timetrial|race|stunt`, `?ai=<n>`, `?demo=1` (autopilot plus a frame-time recording in `window.__perf`), `?time=<0..1>`, `?quality=low|medium|high`, `?cam=<bookmark>`, `?editor=1`, `?nomusic=1`, `?mp=1&name=&color=`.
 
