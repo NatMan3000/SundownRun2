@@ -154,6 +154,14 @@ function constNumber(file: string, name: string): number {
   return Number(m[1])
 }
 
+/** Pull a `const NAME = [0.14, 0.02, ...]` list of numbers out of a source file. */
+function constNumbers(file: string, name: string): number[] {
+  const ln = lineOf(file, new RegExp(`const ${name} = \\[`))
+  const m = linesOf(file)[ln - 1].match(new RegExp(`const ${name} = \\[([\\d.,\\s]+)\\]`))
+  if (!m) throw new Error(`learn-to-code: ${file} has ${name} but not as a one-line list of plain numbers`)
+  return m[1].split(',').map((t) => Number(t.trim()))
+}
+
 /** A config.ts value exactly as written there (so 1.0 stays 1.0, not 1). */
 function configLiteral(name: string): string {
   const ln = lineOf('src/core/config.ts', new RegExp(`^\\s*${name}:`))
@@ -191,14 +199,39 @@ if (typeof hyperBank.maxDeg !== 'number' || typeof hyperBank.designSpeedKmh !== 
   throw new Error('learn-to-code: tracks/hyperdrome.json no longer has road.banking.maxDeg / designSpeedKmh')
 }
 
+/**
+ * The Ai brain's real numbers. It has no single steering gain any more: it
+ * learns one per speed band while it drives (STEER_GAIN_SEED is where each
+ * starts). The lab in Chapter 8 is a simpler brain with its own made-up gain,
+ * LAB_TURN_GAIN below, which is NOT read from the game.
+ */
 const AI = {
-  STEER_GAIN: constNumber('src/play/aiDriver.ts', 'STEER_GAIN'),
   STEER_DAMP: constNumber('src/play/aiDriver.ts', 'STEER_DAMP'),
+  CORRECTION_ALAT: constNumber('src/play/aiDriver.ts', 'CORRECTION_ALAT'),
+  STEER_GAIN_SEED: constNumbers('src/play/aiDriver.ts', 'STEER_GAIN_SEED'),
+  STEER_BAND_CENTRES: constNumbers('src/play/aiDriver.ts', 'STEER_BAND_CENTRES'),
+  STEER_LEARN_RATE: constNumber('src/play/aiDriver.ts', 'STEER_LEARN_RATE'),
   LOOK_BASE: constNumber('src/play/aiDriver.ts', 'LOOK_BASE'),
   LOOK_PER_MS: constNumber('src/play/aiDriver.ts', 'LOOK_PER_MS'),
   LOOK_MIN: constNumber('src/play/aiDriver.ts', 'LOOK_MIN'),
   LOOK_MAX: constNumber('src/play/aiDriver.ts', 'LOOK_MAX'),
 }
+if (AI.STEER_GAIN_SEED.length !== AI.STEER_BAND_CENTRES.length) {
+  throw new Error('learn-to-code: aiDriver.ts STEER_GAIN_SEED and STEER_BAND_CENTRES no longer have one entry each per speed band')
+}
+/** The lab brain's turn-per-angle gain (the value the real brain used before it learned its own). */
+const LAB_TURN_GAIN = 1.9
+/** The real brain's speed bands in km/h, rounded, for the page text ("about 36, 97, 151 and 216 km/h"). */
+const BAND_KMH = AI.STEER_BAND_CENTRES.map((ms) => Math.round(ms * 3.6))
+const BAND_KMH_TEXT = `${BAND_KMH.slice(0, -1).join(', ')} and ${BAND_KMH[BAND_KMH.length - 1]} km/h`
+/** How far the learned gains may wander from their seed: the 0.6 and 1.6 in learnSteering's clamp. */
+const LEARN_LIMITS = (() => {
+  const file = 'src/play/aiDriver.ts'
+  const ln = lineOf(file, 'this.steerGains[b] = clamp(this.steerGains[b], STEER_GAIN_SEED[b] *')
+  const m = linesOf(file)[ln - 1].match(/STEER_GAIN_SEED\[b\] \* ([\d.]+), STEER_GAIN_SEED\[b\] \* ([\d.]+)\)/)
+  if (!m) throw new Error('learn-to-code: the learned-steering clamp in aiDriver.ts changed shape')
+  return { lo: Number(m[1]), hi: Number(m[2]) }
+})()
 const AIR_PTS_PER_S2 = constNumber('src/vehicle/tricks.ts', 'AIR_PTS_PER_S2')
 const SPIN_HALF_PTS = constNumber('src/vehicle/tricks.ts', 'SPIN_HALF_PTS')
 const LOOP_PTS = constNumber('src/vehicle/tricks.ts', 'LOOP_PTS')
@@ -302,7 +335,7 @@ on('lap.complete', (e) => {
 // Try: on('boost', (e) => say('BOOST!'))
 // Or hear EVERYTHING: subscribe((e) => say(e.type))`,
 
-  ai: `const STEER_GAIN = ${AI.STEER_GAIN}     // how hard it turns toward the aim point
+  ai: `const TURN_GAIN = ${LAB_TURN_GAIN}     // lab only: how hard it turns for each bit of angle
 const LOOK_BASE = ${AI.LOOK_BASE}        // aim this many metres up the road...
 const LOOK_PER_MS = ${AI.LOOK_PER_MS}   // ...plus this many more per m/s of speed
 const speedKmh = 95       // how fast it drives`,
@@ -357,8 +390,17 @@ const A = {
   feedTrick: anchor('src/ui/hud/feed.ts', "case 'trick.land': {"),
   airTiers: anchor('src/vehicle/tricks.ts', "'TO THE MOON'"),
   spinPts: anchor('src/vehicle/tricks.ts', 'const SPIN_HALF_PTS'),
-  steerGain: anchor('src/play/aiDriver.ts', 'const STEER_GAIN'),
+  steerSeed: anchor('src/play/aiDriver.ts', 'const STEER_GAIN_SEED = '),
+  correction: anchor('src/play/aiDriver.ts', 'const CORRECTION_ALAT = '),
+  learnSteering: anchor('src/play/aiDriver.ts', 'private learnSteering('),
   lookBase: anchor('src/play/aiDriver.ts', 'const LOOK_BASE'),
+  aiInspector: anchor('src/play/index.tsx', 'steerGains: Array.from(d.steerGains'),
+  brakes: configKey('brakes'),
+  engineSound: configKey('engineSound'),
+  voicings: anchor('src/audio/engineVoicings.ts', 'ENGINE VOICINGS - what kind of motor your car has'),
+  report: anchor('src/ui/screens/Report.tsx', 'REPORT A PROBLEM - tell Dad'),
+  issues: fileStart('server/issues.ts'),
+  clearAll: anchor('src/editor/ClearAll.tsx', 'CLEAR ALL - wipe the map'),
   driveMood: anchor('src/audio/music/score.ts', /^\s*drive: \{/),
   lookahead: anchor('src/audio/music/index.ts', 'export const LOOKAHEAD_S'),
   hudSmooth: anchor('src/ui/hud/Hud.tsx', 'shownSpeed += (telemetry.speedKmh - shownSpeed)'),
@@ -379,11 +421,11 @@ const FOLDERS: { folder: string; open: Anchor; what: string }[] = [
   { folder: 'src/vehicle/', open: fileStart('src/vehicle/carSim.ts'), what: 'The car: raycast springs, tyres, tricks, laps, ghosts, the camera, the five car bodies.' },
   { folder: 'src/world/', open: fileStart('src/world/index.tsx'), what: 'The sky, the striped sun, stars, the ringed planet, the megacity, the terrain look.' },
   { folder: 'src/look/', open: fileStart('src/look/index.tsx'), what: 'The shiny bits: the wet road, light trails, sparks, bloom, quality presets.' },
-  { folder: 'src/audio/', open: fileStart('src/audio/music/index.ts'), what: 'Engine sound, crashes, and the procedural synthwave band.' },
+  { folder: 'src/audio/', open: fileStart('src/audio/music/index.ts'), what: 'The engine (a pretend motor with one thump per cylinder firing, in three voices), crashes, and the procedural synthwave band.' },
   { folder: 'src/play/', open: fileStart('src/play/index.tsx'), what: 'Game modes, the Ai racers, crash props, energy cores, speed traps.' },
-  { folder: 'src/ui/', open: fileStart('src/ui/index.tsx'), what: 'Menus, the garage, settings, the HUD while you drive.' },
+  { folder: 'src/ui/', open: fileStart('src/ui/index.tsx'), what: 'Menus, the garage, settings, Report a problem, the HUD while you drive.' },
   { folder: 'src/editor/', open: fileStart('src/editor/index.tsx'), what: 'The road editor: draw a track with the pencil, place pieces, test drive.' },
-  { folder: 'src/net/ and server/', open: fileStart('src/net/index.tsx'), what: 'LAN multiplayer: the client in the game and the relay the host runs.' },
+  { folder: 'src/net/ and server/', open: fileStart('src/net/index.tsx'), what: 'LAN multiplayer: the client in the game and the relay the host runs. server/ also holds the post office that sends Report a problem to GitHub.' },
   { folder: 'scripts/', open: A.learnScript, what: 'Helper programs: the track checker, the screenshot probe, and the script that made this page.' },
 ]
 
@@ -605,10 +647,10 @@ const html = `<!doctype html>
   <div class="chip">Chapter 5</div>
   <h2>The car floats on four invisible springs</h2>
   <p>Surprise: the car in Sundown Run II has <b>no wheels</b> in its physics. Each corner shoots a <b>ray</b> (an invisible laser) straight down. Where the ray hits the road, the game works out how squashed that corner's spring would be, and pushes the car up by that much. That's called <b>raycast suspension</b>, and real racing games do it.</p>
-  ${realCode('src/vehicle/carSim.ts', 'const suspVel = _pointVel.dot(n)', 9, 0)}
-  <p>The important line is <code>let f = k * this.compression[i] - ...</code>: the push is <b>stiffness times how squashed</b> (a spring), minus <b>damping times how fast it's moving</b> (a shock absorber, so it stops bouncing). And <code>clamp(f, 0, cap)</code> means a suspension can push but never pull.</p>
+  ${realCode('src/vehicle/carSim.ts', 'let f = k * this.compression[i] - ', 7, 2)}
+  <p>The important line is the lit-up one, <code>let f = k * this.compression[i] - ...</code>: the push is <b>stiffness times how squashed</b> (a spring), minus <b>damping times how fast it's moving</b> (a shock absorber, so it stops bouncing). That "how fast" is <code>suspVel</code>, two lines up: how much longer the ray got since the last step, divided by the step's time. Squash a spring nearly flat (past ${link(A.bumpStart, 'bumpStart')}) and a much stiffer <b>bump stop</b> joins in, the <code>if (bump &gt; 0)</code> part, like the rubber block in a real car's suspension. And <code>clamp(f, 0, cap)</code> means a suspension can push but never pull.</p>
   ${realCode('src/vehicle/tuning.ts', 'export const SUSPENSION', 7)}
-  <p>The playground drops one corner of the car using that exact formula, 60 steps a second, with the game's real numbers.</p>
+  <p>The playground drops one corner of the car using that same spring-and-damper formula (it leaves out the bump stop), 60 steps a second, with the game's real numbers.</p>
   ${playground('spring', 'Bouncing spring', CODE.spring, { height: 220 })}
   <div class="hint">Set both damping numbers to <code>0</code>: it bounces forever (no shock absorbers). Set them to <code>20000</code>: it sinks slowly like it's in honey. Make <code>stiffness</code> huge, like <code>3000000</code>: 16 bounces a second, a rattly go-kart on concrete. The real code also caps the push (<code>maxForce</code>), so a car can never launch into orbit off a kerb.</div>
   <div class="hint try"><b>In the real game:</b> the springs live in ${link(A.stiffness, 'tuning.ts')}. Try <code>stiffness: 15000</code> for a soft, wallowy car and land a jump. The full step is in ${link(A.passA, 'carSim.ts, pass A')}. This one is a real physics file, so change one number at a time.</div>
@@ -647,11 +689,24 @@ const html = `<!doctype html>
   <h2>The Ai driver: chase a dot up the road</h2>
   <p>An Ai racer drives the <b>same car</b> you do, with the same physics. It can't cheat; it just presses the same four controls. Its steering trick is called <b>pure pursuit</b>: pick a point a little way up the racing line, and steer toward it. The faster it goes, the further ahead it looks, which keeps it smooth.</p>
   ${realCode('src/play/aiDriver.ts', 'const LOOK_BASE = ', 3, 1)}
-  ${realCode('src/play/aiDriver.ts', 'const alpha = Math.atan2(x, z)', 4, 3)}
-  <p><code>Math.atan2(x, z)</code> works out the angle to the aim point, and ${link(A.steerGain, 'STEER_GAIN')} says how hard to steer for each bit of angle. <code>clamp(..., -1, 1)</code> keeps the steering between full left and full right. The playground runs that brain round Neon Pocket (sped up 3 times). The cyan line is where it is aiming.</p>
+  <p>Every physics step the brain finds its aim point and works out the angle to it. <code>x</code> is how far the dot is to the car's right, <code>z</code> is how far ahead, and <code>Math.atan2(x, z)</code> turns those two into an angle.</p>
+  ${realCode('src/play/aiDriver.ts', 'const alpha = Math.atan2(x, z)', 2, 3)}
+  <h3>From an angle to a steering wheel</h3>
+  <p>The simple way is "the bigger the angle, the harder you turn". The real brain is cleverer than that, in three ways:</p>
+  <ul>
+    <li><b>It works out the curve.</b> <code>2 * Math.sin(alpha) / chord</code> is the exact circle that would carry the car through the dot (<code>chord</code> is how far away the dot is). That is the curve it wants.</li>
+    <li><b>It has a budget.</b> <code>clamp</code> keeps that curve close to the road's own bend (<code>kRoad</code>): it may only add ${AI.CORRECTION_ALAT} m/s&sup2; of extra sideways push (about ${(AI.CORRECTION_ALAT / 9.81).toFixed(1)} g, ${link(A.correction, 'CORRECTION_ALAT')}) to fix where it is, a bit more the further off its line it has got. Without a budget, being a few metres off line at 250 km/h would make it yank full lock and spin.</li>
+    <li><b>It learns its own steering.</b> The same turn of the wheel bends the car far less at 200 km/h than at 50. So it divides by <code>this.steerGain(v)</code>, its number for "how much the car turns per bit of steering at this speed", to turn the curve it wants into how much steering to use.</li>
+  </ul>
+  ${realCode('src/play/aiDriver.ts', 'const kWanted = clamp(', 2, 6)}
+  <p>Where does that number come from? The brain <b>learns it while it drives</b>. It keeps one for each of four speeds (about ${BAND_KMH_TEXT}), starting from numbers measured on the real car, ${link(A.steerSeed, 'STEER_GAIN_SEED')}. Each time it steers, it watches how much the car really turned (<code>curv</code>), works out what that says about its car (<code>sample</code>), and nudges the number for that speed ${Math.round(AI.STEER_LEARN_RATE * 100)} percent of the way toward it:</p>
+  ${realCode('src/play/aiDriver.ts', 'this.steerGains[b] += (sample - this.steerGains[b]) * STEER_LEARN_RATE', 2, 4)}
+  <p>The last line keeps every number between ${LEARN_LIMITS.lo} and ${LEARN_LIMITS.hi} times where it started, so a long race can't teach it anything silly. Learning a little at a time from what really happened, inside safe limits: that is the same idea real machine learning uses.</p>
+  <h3>The lab: a simpler brain</h3>
+  <p>The playground is a <b>simpler version</b> of that brain: no curve maths, no budget, no learning. It steers <code>TURN_GAIN</code> times the angle, plus the real brain's damping (${link(anchor('src/play/aiDriver.ts', 'const STEER_DAMP = '), 'STEER_DAMP')}, which stops it overshooting). <code>TURN_GAIN</code> is a lab number, not one from the game: ${LAB_TURN_GAIN} is what the real brain used before it learned to steer for itself. It drives Neon Pocket, sped up 3 times. The cyan line is where it is aiming.</p>
   ${playground('ai', 'Ai brain lab', CODE.ai, { height: 400 })}
-  <div class="hint">Set <code>LOOK_BASE</code> to <code>60</code>: it aims so far ahead that it cuts every corner across the grass (the real brain never looks further than ${AI.LOOK_MAX} m, its <code>LOOK_MAX</code>, and this lab uses the same limit). Put it back, then push <code>speedKmh</code> to <code>140</code>: the tyres can't hold the corners and it runs wide. Surprise: <code>STEER_GAIN</code> matters less than you'd think, because the tyres are the real limit. Try <code>0.15</code> and <code>20</code> and compare the wobble number. The real Ai solves the speed problem by slowing for corners: the track works out a target speed for every metre.</div>
-  <div class="hint try"><b>In the real game:</b> make the racers properly fast at ${link(A.aiDifficulty)} (<code>1</code> = they want it more than you) and run 5 of them with ${link(A.aiRacers)}. Then race: <a href="${GAME}/?track=neon-pocket&amp;mode=race">${GAME}/?track=neon-pocket&amp;mode=race</a></div>
+  <div class="hint">Set <code>LOOK_BASE</code> to <code>60</code>: it aims so far ahead that it cuts every corner across the grass (the real brain never looks further than ${AI.LOOK_MAX} m, its <code>LOOK_MAX</code>, and this lab uses the same limit). Put it back, then push <code>speedKmh</code> to <code>140</code>: the tyres can't hold the corners and it runs wide. Surprise: <code>TURN_GAIN</code> matters less than you'd think, because the tyres are the real limit. Try <code>0.15</code> and <code>20</code> and compare the wobble number. The real Ai solves the speed problem by slowing for corners: the track works out a target speed for every metre.</div>
+  <div class="hint try"><b>In the real game:</b> make the racers properly fast at ${link(A.aiDifficulty)} (<code>1</code> = they want it more than you) and run 5 of them with ${link(A.aiRacers)}. Then race: <a href="${GAME}/?track=neon-pocket&amp;mode=race">${GAME}/?track=neon-pocket&amp;mode=race</a>. Now watch a brain learn: press F12, click Console, type <code>__game.get('play').ai[0].steerGains</code> and press Enter. Four numbers, one per speed. Type it again a lap later: some of them have moved. That's the first Ai racer learning how its car really steers (the numbers come from ${link(A.aiInspector, 'the play inspector')}).</div>
 </section>
 
 <section id="music" data-title="Make a beat">
@@ -665,6 +720,7 @@ const html = `<!doctype html>
   ${playground('music', 'Beat machine', CODE.music, { height: 150, runLabel: '&#9654; PLAY', extra: '<button class="ghost stop" type="button">&#9632; STOP</button>' })}
   <div class="hint">Drums: <code>x</code> hit, <code>a</code> accent (louder), <code>o</code> open hat, <code>c</code> clap, <code>g</code> ghost (quiet). Bass: <code>r</code> root note, <code>o</code> octave up, <code>5</code> the fifth, <code>-</code> hold, <code>.</code> rest. Try <code>bpm = 132</code> (that's the "hyper" mood) and <code>kick = 'x---x---x---x-x-'</code>.</div>
   <div class="hint try"><b>In the real game:</b> change the drive mood's <code>kick</code> pattern in ${link(A.driveMood, 'score.ts')} and drive a track with the drive mood. The clock that keeps it in time is ${link(A.lookahead, 'LOOKAHEAD_S')}: it books notes about a sixth of a second ahead, so the music never stutters even when the game is busy.</div>
+  <div class="hint">The engine isn't a recording either. It's a pretend motor made of code: one thump every time a cylinder fires, pushed through a pretend exhaust pipe and muffler. Pick its voice at ${link(A.engineSound, 'engineSound')} in config.ts: <code>'muscle'</code> (a deep V8), <code>'rally'</code> (a raspy turbo rally car) or <code>'hover'</code> (a futuristic jet). Want one nobody else has? The top of ${link(A.voicings, 'engineVoicings.ts')} tells you how: copy a voicing, give it a new name and change its numbers.</div>
 </section>
 
 <section id="hud" data-title="The HUD and the editor">
@@ -678,7 +734,7 @@ const html = `<!doctype html>
   <p>The editor lets you draw a track with a pencil instead of typing points. Your hand wobbles, so the editor runs your line through a clean-up pipeline, seven small functions in a row, each doing one job:</p>
   ${realCode('src/editor/cleanup.ts', '//    1. tidy', 10, 0, 'REAL GAME CODE (the plan, in the file header)')}
   <p>Splitting a big job into small named steps is one of the most useful habits in programming. Each step is easy to read and easy to test on its own.</p>
-  <div class="hint try"><b>In the real game:</b> on the title screen pick <b>Road Editor</b> (or open <a href="${GAME}/?editor=1">${GAME}/?editor=1</a>). Draw a track, drop a loop, test drive it. The editor saves real track files, the same format as Chapter 3. The clean-up starts at ${link(A.cleanStroke, 'cleanStroke()')}.</div>
+  <div class="hint try"><b>In the real game:</b> on the title screen pick <b>Road Editor</b> (or open <a href="${GAME}/?editor=1">${GAME}/?editor=1</a>). Draw a track, drop a loop, test drive it. Want a blank page? The eraser on the tool rail ${link(A.clearAll, 'clears the whole track')}, after asking first, and <b>Ctrl+Z</b> brings it back. The editor saves real track files, the same format as Chapter 3. The clean-up starts at ${link(A.cleanStroke, 'cleanStroke()')}.</div>
 </section>
 
 <section id="quiz" data-title="Quick quiz">
@@ -711,7 +767,7 @@ const html = `<!doctype html>
   <p>Everything above ran inside this page. These run in <b>your real game</b>. Start the game, keep it open next to VS Code, and click a pill to jump to the line. Save, and watch it change.</p>
 
   <div class="mission"><div class="lvl">Mission 1 &middot; Warm-up</div><h4>Rocket mode</h4>
-  <p>At ${link(A.power)} set <code>power</code> to <code>1.6</code>, and at ${link(A.topSpeed)} set <code>topSpeedKmh</code> to <code>330</code>. Drive. Is it still drivable? Find your favourite pair.</p></div>
+  <p>At ${link(A.power)} set <code>power</code> to <code>1.6</code>, and at ${link(A.topSpeed)} set <code>topSpeedKmh</code> to <code>330</code>. Drive. Is it still drivable? Can't stop in time for the corners any more? ${link(A.brakes, 'brakes')} at <code>1.6</code> "stops on a coin". Find your favourite mix.</p></div>
 
   <div class="mission"><div class="lvl">Mission 2 &middot; Chapter 2 skills</div><h4>A paint job nobody else has</h4>
   <p>Build three colours by hand (pick red, green and blue numbers from 0 to 255 and turn each into two hex digits) and put them in ${link(A.paint, 'paint')}, ${link(A.glow, 'glow')} and ${link(A.trail, 'trail')}. Rule from the art book: no pure primaries like <code>#ff0000</code>.</p></div>
@@ -729,7 +785,7 @@ const html = `<!doctype html>
   <p>At ${link(A.spinPts, 'SPIN_HALF_PTS')} every half spin is worth ${SPIN_HALF_PTS} points (a loop is ${LOOP_PTS}). Make spins worth what you think they should be, then play Stunt mode: <a href="${GAME}/?track=afterglow&amp;mode=stunt">?mode=stunt</a>.</p></div>
 
   <div class="mission"><div class="lvl">Mission 7 &middot; Chapter 8 skills</div><h4>Retune the Ai brain</h4>
-  <p>At ${link(A.steerGain, 'STEER_GAIN')} and ${link(A.lookBase, 'LOOK_BASE')} try the values that worked best in your Ai lab. Race them on Neon Pocket. Did they get faster, or did they start crashing? Put the old numbers back if they got worse: that's how real tuning works.</p></div>
+  <p>At ${link(A.lookBase, 'LOOK_BASE')} try the look-ahead that worked best in your Ai lab. Then at ${link(A.correction, 'CORRECTION_ALAT')}, the brain's "how hard may I swerve back to my line" budget, try half of it (<code>${AI.CORRECTION_ALAT / 2}</code>) and double it (<code>${AI.CORRECTION_ALAT * 2}</code>). Race them on Neon Pocket. Did they get faster, or did they start crashing? Put the old numbers back if they got worse: that's how real tuning works. Leave ${link(A.steerSeed, 'STEER_GAIN_SEED')} alone: those were measured on the real car, and the brain tunes them itself as it drives (${link(A.learnSteering, 'learnSteering')}).</p></div>
 
   <div class="mission"><div class="lvl">Mission 8 &middot; Chapter 9 skills</div><h4>Your beat in the game</h4>
   <p>Copy your favourite kick pattern from the beat machine into the <code>kick</code> list of the drive mood at ${link(A.driveMood, 'score.ts')}. Afterglow Valley and Neon Pocket each say their mood in their track file (<code>"music": { "mood": ... }</code>), so change that too if you want your beat everywhere.</p></div>
@@ -756,6 +812,8 @@ const html = `<!doctype html>
   <p>Only one computer runs this: the host. It prints a link everyone else opens. Friends need nothing installed.</p></div>
   <div class="mission"><div class="lvl">Do-over</div><h4>Sundown Run II Update.bat ${link(A.updateBat, 'read it')}</h4>
   <p>Gets the newest version and makes the folder an exact fresh copy. <b>It throws away your changes</b>, that's its job. Your best laps survive: they live in the browser, not the folder.</p></div>
+  <div class="mission"><div class="lvl">Found a bug?</div><h4>Report a problem ${link(A.report, 'read it')}</h4>
+  <p>On the title screen, or the pause menu while you drive, pick <b>Report a problem</b>. Say what kind it is (something's broken, an idea, something else), give it a title, say what happened, and Send. It goes to Dad on the game's GitHub page, with game details attached (<b>See what gets sent</b> shows every one). That page is <b>public</b>, so a first name or nickname only, never anything private. The game's own server sends it: ${link(A.issues, 'server/issues.ts')}.</p></div>
   <p>Commands (in a terminal in the game folder): <code>bun run dev</code> plays, <code>bun run tracks:check</code> checks every track, <code>bun run learn</code> rebuilds this page.</p>
   <p style="color:var(--dim);font-size:13px">This page was made by ${link(A.learnScript, 'scripts/learn-to-code.ts')} from ${usedAnchorsPlaceholder()} links into the real code, checked when it was built.</p>
 </section>
@@ -1588,7 +1646,10 @@ PG.ai = {
   anim: 0,
   path: null,
   run: function (api) {
-    var names = ['STEER_GAIN', 'LOOK_BASE', 'LOOK_PER_MS', 'speedKmh'], vals;
+    var names = ['TURN_GAIN', 'LOOK_BASE', 'LOOK_PER_MS', 'speedKmh'], vals;
+    // Park the old car first: its loop rewrites the message line every frame, which
+    // would wipe an error message about Josh's new code before he could read it.
+    this.car = null;
     try { vals = runCode(api.code(), {}, names); } catch (e) { return api.setMsg(friendly(e), 'err'); }
     if (!need(vals, names, api) || !needNumbers(vals, names, api)) return;
     this.p = vals;
@@ -1625,7 +1686,9 @@ PG.ai = {
     var dx = aim.x - c.x, dz = aim.z - c.z, fx = Math.cos(c.h), fz = Math.sin(c.h);
     var alpha = Math.atan2(fx * dz - fz * dx, fx * dx + fz * dz);   // + = aim point to my right
     var rate = clamp((alpha - c.prevAlpha) / dt, -8, 8); c.prevAlpha = alpha;
-    c.steer = clamp(p.STEER_GAIN * alpha + DATA.ai.STEER_DAMP * rate, -1, 1);
+    // The simple brain: steer TURN_GAIN times the angle. (The real one works out the
+    // curve through the aim point and turns it into steering with gains it learns.)
+    c.steer = clamp(p.TURN_GAIN * alpha + DATA.ai.STEER_DAMP * rate, -1, 1);
     // The car, simply: the steering rack turns at a limited speed (like rackRate in tuning.ts),
     // the car's turn rate follows the wheels a moment later (it is heavy), and the
     // tyres can only hold about 1.3 g, so a corner taken too fast runs wide.
@@ -1920,7 +1983,10 @@ document.querySelectorAll('.play').forEach(function (p) {
 
 // ---------------------------------------------------------------- write it
 
-let page = html.replace('__RUNTIME__', () => RUNTIME).replace('__ANCHOR_COUNT__', () => String(usedAnchors.length))
+// The footer counts the links Josh can actually click (some anchors are only
+// checked, never shown: they guard numbers this script reads from the code).
+const shownLinks = (html.match(/class="pill"/g) ?? []).length
+let page = html.replace('__RUNTIME__', () => RUNTIME).replace('__ANCHOR_COUNT__', () => String(shownLinks))
 
 // House style: no em or en dashes anywhere Josh reads; "Ai", never "AI", in prose.
 const dash = page.match(/[\u2013\u2014]/)
