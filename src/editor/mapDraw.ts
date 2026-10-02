@@ -7,6 +7,9 @@
 //  every piece as an icon, props and cores, what is selected, and
 //  pins on anything the game wants you to check (its track checks
 //  come from checks.ts; a failing one gets a red tag by its pin).
+//  The shaping tools draw their previews here too: the stretch Bend
+//  will move (brightest at your hand), and Straight or Curve's new road
+//  before the last click (cyan when it works, red when too tight).
 //
 //  Overlay.tsx calls drawMap() whenever something changed. Nothing
 //  here changes any state.
@@ -15,7 +18,7 @@
 import { FONTS, PALETTE } from '../core/palette'
 import { cars, telemetry } from '../core/telemetry'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
-import type { EditorState } from './draft'
+import type { BendView, EditorState } from './draft'
 import { gateItems } from './checks'
 import { type P } from './geom'
 import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type PlaceKind } from './pieces'
@@ -37,6 +40,28 @@ export interface MapExtras {
   ghost: { kind: PlaceKind; at: P; dir: P } | null
   /** Select tool: the thing under the pointer. */
   hoverPick: Pick | null
+  /** Bend tool: the stretch that would move (hovering) or is moving (dragging). */
+  bend?: { view: BendView; dragging: boolean } | null
+  /** Straight and Curve: the spots clicked, the stretch that will change and the new road there. */
+  shape?: ShapeView | null
+  /** Pencil with a steady hand: the pen (where the line is) and the pointer it trails behind. */
+  pen?: { at: P; to: P } | null
+}
+
+/** What the map shows for a Straight or Curve in progress. */
+export interface ShapeView {
+  /** The clicked spots on the road, in order (1, 2). */
+  marks: P[]
+  /** Curve: the pulled middle (the pointer). */
+  pull: P | null
+  /** The stretch of road that will change. */
+  old: P[]
+  /** The new road there (empty until there is one to show). */
+  preview: P[]
+  /** False when it can't be done (too tight, off the world): drawn red. */
+  ok: boolean
+  /** The spot that is too tight, if any. */
+  tight: P | null
 }
 
 // ---------------------------------------------------------------- cached road shape
@@ -103,9 +128,12 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
 
   if (g.rc.curve.length) {
     // Zoomed out, the 3D road's light strips get thinner than a pixel, so the map draws its outline.
-    if (view.mpp > 0.55) drawRoadOutline(ctx, g.left, g.right, d.environment.palette?.edge ?? PALETTE.roadEdge)
+    // While bending, the 3D road waits for you to let go, so the outline shows the road as it is now.
+    if (view.mpp > 0.55 || x.bend?.dragging) drawRoadOutline(ctx, g.left, g.right, d.environment.palette?.edge ?? PALETTE.roadEdge)
     drawBankOverrides(ctx, g.rc, d.points)
     if (s.selection?.kind === 'section') drawSection(ctx, g.rc, s.selection.from, s.selection.to)
+    if (x.bend) drawBend(ctx, x.bend.view, x.bend.dragging, d.width)
+    if (x.shape) drawShape(ctx, x.shape, d.width)
     drawDirectionArrows(ctx, g.rc.curve)
     drawBridges(ctx, d.points)
     drawPieces(ctx, g.rc, d.pieces, d.width, s.selection, x.hoverPick)
@@ -121,6 +149,7 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
   }
   drawPins(ctx, s, g.rc)
   if (x.stroke.length > 1) drawStroke(ctx, x.stroke)
+  if (x.pen) drawPen(ctx, x.pen.at, x.pen.to)
   drawScaleBar(ctx)
   drawCompass(ctx)
   if (x.hover) drawReadout(ctx, x.hover)
@@ -173,6 +202,177 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: readonly P[]): void {
   ctx.lineWidth = 1.5
   ctx.stroke()
   ctx.restore()
+}
+
+/** The steady pencil's string: a thin line from the pen (where the road is drawn) to the pointer. */
+function drawPen(ctx: CanvasRenderingContext2D, at: P, to: P): void {
+  const a = worldToScreen(at.x, at.z)
+  const b = worldToScreen(to.x, to.z)
+  ctx.save()
+  ctx.strokeStyle = PALETTE.uiDim
+  ctx.lineWidth = 1
+  ctx.setLineDash([3, 3])
+  ctx.beginPath()
+  ctx.moveTo(a.sx, a.sy)
+  ctx.lineTo(b.sx, b.sy)
+  ctx.stroke()
+  ctx.setLineDash([])
+  ctx.fillStyle = PALETTE.uiAccent
+  ctx.shadowColor = PALETTE.uiAccent
+  ctx.shadowBlur = 8
+  ctx.beginPath()
+  ctx.arc(a.sx, a.sy, 3.5, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
+/**
+ * Bend: the stretch of road that moves with your hand, as a glowing band that
+ * is brightest at your hand and fades to nothing at the reach (that is how
+ * much of the pull each bit gets). Ticks mark the two ends of the reach. Red
+ * where the bend would be too tight for a car.
+ */
+function drawBend(ctx: CanvasRenderingContext2D, v: BendView, dragging: boolean, roadWidth: number): void {
+  const colour = v.tight ? PALETTE.uiBad : PALETTE.uiAccent
+  const n = v.line.length
+  if (n < 2) return
+  ctx.save()
+  ctx.lineCap = 'round'
+  ctx.strokeStyle = colour
+  ctx.lineWidth = Math.max(10, (roadWidth + 10) / view.mpp)
+  for (let i = 0; i < n - 1; i++) {
+    const a = worldToScreen(v.line[i].x, v.line[i].z)
+    const b = worldToScreen(v.line[i + 1].x, v.line[i + 1].z)
+    ctx.globalAlpha = 0.06 + 0.34 * ((v.weights[i] + v.weights[i + 1]) / 2)
+    ctx.beginPath()
+    ctx.moveTo(a.sx, a.sy)
+    ctx.lineTo(b.sx, b.sy)
+    ctx.stroke()
+  }
+  ctx.globalAlpha = 1
+  // The ends of the reach: a short tick across the road.
+  for (const [i, j] of [
+    [0, 1],
+    [n - 1, n - 2],
+  ]) {
+    const p = v.line[i]
+    const q = v.line[j]
+    const len = Math.hypot(q.x - p.x, q.z - p.z) || 1
+    const rx = -(q.z - p.z) / len
+    const rz = (q.x - p.x) / len
+    const half = roadWidth / 2 + 6
+    const a = worldToScreen(p.x - rx * half, p.z - rz * half)
+    const b = worldToScreen(p.x + rx * half, p.z + rz * half)
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(a.sx, a.sy)
+    ctx.lineTo(b.sx, b.sy)
+    ctx.stroke()
+  }
+  // Your hand: a handle on the road where it is (or would be) grabbed.
+  const mid = v.line[Math.floor(n / 2)]
+  const m = worldToScreen(mid.x, mid.z)
+  ctx.beginPath()
+  ctx.arc(m.sx, m.sy, dragging ? 9 : 8, 0, Math.PI * 2)
+  ctx.fillStyle = PALETTE.uiPanelSolid
+  ctx.fill()
+  ctx.lineWidth = 2.5
+  ctx.shadowColor = colour
+  ctx.shadowBlur = 10
+  ctx.stroke()
+  ctx.shadowBlur = 0
+  ctx.beginPath()
+  ctx.arc(m.sx, m.sy, 3, 0, Math.PI * 2)
+  ctx.fillStyle = colour
+  ctx.fill()
+  ctx.restore()
+  if (v.tight) {
+    const t = worldToScreen(v.tight.x, v.tight.z)
+    ctx.save()
+    ring(ctx, t.sx, t.sy, 12, PALETTE.uiBad, 2.5)
+    ctx.restore()
+    placePill(ctx, 'TOO TIGHT', t.sx, t.sy, [-26, 26, -50], PALETTE.uiBad)
+  }
+}
+
+/**
+ * Straight and Curve: the stretch that will change (dashed), the new road
+ * there (a band the width of the road with a bright centreline: cyan when it
+ * works, red when it is too tight), and the numbered spots you clicked.
+ */
+function drawShape(ctx: CanvasRenderingContext2D, sh: ShapeView, roadWidth: number): void {
+  const colour = sh.ok ? PALETTE.uiAccent : PALETTE.uiBad
+  ctx.save()
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  if (sh.old.length > 1) {
+    ctx.strokeStyle = PALETTE.uiDim
+    ctx.lineWidth = 2
+    ctx.setLineDash([6, 6])
+    line(ctx, sh.old, false)
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+  if (sh.preview.length > 1) {
+    ctx.strokeStyle = colour
+    ctx.globalAlpha = 0.22
+    ctx.lineWidth = Math.max(6, roadWidth / view.mpp)
+    line(ctx, sh.preview, false)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+    ctx.lineWidth = 2.5
+    ctx.shadowColor = colour
+    ctx.shadowBlur = 10
+    ctx.stroke()
+    ctx.shadowBlur = 0
+  }
+  if (sh.pull && sh.marks.length === 2) {
+    // A thin line from each end to the pulled middle, so you can see what you are pulling.
+    const p = worldToScreen(sh.pull.x, sh.pull.z)
+    ctx.strokeStyle = PALETTE.uiDim
+    ctx.lineWidth = 1
+    ctx.setLineDash([3, 4])
+    for (const mk of sh.marks) {
+      const a = worldToScreen(mk.x, mk.z)
+      ctx.beginPath()
+      ctx.moveTo(a.sx, a.sy)
+      ctx.lineTo(p.sx, p.sy)
+      ctx.stroke()
+    }
+    ctx.setLineDash([])
+    ctx.fillStyle = PALETTE.uiPanelSolid
+    ctx.strokeStyle = colour
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(p.sx, p.sy - 8)
+    ctx.lineTo(p.sx + 8, p.sy)
+    ctx.lineTo(p.sx, p.sy + 8)
+    ctx.lineTo(p.sx - 8, p.sy)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+  }
+  sh.marks.forEach((mk, i) => {
+    const { sx, sy } = worldToScreen(mk.x, mk.z)
+    ctx.beginPath()
+    ctx.arc(sx, sy, 9, 0, Math.PI * 2)
+    ctx.fillStyle = PALETTE.uiPanelSolid
+    ctx.fill()
+    ctx.strokeStyle = PALETTE.uiAccent
+    ctx.lineWidth = 2
+    ctx.stroke()
+    ctx.fillStyle = PALETTE.uiAccent
+    ctx.font = `700 11px ${FONTS.body}`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(i + 1), sx, sy + 0.5)
+  })
+  ctx.restore()
+  if (sh.tight) {
+    const t = worldToScreen(sh.tight.x, sh.tight.z)
+    ring(ctx, t.sx, t.sy, 12, PALETTE.uiBad, 2.5)
+    placePill(ctx, 'TOO TIGHT', t.sx, t.sy, [-26, 26, -50], PALETTE.uiBad)
+  }
 }
 
 /** The road edges as two thin glowing lines, with the road between them darkened a little. */

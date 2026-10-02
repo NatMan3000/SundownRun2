@@ -22,6 +22,31 @@ export const PencilIcon = () => (
     <path d="M14 7l3 3" />
   </Svg>
 )
+/** A stretch of road pulled up into a smooth bump: Bend. */
+export const BendIcon = () => (
+  <Svg>
+    <path d="M2 19c4.5 0 5.5-8 10-8s5.5 8 10 8" />
+    <circle cx="12" cy="11" r="1.6" />
+    <path d="M12 7.5V3M9.8 5.2L12 3l2.2 2.2" />
+  </Svg>
+)
+/** Two spots joined by a dead straight line: Straight. */
+export const StraightIcon = () => (
+  <Svg>
+    <circle cx="5" cy="18.5" r="2" />
+    <circle cx="19" cy="5.5" r="2" />
+    <path d="M6.5 17.1L17.5 6.9" />
+  </Svg>
+)
+/** Two spots joined by one smooth arc, its middle pulled out: Curve. */
+export const CurveIcon = () => (
+  <Svg>
+    <circle cx="4" cy="18.5" r="2" />
+    <circle cx="20" cy="18.5" r="2" />
+    <path d="M5 16.8C6.5 9.5 9 6.5 12 6.5s5.5 3 7 10.3" />
+    <path d="M12 6.5V2.5" strokeDasharray="1.2 2" />
+  </Svg>
+)
 export const SelectIcon = () => (
   <Svg>
     <path d="M5 3l13 8-6 1.5L9 19z" />

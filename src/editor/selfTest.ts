@@ -16,7 +16,28 @@
 // ============================================================
 
 import { CLEANUP, cleanStroke, type CleanResult, type CleanupOptions } from './cleanup'
-import { type P, catmullRomClosed, dist, minRadius } from './geom'
+import { type P, catmullRomClosed, dist, minRadius, turnAngle } from './geom'
+import {
+  STEADY_DEFAULT,
+  STEADY_STRING,
+  alongRoad,
+  atOf,
+  bendProfile,
+  bendRoad,
+  cornerAt,
+  cornerRadius,
+  curveStretch,
+  densify,
+  dirOf,
+  posOf,
+  roadLine,
+  sOf,
+  sOfPoint,
+  smoothRoad,
+  steadyPath,
+  straightStretch,
+  tightestOnRoad,
+} from './shape'
 import { validateTrack } from '../track/validate'
 import { buildTrack } from '../track/build'
 import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, draftFile, isBlankDraft, roadBound } from './draftFile'
@@ -57,6 +78,70 @@ function shaky(shape: (t: number) => P, count: number, wobble: number, seed: num
     out.push({ x: p.x + wx, z: p.z + wz })
   }
   return out
+}
+
+/**
+ * A drive-to-draw road the way Josh lays one with the keyboard: a car follows
+ * a kidney-shaped route, but steering is A or D held for a moment and let go
+ * (with the game's attack and release), so it weaves and corrects all the
+ * way round. Points every 4 m, like the drive recorder. Seeded, so the same every run.
+ */
+export function keyboardDrive(seed = 1): P[] {
+  const r = rng(seed)
+  const route = (a: number) => {
+    const rr = (240 + 70 * Math.sin(2 * a) + 40 * Math.cos(3 * a)) * 1.35
+    return { x: rr * Math.cos(a), z: rr * Math.sin(a) * 0.85 }
+  }
+  const target: P[] = []
+  for (let i = 0; i < 4000; i++) target.push(route((i / 4000) * TAU))
+  let p = { ...target[0] }
+  let heading = Math.atan2(target[1].z - target[0].z, target[1].x - target[0].x)
+  let steer = 0
+  let key = 0
+  let hold = 0
+  let ti = 0
+  const speed = 33
+  const dt = 1 / 60
+  const out: P[] = [{ ...p }]
+  for (let step = 0; step < 60 * 400 && ti <= target.length + 40; step++) {
+    let best = ti
+    let bestD = Infinity
+    for (let k = ti; k < ti + 60; k++) {
+      const q = target[k % target.length]
+      const d = Math.hypot(q.x - p.x, q.z - p.z)
+      if (d < bestD) {
+        bestD = d
+        best = k
+      }
+    }
+    ti = best
+    const look = target[(ti + 30) % target.length]
+    let e = Math.atan2(look.z - p.z, look.x - p.x) - heading
+    while (e > Math.PI) e -= TAU
+    while (e < -Math.PI) e += TAU
+    hold -= dt
+    if (hold <= 0) {
+      const noisy = e + (r() - 0.5) * 0.06
+      key = noisy > 0.04 ? 1 : noisy < -0.04 ? -1 : 0
+      hold = 0.08 + r() * 0.12
+    }
+    const rate = key === 0 ? 5 : 3
+    steer += Math.max(-rate * dt, Math.min(rate * dt, key - steer))
+    heading += (steer / 45) * speed * dt
+    p = { x: p.x + Math.cos(heading) * speed * dt, z: p.z + Math.sin(heading) * speed * dt }
+    if (Math.hypot(p.x - out[out.length - 1].x, p.z - out[out.length - 1].z) >= 4) out.push({ ...p })
+  }
+  return out
+}
+
+/** Wobble of the road the game really builds (the track builder's own curvature), x 1,000,000; see roadRoughness. */
+function builtRoughness(points: RoadPoint[]): number {
+  const v = validateTrack(draftFile({ id: 'selftest-rough', name: 'Self-test rough', points }))
+  if (!v.ok || !v.track) return NaN
+  const S = buildTrack(v.track, {}).samples
+  let rough = 0
+  for (let i = 0; i < S.count; i++) rough += Math.abs(S.curvature[(i + 1) % S.count] - S.curvature[i])
+  return (rough / (S.count * S.ds)) * 1e6
 }
 
 function polygon(corners: P[], perSide: number): P[] {
@@ -473,7 +558,371 @@ export function runEditorSelfTest(): CheckResult[] {
     return bad
   })
 
+  // ---------------------------------------------------------------- shaping tools (shape.ts)
+
+  const world = { width: 14, bound: BOUND, playRadius: Infinity }
+  /** A road that passes the validator with no tight-corner warning. */
+  const validRoad = (points: RoadPoint[], tag: string): string[] => {
+    const v = validateTrack(draftFile({ id: 'selftest-shape', name: 'Self-test shape', points }))
+    const bad = v.ok ? [] : [`${tag}: validator errors: ${v.errors.map((e) => e.message).join(' / ')}`]
+    for (const w of v.warnings) if (/radius/.test(w.message)) bad.push(`${tag}: ${w.message}`)
+    return bad
+  }
+
+  check('Smooth: a keyboard-driven road gets visibly smoother, more each press (issue #8)', () => {
+    const res = cleanStroke(keyboardDrive(1), { ...opts, smoothing: 10, fairing: 8 })
+    if (!res.ok) return ['the driven road did not clean up']
+    // Per-point settings and a lift must ride along untouched.
+    const start = res.points.map((p, i) => (i === 10 ? { ...p, bank: 8, width: 18 } : i === 40 ? { ...p, lift: 3 } : { ...p }))
+    const r0 = builtRoughness(start)
+    const one = smoothRoad(start, world)
+    const r1 = builtRoughness(one.points)
+    const two = smoothRoad(one.points, world)
+    const r2 = builtRoughness(two.points)
+    const bad: string[] = []
+    if (!(r1 <= r0 * 0.7)) bad.push(`one press only took the wobble from ${r0.toFixed(0)} to ${r1.toFixed(0)} (want at least 30% less)`)
+    if (!(r2 < r1 * 0.9)) bad.push(`the second press did not smooth more (${r1.toFixed(0)} -> ${r2.toFixed(0)})`)
+    for (const [tag, out] of [['press 1', one.points], ['press 2', two.points]] as const) {
+      if (out.length !== start.length) bad.push(`${tag}: ${start.length} points became ${out.length}`)
+      const moved = Math.max(...out.map((p, i) => Math.hypot(p.x - start[i].x, p.z - start[i].z)))
+      if (moved > 15) bad.push(`${tag}: a point moved ${moved.toFixed(1)} m (the road's shape should stay)`)
+      if (out[10].bank !== 8 || out[10].width !== 18 || out[40].lift !== 3) bad.push(`${tag}: per-point settings did not stay on their points`)
+      bad.push(...validRoad(out, tag))
+    }
+    info = `wobble ${r0.toFixed(0)} -> ${r1.toFixed(0)} (one press) -> ${r2.toFixed(0)} (two); points moved up to ${Math.max(...one.points.map((p, i) => Math.hypot(p.x - start[i].x, p.z - start[i].z))).toFixed(1)} m per press`
+    return bad
+  })
+
+  check("Smooth leaves a loop's straight run-in and the start grid exactly as they are", () => {
+    // A shaky stadium: two long straights, two round ends. A loop sits on one straight.
+    const stadium = shaky((t) => {
+      const u = t * 4
+      if (u < 1) return { x: -250 + 500 * u, z: -120 }
+      if (u < 2) {
+        const a = -Math.PI / 2 + Math.PI * (u - 1)
+        return { x: 250 + 120 * Math.cos(a), z: 120 * Math.sin(a) }
+      }
+      if (u < 3) return { x: 250 - 500 * (u - 2), z: 120 }
+      const a = Math.PI / 2 + Math.PI * (u - 3)
+      return { x: -250 + 120 * Math.cos(a), z: 120 * Math.sin(a) }
+    }, 600, 3, 12, 0, 1.01)
+    const res = cleanStroke(stadium, opts)
+    if (!res.ok) return ['the stadium did not clean up']
+    const pts = res.points
+    const line = roadLine(pts)
+    // The loop: the middle of the top straight (z = -120); the start line: the middle of the bottom one.
+    const nearest = (q: P) => nearestOnRoad(roadCurve(pts), q).at
+    const loopAt = nearest({ x: 0, z: -120 })
+    const startAt = nearest({ x: 0, z: 120 })
+    const keep = [
+      { at: loopAt, before: 90, after: 74 },
+      { at: startAt, before: 60, after: 15 },
+    ]
+    const out = smoothRoad(pts, world, undefined, keep).points
+    const bad: string[] = []
+    let kept = 0
+    pts.forEach((p, k) => {
+      const s = sOfPoint(line, k)
+      const inZone = keep.some((z) => {
+        const d = sOf(line, z.at)
+        const ahead = ((s - d) % line.length + line.length) % line.length
+        return ahead <= z.after || line.length - ahead <= z.before
+      })
+      if (!inZone) return
+      kept++
+      const moved = Math.hypot(out[k].x - p.x, out[k].z - p.z)
+      if (moved > 0.01) bad.push(`point ${k} in a keep zone moved ${moved.toFixed(2)} m`)
+    })
+    if (kept < 8) bad.push(`only ${kept} points were in the keep zones: the test proves little`)
+    const before = builtRoughness(pts)
+    const after = builtRoughness(out)
+    if (!(after < before)) bad.push(`the rest of the road did not get smoother (${before.toFixed(0)} -> ${after.toFixed(0)})`)
+    info = `${kept} points in the loop's run-in and the start grid kept exactly; the rest smoothed (wobble ${before.toFixed(0)} -> ${after.toFixed(0)})`
+    return bad
+  })
+
+  check('Bend: the bent stretch stays smooth, no curvature spike at the falloff edges', () => {
+    // A 250 m circle with points 16 m apart; grab it and pull 30 m outward, reach 150 m.
+    const pts = ring(98, 250)
+    const line = roadLine(pts)
+    const grabAt = 20
+    const gs = sOf(line, grabAt)
+    const g = posOf(line, gs)
+    const reach = 150
+    const pull = { x: (g.x / 250) * 30, z: (g.z / 250) * 30 }
+    const bent = bendRoad(line, gs, reach, pull, world)
+    const bad: string[] = []
+    // Only the stretch within the reach moves, and the grabbed spot moves with the hand.
+    pts.forEach((p, k) => {
+      const d = alongRoad(sOfPoint(line, k), gs, line.length)
+      const moved = Math.hypot(bent[k].x - p.x, bent[k].z - p.z)
+      if (d >= reach && moved > 0) bad.push(`point ${k}, ${d.toFixed(0)} m away, moved`)
+    })
+    const bl = roadLine(bent)
+    const hand = posOf(bl, sOf(bl, grabAt))
+    const handMoved = Math.hypot(hand.x - g.x, hand.z - g.z)
+    if (Math.abs(handMoved - 30) > 1.5) bad.push(`the grabbed spot moved ${handMoved.toFixed(1)} m (pulled 30)`)
+    // How fast the bend changes (per metre) through the whole bent stretch, edges included.
+    const e0 = sOf(bl, atOf(line, gs - reach))
+    let e1 = sOf(bl, atOf(line, gs + reach))
+    if (e1 < e0) e1 += bl.length
+    const prof = bendProfile(bl, e0 - 40, e1 + 40, 1)
+    const rate = prof.map((k, i) => (i ? Math.abs(k - prof[i - 1]) : 0))
+    const worst = Math.max(...rate)
+    const atEdge = (c: number) => Math.max(...rate.slice(Math.max(1, Math.round(c - (e0 - 40)) - 10), Math.round(c - (e0 - 40)) + 11))
+    const edges = [atEdge(e0), atEdge(e1)]
+    if (worst > 0.001) bad.push(`the bend changes too suddenly somewhere (${worst.toFixed(5)} per metre, limit 0.001)`)
+    edges.forEach((v, i) => {
+      if (v > 0.0008) bad.push(`a spike at the ${i ? 'far' : 'near'} edge of the reach (${v.toFixed(5)} per metre, limit 0.0008)`)
+    })
+    bad.push(...validRoad(bent, 'bent'))
+    info = `hand moved ${handMoved.toFixed(1)} m; bend change per metre: worst ${worst.toFixed(5)}, at the edges ${edges.map((v) => v.toFixed(5)).join(' and ')}; tightest ${tightestOnRoad(bent).radius.toFixed(0)} m`
+    return bad
+  })
+
+  check('Bend on a built-in-style road: extra points keep the road and the pieces in place', () => {
+    // Points far apart, like the built-in tracks (up to 200 m): densify adds points on the same curve.
+    const pts = ring(12, 300)
+    const line = roadLine(pts)
+    const dz = densify(line, 0, line.length)
+    const bad: string[] = []
+    if (dz.points.length <= pts.length) bad.push('no points were added')
+    const dl = roadLine(dz.points)
+    let worst = 0
+    for (let s = 0; s < line.length; s += 5) {
+      const p = posOf(line, s)
+      const q = nearestOnRoad(roadCurve(dz.points), p)
+      worst = Math.max(worst, q.distance)
+    }
+    if (worst > 0.5) bad.push(`the road moved ${worst.toFixed(2)} m`)
+    for (const at of [0.5, 3.25, 7.9, 11.6]) {
+      const was = posOf(line, sOf(line, at))
+      const now = posOf(dl, sOf(dl, dz.mapAt(at)))
+      const d = Math.hypot(now.x - was.x, now.z - was.z)
+      if (d > 1) bad.push(`a piece at ${at} moved ${d.toFixed(2)} m`)
+    }
+    info = `${pts.length} -> ${dz.points.length} points, road moved at most ${worst.toFixed(2)} m`
+    return bad
+  })
+
+  check('Straight: the stretch is dead straight, eased in at both ends, never too tight', () => {
+    const res0 = cleanStroke(shaky((t) => {
+      const a = t * TAU
+      const r = 240 + 70 * Math.sin(2 * a) + 40 * Math.cos(3 * a)
+      return { x: r * Math.cos(a), z: r * Math.sin(a) * 0.85 }
+    }, 500, 4, 7, 0, 1.02), opts)
+    if (!res0.ok) return ['the test road did not clean up']
+    const pts = res0.points
+    const n = pts.length
+    const bad: string[] = []
+    let made = 0
+    let worstMiddle = 0
+    for (const [a, b] of [[n * 0.05, n * 0.2], [n * 0.55, n * 0.7], [n * 0.3, n * 0.36]]) {
+      const res = straightStretch(pts, a, b, world)
+      const tag = `straight ${a.toFixed(0)}-${b.toFixed(0)}`
+      if (!res.ok) {
+        bad.push(`${tag} refused: ${res.reason}`)
+        continue
+      }
+      made++
+      const line0 = roadLine(pts)
+      const A = posOf(line0, sOf(line0, a))
+      const B = posOf(line0, sOf(line0, b))
+      const L = Math.hypot(B.x - A.x, B.z - A.z)
+      const ux = (B.x - A.x) / L
+      const uz = (B.z - A.z) / L
+      // The middle third lies on the line from A to B and does not bend at all; the middle
+      // half is straighter than a loop's run-in needs (the ends ease in from the road).
+      const nl = roadLine(res.points)
+      const nrc = roadCurve(res.points)
+      const sMid = sOf(nl, nearestOnRoad(nrc, A).at)
+      let sEnd = sOf(nl, nearestOnRoad(nrc, B).at)
+      if (sEnd < sMid) sEnd += nl.length
+      const len = sEnd - sMid
+      let off = 0
+      for (let s = sMid + len / 3; s <= sEnd - len / 3; s += 2) {
+        const p = posOf(nl, s)
+        off = Math.max(off, Math.abs((p.x - A.x) * -uz + (p.z - A.z) * ux))
+      }
+      const third = Math.max(...bendProfile(nl, sMid + len / 3, sEnd - len / 3, 2).map(Math.abs))
+      const half = Math.max(...bendProfile(nl, sMid + len / 4, sEnd - len / 4, 2).map(Math.abs))
+      if (off > 0.05) bad.push(`${tag}: the middle wanders ${off.toFixed(2)} m off the straight line`)
+      if (third > 1 / 5000) bad.push(`${tag}: the middle third still bends (radius ${(1 / third).toFixed(0)} m)`)
+      if (half > 1 / 1500) bad.push(`${tag}: the middle half bends (radius ${(1 / half).toFixed(0)} m)`)
+      worstMiddle = Math.max(worstMiddle, third)
+      if (res.tightest < 25) bad.push(`${tag}: a ${res.tightest.toFixed(0)} m corner where it joins`)
+      bad.push(...validRoad(res.points, tag))
+    }
+    // Two spots right next to each other: refused in plain words, nothing changes.
+    const tiny = straightStretch(pts, 10, 10.5, world)
+    if (tiny.ok || !tiny.reason) bad.push('two spots 8 m apart were not refused')
+    info = `${made} straights made, middle third radius over ${worstMiddle > 0 ? (1 / worstMiddle).toFixed(0) : 'infinite'} m; spots too close refused: "${tiny.reason ?? ''}"`
+    return bad
+  })
+
+  check('Curve: tangent-matched at both joins, through the pulled spot, never tighter than the minimum', () => {
+    const pts = ring(98, 250)
+    const line = roadLine(pts)
+    const bad: string[] = []
+    const a = 10
+    const b = 25
+    const sA = sOf(line, a)
+    const sB = sOf(line, b)
+    const A = posOf(line, sA)
+    const B = posOf(line, sB)
+    const mid = { x: (A.x + B.x) / 2, z: (A.z + B.z) / 2 }
+    const r = Math.hypot(mid.x, mid.z)
+    // Pull the middle 50 m out from the circle's chord.
+    const pull = { x: mid.x + (mid.x / r) * 50, z: mid.z + (mid.z / r) * 50 }
+    const res = curveStretch(pts, a, b, pull, world)
+    if (!res.ok) return [`refused: ${res.reason}`]
+    const nl = roadLine(res.points)
+    // Through the pulled spot.
+    const near = nearestOnRoad(roadCurve(res.points), pull).distance
+    if (near > 1.5) bad.push(`the curve misses the pulled spot by ${near.toFixed(1)} m`)
+    // Tangent-matched: at each join the direction just before and just after agree (no kink).
+    let worstTurn = 0
+    for (const at of [a, b]) {
+      const s = sOf(nl, res.mapAt(at))
+      const d0 = dirOf(nl, s - 3)
+      const d1 = dirOf(nl, s + 3)
+      const turn = (Math.acos(Math.max(-1, Math.min(1, d0.x * d1.x + d0.z * d1.z))) * 180) / Math.PI
+      worstTurn = Math.max(worstTurn, turn)
+      if (turn > 4) bad.push(`a kink at the join near ${at}: the road turns ${turn.toFixed(1)} degrees in 6 m`)
+    }
+    if (res.tightest < 25) bad.push(`a ${res.tightest.toFixed(0)} m corner`)
+    bad.push(...validRoad(res.points, 'curve'))
+    // Pulled much too far: refused, red, and says why.
+    const far = { x: mid.x + (mid.x / r) * 400, z: mid.z + (mid.z / r) * 400 }
+    const tight = curveStretch(pts, a, b, far, world)
+    if (tight.ok) bad.push('a curve pulled 400 m out on a 230 m stretch was not refused')
+    else if (!/tight/i.test(tight.reason ?? '')) bad.push(`refused for the wrong reason: ${tight.reason}`)
+    if (!tight.ok && !tight.tightAt) bad.push('the too-tight spot was not marked')
+    info = `passes ${near.toFixed(2)} m from the pulled spot; joins turn at most ${worstTurn.toFixed(1)} degrees in 6 m; tightest ${res.tightest.toFixed(0)} m; pulled 400 m: "${tight.reason ?? ''}"`
+    return bad
+  })
+
+  check('Corner: gentler and tighter, joining the straights either side with no kink', () => {
+    // A drawn square: four corners between long straights.
+    const sq = polygon([{ x: -200, z: -200 }, { x: 200, z: -200 }, { x: 200, z: 200 }, { x: -200, z: 200 }], 50)
+    const res0 = cleanStroke(sq, opts)
+    if (!res0.ok) return ['the square did not clean up']
+    const pts = res0.points
+    const nearestTo = (list: RoadPoint[], q: P) => list.reduce((b, p, i) => (dist(p, q) < dist(list[b], q) ? i : b), 0)
+    const k = nearestTo(pts, { x: 200, z: -200 })
+    const c = cornerAt(pts, k)
+    if (typeof c === 'string') return [`no corner found at the square's corner: ${c}`]
+    const bad: string[] = []
+    const seen: string[] = []
+    for (const R of [35, 150]) {
+      const res = cornerRadius(pts, k, R, world)
+      if (!res.ok) {
+        bad.push(`${R} m refused: ${res.reason}`)
+        continue
+      }
+      const after = cornerAt(res.points, nearestTo(res.points, { x: 200, z: -200 }))
+      if (typeof after === 'string') {
+        bad.push(`${R} m: no corner left (${after})`)
+        continue
+      }
+      seen.push(`${R} m asked -> ${after.radius.toFixed(0)} m`)
+      if (Math.abs(after.radius - R) > R * 0.2) bad.push(`${R} m asked, the corner came out ${after.radius.toFixed(0)} m`)
+      // Nowhere in or around the corner bends harder than the radius asked for (no kink where it meets the straights).
+      const nl = roadLine(res.points)
+      const peak = Math.max(...bendProfile(nl, after.sIn - 60, after.sOut + 60, 1).map(Math.abs))
+      if (peak > 1.2 / R) bad.push(`${R} m: somewhere bends as hard as a ${(1 / peak).toFixed(0)} m corner`)
+      // The far side of the square has not moved.
+      const far = nearestOnRoad(roadCurve(res.points), { x: -200, z: 0 }).distance
+      if (far > 0.5) bad.push(`${R} m: the opposite side moved ${far.toFixed(2)} m`)
+      bad.push(...validRoad(res.points, `${R} m`))
+    }
+    // A point on a straight is not a corner, and says so.
+    const onStraight = cornerAt(pts, nearestTo(pts, { x: 0, z: -200 }))
+    if (typeof onStraight !== 'string') bad.push('a point in the middle of a straight was taken for a corner')
+    info = `was ${c.radius.toFixed(0)} m; ${seen.join(', ')}; on a straight: "${typeof onStraight === 'string' ? onStraight : ''}"`
+    return bad
+  })
+
+  check('Splice: road outside the changed stretch, and pieces on it, do not move', () => {
+    const pts = ring(60, 250)
+    const res = curveStretch(pts, 5, 15, { x: 260, z: -150 }, world)
+    if (!res.ok) return [`refused: ${res.reason}`]
+    const bad: string[] = []
+    const kept = new Set(res.points.map((p) => `${p.x},${p.z}`))
+    let untouched = 0
+    pts.forEach((p, k) => {
+      if (k >= 22 && k <= 58) {
+        if (kept.has(`${p.x},${p.z}`)) untouched++
+        else bad.push(`point ${k}, far from the curve, changed`)
+      }
+    })
+    const line = roadLine(pts)
+    const nl = roadLine(res.points)
+    for (const at of [30.5, 41.2, 57.9]) {
+      const was = posOf(line, sOf(line, at))
+      const now = posOf(nl, sOf(nl, res.mapAt(at)))
+      const d = Math.hypot(now.x - was.x, now.z - was.z)
+      if (d > 0.5) bad.push(`a piece at ${at} moved ${d.toFixed(2)} m`)
+    }
+    info = `${untouched} far points kept exactly`
+    return bad
+  })
+
+  check('Steady pencil: the lazy-mouse string removes hand wobble', () => {
+    // A circle drawn on screen (300 px) with a shaky hand: a few pixels of tremor every few pixels.
+    const r = rng(11)
+    const raw: P[] = []
+    let wx = 0
+    let wz = 0
+    for (let i = 0; i <= 700; i++) {
+      const a = (i / 700) * TAU * 1.03
+      wx = wx * 0.6 + (r() - 0.5) * 5
+      wz = wz * 0.6 + (r() - 0.5) * 5
+      raw.push({ x: 960 + 300 * Math.cos(a) + wx, z: 540 + 300 * Math.sin(a) + wz })
+    }
+    /** How much the line's direction jitters: mean turn per point, degrees (a clean circle of this size is about 0.6). */
+    const jitter = (pts: P[]) => {
+      const even = resampleOpen(pts, 6)
+      let sum = 0
+      for (let i = 1; i < even.length - 1; i++) sum += Math.abs(turnAngle(even[i - 1], even[i], even[i + 1]))
+      return ((sum / Math.max(1, even.length - 2)) * 180) / Math.PI
+    }
+    const off = jitter(steadyPath(raw, STEADY_STRING[0]))
+    const some = jitter(steadyPath(raw, STEADY_STRING[STEADY_DEFAULT]))
+    const lot = jitter(steadyPath(raw, STEADY_STRING[STEADY_STRING.length - 1]))
+    const bad: string[] = []
+    if (!(some < off * 0.5)) bad.push(`the default steady hand only took the jitter from ${off.toFixed(2)} to ${some.toFixed(2)} degrees (want half or less)`)
+    if (!(lot < some)) bad.push(`"a lot" (${lot.toFixed(2)}) is not steadier than the default (${some.toFixed(2)})`)
+    // And the road it makes (screen pixels as metres at a 1.8 m-per-pixel zoom) is smoother too.
+    const toWorld = (pts: P[]) => pts.map((p) => ({ x: (p.x - 960) * 1.8, z: (p.z - 540) * 1.8 }))
+    const roadOff = cleanStroke(toWorld(steadyPath(raw, 0)), { ...opts, bound: 2000 })
+    const roadOn = cleanStroke(toWorld(steadyPath(raw, STEADY_STRING[STEADY_DEFAULT])), { ...opts, bound: 2000 })
+    const ro = roadOff.ok ? builtRoughness(roadOff.points) : NaN
+    const rs = roadOn.ok ? builtRoughness(roadOn.points) : NaN
+    if (!(rs <= ro)) bad.push(`the steadied road is not smoother (${rs.toFixed(0)} vs ${ro.toFixed(0)} without)`)
+    info = `direction jitter ${off.toFixed(2)} (off) -> ${some.toFixed(2)} (default) -> ${lot.toFixed(2)} degrees (a lot); road wobble ${ro.toFixed(0)} -> ${rs.toFixed(0)}`
+    return bad
+  })
+
   return results
+}
+
+/** An open polyline re-spaced every `step` (for measuring a pencil line). */
+function resampleOpen(pts: readonly P[], step: number): P[] {
+  const out: P[] = [pts[0]]
+  let carry = 0
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    const seg = Math.hypot(b.x - a.x, b.z - a.z)
+    let t = step - carry
+    while (t <= seg) {
+      out.push({ x: a.x + ((b.x - a.x) * t) / seg, z: a.z + ((b.z - a.z) * t) / seg })
+      t += step
+    }
+    carry = seg - (t - step)
+  }
+  return out
 }
 
 function printTable(results: CheckResult[]): void {

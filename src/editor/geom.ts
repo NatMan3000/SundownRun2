@@ -245,6 +245,24 @@ export function catmullRomClosed(ctrl: readonly P[], perSegment: number): P[] {
   return out
 }
 
+/**
+ * One spot on that same closed curve: `at` is a control-point index plus
+ * a fraction (at 3.5 = halfway from point 3 to point 4, as in track files).
+ */
+export function catmullRomAt(ctrl: readonly P[], at: number): P {
+  const n = ctrl.length
+  const a = ((at % n) + n) % n
+  const i = Math.floor(a) % n
+  const p0 = ctrl[(i - 1 + n) % n]
+  const p1 = ctrl[i]
+  const p2 = ctrl[(i + 1) % n]
+  const p3 = ctrl[(i + 2) % n]
+  const t01 = Math.sqrt(Math.max(dist(p0, p1), 1e-4))
+  const t12 = Math.sqrt(Math.max(dist(p1, p2), 1e-4))
+  const t23 = Math.sqrt(Math.max(dist(p2, p3), 1e-4))
+  return centripetalPoint(p0, p1, p2, p3, t01, t12, t23, a - Math.floor(a))
+}
+
 function centripetalPoint(p0: P, p1: P, p2: P, p3: P, t01: number, t12: number, t23: number, u: number): P {
   // Tangents at p1 and p2 for the centripetal parameterisation (Barry-Goldman, as a Hermite segment).
   const m1x = t12 * ((p1.x - p0.x) / t01 - (p2.x - p0.x) / (t01 + t12) + (p2.x - p1.x) / t12)

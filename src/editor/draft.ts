@@ -18,7 +18,7 @@
 // ============================================================
 
 import { create } from 'zustand'
-import type { CoreSpot, EnvironmentSpec, Piece, PropSpot, RoadPoint, TrackFile, TrackIssue } from '../track/schema'
+import { TRACK_DEFAULTS, type CoreSpot, type EnvironmentSpec, type Piece, type PropSpot, type RoadPoint, type TrackFile, type TrackIssue } from '../track/schema'
 import { getCurrentTrackFile, getTrack, setTrackFromFile } from '../track/current'
 import type { TrackGate } from '../track/gates'
 import { freeTrackId, getTrackSource, listDrawnTracks, saveDrawnTrack } from '../track/registry'
@@ -27,10 +27,40 @@ import { startSession } from '../core/session'
 import { audio } from '../core/api'
 import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFile, isBlankDraft, roadBound, starterRoad } from './draftFile'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
-import { checkBuiltTrack } from './checks'
+import { checkBuiltTrack, gateItems } from './checks'
 import type { P } from './geom'
 import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
 import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, reanchor, roadCurve, sectionRedraw, wrapAt, LOOP_RUN_IN } from './road'
+import {
+  type ShapeResult,
+  type ShapeWorld,
+  type Splice,
+  BEND_REACH,
+  MIN_RADIUS,
+  STEADY_DEFAULT,
+  STEADY_STRING,
+  alongRoad,
+  atOf,
+  bendRoad,
+  closestPoints,
+  bendWeight,
+  cornerRadius,
+  curveStretch,
+  densify,
+  fairStretch,
+  nearestStraightStart,
+  openCornersOnStretch,
+  roadLine,
+  roadRoughness,
+  SHAPE_SPACING,
+  sOf,
+  smoothRoad as smoothShape,
+  spliceRoad,
+  startGridStraight,
+  straightStretch,
+  stretchOf,
+  tightestBetween,
+} from './shape'
 
 export interface Draft {
   id: string
@@ -88,9 +118,22 @@ export interface EditorState {
   selection: Selection | null
   /** 'edit' = the road editor; 'map' = the read-only world map. */
   mode: 'edit' | 'map'
+  /** The Bend tool's reach: metres of road either side of your hand that come with it. */
+  bendReach: number
+  /** The pencil's steady hand (an index into STEADY_STRING in shape.ts: 0 = off). */
+  steady: number
+  /** A Straight or Curve half made: the spots clicked so far (`at` values). */
+  shaping: Shaping | null
 }
 
-export type EditorTool = 'pencil' | 'pan' | 'select' | 'place' | 'section'
+export type EditorTool = 'pencil' | 'bend' | 'straight' | 'curve' | 'pan' | 'select' | 'place' | 'section'
+
+/** Straight or Curve, part way through: `a` is the first click, `b` the second (Curve only, then you pull). */
+export interface Shaping {
+  tool: 'straight' | 'curve'
+  a: number
+  b: number | null
+}
 
 /** Something selected on the map. A section runs from `from` to `to` going forward (both are `at` values). */
 export type Selection =
@@ -189,6 +232,37 @@ function writeWorking(s: Pick<EditorState, 'draft' | 'savedId' | 'dirty'>): void
 
 const working = typeof window !== 'undefined' ? readWorking() : null
 
+/** Tool settings (Bend's reach, the pencil's steady hand) are remembered in this browser too. */
+const PREFS_KEY = 'sr2.editor.prefs.v1'
+
+function readPrefs(): { bendReach: number; steady: number } {
+  const fallback = { bendReach: BEND_REACH.start, steady: STEADY_DEFAULT }
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(PREFS_KEY) : null
+    if (!raw) return fallback
+    const p = JSON.parse(raw)
+    const reach = Number(p?.bendReach)
+    const steady = Number(p?.steady)
+    return {
+      bendReach: Number.isFinite(reach) ? Math.min(BEND_REACH.max, Math.max(BEND_REACH.min, reach)) : fallback.bendReach,
+      steady: Number.isInteger(steady) && steady >= 0 && steady < STEADY_STRING.length ? steady : fallback.steady,
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function writePrefs(): void {
+  const s = useEditor.getState()
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ bendReach: s.bendReach, steady: s.steady }))
+  } catch (err) {
+    console.warn('[editor] could not remember the tool settings (browser storage full?)', err)
+  }
+}
+
+const prefs = readPrefs()
+
 export const useEditor = create<EditorState>(() => ({
   draft: working?.draft ?? newDraft(),
   past: [],
@@ -207,6 +281,9 @@ export const useEditor = create<EditorState>(() => ({
   placeKind: 'boost',
   selection: null,
   mode: 'edit',
+  bendReach: prefs.bendReach,
+  steady: prefs.steady,
+  shaping: null,
 }))
 
 export function say(text: string, tone: 'info' | 'good' | 'warn' | 'bad' = 'info'): void {
@@ -225,7 +302,7 @@ export function commit(change: (d: Draft) => void, notes: CleanupNotes | null = 
   const next = cloneJson(s.draft)
   change(next)
   const past = [...s.past, s.draft].slice(-HISTORY_MAX)
-  useEditor.setState({ draft: next, past, future: [], dirty: true, notes })
+  useEditor.setState({ draft: next, past, future: [], dirty: true, notes, shaping: null })
   writeWorking({ draft: next, savedId: s.savedId, dirty: true })
   schedulePreview()
 }
@@ -234,7 +311,7 @@ export function undo(): void {
   const s = useEditor.getState()
   if (!s.past.length || s.mode === 'map') return
   const prev = s.past[s.past.length - 1]
-  useEditor.setState({ draft: prev, past: s.past.slice(0, -1), future: [s.draft, ...s.future], dirty: true, notes: null, selection: null })
+  useEditor.setState({ draft: prev, past: s.past.slice(0, -1), future: [s.draft, ...s.future], dirty: true, notes: null, selection: null, shaping: null })
   writeWorking({ draft: prev, savedId: s.savedId, dirty: true })
   audio.ui('back')
   schedulePreview()
@@ -244,7 +321,7 @@ export function redo(): void {
   const s = useEditor.getState()
   if (!s.future.length || s.mode === 'map') return
   const next = s.future[0]
-  useEditor.setState({ draft: next, past: [...s.past, s.draft], future: s.future.slice(1), dirty: true, notes: null, selection: null })
+  useEditor.setState({ draft: next, past: [...s.past, s.draft], future: s.future.slice(1), dirty: true, notes: null, selection: null, shaping: null })
   writeWorking({ draft: next, savedId: s.savedId, dirty: true })
   audio.ui('select')
   schedulePreview()
@@ -252,7 +329,7 @@ export function redo(): void {
 
 /** Start editing a different track (history is cleared: it is a different track). */
 export function replaceDraft(draft: Draft, savedId: string | null): void {
-  useEditor.setState({ draft, past: [], future: [], dirty: false, savedId, notes: null, mode: 'edit', selection: null })
+  useEditor.setState({ draft, past: [], future: [], dirty: false, savedId, notes: null, mode: 'edit', selection: null, shaping: null })
   writeWorking({ draft, savedId, dirty: false })
   previewNow()
 }
@@ -293,7 +370,38 @@ export function previewNow() {
   // Same rows as `bun run tracks:check` (10-100 ms; this already runs debounced after edits).
   const run = checkBuiltTrack(getTrack())
   useEditor.setState({ preview: 'built', errors: result.errors, warnings: result.warnings, gates: run.gates, gatesMs: run.ms, checkedDraft: s.draft })
+  tellIfShapeBrokeChecks(s.draft, run.gates)
   return result
+}
+
+/**
+ * A shaping tool's change, waiting for the game's checks: `failingBefore` are
+ * the checks that already failed before it. See tellIfShapeBrokeChecks.
+ */
+let shapeWatch: { what: string; draft: Draft; failingBefore: string[] } | null = null
+
+/** Remember the checks failing right now, so the rebuild after a shaping change can tell what is new. */
+function failingNow(): string[] {
+  const s = useEditor.getState()
+  if (s.checkedDraft !== s.draft || !s.gates) return []
+  return s.gates.filter((g) => g.level === 'fail').map((g) => g.name)
+}
+
+/**
+ * Straight after the rebuild that follows a shaping change: if one of the
+ * game's own checks now fails that didn't before (for example a bend so sharp
+ * the auto-banking can't follow it), say so at once, in its plain words, with
+ * what to do. The Checks panel and its pin on the map say the same.
+ */
+function tellIfShapeBrokeChecks(draft: Draft, gates: readonly TrackGate[]): void {
+  const watch = shapeWatch
+  if (!watch || watch.draft !== draft) return
+  shapeWatch = null
+  const fresh = gates.filter((g) => g.level === 'fail' && !watch.failingBefore.includes(g.name))
+  if (!fresh.length) return
+  const item = gateItems(gates, draft, roadCurve(draft.points)).find((it) => it.tone === 'bad')
+  say(`${watch.what} made a problem the game's checks don't like: ${item?.title ?? 'see Checks'} Undo puts it back, or see Checks for what to do.`, 'warn')
+  audio.ui('error')
 }
 
 // ---------------------------------------------------------------- the pencil
@@ -517,7 +625,7 @@ export function endGesture(): void {
 
 export function setTool(tool: EditorTool, placeKind?: PlaceKind): void {
   const s = useEditor.getState()
-  useEditor.setState({ tool, placeKind: placeKind ?? s.placeKind, selection: tool === s.tool ? s.selection : null })
+  useEditor.setState({ tool, placeKind: placeKind ?? s.placeKind, selection: tool === s.tool ? s.selection : null, shaping: tool === s.tool ? s.shaping : null })
 }
 
 /** Drop the current place tool's thing at world point q. Returns true if something was placed. */
@@ -668,23 +776,346 @@ export function deletePoint(index: number): void {
   audio.ui('back')
 }
 
-/** Gently even out the whole road (keeps every point, piece and setting). */
-export function smoothRoad(): void {
+/**
+ * Smooth: iron the wobbles and kinks out of the whole road (shape.ts
+ * smoothRoad). Every point, piece and per-point setting stays; the points
+ * slide onto a smoother line, and no corner ends up tighter than a car can
+ * take. Each press is one Undo step and smoother than the last. Returns how
+ * wobbly the road was before and after (see roadRoughness).
+ */
+export function smoothRoad(): { before: number; after: number } {
+  const s = useEditor.getState()
+  const before = roadRoughness(s.draft.points)
+  // Loops need their straight run-in and the start grid needs straight road: Smooth leaves those alone.
+  const keep = [
+    ...s.draft.pieces.flatMap((p) => (p.type === 'loop' ? [{ at: p.at, before: LOOP_RUN_IN + 20, after: 2.6 * (p.radius ?? TRACK_DEFAULTS.loopRadius) + 40 }] : [])),
+    { at: s.draft.startAt, before: 60, after: 15 },
+  ]
+  const res = smoothShape(s.draft.points, shapeWorld(s.draft), undefined, keep)
+  const after = roadRoughness(res.points)
+  const moved = Math.max(0, ...res.points.map((p, i) => Math.hypot(p.x - s.draft.points[i].x, p.z - s.draft.points[i].z)))
+  if (moved < 0.1) {
+    say('The road is already as smooth as Smooth can make it.', 'info')
+    return { before, after: before }
+  }
+  const failingBefore = failingNow()
   commit((d) => {
-    const n = d.points.length
-    for (let pass = 0; pass < 2; pass++) {
-      for (const k of [0.5, -0.53]) {
-        const src = d.points.map((p) => ({ x: p.x, z: p.z }))
-        for (let i = 0; i < n; i++) {
-          const a = src[(i - 1 + n) % n]
-          const c = src[(i + 1) % n]
-          d.points[i].x = Math.round((src[i].x + k * ((a.x + c.x) / 2 - src[i].x)) * 10) / 10
-          d.points[i].z = Math.round((src[i].z + k * ((a.z + c.z) / 2 - src[i].z)) * 10) / 10
-        }
-      }
-    }
+    const old = d.points
+    d.points = res.points
+    carryAlongside(d, old, res.mapAt)
   })
-  say('Smoothed the road a little. Press it again for more, or Undo.', 'good')
+  shapeWatch = { what: 'Smoothing', draft: useEditor.getState().draft, failingBefore }
+  const less = Math.round(100 * (1 - after / Math.max(before, 1e-9)))
+  say(
+    less >= 5
+      ? `Smoothed: the road is ${less}% less wobbly. Press it again for smoother still, or Undo.${res.notes.length ? ` ${res.notes.join(' ')}` : ''}`
+      : `Smoothed a little (it was already smooth). Press it again for more, or Undo.${res.notes.length ? ` ${res.notes.join(' ')}` : ''}`,
+    'good',
+  )
+  audio.ui('select')
+  return { before, after }
+}
+
+// ---------------------------------------------------------------- shaping tools: Bend, Straight, Curve
+
+/**
+ * What the shaping maths needs to know about this draft's world: its edge,
+ * the road width, and (once the live preview of this draft is built) the
+ * ground's height, so new points beside a raised one get a smooth height.
+ */
+export function shapeWorld(d: Draft): ShapeWorld {
+  const o = strokeOptions(d, 1)
+  const t = getTrack()
+  const built = t && t.id === (useEditor.getState().savedId ?? draftId(d)) ? t : null
+  return { width: d.width, bound: o.bound, playRadius: o.playRadius, ground: built ? (x, z) => built.terrainHeight(x, z) : undefined }
+}
+
+function round3(v: number): number {
+  return Math.round(v * 1000) / 1000
+}
+
+/**
+ * Crash props and energy cores beside the road stay beside it when the road
+ * moves: each one within 40 m of the old road keeps its distance from the
+ * same spot on the new road. `mapAt` says where each old spot went.
+ */
+function carryAlongside(d: Draft, oldPoints: RoadPoint[], mapAt: (at: number) => number): void {
+  const oldRc = roadCurve(oldPoints)
+  const newRc = roadCurve(d.points)
+  const move = (spot: { x: number; z: number }) => {
+    const hit = nearestOnRoad(oldRc, spot)
+    if (hit.distance > d.width / 2 + 40) return
+    const f = frameAt(newRc, mapAt(hit.at))
+    const x = Math.round((f.p.x + f.right.x * hit.lateral) * 10) / 10
+    const z = Math.round((f.p.z + f.right.z * hit.lateral) * 10) / 10
+    if (Math.hypot(x - spot.x, z - spot.z) < 0.2) return
+    spot.x = x
+    spot.z = z
+  }
+  for (const p of d.props) move(p)
+  for (const c of d.cores) move(c)
+}
+
+/**
+ * The start grid needs straight road. If a change bent the road under a grid
+ * that was straight before, the start line moves to the nearest straight.
+ * Returns how far it moved (metres), or 0.
+ */
+function keepStartOnStraight(d: Draft, gridWasStraight: boolean): number {
+  if (!gridWasStraight || startGridStraight(d.points, d.startAt)) return 0
+  const spot = nearestStraightStart(d.points, d.startAt, d.pieces)
+  if (spot === null) return 0
+  const line = roadLine(d.points)
+  const metres = alongRoad(sOf(line, d.startAt), sOf(line, spot), line.length)
+  d.startAt = Math.round(spot * 100) / 100
+  return metres
+}
+
+/**
+ * Make a finished Straight, Curve or Corner the draft: one Undo step. Pieces
+ * and the start line move to the same places on the new road, props and
+ * cores beside it come along. Returns false (and says why) if it was refused.
+ */
+export function commitShape(res: ShapeResult, done: string, what = 'That change'): boolean {
+  if (!res.ok) {
+    say(res.reason ?? 'That did not work. Try other spots.', 'warn')
+    audio.ui('error')
+    return false
+  }
+  const failingBefore = failingNow()
+  let startMoved = 0
+  commit((d) => {
+    const old = d.points
+    const gridWasStraight = startGridStraight(old, d.startAt)
+    d.points = res.points
+    for (const p of d.pieces) p.at = round3(res.mapAt(p.at))
+    d.startAt = round3(res.mapAt(d.startAt))
+    carryAlongside(d, old, res.mapAt)
+    startMoved = keepStartOnStraight(d, gridWasStraight)
+  })
+  const extra = [...res.notes]
+  if (startMoved > 1) extra.push(`The start line moved ${Math.round(startMoved)} m to stay on a straight.`)
+  say(`${done}${extra.length ? ` ${extra.join(' ')}` : ''}`, 'good')
+  audio.ui('select')
+  shapeWatch = { what, draft: useEditor.getState().draft, failingBefore }
+  return true
+}
+
+/** Straight: the road between two spots (`at` values) becomes a straight line. */
+export function applyStraight(fromAt: number, toAt: number): boolean {
+  const d = useEditor.getState().draft
+  const res = straightStretch(d.points, fromAt, toAt, shapeWorld(d))
+  return commitShape(res, 'Straightened that stretch of road.', 'That straight')
+}
+
+/** Curve: the road between two spots becomes one smooth curve through `pull`. */
+export function applyCurve(fromAt: number, toAt: number, pull: P): boolean {
+  const d = useEditor.getState().draft
+  const res = curveStretch(d.points, fromAt, toAt, pull, shapeWorld(d))
+  return commitShape(res, 'Made that stretch one smooth curve.', 'That curve')
+}
+
+/**
+ * Corner: the corner around road point `index` gets a new radius (bigger is
+ * gentler, smaller is tighter); its ends stay put. The same corner stays
+ * selected (the road has new points there now).
+ */
+export function applyCornerRadius(index: number, radius: number): boolean {
+  const d = useEditor.getState().draft
+  const res = cornerRadius(d.points, index, radius, shapeWorld(d))
+  const at = res.ok ? res.mapAt(index) : index
+  if (!commitShape(res, 'Changed the corner.', 'That corner change')) return false
+  const count = useEditor.getState().draft.points.length
+  useEditor.setState({ selection: { kind: 'point', index: Math.round(at) % count } })
+  return true
+}
+
+/** Esc, or a different tool: forget a half-made Straight or Curve. Returns true if there was one. */
+export function cancelShaping(): boolean {
+  if (!useEditor.getState().shaping) return false
+  useEditor.setState({ shaping: null })
+  say('Cancelled.', 'info')
+  return true
+}
+
+/** Change Bend's reach (metres either way), kept within its limits and remembered. */
+export function setBendReach(metres: number): void {
+  const reach = Math.round(Math.min(BEND_REACH.max, Math.max(BEND_REACH.min, metres)))
+  if (reach === useEditor.getState().bendReach) return
+  useEditor.setState({ bendReach: reach })
+  writePrefs()
+}
+
+/** The pencil's steady hand: 0 (off) to STEADY_STRING.length - 1 (a lot). Remembered. */
+export function setSteady(level: number): void {
+  const steady = Math.max(0, Math.min(STEADY_STRING.length - 1, Math.round(level)))
+  useEditor.setState({ steady })
+  writePrefs()
+}
+
+// ---------------------------------------------------------------- Bend: grab the road and pull (one undo step per drag)
+
+/**
+ * A bend in progress: where the road was grabbed (`grabAt` on the road before
+ * the drag, `grabNow` on the evened road being bent), the draft before the
+ * drag, the pull so far, its world, and the game's checks failing before it.
+ */
+let bendDrag: { grabAt: number; grabNow: number; grab: P; start: Draft; pull: P; world: ShapeWorld; failingBefore: string[] } | null = null
+
+/** What the map draws for a bend in progress (see bendState). */
+export interface BendView {
+  /** The moving stretch of road, centreline, every 4 m or so. */
+  line: P[]
+  /** How much of the pull each spot of `line` gets (1 at the hand, 0 at the reach). */
+  weights: number[]
+  /** Where the bent road is tighter than a car can take, or null. */
+  tight: P | null
+  tightRadius: number
+}
+
+/** True while a bend drag is going on. */
+export function isBending(): boolean {
+  return bendDrag !== null
+}
+
+/** Start bending: the road was grabbed at `at` (the spot under the pointer is `grab`). */
+export function beginBend(at: number, grab: P): void {
+  beginGesture()
+  const start = useEditor.getState().draft
+  bendDrag = { grabAt: at, grabNow: at, grab, start, pull: { x: 0, z: 0 }, world: shapeWorld(start), failingBefore: failingNow() }
+}
+
+/**
+ * The pointer moved to `to` (or the reach changed): bend the road from where
+ * it was when the drag began. Built-in tracks have points far apart, so the
+ * stretch first gets extra points on the same curve (densify) to bend smoothly.
+ */
+export function moveBend(to?: P): BendView | null {
+  const drag = bendDrag
+  if (!drag) return null
+  if (to) drag.pull = { x: to.x - drag.grab.x, z: to.z - drag.grab.z }
+  const s = useEditor.getState()
+  const reach = s.bendReach
+  const start = drag.start
+  const world = drag.world
+  // Built-in tracks have points far apart: give the road even, close points first (same road).
+  const line0 = roadLine(start.points)
+  const dense = densify(line0, 0, line0.length, 20, undefined, world)
+  const line1 = roadLine(dense.points)
+  drag.grabNow = dense.mapAt(drag.grabAt)
+  const grabS = sOf(line1, drag.grabNow)
+  const points = bendRoad(line1, grabS, reach, drag.pull, world)
+  liveChange((d) => {
+    d.points = points
+    d.pieces = start.pieces.map((p) => ({ ...p, at: round3(dense.mapAt(p.at)) }))
+    d.startAt = round3(dense.mapAt(start.startAt))
+    d.props = start.props.map((p) => ({ ...p }))
+    d.cores = start.cores.map((c) => ({ ...c }))
+    carryAlongside(d, start.points, dense.mapAt)
+  })
+  return bendView(points, grabS, reach)
+}
+
+/** The highlighted stretch for a bend (or, before pressing, for where it would grab). */
+export function bendView(points: RoadPoint[], grabS: number, reach: number): BendView {
+  const line = roadLine(points)
+  const pts = stretchOf(line, grabS - reach, grabS + reach, 4)
+  const weights = pts.map((_, i) => bendWeight(-reach + (2 * reach * i) / Math.max(1, pts.length - 1), reach))
+  const t = tightestBetween(line, grabS - reach - 10, grabS + reach + 10)
+  return { line: pts, weights, tight: t.radius < MIN_RADIUS ? t.at : null, tightRadius: t.radius }
+}
+
+/** Esc during a bend: put the road back as it was and forget the drag. */
+export function cancelBend(): boolean {
+  const drag = bendDrag
+  if (!drag) return false
+  bendDrag = null
+  liveChange((d) => Object.assign(d, cloneJson(drag.start)))
+  endGesture()
+  say('Bend cancelled.', 'info')
+  return true
+}
+
+/**
+ * Let go of a bend: one Undo step. If the bend is too tight for a car, or
+ * squeezed the road points together (a pull along the road with a short
+ * reach), the bent stretch is laid out again with even points and the
+ * clean-up's corner rule opens it out. If even that can't make it drivable
+ * (the road folded over itself), the bend is put back and Josh is told why.
+ * The start line moves to a straight if the bend put its grid on a curve.
+ */
+export function endBend(): void {
+  const drag = bendDrag
+  bendDrag = null
+  if (!drag) return
+  const putBack = (text: string, tone: 'info' | 'warn') => {
+    liveChange((d) => Object.assign(d, cloneJson(drag.start)))
+    endGesture()
+    say(text, tone)
+  }
+  if (Math.hypot(drag.pull.x, drag.pull.z) < 0.3) {
+    // A click, not a drag: nothing changes (and no Undo step).
+    putBack('Hold the mouse button down on the road and drag to bend it.', 'info')
+    return
+  }
+  const s = useEditor.getState()
+  const reach = s.bendReach
+  const line = roadLine(s.draft.points)
+  const grabS = sOf(line, drag.grabNow)
+  const s0 = grabS - reach - 20
+  const s1 = grabS + reach + 20
+  const tight = tightestBetween(line, s0 + 10, s1 - 10).radius < MIN_RADIUS
+  const bunched = closestPoints(s.draft.points) < 4
+  /** Is the road drivable across the bent stretch (no corner too tight, no points squeezed together)? */
+  const drivable = (sp: Splice | null) => {
+    const points = sp ? sp.points : s.draft.points
+    const after = roadLine(points)
+    const a0 = sOf(after, sp ? sp.mapAt(atOf(line, s0)) : atOf(line, s0))
+    let a1 = sOf(after, sp ? sp.mapAt(atOf(line, s1)) : atOf(line, s1))
+    if (a1 <= a0) a1 += after.length
+    return { tight: tightestBetween(after, a0, a1).radius >= MIN_RADIUS, spaced: closestPoints(points) >= 2.5 }
+  }
+  let fixed: Splice | null = null
+  let ok = drivable(null)
+  if (tight || bunched) {
+    // Lay the bent stretch out again with even points and open the tight bit, a little wider each try.
+    // The fairing after it (16 m) lets the opened corner flow into the road either side, so the
+    // game's banking has room to roll in and out (a quicker join made it lean the wrong way).
+    for (const grow of [1.35, 1.6, 1.9]) {
+      const win = openCornersOnStretch(stretchOf(line, s0, s1, 2), MIN_RADIUS * grow)
+      fixed = spliceRoad(line, s0, s1, fairStretch(win, 16), SHAPE_SPACING, drag.world)
+      ok = drivable(fixed)
+      if (ok.tight && ok.spaced) break
+    }
+  }
+  if (!ok.tight || !ok.spaced) {
+    putBack(
+      ok.spaced
+        ? 'That bend is too sharp for a car, even opened out, so it was put back. Pull less, or roll the mouse wheel for a longer reach.'
+        : 'That bend folded the road over itself, so it was put back. Pull less, or roll the mouse wheel for a longer reach.',
+      'warn',
+    )
+    audio.ui('error')
+    return
+  }
+  let startMoved = 0
+  liveChange((d) => {
+    if (fixed) {
+      const old = d.points
+      d.points = fixed.points
+      for (const p of d.pieces) p.at = round3(fixed.mapAt(p.at))
+      d.startAt = round3(fixed.mapAt(d.startAt))
+      carryAlongside(d, old, fixed.mapAt)
+    }
+    startMoved = keepStartOnStraight(d, startGridStraight(drag.start.points, drag.start.startAt))
+  })
+  endGesture()
+  shapeWatch = { what: 'That bend', draft: useEditor.getState().draft, failingBefore: drag.failingBefore }
+  const notes: string[] = []
+  if (fixed && tight) notes.push('It was too tight for a car there, so the clean-up opened it out a little.')
+  if (startMoved > 1) notes.push(`The start line moved ${Math.round(startMoved)} m to stay on a straight.`)
+  say(notes.length ? `Bent the road. ${notes.join(' ')}` : 'Bent the road. Undo if you want it back.', 'good')
+  audio.ui('select')
 }
 
 /**

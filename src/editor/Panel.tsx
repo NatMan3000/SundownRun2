@@ -42,6 +42,7 @@ import {
   updateProp,
   useEditor,
   commit,
+  applyCornerRadius,
 } from './draft'
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
 import { issueLocation, roadGeometry } from './mapDraw'
@@ -49,6 +50,7 @@ import { type CheckItem, checkVerdict, gateItems, plainWords } from './checks'
 import { pieceLabel } from './pieces'
 import { startDriveToDraw } from './driveToDraw'
 import { metresBetween, roadLength } from './road'
+import { cornerAt } from './shape'
 import { setView, view } from './view'
 
 /** Edge-strip colours a track can pick (the road's light strips). */
@@ -124,7 +126,7 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
           <TextField label="Made by" value={draft.author} onCommit={setAuthor} placeholder="Your name" />
           <TextField label="About this track" value={draft.description} onCommit={setDescription} placeholder="One line for the track list" multiline max={200} />
           <div className="sre-row">
-            <button type="button" className="sre-btn" onClick={smoothRoad} title="Evens out wobbles in the whole road. Undo if you don't like it.">
+            <button type="button" className="sre-btn" onClick={() => smoothRoad()} title="Irons the wobbles and kinks out of the whole road. Press again for smoother still; Undo if you don't like it.">
               Smooth the road
             </button>
             <button type="button" className="sre-btn" onClick={() => startDriveToDraw()} title="Drive anywhere in this world: the car lays a road behind it, and it opens here when you finish.">
@@ -273,6 +275,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
     body = (
       <>
         <p className="sre-help">Drag it on the map to reshape the road. Double-click the road to add a point.</p>
+        <CornerField index={sel.index} draft={d} />
         <SliderField
           label="Height above the ground"
           value={point.lift ?? 0}
@@ -352,6 +355,33 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
         </button>
       )}
     </section>
+  )
+}
+
+/**
+ * Corner: when the selected point sits in a corner, one slider makes that
+ * whole corner gentler (a bigger radius) or tighter, keeping the road either
+ * side where it is (shape.ts cornerRadius).
+ */
+function CornerField(p: { index: number; draft: Draft }) {
+  const corner = useMemo(() => cornerAt(p.draft.points, p.index), [p.draft.points, p.index])
+  if (typeof corner === 'string') return <p className="sre-help">Corner: {corner}</p>
+  const min = Math.floor(corner.min)
+  const max = Math.ceil(corner.max)
+  return (
+    <>
+      <SliderField
+        label="Corner"
+        value={Math.min(max, Math.max(min, Math.round(corner.radius)))}
+        min={min}
+        max={max}
+        step={1}
+        format={(v) => `${v} m round`}
+        onCommit={(v) => applyCornerRadius(p.index, v)}
+        help="Left makes the corner tighter, right makes it gentler. The road either side stays where it is."
+      />
+      <p className="sre-help">Left: tighter. Right: gentler. The road either side stays where it is.</p>
+    </>
   )
 }
 

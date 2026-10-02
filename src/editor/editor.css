@@ -768,3 +768,91 @@ textarea.sre-input {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
+
+/* ---------------------------------------------------------------- tool options (beside the rail) */
+
+/* The chosen tool's own settings, where the piece palette sits for Place. */
+.sre-options {
+  position: absolute;
+  left: 84px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 236px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+}
+.sre-options-title {
+  font-family: var(--font-display);
+  font-size: 0.78em;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent2);
+}
+.sre-options .sre-help {
+  margin: 0;
+}
+
+/* Straight and Curve: numbered steps, the one you are on lit in the accent colour. */
+.sre-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sre-steps li {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--dim);
+  line-height: 1.35;
+}
+.sre-step-num {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  font-size: 0.8em;
+  font-variant-numeric: tabular-nums;
+  align-self: start;
+}
+.sre-steps li.is-now {
+  color: var(--text);
+}
+.sre-steps li.is-now .sre-step-num {
+  color: var(--panel-solid);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.sre-steps li.is-done .sre-step-num {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* A short window: the rail's buttons shrink so all of them still fit. */
+@media (max-height: 940px) {
+  .sre-tool {
+    width: 38px;
+    height: 38px;
+  }
+  .sre-tools {
+    gap: 4px;
+  }
+  .sre-tools-gap {
+    margin: 2px 6px;
+  }
+  .sre-options,
+  .sre-palette {
+    left: 76px;
+  }
+}

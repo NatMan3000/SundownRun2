@@ -11,9 +11,12 @@
 //    dialog      Library.tsx (open, new, copy, import, export), and
 //                ClearAll.tsx ("Clear the whole track?")
 //
-//  Esc (or the pad's Menu button): first closes a dialog, then clears
-//  a selection, then leaves the editor. Work is never lost: the draft
-//  is kept.
+//  Esc (or the pad's Menu button): first closes a dialog, then stops a
+//  bend or a half-made Straight or Curve, then clears a selection, then
+//  leaves the editor. Work is never lost: the draft is kept.
+//
+//  Beside the rail, the chosen tool's own settings (ToolOptions): the
+//  pencil's steady hand, Bend's reach, the steps of Straight and Curve.
 // ============================================================
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
@@ -21,7 +24,7 @@ import { FONTS, PALETTE } from '../core/palette'
 import { controlSignals } from '../core/controls'
 import { endSession } from '../core/session'
 import { audio } from '../core/api'
-import { type EditorTool, redo, say, setTool, undo, useEditor } from './draft'
+import { type EditorTool, cancelBend, cancelShaping, redo, say, setBendReach, setSteady, setTool, undo, useEditor } from './draft'
 import { Overlay, fitToDraft, pencilHint } from './Overlay'
 import { Panel } from './Panel'
 import { Library } from './Library'
@@ -29,7 +32,9 @@ import { closeWorldMap } from './worldMap'
 import { PLACE_TOOLS, type PlaceKind } from './pieces'
 import { setView, view, zoomAt } from './view'
 import { ClearAllDialog, askClearAll, clearAllTakesPause, setClearAllBlocked } from './ClearAll'
-import { ClearIcon, FitIcon, GlobeIcon, HandIcon, LibraryIcon, MinusIcon, PencilIcon, PlaceIcon, PlusIcon, SectionIcon, SelectIcon, UndoIcon } from './icons'
+import { BendIcon, ClearIcon, CurveIcon, FitIcon, GlobeIcon, HandIcon, LibraryIcon, MinusIcon, PencilIcon, PlaceIcon, PlusIcon, SectionIcon, SelectIcon, StraightIcon, UndoIcon } from './icons'
+import { SliderField } from './fields'
+import { BEND_REACH, STEADY_NAMES, STEADY_STRING } from './shape'
 import './editor.css'
 
 /** CSS custom properties from the palette, so the stylesheet never holds a colour of its own. */
@@ -59,6 +64,9 @@ const cssVars = {
 /** What each tool does, said once when you pick it. */
 const TOOL_TIPS: Record<EditorTool, string> = {
   pencil: 'Pencil: draw a loop for a new road, or draw from the road back to the road to redraw that stretch.',
+  bend: 'Bend: grab the road and pull it. The mouse wheel (or [ and ]) changes how much road comes with it.',
+  straight: 'Straight: click the road where the straight starts, then click where it ends.',
+  curve: 'Curve: click the road where the curve starts, then where it ends, then pull the middle out and click.',
   select: 'Select: click a piece or road point, drag to move it, Delete removes it. Double-click the road to add a point.',
   section: 'Bank and width: drag along the road to pick a stretch, then set it in the panel.',
   place: 'Place: pick a piece, then click where it goes.',
@@ -80,6 +88,9 @@ export function EditorUi() {
         if (clearAllTakesPause(seen)) {
           // The "Clear the whole track?" box used this press to close.
         } else if (library) setLibrary(false)
+        else if (cancelBend() || cancelShaping()) {
+          // Esc stopped a bend or a half-made Straight or Curve.
+        }
         else if (useEditor.getState().selection) useEditor.setState({ selection: null })
         else leaveEditor()
       }
@@ -98,6 +109,7 @@ export function EditorUi() {
       <Overlay />
       <Toolbar onLibrary={() => setLibrary(true)} />
       <Palette />
+      <ToolOptions />
       <Panel onLibrary={() => setLibrary(true)} onExit={leaveEditor} />
       <StatusLine />
       {library && <Library onClose={() => setLibrary(false)} />}
@@ -135,6 +147,9 @@ function Toolbar(props: { onLibrary: () => void }) {
       {editing && (
         <>
           <ToolButton label="Pencil" keyHint="P" active={tool === 'pencil'} onClick={() => pickTool('pencil')} icon={<PencilIcon />} />
+          <ToolButton label="Bend: grab the road and pull" keyHint="G" active={tool === 'bend'} onClick={() => pickTool('bend')} icon={<BendIcon />} />
+          <ToolButton label="Straight: make a stretch dead straight" keyHint="L" active={tool === 'straight'} onClick={() => pickTool('straight')} icon={<StraightIcon />} />
+          <ToolButton label="Curve: make a stretch one smooth curve" keyHint="C" active={tool === 'curve'} onClick={() => pickTool('curve')} icon={<CurveIcon />} />
           <ToolButton label="Select and move" keyHint="V" active={tool === 'select'} onClick={() => pickTool('select')} icon={<SelectIcon />} />
           <ToolButton label="Place pieces" keyHint="1-0" active={tool === 'place'} onClick={() => pickTool('place')} icon={<PlaceIcon />} />
           <ToolButton label="Bank and width" keyHint="B" active={tool === 'section'} onClick={() => pickTool('section')} icon={<SectionIcon />} />
@@ -209,6 +224,84 @@ function Palette() {
       ))}
     </div>
   )
+}
+
+// ---------------------------------------------------------------- the chosen tool's settings
+
+/** The steps of a Straight and a Curve, in the words the box shows. */
+const SHAPE_STEPS: Record<'straight' | 'curve', string[]> = {
+  straight: ['Click the road where the straight starts.', 'Click where it ends.'],
+  curve: ['Click the road where the curve starts.', 'Click where it ends.', 'Pull the middle out, then click.'],
+}
+
+/**
+ * A small box beside the rail with the chosen tool's own settings, the way
+ * the piece palette sits beside it for Place: the pencil's steady hand,
+ * Bend's reach, and the steps of a Straight or Curve with the one you are
+ * on lit up.
+ */
+function ToolOptions() {
+  const tool = useEditor((s) => s.tool)
+  const mode = useEditor((s) => s.mode)
+  const steady = useEditor((s) => s.steady)
+  const reach = useEditor((s) => s.bendReach)
+  const shaping = useEditor((s) => s.shaping)
+  if (mode !== 'edit') return null
+  if (tool === 'pencil') {
+    return (
+      <div className="sre-options" role="group" aria-label="Pencil settings" data-testid="editor-tool-options">
+        <span className="sre-options-title">Pencil</span>
+        <SliderField
+          label="Steady hand"
+          value={steady}
+          min={0}
+          max={STEADY_STRING.length - 1}
+          step={1}
+          format={(v) => STEADY_NAMES[v] ?? ''}
+          onCommit={setSteady}
+          help="The line trails a little behind the mouse on a string, so wobbles never reach it."
+        />
+        <p className="sre-help">Your line trails a little behind the mouse, so a shaky hand still draws a smooth road. Turn it up for smoother, down for more control.</p>
+      </div>
+    )
+  }
+  if (tool === 'bend') {
+    return (
+      <div className="sre-options" role="group" aria-label="Bend settings" data-testid="editor-tool-options">
+        <span className="sre-options-title">Bend</span>
+        <SliderField
+          label="Reach"
+          value={reach}
+          min={BEND_REACH.min}
+          max={BEND_REACH.max}
+          step={10}
+          format={(v) => `${v} m each way`}
+          onCommit={setBendReach}
+          help="How much road comes with your hand."
+        />
+        <p className="sre-help">How much road comes with your hand. Short for a small nudge, long for a big sweeping bend. While you drag: mouse wheel, or [ and ].</p>
+      </div>
+    )
+  }
+  if (tool === 'straight' || tool === 'curve') {
+    const steps = SHAPE_STEPS[tool]
+    const now = shaping?.tool === tool ? (shaping.b !== null ? 2 : 1) : 0
+    return (
+      <div className="sre-options" role="group" aria-label={tool === 'straight' ? 'Straight steps' : 'Curve steps'} data-testid="editor-tool-options">
+        <span className="sre-options-title">{tool === 'straight' ? 'Straight' : 'Curve'}</span>
+        <ol className="sre-steps">
+          {steps.map((text, i) => (
+            <li key={text} className={i === now ? 'is-now' : i < now ? 'is-done' : undefined}>
+              <span className="sre-step-num">{i + 1}</span>
+              {text}
+            </li>
+          ))}
+        </ol>
+        <p className="sre-help">{tool === 'straight' ? 'The ends ease into the road so there is no kink.' : 'The curve joins the road at both ends with no kink.'} Red means too tight for a car. Esc starts again.</p>
+      </div>
+    )
+  }
+  return null
 }
 
 // ---------------------------------------------------------------- status line

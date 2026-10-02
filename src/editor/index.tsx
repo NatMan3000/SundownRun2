@@ -11,6 +11,8 @@
 //
 //  How the pieces fit:
 //    cleanup.ts     turns a pencil line into a drivable road (pure maths)
+//    shape.ts       the shaping tools' maths: Smooth, Bend, Straight,
+//                   Curve, corner radius, the pencil's steady hand
 //    geom.ts        the 2D helpers it is built from
 //    road.ts        "where on the road is this?" (at, offset), keeping
 //                   pieces in place when points are added or removed

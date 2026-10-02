@@ -25,6 +25,20 @@
 //                                          track gates on the built draft (the same
 //                                          rows `bun run tracks:check` prints)
 //
+//  The shaping tools, for checkers without a mouse:
+//    __dev.editor('smooth')                press Smooth once; returns the wobble before and after
+//    __dev.editor('roughness')             how wobbly the road is (shape.ts roadRoughness), and the
+//                                          same measure on the built preview's samples
+//    __dev.editor('bend', [at, dx, dz, reach])   grab the road at `at` and pull it by (dx, dz) metres
+//    __dev.editor('straight', [fromAt, toAt])    make that stretch straight
+//    __dev.editor('curve', [fromAt, toAt, x, z]) make it one curve through (x, z)
+//    __dev.editor('corners')               the corners, tightest first: at, radius, where
+//    __dev.editor('corner', [i, radius])   the corner road point i sits in: read it, or set its radius
+//    __dev.editor('screen', at | [x, z])   where a road spot (or a world point) is on screen,
+//                                          so a probe can click it with the real mouse
+//    __dev.editor('tool', name)            pick a tool: pencil bend straight curve select place section pan
+//    __dev.editor('steady', 0..3)          the pencil's steady hand (0 = off)
+//
 //  Inspector: __game.get('editor') - a summary of the draft.
 //  URL switch: ?editor=1 opens the editor straight away.
 // ============================================================
@@ -36,16 +50,27 @@ import { getTrackFile } from '../track/registry'
 import { getTrack } from '../track/current'
 import type { P } from './geom'
 import {
+  type EditorTool,
+  applyCornerRadius,
+  applyCurve,
+  applyStraight,
   applyStroke,
+  beginBend,
   clearAll,
   draftFromFile,
   draftId,
+  endBend,
   fileFromDraft,
+  moveBend,
   newDraft,
   previewNow,
   redo,
   replaceDraft,
   saveDraft,
+  setBendReach,
+  setSteady,
+  setTool,
+  smoothRoad,
   testDrive,
   undo,
   useEditor,
@@ -56,7 +81,10 @@ import { checkVerdict } from './checks'
 import { cancelDriveToDraw, clearLaidRoad, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
 import { answerClearAll, askClearAll, useClearAsk } from './ClearAll'
 import { closeWorldMap, isMapOpen, openWorldMap } from './worldMap'
-import { setView, view } from './view'
+import { setView, view, worldToScreen } from './view'
+import { frameAt, roadCurve } from './road'
+import { atOf, cornerAt, posOf, roadLine, roadRoughness, tightestOnRoad } from './shape'
+import { circumradius } from './geom'
 
 const TAU = Math.PI * 2
 
@@ -135,7 +163,7 @@ function strokeResult(raw: P[]) {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -211,11 +239,120 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       return runEditorSelfTest()
     case 'checks':
       return checksSummary()
+    case 'smooth':
+      return smoothRoad()
+    case 'roughness':
+      return roughnessNow()
+    case 'bend': {
+      const [at, dx, dz, reach] = Array.isArray(arg) ? arg.map(Number) : []
+      if (![at, dx, dz].every(Number.isFinite)) return 'bend needs [at, dx, dz] (and optionally reach in metres)'
+      if (Number.isFinite(reach)) setBendReach(reach)
+      const d = useEditor.getState().draft
+      const grab = frameAt(roadCurve(d.points), at).p
+      beginBend(at, grab)
+      const view0 = moveBend({ x: grab.x + dx, z: grab.z + dz })
+      endBend()
+      return { tightDuringDrag: view0?.tight ? Math.round(view0.tightRadius * 10) / 10 : null, ...shapeSummary() }
+    }
+    case 'straight': {
+      const [a, b] = Array.isArray(arg) ? arg.map(Number) : []
+      if (![a, b].every(Number.isFinite)) return 'straight needs [fromAt, toAt]'
+      return { ok: applyStraight(a, b), ...shapeSummary() }
+    }
+    case 'curve': {
+      const [a, b, x, z] = Array.isArray(arg) ? arg.map(Number) : []
+      if (![a, b, x, z].every(Number.isFinite)) return 'curve needs [fromAt, toAt, x, z]'
+      return { ok: applyCurve(a, b, { x, z }), ...shapeSummary() }
+    }
+    case 'corners':
+      return cornerList()
+    case 'corner': {
+      // [pointIndex] reads the corner a road point sits in; [pointIndex, radius] sets its radius.
+      const [index, radius] = Array.isArray(arg) ? arg.map(Number) : [Number(arg), NaN]
+      const d = useEditor.getState().draft
+      if (!Number.isInteger(index) || !d.points[index]) return 'corner needs [pointIndex] or [pointIndex, radius]'
+      if (Number.isFinite(radius)) return { ok: applyCornerRadius(index, radius), ...shapeSummary() }
+      const c = cornerAt(d.points, index)
+      if (typeof c === 'string') return c
+      return { radiusM: Math.round(c.radius), minM: Math.floor(c.min), maxM: Math.ceil(c.max), turnDeg: Math.round((c.turn * 180) / Math.PI) }
+    }
+    case 'screen': {
+      const d = useEditor.getState().draft
+      const w = Array.isArray(arg) ? { x: Number(arg[0]), z: Number(arg[1]) } : frameAt(roadCurve(d.points), Number(arg)).p
+      const s = worldToScreen(w.x, w.z)
+      return { sx: Math.round(s.sx * 10) / 10, sy: Math.round(s.sy * 10) / 10, x: Math.round(w.x * 10) / 10, z: Math.round(w.z * 10) / 10 }
+    }
+    case 'tool': {
+      const tools = ['pencil', 'bend', 'straight', 'curve', 'select', 'place', 'section', 'pan']
+      if (!tools.includes(String(arg))) return `tool must be one of ${tools.join(' ')}`
+      setTool(String(arg) as EditorTool)
+      return useEditor.getState().tool
+    }
+    case 'steady':
+      setSteady(Number(arg))
+      return useEditor.getState().steady
     case 'state':
       return summary()
     default:
       return `unknown editor command "${cmd}" - try __dev.editor('help')`
   }
+}
+
+/** How wobbly the draft is: shape.ts's measure, and the same on the built preview's own samples. */
+function roughnessNow() {
+  const s = useEditor.getState()
+  const t = getTrack()
+  let built: number | null = null
+  if (t && s.checkedDraft === s.draft && s.preview === 'built') {
+    const S = t.samples
+    let rough = 0
+    for (let i = 0; i < S.count; i++) rough += Math.abs(S.curvature[(i + 1) % S.count] - S.curvature[i])
+    built = Math.round((rough / (S.count * S.ds)) * 1e6)
+  }
+  return {
+    editor: Math.round(roadRoughness(s.draft.points)),
+    built,
+    tightestM: Math.round(tightestOnRoad(s.draft.points).radius * 10) / 10,
+    points: s.draft.points.length,
+  }
+}
+
+/** After a shaping command: what the status line said and the draft's shape. */
+function shapeSummary() {
+  const s = useEditor.getState()
+  return {
+    message: s.message?.text ?? null,
+    points: s.draft.points.length,
+    pieces: s.draft.pieces.map((p) => ({ type: p.type, at: p.at })),
+    startAt: s.draft.startAt,
+    undoSteps: s.past.length,
+    roughness: Math.round(roadRoughness(s.draft.points)),
+    tightestM: Math.round(tightestOnRoad(s.draft.points).radius * 10) / 10,
+  }
+}
+
+/** The road's corners, tightest first (a probe picks one to bend). */
+function cornerList() {
+  const d = useEditor.getState().draft
+  const line = roadLine(d.points)
+  const step = 2
+  const n = Math.floor(line.length / step)
+  const r = new Float64Array(n)
+  for (let i = 0; i < n; i++) r[i] = circumradius(posOf(line, i * step - 6), posOf(line, i * step), posOf(line, i * step + 6))
+  const peaks: { s: number; radius: number }[] = []
+  for (let i = 0; i < n; i++) {
+    const here = r[i]
+    if (here > 400) continue
+    let isPeak = true
+    for (let k = -10; k <= 10 && isPeak; k++) if (k && r[(i + k + n) % n] < here) isPeak = false
+    if (isPeak) peaks.push({ s: i * step, radius: here })
+  }
+  peaks.sort((a, b) => a.radius - b.radius)
+  return peaks.slice(0, 12).map((p) => {
+    const at = atOf(line, p.s)
+    const w = posOf(line, p.s)
+    return { at: Math.round(at * 1000) / 1000, radiusM: Math.round(p.radius * 10) / 10, x: Math.round(w.x), z: Math.round(w.z) }
+  })
 }
 
 /** What the Checks panel is showing, and the raw gate rows behind it. */
@@ -248,6 +385,9 @@ function summary() {
     dirty: s.dirty,
     savedId: s.savedId,
     tool: s.tool,
+    bendReach: s.bendReach,
+    steady: s.steady,
+    shaping: s.shaping,
     clearAsk: useClearAsk.getState().open,
     pieces: s.draft.pieces.length,
     props: s.draft.props.length,

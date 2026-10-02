@@ -181,10 +181,7 @@ export function cleanStroke(raw: readonly P[], options: Partial<CleanupOptions> 
   }
 
   // 3. smooth (on an even spacing first, so every bit of the line counts the same)
-  const limit: WorldLimit = {
-    square: Math.max(80, o.bound - o.worldMargin),
-    radius: Math.max(80, o.playRadius - o.width / 2 - o.worldMargin),
-  }
+  const limit = worldLimit(o)
   let smoothed = resample(closed, o.fine, true)
   smoothed = gaussianSmoothClosed(smoothed, o.smoothing)
   const movedIn = keepInside(smoothed, limit)
@@ -313,13 +310,31 @@ function closeStroke(pts: P[], o: CleanupOptions, issues: StrokeIssue[]): P[] {
 // ---------------------------------------------------------------- 4. relax
 
 /** Where the road may go: inside a square (the track validator's world bound) and a circle. */
-interface WorldLimit {
+export interface WorldLimit {
   square: number
   radius: number
 }
 
+/** The world limit for a set of clean-up options (the road's centreline stays this far in). */
+export function worldLimit(o: Pick<CleanupOptions, 'bound' | 'playRadius' | 'width' | 'worldMargin'>): WorldLimit {
+  return {
+    square: Math.max(80, o.bound - o.worldMargin),
+    radius: Math.max(80, o.playRadius - o.width / 2 - o.worldMargin),
+  }
+}
+
+/**
+ * The clean-up's corner, spacing and world-edge rules (step 4) on a road
+ * that is already a closed loop. Smooth (shape.ts) uses it so a smoothed
+ * road obeys exactly the same rules as a freshly drawn one.
+ */
+export function relaxLoop(loop: readonly P[], options: Partial<CleanupOptions>, margin = CLEANUP.cornerMargin): P[] {
+  const o: CleanupOptions = { ...CLEANUP, width: 14, bound: Infinity, playRadius: Infinity, ...options }
+  return relax(loop.map((p) => ({ x: p.x, z: p.z })), o, worldLimit(o), margin)
+}
+
 /** Pull any point past the world edge back inside it. Returns the furthest a point moved. */
-function keepInside(pts: P[], limit: WorldLimit): number {
+export function keepInside(pts: P[], limit: WorldLimit): number {
   let moved = 0
   for (const p of pts) {
     const x0 = p.x

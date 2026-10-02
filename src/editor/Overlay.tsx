@@ -6,6 +6,16 @@
 //
 //    Pencil   drag to draw. A whole loop makes a new road; a line that
 //             starts and ends on the road redraws just that stretch.
+//             The steady hand (shape.ts SteadyPen) makes the line trail
+//             the pointer on a short string, so wobbles never reach it.
+//    Bend     grab the road and pull: the stretch near your hand comes
+//             along with a soft falloff. The wheel (while dragging) or
+//             [ and ] change how much road comes. One Undo step per drag.
+//    Straight click the road twice: that stretch becomes dead straight.
+//    Curve    click the road twice, then pull the middle out and click:
+//             that stretch becomes one smooth curve through that spot.
+//             Both show the result before the last click (red = too
+//             tight for a car, and it won't do it); Esc starts again.
 //    Select   click a piece, prop, core or road point to select it,
 //             drag to move it, double-click the road to add a point,
 //             Delete removes what is selected. Drag empty map to pan.
@@ -18,7 +28,8 @@
 //  Everywhere: right or middle drag (or Space + drag) pans, the wheel
 //  zooms where you point, WASD / arrows pan, F fits the track, + and -
 //  zoom, Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes. Number keys pick
-//  a piece to place; P pencil, V select, B section, H pan.
+//  a piece to place; P pencil, G bend, L straight, C curve, V select,
+//  B section, H pan.
 //
 //  The drawing itself is in mapDraw.ts.
 // ============================================================
@@ -30,27 +41,38 @@ import { audio } from '../core/api'
 import { askClearAll, clearAskVersion } from './ClearAll'
 import { PLACE_TOOLS, toolFor } from './pieces'
 import {
+  type BendView,
   type EditorTool,
   testDrive,
+  applyCurve,
+  applyStraight,
   applyStroke,
+  beginBend,
   beginGesture,
+  bendView,
   deleteSelection,
+  endBend,
   endGesture,
   insertPointAt,
+  isBending,
   liveChange,
   loopSpot,
   gestureStartAt,
+  moveBend,
   placeAt,
   redo,
   roadBoundFor,
   say,
+  setBendReach,
   setTool,
+  shapeWorld,
   undo,
   useEditor,
 } from './draft'
 import { type P } from './geom'
-import { type MapExtras, type Pick, drawMap, pieceScreen, pointsVisible, roadGeometry } from './mapDraw'
-import { advanceAt, frameAt, metresBetween, nearestOnRoad, wrapAt } from './road'
+import { type MapExtras, type Pick, type ShapeView, drawMap, pieceScreen, pointsVisible, roadGeometry } from './mapDraw'
+import { type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, wrapAt } from './road'
+import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
 import { view, panBy, screenToWorld, worldToScreen, zoomAt, fitBox } from './view'
 
 /** Pixels the pointer must move before the pencil adds another point. */
@@ -149,6 +171,19 @@ export function Overlay() {
     let hover: P | null = null
     let hoverPick: Pick | null = null
     let ghost: MapExtras['ghost'] = null
+    // Pencil: the steady pen (the line trails it) and where the pointer really is.
+    let pen: SteadyPen | null = null
+    let penTo: P | null = null
+    // Bend: the highlighted stretch (hovering or dragging).
+    let bending = false
+    let bendShown: BendView | null = null
+    // Straight and Curve: the preview, worked out at most once a frame.
+    let shapeShown: ShapeView | null = null
+    let shapeDirty = false
+    let shapeSaid = ''
+    let pointer = { x: 0, y: 0 }
+    // A press off the road with Straight or Curve pans; a click there (no drag) says what to do.
+    let hintOnClick: { x: number; y: number } | null = null
     const held = new Set<string>()
     let needsDraw = true
     let drawnVersion = -1
@@ -174,6 +209,7 @@ export function Overlay() {
       if (panning) canvas.style.cursor = 'grabbing'
       else if (spaceHeld || s.tool === 'pan' || s.mode === 'map') canvas.style.cursor = 'grab'
       else if (s.tool === 'select') canvas.style.cursor = dragging ? 'grabbing' : hoverPick ? 'pointer' : 'default'
+      else if (s.tool === 'bend') canvas.style.cursor = bending ? 'grabbing' : bendShown ? 'grab' : 'default'
       else if (s.tool === 'place' || s.tool === 'section') canvas.style.cursor = 'copy'
       else canvas.style.cursor = 'crosshair'
     }
@@ -217,6 +253,85 @@ export function Overlay() {
       })
     }
 
+    /** The spot on the road under screen point (sx, sy), or null if the pointer is off the road (any zoom). */
+    const roadHitAt = (sx: number, sy: number): RoadHit | null => {
+      const d = useEditor.getState().draft
+      const hit = nearestOnRoad(roadGeometry(d.points, d.width).rc, screenToWorld(sx, sy))
+      return hit.distance <= d.width / 2 + Math.max(4, 12 * view.mpp) ? hit : null
+    }
+
+    /** While bending: say once when it turns too tight, and once when it is fine again. */
+    let bendTightSaid = false
+    const bendWarn = () => {
+      const tight = !!bendShown?.tight
+      if (tight === bendTightSaid) return
+      bendTightSaid = tight
+      if (tight) say('Too tight for a car there! Pull less, or roll the mouse wheel to bring more road along. If you let go now it gets opened out, or put back if it can\'t be.', 'warn')
+      else say('Let go to keep the bend, or press Esc to put it back.', 'info')
+    }
+
+    /** Bend, before pressing: light up the stretch that would come with your hand. */
+    const bendHover = () => {
+      const s = useEditor.getState()
+      const hit = s.tool === 'bend' && !bending ? roadHitAt(pointer.x, pointer.y) : null
+      if (!hit) {
+        bendShown = null
+        return
+      }
+      const line = roadLine(s.draft.points)
+      bendShown = bendView(s.draft.points, sOf(line, hit.at), s.bendReach)
+    }
+
+    /**
+     * Straight and Curve: what would happen if you clicked now. Worked out in
+     * the frame loop (at most once a frame), with the reason in the status
+     * line whenever it changes.
+     */
+    const shapePreview = (): ShapeView | null => {
+      const s = useEditor.getState()
+      if ((s.tool !== 'straight' && s.tool !== 'curve') || s.mode !== 'edit') return null
+      const d = s.draft
+      const sh = s.shaping?.tool === s.tool ? s.shaping : null
+      const hit = roadHitAt(pointer.x, pointer.y)
+      if (!sh) return hit ? { marks: [hit.p], pull: null, old: [], preview: [], ok: true, tight: null } : null
+      const line = roadLine(d.points)
+      const sA = sOf(line, sh.a)
+      const A = posOf(line, sA)
+      /** The shorter way round between two spots: the stretch that changes. */
+      const between = (sB: number) => {
+        const fwd = ((sB - sA) % line.length + line.length) % line.length
+        return fwd <= line.length / 2 ? stretchOf(line, sA, sA + fwd, 4) : stretchOf(line, sB, sB + line.length - fwd, 4)
+      }
+      if (s.tool === 'straight') {
+        if (!hit) return { marks: [A], pull: null, old: [], preview: [], ok: true, tight: null }
+        const res = straightStretch(d.points, sh.a, hit.at, shapeWorld(d))
+        tell(res.ok ? '' : (res.reason ?? ''), 'Click to make it straight.')
+        return { marks: [A, hit.p], pull: null, old: between(sOf(line, hit.at)), preview: res.preview, ok: res.ok, tight: res.ok ? null : res.tightAt }
+      }
+      if (sh.b === null) {
+        if (!hit) return { marks: [A], pull: null, old: [], preview: [], ok: true, tight: null }
+        const far = alongRoad(sA, sOf(line, hit.at), line.length) >= 30
+        return { marks: [A, hit.p], pull: null, old: between(sOf(line, hit.at)), preview: [], ok: far, tight: null }
+      }
+      const sB = sOf(line, sh.b)
+      const B = posOf(line, sB)
+      const pull = screenToWorld(pointer.x, pointer.y)
+      const res = curveStretch(d.points, sh.a, sh.b, pull, shapeWorld(d))
+      tell(res.ok ? '' : (res.reason ?? ''), 'Click to make the curve.')
+      return { marks: [A, B], pull, old: between(sB), preview: res.preview, ok: res.ok, tight: res.ok ? null : res.tightAt }
+    }
+    /**
+     * Say a preview's problem once (not on every mouse move), and when it is
+     * fixed again, what to do next, so an old warning never hangs about.
+     */
+    const tell = (reason: string, okPrompt: string) => {
+      if (reason === shapeSaid) return
+      const wasBad = shapeSaid !== ''
+      shapeSaid = reason
+      if (reason) say(reason, 'warn')
+      else if (wasBad) say(okPrompt, 'info')
+    }
+
     // ---- pointer ----
     const onDown = (e: PointerEvent) => {
       // Clicking the map takes the keyboard back from any panel control.
@@ -236,6 +351,65 @@ export function Overlay() {
       if (s.tool === 'pencil') {
         drawing = true
         stroke = [q]
+        // The steady hand: the line follows a pen that trails the pointer on a string.
+        pen = new SteadyPen(STEADY_STRING[s.steady] ?? 0)
+        pen.start(e.clientX, e.clientY)
+        penTo = q
+        needsDraw = true
+        return
+      }
+      if (s.tool === 'bend') {
+        const hit = roadHitAt(e.clientX, e.clientY)
+        if (!hit) {
+          // Off the road: drag the map instead.
+          panning = true
+          setCursor()
+          return
+        }
+        // The grab point is where the pointer is, so the road moves exactly as far as the mouse does.
+        beginBend(hit.at, q)
+        bending = true
+        bendTightSaid = false
+        bendShown = moveBend(q)
+        setCursor()
+        needsDraw = true
+        return
+      }
+      if (s.tool === 'straight' || s.tool === 'curve') {
+        const sh = s.shaping?.tool === s.tool ? s.shaping : null
+        if (sh && sh.tool === 'curve' && sh.b !== null) {
+          // Third click (anywhere): the curve goes through here.
+          applyCurve(sh.a, sh.b, q)
+          shapeDirty = true
+          needsDraw = true
+          return
+        }
+        const hit = roadHitAt(e.clientX, e.clientY)
+        if (!hit) {
+          panning = true
+          hintOnClick = { x: e.clientX, y: e.clientY }
+          setCursor()
+          return
+        }
+        if (!sh) {
+          useEditor.setState({ shaping: { tool: s.tool, a: hit.at, b: null } })
+          say(s.tool === 'straight' ? 'Now click the road where the straight should end.' : 'Now click the road where the curve should end.', 'info')
+          audio.ui('select')
+        } else if (sh.tool === 'straight') {
+          applyStraight(sh.a, hit.at)
+        } else {
+          const line = roadLine(s.draft.points)
+          if (alongRoad(sOf(line, sh.a), sOf(line, hit.at), line.length) < 30) {
+            say('Pick a spot further along the road (at least 30 m from the first one).', 'warn')
+            audio.ui('error')
+          } else {
+            useEditor.setState({ shaping: { ...sh, b: hit.at } })
+            say('Now move the mouse to pull the middle of the curve out, and click.', 'info')
+            audio.ui('select')
+          }
+        }
+        shapeSaid = ''
+        shapeDirty = true
         needsDraw = true
         return
       }
@@ -282,6 +456,7 @@ export function Overlay() {
     const onMove = (e: PointerEvent) => {
       const q = screenToWorld(e.clientX, e.clientY)
       hover = q
+      pointer = { x: e.clientX, y: e.clientY }
       const s = useEditor.getState()
       if (panning) {
         panBy(e.clientX - lastX, e.clientY - lastY)
@@ -290,11 +465,26 @@ export function Overlay() {
         return
       }
       if (drawing) {
-        if (Math.hypot(e.clientX - lastX, e.clientY - lastY) >= PENCIL_STEP_PX) {
-          stroke.push(q)
-          lastX = e.clientX
-          lastY = e.clientY
+        // The line is drawn where the pen is; with the steady hand off, the pen IS the pointer.
+        penTo = q
+        if (pen) pen.follow(e.clientX, e.clientY)
+        const px = pen ? pen.x : e.clientX
+        const py = pen ? pen.y : e.clientY
+        if (Math.hypot(px - lastX, py - lastY) >= PENCIL_STEP_PX) {
+          stroke.push(screenToWorld(px, py))
+          lastX = px
+          lastY = py
         }
+      } else if (bending) {
+        if (isBending()) {
+          bendShown = moveBend(q)
+          bendWarn()
+        } else bending = false // Esc stopped it; wait for the button to come up
+      } else if (s.tool === 'bend') {
+        bendHover()
+        setCursor()
+      } else if (s.tool === 'straight' || s.tool === 'curve') {
+        shapeDirty = true
       } else if (dragging) {
         dragTo(q)
       } else if (sectionAnchor !== null) {
@@ -324,7 +514,21 @@ export function Overlay() {
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
       if (panning) {
         panning = false
+        // Straight or Curve: a click off the road (not a drag) gets a hint.
+        if (hintOnClick && Math.hypot(e.clientX - hintOnClick.x, e.clientY - hintOnClick.y) < 5) {
+          const tool = useEditor.getState().tool
+          say(tool === 'curve' ? 'Click on the road where the curve should start.' : 'Click on the road where the straight should start.', 'info')
+        }
+        hintOnClick = null
         setCursor()
+        return
+      }
+      if (bending) {
+        bending = false
+        endBend()
+        bendHover()
+        setCursor()
+        needsDraw = true
         return
       }
       if (dragging) {
@@ -369,6 +573,15 @@ export function Overlay() {
       if (!drawing) return
       drawing = false
       const done = stroke
+      // The pen trails the pointer: finish the line where the pointer let go, so a
+      // stroke ending on the road (a stretch redraw) really ends there.
+      if (pen && pen.stringPx > 0) {
+        const end = screenToWorld(e.clientX, e.clientY)
+        const last = done[done.length - 1]
+        if (last && Math.hypot(end.x - last.x, end.z - last.z) > 0.5) done.push(end)
+      }
+      pen = null
+      penTo = null
       stroke = []
       needsDraw = true
       if (done.length < 4) return
@@ -385,20 +598,38 @@ export function Overlay() {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
       const lines = e.deltaMode === 1 ? 16 : 1
+      if (bending && isBending()) {
+        // While bending, the wheel changes how much road comes along (up = more).
+        const s = useEditor.getState()
+        setBendReach(s.bendReach * Math.exp(-e.deltaY * lines * 0.0015))
+        bendShown = moveBend()
+        bendWarn()
+        needsDraw = true
+        return
+      }
       zoomAt(e.clientX, e.clientY, Math.exp(e.deltaY * lines * 0.0015))
+      if (useEditor.getState().tool === 'bend') bendHover()
     }
     const onContext = (e: Event) => e.preventDefault()
     const onLeave = () => {
       ghost = null
       hover = null
+      if (!bending) bendShown = null
+      shapeDirty = true
+      pointer = { x: -9999, y: -9999 }
       needsDraw = true
     }
 
     // ---- keyboard ----
-    const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyV: 'select', KeyB: 'section', KeyH: 'pan' }
+    const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyG: 'bend', KeyL: 'straight', KeyC: 'curve', KeyV: 'select', KeyB: 'section', KeyH: 'pan' }
     const onKeyDown = (e: KeyboardEvent) => {
       if (typing(e)) return
       const mod = e.ctrlKey || e.metaKey
+      // Mid-bend, Undo would pull the road out from under your hand: let go first (or Esc).
+      if (mod && bending && (e.code === 'KeyZ' || e.code === 'KeyY')) {
+        e.preventDefault()
+        return
+      }
       if (mod && e.code === 'KeyZ') {
         e.preventDefault()
         if (e.shiftKey) redo()
@@ -427,7 +658,16 @@ export function Overlay() {
         deleteSelection()
         return
       }
-      if (toolKeys[e.code]) setTool(toolKeys[e.code])
+      if (toolKeys[e.code] && !bending && !drawing) setTool(toolKeys[e.code])
+      // [ and ] change how much road Bend moves (also while dragging).
+      if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && useEditor.getState().tool === 'bend') {
+        const s = useEditor.getState()
+        setBendReach(s.bendReach * (e.code === 'BracketRight' ? 1.25 : 1 / 1.25))
+        if (bending && isBending()) bendShown = moveBend()
+        else bendHover()
+        say(`Bend reach: ${useEditor.getState().bendReach} m each way.`, 'info')
+        needsDraw = true
+      }
       const digit = /^Digit(\d)$/.exec(e.code)
       if (digit) {
         const tool = PLACE_TOOLS.find((t) => t.key === digit[1])
@@ -455,8 +695,16 @@ export function Overlay() {
       needsDraw = true
       if (s.tool !== prev.tool) {
         ghost = null
+        bendShown = null
+        shapeShown = null
         setCursor()
       }
+      // The road or a half-made Straight / Curve changed: work the preview out again.
+      if (s.draft !== prev.draft || s.shaping !== prev.shaping || s.tool !== prev.tool) {
+        shapeDirty = true
+        if (s.shaping !== prev.shaping) shapeSaid = ''
+      }
+      if (s.bendReach !== prev.bendReach && !bending) bendHover()
     })
     // ---- controller: left stick pans, triggers zoom, X undo, Y redo, B clear all, hold View to test drive ----
     const padWas: boolean[] = []
@@ -532,11 +780,25 @@ export function Overlay() {
       if (held.has('KeyW') || held.has('ArrowUp')) py += 1
       if (held.has('KeyS') || held.has('ArrowDown')) py -= 1
       if (px || py) panBy(px * KEY_PAN_PX * dt, py * KEY_PAN_PX * dt)
+      // Straight and Curve previews: once a frame at most, however fast the mouse moves.
+      if (shapeDirty || (drawnVersion !== view.version && shapeShown)) {
+        shapeDirty = false
+        shapeShown = shapePreview()
+        needsDraw = true
+      }
       // The world map follows moving cars, so it redraws every frame.
       if (needsDraw || drawnVersion !== view.version || useEditor.getState().mode === 'map') {
         drawnVersion = view.version
         needsDraw = false
-        drawMap(ctx, useEditor.getState(), { stroke, hover, ghost, hoverPick })
+        drawMap(ctx, useEditor.getState(), {
+          stroke,
+          hover,
+          ghost,
+          hoverPick,
+          bend: bendShown ? { view: bendShown, dragging: bending } : null,
+          shape: shapeShown,
+          pen: drawing && pen && pen.stringPx > 0 && penTo ? { at: screenToWorld(pen.x, pen.y), to: penTo } : null,
+        })
       }
       raf = requestAnimationFrame(loop)
     }
