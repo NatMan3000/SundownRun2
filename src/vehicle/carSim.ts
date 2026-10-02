@@ -387,6 +387,8 @@ export class CarSim {
   barrierRays = 0
   /** The body is touching a barrier this step (stepBarrierContact). */
   barrierTouch = false
+  /** The scrape's drag along the road this step, g (BARRIER.scrubFloorG ... scrubMaxG; 0 = not scraping). */
+  barrierScrub = 0
   /** Seconds the barrier's righting stays on after the last touch (BARRIER.holdSeconds). */
   private barrierTimer = 0
   /** Physics steps since the car (re)spawned. */
@@ -1597,9 +1599,24 @@ export class CarSim {
     this.barrierTouch = this.touchingBarrier(world, chassis)
     if (this.barrierTouch) this.barrierTimer = BARRIER.holdSeconds
     else if (this.barrierTimer > 0) this.barrierTimer -= DT
+    this.barrierScrub = 0
     if (this.barrierTimer <= 0 || !this.hasTrackS) return
     const f = track.frameAt(this.trackS, this.frame)
     if (!finiteV(f.up) || !finiteV(f.right)) return
+    // Scraping along it costs speed: sliding friction against the road's direction of travel, a
+    // floor plus more the harder the car leans on it (the barrier's push on the body). Riding
+    // the outer wall flat out through a whole end was 1.3-1.4x faster than the racing line
+    // (hyper-3 O2); now the line is the quick way round. Never more than stops the car.
+    if (this.barrierTouch && finiteV(f.tangent)) {
+      const press = this.barrierImpulse / DT / (mass * GRAVITY) // the push, in g
+      const g = clamp(BARRIER.scrubFloorG + BARRIER.scrubPerG * (Number.isFinite(press) ? press : 0), 0, BARRIER.scrubMaxG)
+      const vT = this.linvel.dot(f.tangent)
+      const a = Math.min(g * GRAVITY, Math.abs(vT) / DT) * Math.sign(vT)
+      if (a !== 0) {
+        this.addForce(body, -f.tangent.x * a * mass, -f.tangent.y * a * mass, -f.tangent.z * a * mass)
+        this.barrierScrub = Math.abs(a) / GRAVITY
+      }
+    }
     const up = this.up
     // Never right a car that is on its roof: that is a wipeout, and the tricks say so.
     if (up.dot(f.up) < BARRIER.minUp) return
@@ -1732,6 +1749,12 @@ export class CarSim {
     this.hasTrackS = true
     this.reseats.moved++
     this.seatMove.tick++
+    // A car the hold had stopped stays held on the new road, whatever its bank: it was put there
+    // (like R puts a car), it didn't roll there, so the steep-slope rule doesn't let it go (hyper-3 3b).
+    if (this.holding) {
+      this.parked = true
+      this.launch = Math.max(this.launch, HOLD.launchSeconds)
+    }
   }
 
   /** Snap the body to a pose with zero velocity, and forget anything in flight. */
@@ -2273,20 +2296,26 @@ export class CarSim {
   }
 
   private barrierHit = false
+  /** The barrier's push on the body over the last step, N s (summed contact impulses; for the scrape). */
+  private barrierImpulse = 0
   private readonly onBarrierManifold = (m: Manifold) => {
-    if (manifoldTouches(m)) this.barrierHit = true
+    if (!manifoldTouches(m)) return
+    this.barrierHit = true
+    const n = m.numContacts()
+    for (let i = 0; i < n; i++) this.barrierImpulse += m.contactImpulse(i)
   }
   private readonly onBarrierPair = (other: RapierCollider) => {
-    if (this.barrierHit || !this.probeWorld || !this.probeChassis) return
+    if (!this.probeWorld || !this.probeChassis) return
     if (ownerOf(other.handle) || surfaceOf(other.handle) !== 'barrier') return
     this.probeWorld.contactPair(this.probeChassis, other, this.onBarrierManifold)
   }
 
-  /** True if the chassis box is touching a barrier right now. */
+  /** True if the chassis box is touching a barrier right now (and sums how hard: barrierImpulse). */
   private touchingBarrier(world: RapierWorld, chassis: RapierCollider): boolean {
     this.probeWorld = world
     this.probeChassis = chassis
     this.barrierHit = false
+    this.barrierImpulse = 0
     world.contactPairsWith(chassis, this.onBarrierPair)
     return this.barrierHit
   }

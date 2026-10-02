@@ -483,6 +483,13 @@ export const BARRIER = {
   /** Perched on it with no wheel down and beyond halfWidth - shedInside (m) from the centre line: pushed back toward the road (m/s^2). */
   shedInside: 0.5,
   shedAccel: 4,
+  /**
+   * Scraping along a barrier costs speed: a drag of scrubFloorG g, plus scrubPerG for every g the
+   * barrier pushes on the body (leaning harder on it scrubs more), at most scrubMaxG g.
+   */
+  scrubFloorG: 0.5,
+  scrubPerG: 0.25,
+  scrubMaxG: 1.0,
 }
 
 export const BOOST = {
