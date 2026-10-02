@@ -345,7 +345,8 @@ export const ASSIST = {
    *  a spring pulls the nose back toward the path and a damper brakes any rotation
    *  that is making the slide deeper. It stays on even while the player asks for
    *  a drift: a held drift lives at a big, steady angle instead of becoming a spin,
-   *  and a counter-steer can always catch it.
+   *  and a counter-steer can always catch it. The one exception is a slow handbrake
+   *  slide (HANDBRAKE TURNS, below), so the car can come right round.
    */
   ceilStart: 0.5, //     rad (29 deg): the spring starts here
   ceilSpring: 16000, //  Nm per rad past the start
@@ -355,6 +356,35 @@ export const ASSIST = {
   maxDriftYaw: 1.1,
   yawCapK: 7000, //      Nm per rad/s over the cap
   ceilEnd: 1.9, //       rad (109 deg): beyond this the car has really spun (a crash) - let it go
+  /**
+   *  HANDBRAKE SLIDES KEEP GOING (Nathan: "I would have expected it to just keep drifting sideways
+   *  to a stop. That way I can do a 180"). A slide the handbrake started is a slide the player
+   *  wanted. Once it is bigger than carryLo..carryHi, letting go of the handbrake no longer swings
+   *  the nose back: the drift recovery, the hands-off yaw damping and the ceiling's spring all
+   *  stand down, so the car keeps the spin it had and slides on sideways, scrubbing off speed. A
+   *  small flick (under carryLo) still straightens itself, and counter-steer still catches any of it.
+   *  Only a person's handbrake starts one: the Ai and the demo never touch the handbrake.
+   *  The stability setting: each 1.0 above or below 1 moves both angles by carryPerStab (more
+   *  stability = it has to be a bigger slide), and above 1 keeps carryStabHelp of the hands-off
+   *  yaw damping per 1.0 (the spin slows down, but the nose never swings back).
+   */
+  carryLo: 0.52, //      rad (30 deg) at stability 1
+  carryHi: 0.7, //       rad (40 deg)
+  carryPerStab: 0.17, // rad (10 deg) per 1.0 of stability
+  carryStabHelp: 0.8,
+  /** The slide is over (and all the help is back) once it is under this angle with the handbrake off. */
+  carryEnd: 0.17, //     rad (10 deg)
+  /**
+   *  HANDBRAKE TURNS. Below spinFreeLo (m/s) a handbrake slide has no drift ceiling and no yaw cap,
+   *  so handbrake + steering swings the car right round and you can drive off the other way. The
+   *  ceiling comes back in by spinFreeHi, so at speed it still stops a spin to backwards, and it
+   *  comes straight back the moment you counter-steer (you want to catch it). Each 1.0 of
+   *  stability above 1 moves both speeds down by spinFreePerStab of themselves. A stability
+   *  under 1 never moves them up: at 0.5 that let a held drift at 90 km/h spin past 90 degrees.
+   */
+  spinFreeLo: 15.3, //   55 km/h
+  spinFreeHi: 23.6, //   85 km/h
+  spinFreePerStab: 0.4,
   /**
    *  AIR CONTROL - generous but calm.
    *  A kid holds the throttle through every jump, so throttle / brake on their
