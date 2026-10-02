@@ -1,10 +1,10 @@
 @echo off
 setlocal
-title Sundown Run Two
+title Sundown Run II
 cd /d "%~dp0"
 
 echo.
-echo   SUNDOWN RUN TWO
+echo   SUNDOWN RUN II
 echo   ====================================
 echo.
 
@@ -53,7 +53,7 @@ echo.
 call %RUNNER% run start
 
 echo.
-echo   Sundown Run Two has stopped.
+echo   Sundown Run II has stopped.
 pause
 exit /b 0
 

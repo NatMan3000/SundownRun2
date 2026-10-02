@@ -1,5 +1,5 @@
 // ============================================================
-//  SUNDOWN RUN TWO - THE FUN KNOBS
+//  SUNDOWN RUN II - THE FUN KNOBS
 // ------------------------------------------------------------
 //  This file is yours, Josh. Change a number, save the file,
 //  and the game changes straight away - no restart needed.

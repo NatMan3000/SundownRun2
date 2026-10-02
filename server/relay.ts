@@ -102,7 +102,7 @@ export function startRelay(port = RELAY_PORT, log: (line: string) => void = (l) 
       const address: string = srv.requestIP(req)?.address ?? ''
       const data: ClientData = { id: nextId++, hello: null, loopback: isLoopback(address), address }
       if (srv.upgrade(req, { data })) return undefined
-      return new Response('Sundown Run Two relay - connect with a WebSocket.\n', { status: 200 })
+      return new Response('Sundown Run II relay - connect with a WebSocket.\n', { status: 200 })
     },
     websocket: {
       // A tab that reloads or crashes can leave a half-open socket: a "zombie"

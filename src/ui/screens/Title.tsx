@@ -139,7 +139,7 @@ function LearnLink() {
       }
     },
     acceptHint: 'Open',
-    help: 'Learn to code with Sundown Run Two: missions that change the real game. Opens in a new tab.',
+    help: 'Learn to code with Sundown Run II: missions that change the real game. Opens in a new tab.',
   })
   return (
     <button type="button" tabIndex={-1} ref={nav.ref} {...nav.props} className={`learn-link${nav.focused ? ' is-focused' : ''}`}>

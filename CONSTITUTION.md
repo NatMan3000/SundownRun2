@@ -1,4 +1,4 @@
-# Sundown Run Two - Constitution
+# Sundown Run II - Constitution
 
 The one standard every worker and checker judges against. Disputes are settled against this document, never against taste in the moment or a worker's report. Changes are deliberate, dated in section 7 and committed by the orchestrator; never drive-by.
 

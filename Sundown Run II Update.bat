@@ -1,10 +1,10 @@
 @echo off
 setlocal
-title Sundown Run Two - Update
+title Sundown Run II - Update
 cd /d "%~dp0"
 
 echo.
-echo   SUNDOWN RUN TWO - UPDATE
+echo   SUNDOWN RUN II - UPDATE
 echo   ====================================
 echo.
 echo   This makes this folder an exact copy of the latest version.
@@ -58,7 +58,7 @@ call %RUNNER% install >nul 2>&1
 :done
 echo.
 echo   ====================================
-echo   All up to date! Start the game with "Sundown Run Two.bat".
+echo   All up to date! Start the game with "Sundown Run II.bat".
 echo.
 pause
 exit /b 0

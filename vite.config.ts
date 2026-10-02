@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Port 5201 is reserved for Sundown Run Two (see ~/Dev/.claude/rules/reserved-ports.md).
+// Port 5201 is reserved for Sundown Run II (see ~/Dev/.claude/rules/reserved-ports.md).
 // strictPort: if 5201 is busy we fail loudly instead of silently moving to another port,
 // because the multiplayer join links and the Windows launchers all point at 5201.
 export default defineConfig({

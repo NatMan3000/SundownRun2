@@ -1,10 +1,10 @@
 @echo off
 setlocal
-title Sundown Run Two - Multiplayer
+title Sundown Run II - Multiplayer
 cd /d "%~dp0"
 
 echo.
-echo   SUNDOWN RUN TWO - MULTIPLAYER HOST
+echo   SUNDOWN RUN II - MULTIPLAYER HOST
 echo   ====================================
 echo.
 echo   Only ONE computer runs this file. Everyone else just opens

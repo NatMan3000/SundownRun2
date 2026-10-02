@@ -90,14 +90,14 @@ const ips = lanAddresses()
 const firewall =
   process.platform === 'win32'
     ? `Friends can't connect? Windows Firewall must let ports ${gamePort}-${relayPort} in.
-  "Sundown Run Two Multiplayer.bat" adds that rule for you (click YES once).`
+  "Sundown Run II Multiplayer.bat" adds that rule for you (click YES once).`
     : process.platform === 'darwin'
       ? `Friends can't connect? If macOS asks whether "bun" may accept incoming
   connections, click Allow (System Settings > Network > Firewall).`
       : `Friends can't connect? Allow TCP ports ${gamePort}-${relayPort} in through the firewall.`
 
 console.log(`
-${bold}${amber}  SUNDOWN RUN TWO - MULTIPLAYER${reset}
+${bold}${amber}  SUNDOWN RUN II - MULTIPLAYER${reset}
 ${up ? '' : `\n  ${amber}The game server is slow to start - the links below work once it is up.${reset}\n`}
   This computer (the host):  ${bold}${cyan}http://localhost:${gamePort}/?mp=1&name=JOSH${relayQuery}${reset}
   Other computers:           ${bold}${cyan}${ips[0] ? `http://${ips[0]}:${gamePort}/?mp=1&name=DAD&color=orange${relayQuery}` : '(no network address found - is the wifi on?)'}${reset}

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Learn To Code - Sundown Run Two - for Josh</title>
+<title>Learn To Code - Sundown Run II - for Josh</title>
 <link rel="icon" href="data:,">
 <style>
 :root {
@@ -119,7 +119,7 @@ table.map td:first-child { white-space: nowrap; font: 13px var(--mono); color: v
 </head>
 <body>
 <nav id="nav">
-  <div class="brand">Learn to code <b>with Sundown Run Two</b></div>
+  <div class="brand">Learn to code <b>with Sundown Run II</b></div>
   <div class="sub">Josh's workshop. The game is the textbook.</div>
   <div id="navlinks"></div>
   <div class="prog"><span id="progtext">0 of 0 done</span><div class="barx"><i id="progbar"></i></div></div>
@@ -131,7 +131,7 @@ table.map td:first-child { white-space: nowrap; font: 13px var(--mono); color: v
 <section id="start" data-title="Start here">
   <div class="chip">Start here</div>
   <h2>Josh, the whole game is text</h2>
-  <p>Sundown Run Two was built <b>for</b> you. This page is where it starts being built <b>by</b> you. The road, the sun, the springs in the car, the Ai racers, the music: all of it is <b>text in files</b>. The browser reads the text, follows it like a recipe, and the world appears. Change the text and the world changes.</p>
+  <p>Sundown Run II was built <b>for</b> you. This page is where it starts being built <b>by</b> you. The road, the sun, the springs in the car, the Ai racers, the music: all of it is <b>text in files</b>. The browser reads the text, follows it like a recipe, and the world appears. Change the text and the world changes.</p>
   <p>You have already done this. When you changed a value in <code>config.ts</code> and the game changed, that was programming. Everything on this page is more of that, one step further each chapter.</p>
   <p><b>How this page works:</b></p>
   <ul>
@@ -139,7 +139,7 @@ table.map td:first-child { white-space: nowrap; font: 13px var(--mono); color: v
     <li>The pink pills like <a class="pill" data-file="src/core/config.ts" data-line="28">src/core/config.ts:28</a> open <b>VS Code at that exact line</b> of the real game. That is not example code, it is the code your game is running.</li>
     <li>Each chapter ends with something to try in the real game. Keep the game running while you edit: it updates the moment you save.</li>
   </ul>
-  <div class="hint">If an experiment in the real files goes properly wrong, <b>Ctrl+Z</b> in VS Code undoes it, and <code>Sundown Run Two Update.bat</code> is the big do-over button that puts the whole folder back. Nothing you try can break it for good.</div>
+  <div class="hint">If an experiment in the real files goes properly wrong, <b>Ctrl+Z</b> in VS Code undoes it, and <code>Sundown Run II Update.bat</code> is the big do-over button that puts the whole folder back. Nothing you try can break it for good.</div>
   <p>Two ways to open this page: double-click <code>Learn To Code.html</code> in the game folder, or, while the game is running, go to <a href="http://localhost:5201/Learn%20To%20Code.html">http://localhost:5201/Learn To Code.html</a>. When the code changes, <code>bun run learn</code> rebuilds this page so every link still points at the right line.</p>
 </section>
 
@@ -189,7 +189,7 @@ const tier = 'T2'                 // 'T0', 'T1', 'T2' or 'T3'</textarea>
 <section id="tracks" data-title="Tracks are data">
   <div class="chip">Chapter 3</div>
   <h2>Tracks are data, not code</h2>
-  <p>Here's a big idea in programming: keep the <b>data</b> (what) apart from the <b>code</b> (how). A track in Sundown Run Two is <b>one file</b> in the <code>tracks/</code> folder, written in <b>JSON</b>, a format that is just lists <code>[ ]</code> and labelled values <code>{ }</code>. The game's code reads the file and builds everything: the road, the hills, the jumps, the racing line the Ai follows, the minimap. Adding a track never touches code.</p>
+  <p>Here's a big idea in programming: keep the <b>data</b> (what) apart from the <b>code</b> (how). A track in Sundown Run II is <b>one file</b> in the <code>tracks/</code> folder, written in <b>JSON</b>, a format that is just lists <code>[ ]</code> and labelled values <code>{ }</code>. The game's code reads the file and builds everything: the road, the hills, the jumps, the racing line the Ai follows, the minimap. Adding a track never touches code.</p>
   <div class="real"><div class="tag">REAL GAME CODE <a class="pill" data-file="tracks/neon-pocket.json" data-line="39">tracks/neon-pocket.json:39</a></div><pre><span class="hot"><i>39</i><span class="s">&quot;pieces&quot;</span>: [</span><span><i>40</i>  { <span class="s">&quot;type&quot;</span>: <span class="s">&quot;boost&quot;</span>, <span class="s">&quot;at&quot;</span>: <span class="n">0.75</span> },</span><span><i>41</i>  { <span class="s">&quot;type&quot;</span>: <span class="s">&quot;loop&quot;</span>, <span class="s">&quot;at&quot;</span>: <span class="n">2.0</span>, <span class="s">&quot;radius&quot;</span>: <span class="n">13</span> },</span><span><i>42</i>  { <span class="s">&quot;type&quot;</span>: <span class="s">&quot;wallride&quot;</span>, <span class="s">&quot;at&quot;</span>: <span class="n">9.5</span>, <span class="s">&quot;side&quot;</span>: <span class="s">&quot;left&quot;</span>, <span class="s">&quot;length&quot;</span>: <span class="n">150</span> },</span><span><i>43</i>  { <span class="s">&quot;type&quot;</span>: <span class="s">&quot;speedtrap&quot;</span>, <span class="s">&quot;at&quot;</span>: <span class="n">12.5</span> },</span><span><i>44</i>  { <span class="s">&quot;type&quot;</span>: <span class="s">&quot;ramp&quot;</span>, <span class="s">&quot;at&quot;</span>: <span class="n">13.3</span> },</span><span><i>45</i>  { <span class="s">&quot;type&quot;</span>: <span class="s">&quot;boost&quot;</span>, <span class="s">&quot;at&quot;</span>: <span class="n">20.5</span> }</span><span><i>46</i>],</span></pre></div>
   <p>A road is a list of <b>points</b> (x is east, z is south, in metres) and the game runs a smooth curve through them. <b>Pieces</b> sit at an <code>at</code>: <code>at: 2.0</code> means "at point 2", <code>at: 0.75</code> means "three quarters of the way from point 0 to point 1".</p>
   <p>This playground holds the real <b>Neon Pocket</b>. Move a point, add one, add a piece, press RUN to redraw. It uses the same kind of curve the game uses (a centripetal Catmull-Rom spline, from <a class="pill" data-file="src/track/spline.ts" data-line="75">spline.ts</a>).</p>
@@ -233,7 +233,7 @@ const pieces = [
 <section id="loop" data-title="The game loop">
   <div class="chip">Chapter 4</div>
   <h2>The game loop: 60 tiny steps a second</h2>
-  <p>A game is a loop. Over and over: read the controls, move everything a tiny bit, draw the picture. Each pass through the loop is a <b>step</b>. The physics in Sundown Run Two always takes exactly <b>60 steps a second</b>, even if your screen draws 165 frames a second. That keeps the car behaving exactly the same on every computer.</p>
+  <p>A game is a loop. Over and over: read the controls, move everything a tiny bit, draw the picture. Each pass through the loop is a <b>step</b>. The physics in Sundown Run II always takes exactly <b>60 steps a second</b>, even if your screen draws 165 frames a second. That keeps the car behaving exactly the same on every computer.</p>
   <div class="real"><div class="tag">REAL GAME CODE <a class="pill" data-file="src/vehicle/tuning.ts" data-line="18">src/vehicle/tuning.ts:18</a></div><pre><span class="hot"><i>18</i><span class="k">export</span> <span class="k">const</span> DT = <span class="n">1</span> / <span class="n">60</span></span></pre></div>
   <p>But if the physics only moves 60 times a second and the screen draws 165 times, the car would look jerky. So the game <b>interpolates</b>: for each frame it draws the car part of the way between its last two physics positions. Smooth at any refresh rate.</p>
   <p>After each step, the car writes everything it knows into one shared object called <b>telemetry</b>: speed, rpm, drifting, airborne. The HUD, camera, sound and effects all read it. No one asks the car; they just read the board.</p>
@@ -258,7 +258,7 @@ function step(car, dt) {
 <section id="springs" data-title="The car's springs">
   <div class="chip">Chapter 5</div>
   <h2>The car floats on four invisible springs</h2>
-  <p>Surprise: the car in Sundown Run Two has <b>no wheels</b> in its physics. Each corner shoots a <b>ray</b> (an invisible laser) straight down. Where the ray hits the road, the game works out how squashed that corner's spring would be, and pushes the car up by that much. That's called <b>raycast suspension</b>, and real racing games do it.</p>
+  <p>Surprise: the car in Sundown Run II has <b>no wheels</b> in its physics. Each corner shoots a <b>ray</b> (an invisible laser) straight down. Where the ray hits the road, the game works out how squashed that corner's spring would be, and pushes the car up by that much. That's called <b>raycast suspension</b>, and real racing games do it.</p>
   <div class="real"><div class="tag">REAL GAME CODE <a class="pill" data-file="src/vehicle/carSim.ts" data-line="587">src/vehicle/carSim.ts:587</a></div><pre><span class="hot"><i>587</i>  <span class="k">const</span> suspVel = _pointVel.dot(n) / Math.max(up.dot(n), <span class="n">0.5</span>) <span class="c">// + extending, - compressing</span></span><span><i>588</i>  <span class="k">let</span> f = k * <span class="k">this</span>.compression[i] - (suspVel &lt; <span class="n">0</span> ? dC : dR) * suspVel</span><span><i>589</i>  <span class="k">let</span> cap = fMax</span><span><i>590</i>  <span class="k">const</span> bump = <span class="k">this</span>.compression[i] - SUSPENSION.bumpStart</span><span><i>591</i>  <span class="k">if</span> (bump &gt; <span class="n">0</span>) {</span><span><i>592</i>    f += SUSPENSION.bumpStiffness * massRatio * bump - (SUSPENSION.bumpDamp - <span class="n">1</span>) * (suspVel &lt; <span class="n">0</span> ? dC : dR) * suspVel</span><span><i>593</i>    cap = fMax * SUSPENSION.bumpMaxScale</span><span><i>594</i>  }</span><span><i>595</i>  <span class="k">this</span>.suspForce[i] = clamp(f, <span class="n">0</span>, cap) <span class="c">// a suspension pushes, never pulls</span></span><span><i>596</i>}</span></pre></div>
   <p>The important line is <code>let f = k * this.compression[i] - ...</code>: the push is <b>stiffness times how squashed</b> (a spring), minus <b>damping times how fast it's moving</b> (a shock absorber, so it stops bouncing). And <code>clamp(f, 0, cap)</code> means a suspension can push but never pull.</p>
   <div class="real"><div class="tag">REAL GAME CODE <a class="pill" data-file="src/vehicle/tuning.ts" data-line="55">src/vehicle/tuning.ts:55</a></div><pre><span class="hot"><i>55</i><span class="k">export</span> <span class="k">const</span> SUSPENSION = {</span><span><i>56</i>  /** N/m per corner. Over a <span class="n">300</span> kg quarter mass that is a <span class="n">1.6</span> Hz ride, a real car's number. */</span><span><i>57</i>  stiffness: <span class="n">30000</span>,</span><span><i>58</i>  /** Rebound damps harder than compression, like a real damper: soak the bump, settle once. */</span><span><i>59</i>  dampCompress: <span class="n">3600</span>,</span><span><i>60</i>  dampRebound: <span class="n">4600</span>,</span><span><i>61</i>  /** Never launch the car into orbit off a kerb. */</span><span><i>62</i>  maxForce: <span class="n">26000</span>,</span></pre></div>
@@ -467,11 +467,11 @@ function smooth(shown, real, dt) {
   <div class="chip">Keep this handy</div>
   <h2>Running your game</h2>
   <p>In the game folder, double-click:</p>
-  <div class="mission"><div class="lvl">Play</div><h4>Sundown Run Two.bat <a class="pill" data-file="Sundown Run Two.bat" data-line="1">read it</a></h4>
+  <div class="mission"><div class="lvl">Play</div><h4>Sundown Run II.bat <a class="pill" data-file="Sundown Run II.bat" data-line="1">read it</a></h4>
   <p>Starts the game at <a href="http://localhost:5201">http://localhost:5201</a>. The first run installs what it needs; after that it starts in seconds. While it runs, every file you save updates the game.</p></div>
-  <div class="mission"><div class="lvl">Multiplayer</div><h4>Sundown Run Two Multiplayer.bat <a class="pill" data-file="Sundown Run Two Multiplayer.bat" data-line="1">read it</a></h4>
+  <div class="mission"><div class="lvl">Multiplayer</div><h4>Sundown Run II Multiplayer.bat <a class="pill" data-file="Sundown Run II Multiplayer.bat" data-line="1">read it</a></h4>
   <p>Only one computer runs this: the host. It prints a link everyone else opens. Friends need nothing installed.</p></div>
-  <div class="mission"><div class="lvl">Do-over</div><h4>Sundown Run Two Update.bat <a class="pill" data-file="Sundown Run Two Update.bat" data-line="1">read it</a></h4>
+  <div class="mission"><div class="lvl">Do-over</div><h4>Sundown Run II Update.bat <a class="pill" data-file="Sundown Run II Update.bat" data-line="1">read it</a></h4>
   <p>Gets the newest version and makes the folder an exact fresh copy. <b>It throws away your changes</b>, that's its job. Your best laps survive: they live in the browser, not the folder.</p></div>
   <p>Commands (in a terminal in the game folder): <code>bun run dev</code> plays, <code>bun run tracks:check</code> checks every track, <code>bun run learn</code> rebuilds this page.</p>
   <p style="color:var(--dim);font-size:13px">This page was made by <a class="pill" data-file="scripts/learn-to-code.ts" data-line="2">scripts/learn-to-code.ts</a> from 76 links into the real code, checked when it was built.</p>
@@ -956,7 +956,7 @@ PG.track = {
     if (res.errs.length) return api.setMsg('Fix these first:\n' + res.errs.join('\n'), 'err');
     var file = {
       format: 'sundown-run-track', version: 1, id: 'josh-1', name: 'Josh 1', author: 'Josh',
-      description: 'My first Sundown Run Two track.',
+      description: 'My first Sundown Run II track.',
       road: { points: v.points, width: v.width },
       pieces: v.pieces,
       start: { at: v.startAt },

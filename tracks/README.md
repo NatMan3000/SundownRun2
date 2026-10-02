@@ -1,6 +1,6 @@
 # Track files
 
-Every track in Sundown Run Two is **one JSON file in this folder**. The game builds the whole world from it: the road, the terrain, the jumps and loops, the crash props and energy cores, the sky and the music mood. It also works out, by itself, the lap checkpoints, the Ai racing line, the start grid, the minimap and the ghost key. Drop a new file in here and it shows up in the game. You never touch any code.
+Every track in Sundown Run II is **one JSON file in this folder**. The game builds the whole world from it: the road, the terrain, the jumps and loops, the crash props and energy cores, the sky and the music mood. It also works out, by itself, the lap checkpoints, the Ai racing line, the start grid, the minimap and the ghost key. Drop a new file in here and it shows up in the game. You never touch any code.
 
 This page is the whole format. It is written for Josh and for a future Claude session that has only this file.
 

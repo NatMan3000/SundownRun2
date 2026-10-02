@@ -1,4 +1,4 @@
-# Sundown Run Two
+# Sundown Run II
 
 A neon synthwave driving game for the browser. A giant striped sun sinks into a magenta sky, the city lights up window by window, and you drive a glowing car down a wet neon road: through loops, along wall rides, off ramps and over the big-air hill. Race Ai cars, beat your own ghost, smash crash props for points, hunt energy cores, draw your own tracks, and play with friends on the same wifi.
 
@@ -13,7 +13,7 @@ bun install
 bun run dev
 ```
 
-Then open **http://localhost:5201**. On Windows, just double-click **`Sundown Run Two.bat`** instead (see [Windows](#windows) below).
+Then open **http://localhost:5201**. On Windows, just double-click **`Sundown Run II.bat`** instead (see [Windows](#windows) below).
 
 ## Controls
 
@@ -53,7 +53,7 @@ Sound starts after your first key press or click (that's the browser's rule; a c
 
 ONE computer is the **host**. Everyone needs to be on the same wifi.
 
-- **Windows:** double-click **`Sundown Run Two Multiplayer.bat`**. The first time, it asks for an admin YES: that adds the Windows Firewall rule that lets friends connect (ports 5201-5202). Without it, Windows silently blocks them. Don't type `bun run mp` into PowerShell; the .bat file is the way.
+- **Windows:** double-click **`Sundown Run II Multiplayer.bat`**. The first time, it asks for an admin YES: that adds the Windows Firewall rule that lets friends connect (ports 5201-5202). Without it, Windows silently blocks them. Don't type `bun run mp` into PowerShell; the .bat file is the way.
 - **Mac or Linux:** run `bun run mp` in a terminal. If macOS asks whether "bun" may accept incoming connections, click **Allow**.
 
 It prints two links. Open the first one on the host. Open the second one on every other computer: they need **nothing installed**, because the game loads straight from the host. Change `name=` in the link to your own name (that's your name tag), and set `color=` to `orange`, `yellow`, `mint`, `pink`, `purple`, `cyan`, `red` or `white` so every car looks different.
@@ -76,7 +76,7 @@ It prints two links. Open the first one on the host. Open the second one on ever
 ### First time
 
 1. Get the game folder onto the laptop (a `git clone`, or download the ZIP and unzip it somewhere easy like `Documents\SundownRun2`).
-2. Double-click **`Sundown Run Two.bat`**. It looks for Bun (or Node.js), installs the game's parts the first time (that takes a minute), and opens the game in your browser. If it says it can't find Bun or Node.js, install Bun from https://bun.sh (or Node.js LTS from https://nodejs.org) and run it again.
+2. Double-click **`Sundown Run II.bat`**. It looks for Bun (or Node.js), installs the game's parts the first time (that takes a minute), and opens the game in your browser. If it says it can't find Bun or Node.js, install Bun from https://bun.sh (or Node.js LTS from https://nodejs.org) and run it again.
 3. Keep the black window open while you play. Closing it stops the game.
 
 ### Make it fast: give the browser the real graphics card
@@ -94,7 +94,7 @@ If it's still slow, set **Settings > Graphics > Quality** to Medium or Low.
 
 ### Updating
 
-Double-click **`Sundown Run Two Update.bat`**. It downloads the latest version and makes the folder an exact copy of it, so any changes you made to the game's files are thrown away (that's on purpose: it's the do-over button). Tracks you drew in the editor live in the browser, so they're safe. Track files you dropped into `tracks/` yourself are removed, so export or copy them somewhere else first.
+Double-click **`Sundown Run II Update.bat`**. It downloads the latest version and makes the folder an exact copy of it, so any changes you made to the game's files are thrown away (that's on purpose: it's the do-over button). Tracks you drew in the editor live in the browser, so they're safe. Track files you dropped into `tracks/` yourself are removed, so export or copy them somewhere else first.
 
 ### Xbox controller
 
