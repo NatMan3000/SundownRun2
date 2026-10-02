@@ -45,6 +45,7 @@ export const CONFIG = {
   musicVolume: 0.7, // 0 = silent ... 1 = full
   sfxVolume: 0.85, //  engine, crashes, pickups
   engineSound: 'muscle' as string, // what your engine sounds like: 'muscle' = a deep V8 rumble, 'rally' = a raspy turbo rally car, 'hover' = a futuristic jet
+  musicStyle: 'classic' as string, // what the band sounds like: 'classic' = the original synthwave band, 'house' = a Daft Punk-style French house band (robot voice, chord stabs, claps)
 
   // ---------- RACING ----------
   aiRacers: 3, //       how many Ai cars race you (0 to 5)
