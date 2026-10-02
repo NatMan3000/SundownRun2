@@ -636,7 +636,7 @@ const html = `<!doctype html>
   ${realCode('src/vehicle/tuning.ts', 'export const DT', 0, 0)}
   <p>But if the physics only moves 60 times a second and the screen draws 165 times, the car would look jerky. So the game <b>interpolates</b>: for each frame it draws the car part of the way between its last two physics positions. Smooth at any refresh rate.</p>
   <p>After each step, the car writes everything it knows into one shared object called <b>telemetry</b>: speed, rpm, drifting, airborne. The HUD, camera, sound and effects all read it. No one asks the car; they just read the board.</p>
-  ${realCode('src/vehicle/PlayerCar.tsx', '// Telemetry: everything except the render pose', 6)}
+  ${realCode('src/vehicle/PlayerCar.tsx', "// Telemetry: everything about the player's car", 6)}
   <p>Here's your own game loop. The <code>step</code> function is a <b>function</b>: a little machine that runs once per physics step. Hold <b>GAS</b> (or click the picture and hold <b>W</b>).</p>
   ${playground('loop', 'Fixed step loop', CODE.loop, { height: 170, extra: '<button class="hold" type="button">GAS (W)</button><label><input type="checkbox" class="smooth" checked> smooth</label>' })}
   <div class="hint">Set <code>physicsHz</code> to <code>8</code> and untick <b>smooth</b>: jerky. Tick it again: smooth, even at 8 steps a second. That's interpolation. Then try giving the car brakes: <code>if (car.throttle === 0) car.speed -= 10 * dt</code> (and don't let speed go below 0). Make the car go <code>NaN</code> (not a number) with <code>car.x += 0 / 0</code> and see what the page does: the real game has a ${link(A.nanFirewall, 'NaN firewall')} for exactly this.</div>
