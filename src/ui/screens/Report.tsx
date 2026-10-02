@@ -11,6 +11,10 @@
 //  you type, every key belongs to the box - W, A, S, D, R, Space,
 //  Esc, the arrows - so nothing drives the car or opens a menu.
 //  Esc stops typing, Tab goes to the next box, Ctrl+Enter sends.
+//  Clicking in the words puts the caret where you clicked (drag,
+//  double-click and Shift+click select, like any text box); getting
+//  in with Enter or Tab puts it at the end. While you type, moving
+//  the mouse over other things leaves you in your box (nav.tsx).
 //
 //  The controller moves around the screen and presses Send and
 //  Cancel like every other menu. Typing itself needs a keyboard.
@@ -88,6 +92,7 @@ function Field(props: {
   onChange: (v: string) => void
   register: (id: FieldId, el: TextEl | null) => void
   startTyping: (id: FieldId) => void
+  clickBox: (id: FieldId) => void
   onKey: (id: FieldId, e: ReactKeyboardEvent<TextEl>) => void
   onFocusBox: (id: FieldId) => void
   onBlurBox: (id: FieldId) => void
@@ -104,7 +109,7 @@ function Field(props: {
       // After this key press is over, or the Enter / Space that got us here would land in the box.
       setTimeout(() => props.startTyping(props.id), 0)
     },
-    onClick: () => props.startTyping(props.id),
+    onClick: () => props.clickBox(props.id),
     acceptSound: null,
     acceptHint: 'Type',
     help: props.help,
@@ -368,11 +373,23 @@ export function ReportScreen() {
     if (stage === 'done') requestAnimationFrame(() => focusItem('report', 'done'))
   }, [stage])
 
+  /** Getting into a box from the keyboard (Enter, Space, Tab): type in it, carrying on from the end. */
   const startTyping = (id: FieldId) => {
     const el = boxes.current[id]
     if (!el) return
     el.focus()
     el.setSelectionRange(el.value.length, el.value.length)
+  }
+
+  /**
+   * A mouse click on a box. A click on its words has already put the caret
+   * where you clicked (or a drag, double-click or Shift+click has selected
+   * some), so leave that alone. Only a click beside them (the label, the
+   * box's edge) starts typing, and then at the end.
+   */
+  const clickBox = (id: FieldId) => {
+    if (document.activeElement === boxes.current[id]) return
+    startTyping(id)
   }
 
   const trySend = async () => {
@@ -442,6 +459,7 @@ export function ReportScreen() {
       boxes.current[id] = el
     },
     startTyping,
+    clickBox,
     onKey,
     onFocusBox: (id: FieldId) => {
       setEditing(id)

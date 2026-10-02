@@ -17,10 +17,16 @@
 //   - A slider eats left/right to change its value instead of
 //     moving focus. Holding the button speeds it up.
 //   - The mouse focuses what it hovers and clicks what it clicks.
+//     Except while you type in a text box: then hovering moves
+//     nothing (the box you're typing in keeps the focus), and only
+//     a click moves on. Clicking anything outside the box finishes
+//     typing there.
 //
 //  Focus is our own state (useUi.focus), not the browser's focus,
 //  so a mouse click never leaves a button "focused" that Enter
-//  would then press a second time.
+//  would then press a second time. The one exception is a text
+//  box you're typing in: it holds the browser's focus too, so the
+//  keys go into it.
 // ============================================================
 
 import { createContext, useContext, useEffect, useLayoutEffect, useRef } from 'react'
@@ -173,6 +179,22 @@ export function focusedElement(): HTMLElement | null {
   return it && it.el && it.el.isConnected ? it.el : null
 }
 
+/** Input types that are not for typing words into (ticks, sliders, buttons, files). */
+const NOT_TYPING = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'])
+
+/** True for a box you type words into: a text input, a text area or an editable area. */
+function isTextBox(el: Element | null): el is HTMLElement {
+  if (el instanceof HTMLTextAreaElement) return true
+  if (el instanceof HTMLInputElement) return !NOT_TYPING.has(el.type)
+  return el instanceof HTMLElement && el.isContentEditable
+}
+
+/** The text box you're typing in right now (it has the keyboard), or null. */
+export function typingBox(): HTMLElement | null {
+  const el = document.activeElement
+  return isTextBox(el) ? el : null
+}
+
 /** Handlers of the focused item (the hint bar reads what accept does). */
 export function focusedHandlers(): NavHandlers | null {
   const screen = activeScreen()
@@ -231,12 +253,20 @@ export function useNavItem<T extends HTMLElement = HTMLElement>(id: string, hand
         if (e.pointerType !== 'mouse' || (e.movementX === 0 && e.movementY === 0)) return
         if (h.current.disabled || useUi.getState().focus[screen] === id) return
         if (activeScreen() !== screen) return
+        // Typing in a box: the mouse passing over something else must not pull focus off it.
+        if (typingBox()) return
         setFocus(screen, id)
         audio.ui('move')
       },
       onClick: (e) => {
         if (activeScreen() !== screen || h.current.disabled) return
         audio.unlock()
+        // A click outside the box you're typing in means you've finished typing there.
+        // (The UI stops a mouse press moving the browser's focus, so we let go of the box
+        // here; otherwise the keys would stay in the box while the ring sits on this item.)
+        // A click on another box's text already moved the keyboard there, so it stays.
+        const box = typingBox()
+        if (box && !ref.current?.contains(box)) box.blur()
         setFocus(screen, id)
         if (h.current.onClick) {
           h.current.onClick(e)
