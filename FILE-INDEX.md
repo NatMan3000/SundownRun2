@@ -13,3 +13,4 @@
 | `tracks/afterglow.json` | `export` | Afterglow figure-eight track |
 | `tracks/hyperdrome.json` | `export` | Hyperdrome bank track |
 | `tracks/neon-pocket.json` | `export` | Neon Pocket, authored from the README only |
+| `docs/title-screen.jpg` | `permanent` | Title screen screenshot shown at the top of the README |

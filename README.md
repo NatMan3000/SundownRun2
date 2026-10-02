@@ -4,6 +4,8 @@ A neon synthwave driving game for the browser. A giant striped sun sinks into a 
 
 Everything you see and hear is made by the code: no downloaded models, textures, fonts or music.
 
+![The Sundown Run II title screen: the striped sun setting behind a neon city, and a glowing car on the start line](docs/title-screen.jpg)
+
 ## Play it
 
 You need [Bun](https://bun.sh) (or Node.js) installed once.
