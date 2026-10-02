@@ -15,6 +15,7 @@
 //    window.__dev.editor('selftest')     (in the running game)
 // ============================================================
 
+import * as THREE from 'three'
 import { CLEANUP, cleanStroke, type CleanResult, type CleanupOptions } from './cleanup'
 import { type P, catmullRomClosed, dist, minRadius, turnAngle } from './geom'
 import {
@@ -29,7 +30,11 @@ import {
   curveStretch,
   densify,
   dirOf,
+  evenRoad,
+  newPointHeight,
+  pointHeight,
   posOf,
+  roadHeightAt,
   roadLine,
   sOf,
   sOfPoint,
@@ -40,9 +45,12 @@ import {
 } from './shape'
 import { validateTrack } from '../track/validate'
 import { buildTrack } from '../track/build'
-import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, draftFile, isBlankDraft, roadBound } from './draftFile'
+import { sampleClosedSpline } from '../track/spline'
+import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
+import afterglowJson from '../../tracks/afterglow.json'
+import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, draftFile, isBlankDraft, pointGroundOf, roadBound, worldForCopy } from './draftFile'
 import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, roadCurve, sectionRedraw } from './road'
-import type { Piece, RoadPoint } from '../track/schema'
+import type { Piece, RoadPoint, TrackFile } from '../track/schema'
 import { checkBuiltTrack, checkVerdict, gateItems } from './checks'
 import type { Draft } from './draft'
 
@@ -865,6 +873,112 @@ export function runEditorSelfTest(): CheckResult[] {
       if (d > 0.5) bad.push(`a piece at ${at} moved ${d.toFixed(2)} m`)
     }
     info = `${untouched} far points kept exactly`
+    return bad
+  })
+
+  // ---------------------------------------------------------------- copies of built-in tracks keep their road height
+
+  const afterglow = afterglowJson as unknown as TrackFile
+
+  check("A copy of a built-in track sits in exactly the original's world", () => {
+    // Afterglow has no seed, so its hills come from its id; the copy gets a new id.
+    const was = pointGroundOf(afterglow.environment, afterglow.id)
+    const now = pointGroundOf(worldForCopy(afterglow), 'afterglow-copy')
+    if (!was || !now) return ["a world didn't validate"]
+    let worst = 0
+    for (const p of afterglow.road.points) worst = Math.max(worst, Math.abs(now(p.x, p.z) - was(p.x, p.z)))
+    info = `the ground under all ${afterglow.road.points.length} road points is the same to ${(worst * 1000).toFixed(1)} mm`
+    return worst > 0.001 ? [`the copy's ground is ${worst.toFixed(2)} m off the original's under a road point (a copy must keep the seed)`] : []
+  })
+
+  check("Shaping a copy of a built-in track keeps its road height (Afterglow: evened, a Curve, an added point)", () => {
+    const env = worldForCopy(afterglow)
+    const id = 'afterglow-copy'
+    const ground = pointGroundOf(env, id)
+    if (!ground) return ["the copy's world didn't validate"]
+    const shapeWorld = { width: afterglow.road.width ?? 14, bound: roadBound(env), playRadius: Infinity, pointGround: ground }
+    const pts = afterglow.road.points
+    const startAt = afterglow.start?.at ?? 0
+    const build = (points: RoadPoint[], mapAt: (at: number) => number): TrackRuntime | null => {
+      const pieces = (afterglow.pieces ?? []).map((p) => ({ ...p, at: Math.round(mapAt(p.at) * 1000) / 1000 }))
+      const v = validateTrack(draftFile({ id, name: 'Afterglow copy', points, width: afterglow.road.width, pieces, startAt: Math.round(mapAt(startAt) * 1000) / 1000, environment: env }))
+      return v.ok && v.track ? buildTrack(v.track, {}) : null
+    }
+    const bad: string[] = []
+    // 1. The editor's height maths is the game's own curve (src/track/spline.ts) through the same heights.
+    const dense = sampleClosedSpline(pts.map((p) => ({ x: p.x, y: pointHeight(p, ground), z: p.z })), 0.5)
+    let maths = 0
+    for (let j = 0; j < dense.count - 1; j++) maths = Math.max(maths, Math.abs(roadHeightAt(pts, dense.at[j], ground) - dense.y[j]))
+    if (maths > 0.001) bad.push(`the editor's road height is ${maths.toFixed(3)} m off the game's curve`)
+    const before = build(pts, (at) => at)
+    if (!before) return [...bad, 'the copy did not build']
+    const hit = {} as NearestHit
+    const frame = { position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3() } as TrackFrame
+    /** The road's centre on `t` nearest (x, y, z): the exact spot between samples, not the nearest sample. */
+    const roadAt = (t: TrackRuntime, x: number, y: number, z: number, hint?: number) => {
+      t.nearest(x, y, z, hit, hint)
+      return t.frameAt(hit.s, frame).position
+    }
+    /** Worst height change at the original points, and every 2 m of road that stayed put on the map. */
+    const drift = (after: TrackRuntime) => {
+      const B = before.samples
+      let points = 0
+      for (const p of pts) {
+        const yB = roadAt(before, p.x, pointHeight(p, ground), p.z).y
+        const q = roadAt(after, p.x, yB, p.z)
+        if (Math.hypot(q.x - p.x, q.z - p.z) <= 0.3) points = Math.max(points, Math.abs(q.y - yB))
+      }
+      let road = 0
+      let spots = 0
+      let hint: number | undefined
+      for (let i = 0; i < B.count; i += 2) {
+        if (B.surface[i] === 1) continue // a loop
+        const q = roadAt(after, B.px[i], B.py[i], B.pz[i], hint)
+        hint = hit.s
+        if (Math.hypot(q.x - B.px[i], q.z - B.pz[i]) > 0.3) continue
+        spots++
+        road = Math.max(road, Math.abs(q.y - B.py[i]))
+      }
+      return { points, road, spots }
+    }
+    const gateFails = (t: TrackRuntime) => checkBuiltTrack(t).gates.filter((g) => g.level === 'fail').map((g) => g.name)
+    // 2. Evened: what the first Bend, Straight, Curve or Corner does to a built-in copy (40 points -> ~280).
+    const even = evenRoad(pts, shapeWorld)
+    const evened = build(even.line.points.slice(), even.mapAt)
+    if (!evened) return [...bad, 'the evened copy did not build']
+    const de = drift(evened)
+    if (de.points > 0.02) bad.push(`evened: an original point's road moved ${de.points.toFixed(3)} m up or down (limit 0.02)`)
+    if (de.road > 0.06 || de.spots < 1500) bad.push(`evened: the road moved ${de.road.toFixed(3)} m up or down (limit 0.06, over ${de.spots} spots)`)
+    const fe = gateFails(evened)
+    if (fe.length) bad.push(`evened: the game's checks fail: ${fe.join(', ')}`)
+    // 3. A Curve mid-lap (new points on the reshaped stretch, the rest evened).
+    const line0 = roadLine(pts)
+    const sMid = sOf(line0, startAt) + line0.length * 0.45
+    const m = posOf(line0, sMid)
+    const d = dirOf(line0, sMid)
+    const cur = curveStretch(pts, atOf(line0, sMid - 90), atOf(line0, sMid + 90), { x: m.x - d.z * 12, z: m.z + d.x * 12 }, shapeWorld)
+    let dc = { points: 0, road: 0, spots: 0 }
+    if (!cur.ok) bad.push(`the Curve was refused: ${cur.reason}`)
+    else {
+      const curved = build(cur.points, cur.mapAt)
+      if (!curved) bad.push('the curved copy did not build')
+      else {
+        dc = drift(curved)
+        if (dc.points > 0.02) bad.push(`Curve: an original point's road moved ${dc.points.toFixed(3)} m up or down (limit 0.02)`)
+        if (dc.road > 0.06) bad.push(`Curve: the road outside the curve moved ${dc.road.toFixed(3)} m up or down (limit 0.06)`)
+        const fc = gateFails(curved)
+        if (fc.length) bad.push(`Curve: the game's checks fail: ${fc.join(', ')}`)
+      }
+    }
+    // 4. A point added halfway between two far-apart points (double-click) sits at the road's height.
+    let added = 0
+    for (let k = 0; k < pts.length; k++) {
+      const spot = posOf(line0, sOf(line0, k + 0.5))
+      const y = pointHeight({ ...spot, ...newPointHeight(pts, k + 0.5, spot, ground) }, ground)
+      added = Math.max(added, Math.abs(roadAt(before, spot.x, y, spot.z).y - y))
+    }
+    if (added > 0.05) bad.push(`a point added between two road points sits ${added.toFixed(3)} m off the road (limit 0.05)`)
+    info = `maths = game's curve to ${(maths * 1000).toFixed(2)} mm; evened ${pts.length} -> ${even.line.points.length} points: original points ${(de.points * 100).toFixed(1)} cm, road ${(de.road * 100).toFixed(1)} cm (${de.spots} spots); Curve: ${(dc.points * 100).toFixed(1)} cm, ${(dc.road * 100).toFixed(1)} cm; added points ${(added * 100).toFixed(1)} cm; every gate passes`
     return bad
   })
 

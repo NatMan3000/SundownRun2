@@ -18,6 +18,7 @@
 import { FONTS, PALETTE } from '../core/palette'
 import { cars, telemetry } from '../core/telemetry'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
+import { FILL_MAX } from '../track/road'
 import type { BendView, EditorState } from './draft'
 import { gateItems } from './checks'
 import { type P } from './geom'
@@ -454,7 +455,7 @@ function drawControlPoints(ctx: CanvasRenderingContext2D, points: readonly RoadP
     const hovered = isPicked(hover, 'point', i)
     ctx.beginPath()
     ctx.arc(sx, sy, picked || hovered ? r + 2 : r, 0, Math.PI * 2)
-    ctx.fillStyle = picked ? PALETTE.uiAccent : p.lift ? PALETTE.wallRide : PALETTE.uiText
+    ctx.fillStyle = picked ? PALETTE.uiAccent : isRaised(p) ? PALETTE.wallRide : PALETTE.uiText
     ctx.fill()
     ctx.lineWidth = 1.5
     ctx.strokeStyle = PALETTE.uiPanelSolid
@@ -508,10 +509,24 @@ function drawStartLine(ctx: CanvasRenderingContext2D, rc: RoadCurve, startAt: nu
   placePill(ctx, 'START', mx - ux * 30 - uy * 26, my - uy * 30 + ux * 26, [0, 24, -24, 48], PALETTE.uiText)
 }
 
-/** Each raised stretch (a bridge) gets one label beside its highest point. */
+/**
+ * A road point raised a metre or more above the ground. (The shaping tools give
+ * their new points small lifts, above or below zero, that only keep the road at
+ * the height it had: those are not raised.)
+ */
+function isRaised(p: RoadPoint): boolean {
+  return (p.lift ?? 0) >= 1
+}
+
+/**
+ * Each raised stretch that is a bridge gets one label beside its highest point:
+ * 6 m (FILL_MAX) or more, the same as the panel's Bridges count. The game fills
+ * the ground up to a road less high than that, so a lower raise is a crest or a
+ * bank of earth, not a bridge with air under it.
+ */
 function drawBridges(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[]): void {
   const n = points.length
-  const raised = (i: number) => (points[((i % n) + n) % n].lift ?? 0) >= 1
+  const raised = (i: number) => isRaised(points[((i % n) + n) % n])
   for (let i = 0; i < n; i++) {
     if (!raised(i) || raised(i - 1)) continue
     let top = i
@@ -521,6 +536,7 @@ function drawBridges(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[]
       count++
     }
     const p = points[top % n]
+    if ((p.lift ?? 0) < FILL_MAX) continue
     const q = points[(top + 1) % n]
     const len = Math.hypot(q.x - p.x, q.z - p.z) || 1
     const { sx, sy } = worldToScreen(p.x, p.z)

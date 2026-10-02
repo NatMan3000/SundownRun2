@@ -13,7 +13,9 @@
 //  what "Clear all" leaves behind.
 // ============================================================
 
-import { roadBound as trackRoadBound } from '../track/validate'
+import { roadBound as trackRoadBound, validateTrack } from '../track/validate'
+import { averagedHeight, makeNaturalTerrain } from '../track/terrain'
+import { hashString } from '../track/noise'
 import { TRACK_FORMAT, TRACK_VERSION, type EnvironmentSpec, type Piece, type PropSpot, type CoreSpot, type RoadPoint, type TrackFile } from '../track/schema'
 import type { Draft } from './draft'
 
@@ -133,6 +135,46 @@ export function draftFile(parts: DraftParts): TrackFile {
  */
 export function roadBound(environment: EnvironmentSpec): number {
   return trackRoadBound(environment).limit
+}
+
+// ---------------------------------------------------------------- the world under the road
+
+/**
+ * A track's world, for a copy of that track. A world with no `seed` takes its
+ * randomness (the rolling hills, where the roadside things go) from the
+ * track's id, and a copy gets a new id, so the copy is given the original's
+ * seed and sits in exactly the same world. (Without it, a copy of Afterglow
+ * sat on different hills, and every road point with no set height rode up or
+ * down with them.)
+ */
+export function worldForCopy(file: TrackFile): EnvironmentSpec {
+  const environment = cloneJson(file.environment)
+  if (environment.seed === undefined) environment.seed = hashString(file.id)
+  return environment
+}
+
+/** The last world's ground, kept: the shaping tools ask for it on every use (a Bend once per drag). */
+let groundMemo: { key: string; ground: (x: number, z: number) => number } | null = null
+
+/**
+ * The ground a road point with no `y` sits on, in this world, for a track
+ * with this id, worked out exactly the way the game does it (the natural
+ * ground averaged over about 12 m: averagedHeight in src/track/terrain.ts).
+ * undefined if the world itself is not valid. Only the world and the id
+ * matter (a world with no `seed` takes its hills from the id), so it is
+ * checked with the starter road: a half-finished draft still gets it.
+ */
+export function pointGroundOf(environment: EnvironmentSpec, id: string): ((x: number, z: number) => number) | undefined {
+  const v = validateTrack(draftFile({ id, name: 'Ground', points: starterRoad(environment), environment }))
+  const env = v.track?.environment
+  if (!env) return undefined
+  // What the game's natural ground depends on (the envKey in src/track/build.ts).
+  const key = JSON.stringify([env.seed, env.size, env.terrain, env.sky.sunAzimuthDeg])
+  if (groundMemo?.key !== key) {
+    const nat = makeNaturalTerrain(env)
+    groundMemo = { key, ground: (x, z) => averagedHeight(nat, x, z) }
+  }
+  return groundMemo.ground
 }
 
 // ---------------------------------------------------------------- a blank track

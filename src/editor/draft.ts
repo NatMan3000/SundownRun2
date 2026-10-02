@@ -25,7 +25,7 @@ import { freeTrackId, getTrackSource, listDrawnTracks, saveDrawnTrack } from '..
 import { validateTrack } from '../track/validate'
 import { startSession } from '../core/session'
 import { audio } from '../core/api'
-import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFile, isBlankDraft, roadBound, starterRoad } from './draftFile'
+import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFile, isBlankDraft, pointGroundOf, roadBound, starterRoad, worldForCopy } from './draftFile'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import { checkBuiltTrack, gateItems } from './checks'
 import type { P } from './geom'
@@ -49,6 +49,7 @@ import {
   densify,
   fairStretch,
   nearestStraightStart,
+  newPointHeight,
   openCornersOnStretch,
   roadLine,
   roadRoughness,
@@ -165,8 +166,12 @@ export function newDraft(baseWorldId = DEFAULT_BASE_WORLD.id): Draft {
   }
 }
 
-/** Turn any track file (built-in, drawn or imported) into a draft. Built-ins become a copy. */
+/**
+ * Turn any track file (built-in, drawn or imported) into a draft. Built-ins
+ * become a copy, in exactly the original's world (see worldForCopy).
+ */
 export function draftFromFile(file: TrackFile, asCopy: boolean): Draft {
+  const environment = asCopy ? worldForCopy(file) : cloneJson(file.environment)
   return {
     id: asCopy ? '' : file.id,
     name: asCopy ? `${file.name} copy` : file.name,
@@ -175,7 +180,7 @@ export function draftFromFile(file: TrackFile, asCopy: boolean): Draft {
     points: cloneJson(file.road.points),
     width: file.road.width ?? 14,
     baseWorld: 'custom',
-    environment: cloneJson(file.environment),
+    environment,
     pieces: cloneJson(file.pieces ?? []),
     props: cloneJson(file.props ?? []),
     cores: cloneJson(file.cores ?? []),
@@ -729,7 +734,7 @@ export function updateCore(index: number, change: (p: CoreSpot) => void): void {
 
 // ---------------------------------------------------------------- road points
 
-/** Add a road point at `at` (on the curve, so the road does not move). */
+/** Add a road point at `at` (on the curve, and at the road's own height there, so the road does not move). */
 export function insertPointAt(at: number): void {
   const s = useEditor.getState()
   const d = s.draft
@@ -743,12 +748,18 @@ export function insertPointAt(at: number): void {
   }
   const where = frameAt(roadCurve(d.points), a).p
   const index = k + 1
+  const ground = pointGroundFor(d)
   commit((x) => {
     const before = x.points[k]
     const after = x.points[(k + 1) % count]
     const point: RoadPoint = { x: Math.round(where.x * 10) / 10, z: Math.round(where.z * 10) / 10 }
-    const lift = (before.lift ?? 0) * (1 - t) + (after.lift ?? 0) * t
-    if (lift > 0.05) point.lift = Math.round(lift * 10) / 10
+    if (ground) {
+      // Exactly the height the road has here now (points on built-in tracks can be 200 m apart).
+      Object.assign(point, newPointHeight(x.points, a, point, ground))
+    } else {
+      const lift = (before.lift ?? 0) * (1 - t) + (after.lift ?? 0) * t
+      if (lift > 0.05) point.lift = Math.round(lift * 10) / 10
+    }
     if (before.bank !== undefined && after.bank !== undefined) point.bank = Math.round((before.bank * (1 - t) + after.bank * t) * 10) / 10
     if (before.width !== undefined && after.width !== undefined) point.width = Math.round(before.width * (1 - t) + after.width * t)
     x.points.splice(index, 0, point)
@@ -820,14 +831,20 @@ export function smoothRoad(): { before: number; after: number } {
 
 /**
  * What the shaping maths needs to know about this draft's world: its edge,
- * the road width, and (once the live preview of this draft is built) the
- * ground's height, so new points beside a raised one get a smooth height.
+ * the road width, and the ground its road points sit on, so every point a
+ * tool adds keeps the road at exactly the height it had.
  */
 export function shapeWorld(d: Draft): ShapeWorld {
   const o = strokeOptions(d, 1)
-  const t = getTrack()
-  const built = t && t.id === (useEditor.getState().savedId ?? draftId(d)) ? t : null
-  return { width: d.width, bound: o.bound, playRadius: o.playRadius, ground: built ? (x, z) => built.terrainHeight(x, z) : undefined }
+  return { width: d.width, bound: o.bound, playRadius: o.playRadius, pointGround: pointGroundFor(d) }
+}
+
+/**
+ * The ground a road point with no `y` sits on in this draft's world (see
+ * pointGroundOf), under the id the live preview builds it with.
+ */
+export function pointGroundFor(d: Draft): ((x: number, z: number) => number) | undefined {
+  return pointGroundOf(d.environment, useEditor.getState().savedId ?? draftId(d))
 }
 
 function round3(v: number): number {

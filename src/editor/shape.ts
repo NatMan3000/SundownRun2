@@ -26,7 +26,10 @@
 //  of road, from s0 to s1. The control points inside the window are
 //  replaced by new ones 16 m apart along the new line, and every `at`
 //  (pieces, the start line) moves to the same place on the new road.
-//  Points outside the window are not touched at all.
+//  Points outside the window are not touched at all. Every new point
+//  gets the old road's height at its spot, worked out exactly the way
+//  the game builds it (newPointHeight), so no tool lifts or sinks the
+//  road by adding points.
 //
 //  Pure maths, no React or game state: points in, points out.
 //  selfTest.ts checks every tool (bun src/editor/selfTest.ts).
@@ -46,14 +49,17 @@ export interface ShapeWorld {
   /** The world's reachable radius, metres (Infinity when unknown). */
   playRadius: number
   /**
-   * The built world's ground height at a spot, if the editor has it (the live
-   * preview). New points next to a raised one use it to get a smooth height.
+   * The ground a road point with no `y` sits on, worked out exactly the way the
+   * game does it (the natural ground averaged over about 12 m: averagedHeight in
+   * src/track/terrain.ts). With it, every point a tool adds keeps the road at
+   * exactly the height it had (see newPointHeight). Without it (the self-test's
+   * flat-world maths) new points simply sit on the ground.
    */
-  ground?: (x: number, z: number) => number
+  pointGround?: (x: number, z: number) => number
 }
 
 /** Where settingsAt gets heights from: the part of ShapeWorld about the ground. */
-export type HeightSource = Pick<ShapeWorld, 'ground'>
+export type HeightSource = Pick<ShapeWorld, 'pointGround'>
 
 /** No corner tighter than this, metres (the clean-up's and the track validator's minimum). */
 export const MIN_RADIUS = CLEANUP.minRadius
@@ -269,17 +275,101 @@ function smoothBlend(v0: number, v1: number, v2: number, v3: number, t: number):
   return 0.5 * (2 * v1 + (v2 - v0) * t + (2 * v0 - 5 * v1 + 4 * v2 - v3) * t * t + (3 * v1 - v0 - 3 * v2 + v3) * t * t * t)
 }
 
+// ---------------------------------------------------------------- road height, exactly as the game builds it
+
+/** The ground under a road point with no `y` (see ShapeWorld.pointGround). */
+type PointGround = (x: number, z: number) => number
+
+/** Heights to the centimetre: closer than anyone can see, and short in the saved file. */
+function roundCm(v: number): number {
+  return Math.round(v * 100) / 100
+}
+
+/** How high the game builds a road point: its own `y`, or the ground under it plus its `lift` (src/track/road.ts, step 1). */
+export function pointHeight(p: RoadPoint, ground: PointGround): number {
+  return typeof p.y === 'number' ? p.y : ground(p.x, p.z) + (p.lift ?? 0)
+}
+
+/** Every point's height, worked out once per road (a Bend asks on every mouse move, for the same road). */
+const heightMemo = new WeakMap<readonly RoadPoint[], { ground: PointGround; h: Float64Array }>()
+
+function pointHeights(points: readonly RoadPoint[], ground: PointGround): Float64Array {
+  const memo = heightMemo.get(points)
+  if (memo && memo.ground === ground) return memo.h
+  const h = Float64Array.from(points, (p) => pointHeight(p, ground))
+  heightMemo.set(points, { ground, h })
+  return h
+}
+
+/**
+ * The road's surface height at `at`, exactly as the game builds it. The game
+ * runs one smooth curve (centripetal Catmull-Rom, src/track/spline.ts) through
+ * the points in 3D, so the height between two points depends on the points
+ * either side AND on how far apart they all are, height included. This is the
+ * same sum (the Barry-Goldman "pyramid" of in-betweens), for one spot.
+ */
+export function roadHeightAt(points: readonly RoadPoint[], at: number, ground: PointGround): number {
+  const n = points.length
+  const h = pointHeights(points, ground)
+  const a = wrapAt(at, n)
+  const i = Math.floor(a) % n
+  const u = a - Math.floor(a)
+  const k = [(i - 1 + n) % n, i, (i + 1) % n, (i + 2) % n]
+  const y = k.map((j) => h[j])
+  // Knot spacing: the square root of the 3D distance between neighbours (the game's ALPHA = 0.5).
+  const knot = (j0: number, j1: number) =>
+    Math.max(1e-4, Math.sqrt(Math.hypot(points[k[j1]].x - points[k[j0]].x, y[j1] - y[j0], points[k[j1]].z - points[k[j0]].z)))
+  const t0 = 0
+  const t1 = t0 + knot(0, 1)
+  const t2 = t1 + knot(1, 2)
+  const t3 = t2 + knot(2, 3)
+  const t = t1 + (t2 - t1) * u
+  const mix = (va: number, vb: number, ta: number, tb: number) => va + ((vb - va) * (t - ta)) / (tb - ta)
+  const a1 = mix(y[0], y[1], t0, t1)
+  const a2 = mix(y[1], y[2], t1, t2)
+  const a3 = mix(y[2], y[3], t2, t3)
+  return mix(mix(a1, a2, t0, t2), mix(a2, a3, t1, t3), t1, t2)
+}
+
+/**
+ * The height for a new road point a tool adds at `at` on the road (sitting at
+ * `spot` on the map): exactly the height the road has there now, so adding
+ * points never lifts or sinks the road. (Built-in tracks have points up to
+ * 200 m apart; a new point that just sat on its own bit of ground moved the
+ * road by up to 7 m on Afterglow, into a ramp.)
+ *  - Where the nearer of the two points either side has a set height (`y`),
+ *    the stretch's height was set by hand: the new point gets a `y` too.
+ *  - Where it sits on the ground, the new point gets its height above the
+ *    ground under it (`lift`, a little below zero where the road dips between
+ *    far-apart points), so it keeps riding the ground like its neighbours if
+ *    the road is moved later.
+ */
+export function newPointHeight(points: readonly RoadPoint[], at: number, spot: P, ground: PointGround): Pick<RoadPoint, 'y' | 'lift'> {
+  const n = points.length
+  const a = wrapAt(at, n)
+  const k = Math.floor(a) % n
+  const near = a - Math.floor(a) < 0.5 ? points[k] : points[(k + 1) % n]
+  const y = roadHeightAt(points, a, ground)
+  if (!Number.isFinite(y)) return {}
+  if (near.y === undefined) {
+    const lift = roundCm(y - ground(spot.x, spot.z))
+    // The track format takes a lift from -30 to 200 m; past that (never on a real world) a set height does it.
+    if (lift >= -30 && lift <= 200) return lift === 0 ? {} : { lift }
+  }
+  return { y: roundCm(y) }
+}
+
 /**
  * A road point's own settings (height, lift, bank, width) at s metres along
- * the old road, from the points either side.
- *  - Height follows the same smooth curve the game runs between points, so a
- *    crest or a bridge keeps its shape. A point next to one with a set height
- *    (`y`) gets a set height too; `ground` (the built world's ground height,
- *    when the editor has it) says how high the points without one sit.
+ * the old road, from the points either side. `spot` is where the new point
+ * will sit on the map (on the old road unless a tool reshaped it).
+ *  - Height: with `pointGround`, exactly the old road's height there (see
+ *    newPointHeight). Without it, the old road's set heights blend along the
+ *    same smooth curve the game runs, and points with none sit on the ground.
  *  - Bank and width blend between the two neighbours; a setting only one of
  *    them has comes from the nearer, so a banked or widened stretch keeps its length.
  */
-export function settingsAt(line: RoadLine, s: number, heights: HeightSource = {}): Omit<RoadPoint, 'x' | 'z'> {
+export function settingsAt(line: RoadLine, s: number, heights: HeightSource = {}, spot?: P): Omit<RoadPoint, 'x' | 'z'> {
   const pts = line.points
   const n = pts.length
   const at = atOf(line, s)
@@ -288,16 +378,15 @@ export function settingsAt(line: RoadLine, s: number, heights: HeightSource = {}
   const q = [pts[(k - 1 + n) % n], pts[k], pts[(k + 1) % n], pts[(k + 2) % n]]
   const [, a, b] = q
   const out: Omit<RoadPoint, 'x' | 'z'> = {}
-  const ground = heights.ground
-  if (a.y !== undefined || b.y !== undefined) {
+  const ground = heights.pointGround
+  if (ground) {
+    Object.assign(out, newPointHeight(pts, at, spot ?? posOf(line, s), ground))
+  } else if (a.y !== undefined || b.y !== undefined) {
     let y: number | undefined
     if (a.y !== undefined && b.y !== undefined) {
       const ay = a.y
       const by = b.y
       y = smoothBlend(q[0].y ?? ay, ay, by, q[3].y ?? by, t)
-    } else if (ground) {
-      const h = q.map((p) => p.y ?? ground(p.x, p.z) + (p.lift ?? 0))
-      y = smoothBlend(h[0], h[1], h[2], h[3], t)
     } else y = t < 0.5 ? a.y : b.y
     if (y !== undefined && Number.isFinite(y)) out.y = round1(y)
   } else {
@@ -380,7 +469,8 @@ export function spliceRoad(line: RoadLine, s0: number, s1: number, win: readonly
   for (let i = 1; i < c; i++) {
     const u = (T * i) / c
     const p = pathAt(u)
-    fresh.push({ x: roundMm(p.x), z: roundMm(p.z), ...settingsAt(line, oldS(u), heights) })
+    const spot = { x: roundMm(p.x), z: roundMm(p.z) }
+    fresh.push({ ...spot, ...settingsAt(line, oldS(u), heights, spot) })
   }
   // New list: the kept points in order, then the new ones. Old point 0 stays first when it was kept.
   let list: RoadPoint[] = [...kept.map((k) => ({ ...pts[k] })), ...fresh]
@@ -573,7 +663,9 @@ export function bendWeight(d: number, reach: number): number {
  * Give a stretch of road enough control points to bend smoothly: any gap
  * longer than `maxGap` metres between s0 and s1 gets new points on the curve
  * about 16 m apart (built-in tracks have points up to 200 m apart). The road
- * does not move; pieces keep their places.
+ * does not move, up or down, as long as `heights` knows the ground (each new
+ * point gets the road's own height there, see newPointHeight); pieces keep
+ * their places.
  */
 export function densify(
   line: RoadLine,
@@ -610,7 +702,8 @@ export function densify(
     for (let j = 1; j < parts[k]; j++) {
       const s = a + (len * j) / parts[k]
       const p = posOf(line, s)
-      out.push({ x: roundMm(p.x), z: roundMm(p.z), ...settingsAt(line, s, heights) })
+      const spot = { x: roundMm(p.x), z: roundMm(p.z) }
+      out.push({ ...spot, ...settingsAt(line, s, heights, spot) })
     }
   }
   const mapAt = (at: number): number => {
@@ -645,7 +738,8 @@ export function bendRoad(line: RoadLine, grabS: number, reach: number, pull: P, 
  * shape at each point from the points either side, so a short new gap next to
  * a long old one would put a kink in the road beside a change; with even gaps
  * a stretch can be swapped cleanly. The road itself moves a few centimetres
- * at most, and pieces keep their places (mapAt).
+ * at most (its height too, when `world` knows the ground), and pieces keep
+ * their places (mapAt).
  */
 export function evenRoad(points: readonly RoadPoint[], world: ShapeWorld): { line: RoadLine; mapAt: (at: number) => number } {
   const line0 = roadLine(points)
