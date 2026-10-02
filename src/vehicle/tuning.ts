@@ -154,6 +154,14 @@ export const TYRE = {
   slideRearFrac: 0.7,
   /** The handbrake multiplies rear grip by this: the tail steps out on command. */
   handbrakeGrip: 0.3,
+  /**
+   *  BRAKING GRIP. Under the brake pedal a tyre grips this much harder ALONG the car than
+   *  across it, so its grip is an ellipse, not a circle (real tyres do this a little; an
+   *  arcade car does it a lot). With a circle every tyre ran out of grip at about 1.5 g, so
+   *  the top half of the brakes slider did nothing: 1.5 stopped only 15% shorter than 1.0.
+   *  Cornering grip is untouched, and the handbrake still uses the plain circle.
+   */
+  brakeGrip: 1.35,
   rollingResistance: 0.014,
   /** Below this speed the slip angle is measured against a floor, so parking is not "sliding". */
   slipSpeedFloor: 2.0,
@@ -186,9 +194,32 @@ export const DRIVE = {
   engineBrakePerMs: 0.004,
   reverseForce: 3800,
   reverseTopKmh: 45,
-  /** Total brake force N (x the brakes setting) and how much of it the front takes. */
+  /**
+   *  BRAKES. Total brake force, N, times the brakes setting. Full brake from 200 km/h:
+   *  0.6 -> ~0.85 g, 1.0 -> ~1.4 g (about 110 m to stop), 1.5 -> ~2 g (about 80 m), where
+   *  the tyres' braking grip (TYRE.brakeGrip) runs out; past that the setting adds nothing.
+   */
   brakeForce: 16000,
+  /**
+   *  BRAKE BALANCE (like a real car's EBD). Braking moves weight onto the front wheels, so
+   *  the brake force is split between the axles by how much grip each one has right now
+   *  (mu x the load on its springs). The rear's share is cut to brakeRearShare of its grip
+   *  so the front always runs out first: a washed-out front is understeer, the safe failure.
+   *  A fixed 68 / 32 split over-braked the light rear (it was out of grip at the default
+   *  setting) and left the front's spare grip unused.
+   */
+  brakeRearShare: 0.85,
+  /** The front's share never goes outside this range. */
+  brakeFrontMin: 0.55,
+  brakeFrontMax: 0.9,
+  /** The front's share with no wheel loads to go by (all four wheels in the air). */
   brakeFrontBias: 0.68,
+  /**
+   *  Brake pressure builds over this long, seconds (0 to full), like a real brake's
+   *  hydraulics, so a trigger stamped to full comes in firm but never as a jolt. Letting go
+   *  is instant. The keyboard's own smoothing is already about this slow.
+   */
+  brakeRiseSeconds: 0.12,
   /** Extra rear brake when the handbrake is pulled. */
   handbrakeForce: 5200,
 }
@@ -507,6 +538,19 @@ export const BOOST = {
   overTop: 0.35,
   /** The same pad cannot fire again for this long. */
   cooldown: 1.0,
+  /**
+   *  BRAKES BEAT BOOST. Afterglow has two pads in the braking zone for its hairpin: each one
+   *  kicked a braking car up by 25 km/h and then pushed at 0.9 g, two thirds of the brakes,
+   *  so braking from 250 km/h there took 70 m longer than on a clear straight. Now a pad
+   *  crossed with the brake past `brakeIgnore` does not fire, and a running boost's push
+   *  fades out as the brake goes from `brakeCutFrom` to `brakeIgnore` (its glow fading up
+   *  to `brakeFade` times faster), so a light brake through a pad keeps most of it. Only for
+   *  a person driving: the Ai brain plans its braking around each pad's kick, and with the
+   *  rule on it lost 1.5-2 s a lap on Neon Pocket.
+   */
+  brakeCutFrom: 0.3,
+  brakeIgnore: 0.8,
+  brakeFade: 4,
 }
 
 /**

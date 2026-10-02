@@ -490,12 +490,24 @@ export class CarSim {
   launch = 0
   /** The roll-back catch's brake this step, 0..1 of the full brake (ROLLBACK in tuning.ts). */
   rollbackBrake = 0
+  /** The brake pedal as the brakes feel it, 0..1: the pedal, built up over DRIVE.brakeRiseSeconds. */
+  brakePressure = 0
+  /** This step's brake balance: the front axle's share of the brake force (DRIVE.brakeRearShare). */
+  brakeFront = 0
   /**
    * The roll-back catch is for a person on keys or a pad (S is brake AND reverse). An Ai brain
    * or the demo autopilot coasts backwards on purpose (backing up for a loop run-up), so its
    * owner switches the catch off.
    */
   rollbackCatch = true
+  /**
+   * A person is driving this car (keys or a pad), not an Ai brain or the demo: the same owners'
+   * switch as the roll-back catch. Brakes beat boost (BOOST.brakeCutFrom) only for a person: the
+   * Ai brain plans its braking around each pad's kick, so for it a pad always fires.
+   */
+  get personDriving(): boolean {
+    return this.rollbackCatch
+  }
   /** On a loop: the turn it is asking for this step, v^2 / R toward its centre (m/s^2). 0 off a loop. */
   loopAccel = 0
   /** On a wall ride: how hard the wall's curve presses the car into it this step (m/s^2, < 0 = away). */
@@ -763,13 +775,18 @@ export class CarSim {
     this.steerAngle += clamp(steerTarget - this.steerAngle, -maxDelta, maxDelta)
 
     // ---- boost envelope ----
-    this.boostAge += DT
-    this.boost = this.boostAge < BOOST.seconds ? 1 - smoothstep(0, 1, this.boostAge / BOOST.seconds) : 0
+    // A person's firm brake makes it fade faster (BOOST.brakeCutFrom): brakes beat boost.
+    const brakeCut = this.personDriving && !this.frozen && vLongCar > 0.6 ? smoothstep(BOOST.brakeCutFrom, BOOST.brakeIgnore, brake) : 0
+    this.boostAge += DT * (1 + (BOOST.brakeFade - 1) * brakeCut)
+    this.boost =this.boostAge < BOOST.seconds ? 1 - smoothstep(0, 1, this.boostAge / BOOST.seconds) : 0
 
     // ---- engine / brakes / reverse ----
     const vTop = Math.max(10, h.topSpeedKmh / 3.6)
     const vLimit = vTop * (1 + BOOST.overTop * this.boost)
-    let brakeCmd = brake
+    // Brake pressure builds over DRIVE.brakeRiseSeconds, so a stamp on the brake comes in firm
+    // but never as a jolt; letting go is instant. Frozen cars are held at once.
+    this.brakePressure = this.frozen ? brake : Math.min(brake, this.brakePressure + DT / DRIVE.brakeRiseSeconds)
+    let brakeCmd = this.brakePressure
     let engineTotal = 0
     let reversing = false
     if (brake > 0.05 && throttle < 0.1 && vLongCar < 0.6 && !this.frozen) {
@@ -792,8 +809,9 @@ export class CarSim {
     }
     this.reversing = reversing
     const brakeTotal = DRIVE.brakeForce * h.brakes * massRatio
-    const brakeFrontWheel = (brakeTotal * DRIVE.brakeFrontBias) / 2
-    const brakeRearWheel = (brakeTotal * (1 - DRIVE.brakeFrontBias)) / 2
+    // Split between the axles once the springs say where the weight is (brake balance, below).
+    let brakeFrontWheel = (brakeTotal * DRIVE.brakeFrontBias) / 2
+    let brakeRearWheel = (brakeTotal * (1 - DRIVE.brakeFrontBias)) / 2
     const quarterMass = mass / 4
     const grip = h.grip * this.tuning.grip
     // The tyres stiffen with speed (TYRE.peakSlipFast): the slip curve peaks sooner.
@@ -984,6 +1002,16 @@ export class CarSim {
       if (amt > brakeCmd) brakeCmd = amt
     }
 
+    // ---- brake balance: each axle brakes by the grip it has right now (DRIVE.brakeRearShare) ----
+    // The springs' loads say where the weight is: under hard braking most of it is on the front.
+    {
+      const gripF = TYRE.muFront * (sf[0] + sf[1])
+      const gripR = TYRE.muRear * (sf[2] + sf[3]) * DRIVE.brakeRearShare
+      this.brakeFront = gripF + gripR > 1 ? clamp(gripF / (gripF + gripR), DRIVE.brakeFrontMin, DRIVE.brakeFrontMax) : DRIVE.brakeFrontBias
+      brakeFrontWheel = (brakeTotal * this.brakeFront) / 2
+      brakeRearWheel = (brakeTotal * (1 - this.brakeFront)) / 2
+    }
+
     // =========================================================
     //  PASS B - tyres, friction circle, apply
     // =========================================================
@@ -1057,10 +1085,14 @@ export class CarSim {
       fLong -= Math.sign(vLong) * TYRE.rollingResistance * rollLoad
 
       // ---- friction circle: one grip budget for cornering AND driving ----
+      // Under the brake pedal it is an ellipse: the tyre grips TYRE.brakeGrip times harder along
+      // the car than across it (never with the handbrake: drifts keep the plain circle).
+      const braking = brakeCmd > 0.05 && !handbrake && engineTotal <= 0
+      const longK = braking ? TYRE.brakeGrip : 1
       const requestedLong = Math.abs(fLong)
-      const mag = Math.hypot(fLong, fLat)
+      const mag = Math.hypot(fLong / longK, fLat)
       if (mag > maxF && mag > 1e-4) {
-        if (!isFront && brakeCmd > 0.05 && !handbrake && engineTotal <= 0) {
+        if (!isFront && braking) {
           // BRAKE BALANCE (v1's "braking into a corner spins me" fix). Scaling
           // proportionally stole the rears' cornering grip exactly when load
           // transfer had already halved it. Street-car rule: the rears keep their
@@ -1071,7 +1103,7 @@ export class CarSim {
           // the fronts lateral-first too only added 0.1 g of turn and halved the
           // braking in a corner (measured 2026-10-01).
           if (Math.abs(fLat) > maxF) fLat = Math.sign(fLat) * maxF
-          const room = Math.sqrt(Math.max(0, maxF * maxF - fLat * fLat))
+          const room = longK * Math.sqrt(Math.max(0, maxF * maxF - fLat * fLat))
           if (Math.abs(fLong) > room) fLong = Math.sign(fLong) * room
         } else {
           const scale = maxF / mag
@@ -1079,7 +1111,7 @@ export class CarSim {
           fLat *= scale
         }
       }
-      const availableLong = Math.sqrt(Math.max(0, maxF * maxF - fLat * fLat))
+      const availableLong = longK * Math.sqrt(Math.max(0, maxF * maxF - fLat * fLat))
       this.longClip[i] = clamp((requestedLong - availableLong) / Math.max(availableLong, 500), 0, 1)
       if (!isFront) {
         rearAlphaSum += alpha
@@ -1193,7 +1225,9 @@ export class CarSim {
       // (306-346 km/h on the Hyperdrome against a 260 top speed). The limit sinks back to the top
       // speed as the envelope fades, and drag brings the car down after it.
       const lim = 1 - smoothstep(vLimit * DRIVE.limiterLo, vLimit * DRIVE.limiterHi, vLongCar)
-      const push = BOOST.accel * this.boostPower * this.boost * lim * mass
+      // Brakes beat boost (BOOST.brakeCutFrom): a person's firm brake stops the push.
+      const brakeOff = this.personDriving && !reversing ? 1 - smoothstep(BOOST.brakeCutFrom, BOOST.brakeIgnore, this.brakePressure) : 1
+      const push = BOOST.accel * this.boostPower * this.boost * lim * brakeOff * mass
       this.addForce(body, fwd.x * push, fwd.y * push, fwd.z * push)
     }
 
@@ -2191,6 +2225,8 @@ export class CarSim {
       if (along < 0 || along > (len > 0 ? len : zone.length)) continue
       if (this.lateral < zone.lat0 - 0.6 || this.lateral > zone.lat1 + 0.6) continue
       if (airborne && this.hit.height > 2.5) continue
+      // Braking hard across a pad (BOOST.brakeIgnore): it doesn't fire (ease off on it and it does).
+      if (this.personDriving && !this.reversing && this.brakePressure > BOOST.brakeIgnore) continue
       this.boostCooldown[z] = BOOST.cooldown
       const strength = (Number.isFinite(zone.strength) ? zone.strength : 1) * clamp(this.handling.boostStrength, 0, 3)
       if (strength <= 0) continue
