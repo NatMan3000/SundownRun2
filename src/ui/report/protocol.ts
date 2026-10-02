@@ -69,7 +69,14 @@ export type SavedReason =
 /** The server's answer to a report. */
 export type ReportResult =
   | { status: 'sent'; number: number; url: string; /** Earlier waiting reports that went with it. */ alsoSent: number }
-  | { status: 'saved'; reason: SavedReason; /** Reports now waiting on this computer, this one included. */ waiting: number }
+  | {
+      status: 'saved'
+      reason: SavedReason
+      /** Reports now waiting on this computer, this one included. */
+      waiting: number
+      /** What went wrong, in the server's words (e.g. GitHub's 401 or 403), for Dad. Never holds the key. */
+      detail?: string
+    }
   | { status: 'rejected'; reason: 'too-many' | 'invalid' | 'full'; message: string }
 
 /**

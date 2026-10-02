@@ -273,8 +273,8 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
       return
     }
     const file = await savePending({ savedAt: new Date().toISOString(), reason, issue })
-    warn(`saved on this computer as ${file}: ${detail}. It sends after the next report that gets through.`)
-    const result: ReportResult = { status: 'saved', reason, waiting: before + 1 }
+    warn(`saved on this computer as ${file}: ${detail}. It sends as soon as reporting works (when the game starts, or the Report screen opens).`)
+    const result: ReportResult = { status: 'saved', reason, waiting: before + 1, detail }
     reply(res, 200, result)
   }
 

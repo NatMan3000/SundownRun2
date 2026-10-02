@@ -601,6 +601,7 @@ function DoneView(props: { result: ReportResult; onAgain: () => void; onDone: ()
           <>
             <p className="report-done__line">Saved on this computer, it will send next time.</p>
             <p className="report-done__why">{SAVED_WHY[r.reason]}</p>
+            {r.reason === 'refused' && r.detail && <p className="report-done__why">For Dad: {r.detail}.</p>}
           </>
         )}
       </div>
