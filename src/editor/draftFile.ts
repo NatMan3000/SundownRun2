@@ -3,8 +3,9 @@
 // ------------------------------------------------------------
 //  Everything the editor makes ends up as one TrackFile (the same
 //  format as tracks/*.json, see src/track/schema.ts). This module
-//  builds that file from the editor's pieces of work, and holds the
-//  "base worlds" a drawn track can sit in.
+//  builds that file from the editor's pieces of work (and a draft
+//  from a file: a copy keeps everything that makes the track
+//  itself), and holds the "base worlds" a drawn track can sit in.
 //
 //  A base world is just an `environment` block: the ground, the sky,
 //  the city, the music. Pick one and the draft gets a copy of it.
@@ -16,8 +17,8 @@
 import { roadBound as trackRoadBound, validateTrack } from '../track/validate'
 import { averagedHeight, makeNaturalTerrain } from '../track/terrain'
 import { hashString } from '../track/noise'
-import { TRACK_FORMAT, TRACK_VERSION, type EnvironmentSpec, type Piece, type PropSpot, type CoreSpot, type RoadPoint, type TrackFile } from '../track/schema'
-import type { Draft } from './draft'
+import { TRACK_FORMAT, TRACK_VERSION, type EnvironmentSpec, type HuntSpec, type Piece, type PropSpot, type CoreSpot, type RoadPoint, type TrackFile } from '../track/schema'
+import type { Draft, RoadSettings } from './draft'
 
 export interface BaseWorld {
   id: string
@@ -102,10 +103,16 @@ export interface DraftParts {
   cores?: CoreSpot[]
   startAt?: number
   environment?: EnvironmentSpec
+  /** The road's banking and walls (see Draft.roadSettings); none = automatic banking, no walls. */
+  roadSettings?: RoadSettings
+  laps?: number
+  hunt?: HuntSpec
 }
 
 /** Assemble a complete, valid-shaped TrackFile from the editor's parts. */
 export function draftFile(parts: DraftParts): TrackFile {
+  // The banking, and the rest of the road's settings (its barrier walls) just as they were.
+  const { banking, ...restOfRoad } = cloneJson(parts.roadSettings ?? {})
   const file: TrackFile = {
     format: TRACK_FORMAT,
     version: TRACK_VERSION,
@@ -114,17 +121,74 @@ export function draftFile(parts: DraftParts): TrackFile {
     road: {
       points: parts.points.map((p) => ({ ...p })),
       width: parts.width ?? 14,
-      banking: { auto: true },
+      // A drawn road banks its corners by itself; a copied one keeps its track's banking.
+      banking: banking ?? { auto: true },
+      ...restOfRoad,
     },
     environment: cloneJson(parts.environment ?? DEFAULT_BASE_WORLD.environment),
   }
   if (parts.author) file.author = parts.author
   if (parts.description) file.description = parts.description
+  if (parts.laps !== undefined) file.laps = parts.laps
   if (parts.pieces?.length) file.pieces = cloneJson(parts.pieces)
   if (parts.props?.length) file.props = cloneJson(parts.props)
   if (parts.cores?.length) file.cores = cloneJson(parts.cores)
+  if (parts.hunt && parts.cores?.length) {
+    // Never more cores a round than there are spots (the game would use them all and warn).
+    const hunt = cloneJson(parts.hunt)
+    if (hunt.count !== undefined) hunt.count = Math.min(hunt.count, parts.cores.length)
+    file.hunt = hunt
+  }
   if (parts.startAt) file.start = { at: parts.startAt }
   return file
+}
+
+/**
+ * Turn any track file (built-in, drawn or imported) into a draft. Built-ins
+ * become a copy. A copy keeps everything that makes the track itself: its
+ * world exactly (see worldForCopy), its road's banking and walls, its laps
+ * and its hunt. Only the id and the name change.
+ */
+export function draftFromFile(file: TrackFile, asCopy: boolean): Draft {
+  const { points, width, ...roadSettings } = file.road
+  const d: Draft = {
+    id: asCopy ? '' : file.id,
+    name: asCopy ? `${file.name} copy` : file.name,
+    author: file.author ?? '',
+    description: file.description ?? '',
+    points: cloneJson(points),
+    width: width ?? 14,
+    baseWorld: 'custom',
+    environment: asCopy ? worldForCopy(file) : cloneJson(file.environment),
+    pieces: cloneJson(file.pieces ?? []),
+    props: cloneJson(file.props ?? []),
+    cores: cloneJson(file.cores ?? []),
+    startAt: file.start?.at ?? 0,
+  }
+  if (Object.keys(roadSettings).length) d.roadSettings = cloneJson(roadSettings)
+  if (typeof file.laps === 'number') d.laps = file.laps
+  if (file.hunt) d.hunt = cloneJson(file.hunt)
+  return d
+}
+
+/** The track file a draft makes, under the id given (the store's fileFromDraft picks a free one). */
+export function fileOfDraft(d: Draft, id: string): TrackFile {
+  return draftFile({
+    id,
+    name: d.name.trim() || 'My Track',
+    author: d.author.trim() || undefined,
+    description: d.description.trim() || undefined,
+    points: d.points,
+    width: d.width,
+    pieces: d.pieces,
+    props: d.props,
+    cores: d.cores,
+    startAt: d.startAt,
+    environment: d.environment,
+    roadSettings: d.roadSettings,
+    laps: d.laps,
+    hunt: d.hunt,
+  })
 }
 
 /**
@@ -206,7 +270,7 @@ export function starterRoad(environment?: EnvironmentSpec): RoadPoint[] {
  * the starter oval, and every piece, crash-prop pile, energy core and the
  * start line go too (per-stretch bank and width live on the road points, so
  * they go with the road). What the track IS stays: its name, maker, blurb,
- * world, time of day, edge lights and road width.
+ * world, time of day, edge lights, road width, banking, walls, laps and hunt.
  */
 export function clearedDraft(d: Draft): Draft {
   return {

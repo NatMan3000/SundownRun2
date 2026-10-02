@@ -48,7 +48,9 @@ import { buildTrack } from '../track/build'
 import { sampleClosedSpline } from '../track/spline'
 import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
 import afterglowJson from '../../tracks/afterglow.json'
-import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, draftFile, isBlankDraft, pointGroundOf, roadBound, worldForCopy } from './draftFile'
+import neonPocketJson from '../../tracks/neon-pocket.json'
+import hyperdromeJson from '../../tracks/hyperdrome.json'
+import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, draftFile, draftFromFile, fileOfDraft, isBlankDraft, pointGroundOf, roadBound, worldForCopy } from './draftFile'
 import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, roadCurve, sectionRedraw } from './road'
 import type { Piece, RoadPoint, TrackFile } from '../track/schema'
 import { checkBuiltTrack, checkVerdict, gateItems } from './checks'
@@ -889,6 +891,50 @@ export function runEditorSelfTest(): CheckResult[] {
     for (const p of afterglow.road.points) worst = Math.max(worst, Math.abs(now(p.x, p.z) - was(p.x, p.z)))
     info = `the ground under all ${afterglow.road.points.length} road points is the same to ${(worst * 1000).toFixed(1)} mm`
     return worst > 0.001 ? [`the copy's ground is ${worst.toFixed(2)} m off the original's under a road point (a copy must keep the seed)`] : []
+  })
+
+  check('A copy of each built-in track keeps everything that makes it itself (banking, walls, laps, hunt...)', () => {
+    /** The same value with every object's keys in order, so two files compare however their keys were written. */
+    const sorted = (v: unknown): unknown =>
+      Array.isArray(v)
+        ? v.map(sorted)
+        : v && typeof v === 'object'
+          ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted((v as Record<string, unknown>)[k])]))
+          : v
+    const same = (a: unknown, b: unknown) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b))
+    const bad: string[] = []
+    const kept: string[] = []
+    for (const file of [afterglow, neonPocketJson as unknown as TrackFile, hyperdromeJson as unknown as TrackFile]) {
+      // Copy and edit, then save, with nothing changed: the real path (draftFromFile, fileOfDraft).
+      const copy = fileOfDraft(draftFromFile(file, true), `${file.id}-copy`)
+      // 1. The file comes back field for field. Only the id and name change, and a world with no seed gets the original's.
+      const back = JSON.parse(JSON.stringify(copy)) as TrackFile & Record<string, unknown>
+      back.id = file.id
+      back.name = file.name
+      if (file.environment.seed === undefined) delete back.environment.seed
+      const orig = file as TrackFile & Record<string, unknown>
+      for (const k of new Set([...Object.keys(orig), ...Object.keys(back)])) {
+        if (k === 'road') {
+          const ro = orig.road as unknown as Record<string, unknown>
+          const rb = back.road as unknown as Record<string, unknown>
+          for (const r of new Set([...Object.keys(ro), ...Object.keys(rb)])) if (!same(ro[r], rb[r])) bad.push(`${file.id}: road.${r} changed (${JSON.stringify(ro[r]) ?? 'none'} -> ${JSON.stringify(rb[r]) ?? 'none'})`)
+        } else if (!same(orig[k], back[k])) bad.push(`${file.id}: ${k} changed (${JSON.stringify(orig[k])?.slice(0, 80) ?? 'none'} -> ${JSON.stringify(back[k])?.slice(0, 80) ?? 'none'})`)
+      }
+      // 2. The game reads it as the same track, world included (only the id and name differ).
+      const vo = validateTrack(file).track
+      const vc = validateTrack(copy).track
+      if (!vo || !vc) bad.push(`${file.id}: a copy did not validate`)
+      else if (!same({ ...vo, id: '', name: '' }, { ...vc, id: '', name: '' })) bad.push(`${file.id}: the game reads the copy as a different track`)
+      const r = file.road
+      kept.push(`${file.id} (bank ${r.banking?.maxDeg ?? 10} deg for ${r.banking?.designSpeedKmh ?? 120} km/h${r.banking?.adjustable ? ', bank slider' : ''}${r.barriers === 'walls' ? `, ${r.barrierHeight ?? 2.2} m walls` : ''}${file.laps ? `, ${file.laps} laps` : ''}${file.hunt ? `, hunt ${file.hunt.count}` : ''})`)
+    }
+    // 3. Clear all on a copy keeps the track's hunt, but the file never asks for more cores than it has.
+    const cleared = clearedDraft(draftFromFile(neonPocketJson as unknown as TrackFile, true))
+    const cv = validateTrack(fileOfDraft(cleared, 'neon-pocket-cleared'))
+    if (!cleared.hunt) bad.push('Clear all dropped the hunt from the draft')
+    for (const w of cv.warnings) if (w.path.startsWith('hunt')) bad.push(`a cleared copy warns: ${w.message}`)
+    info = `all of every built-in comes back (only id and name change): ${kept.join('; ')}`
+    return bad
   })
 
   check("Shaping a copy of a built-in track keeps its road height (Afterglow: evened, a Curve, an added point)", () => {

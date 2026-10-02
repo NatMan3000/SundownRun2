@@ -12,20 +12,20 @@
 //       runs the game's own track checks on it (checks.ts), so the
 //       Checks panel agrees with `bun run tracks:check`.
 //
-//  The draft becomes a real track file with draftFile() and is saved
+//  The draft becomes a real track file with fileFromDraft() and is saved
 //  with the track registry (src/track/registry.ts), exactly like a
 //  built-in track, so a test drive plays it the normal way.
 // ============================================================
 
 import { create } from 'zustand'
-import { TRACK_DEFAULTS, type CoreSpot, type EnvironmentSpec, type Piece, type PropSpot, type RoadPoint, type TrackFile, type TrackIssue } from '../track/schema'
+import { TRACK_DEFAULTS, type CoreSpot, type EnvironmentSpec, type HuntSpec, type Piece, type PropSpot, type RoadPoint, type RoadSpec, type TrackFile, type TrackIssue } from '../track/schema'
 import { getCurrentTrackFile, getTrack, setTrackFromFile } from '../track/current'
 import type { TrackGate } from '../track/gates'
 import { freeTrackId, getTrackSource, listDrawnTracks, saveDrawnTrack } from '../track/registry'
 import { validateTrack } from '../track/validate'
 import { startSession } from '../core/session'
 import { audio } from '../core/api'
-import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFile, isBlankDraft, pointGroundOf, roadBound, starterRoad, worldForCopy } from './draftFile'
+import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFromFile, fileOfDraft, isBlankDraft, pointGroundOf, roadBound, starterRoad, worldForCopy } from './draftFile'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import { checkBuiltTrack, gateItems } from './checks'
 import type { P } from './geom'
@@ -77,7 +77,21 @@ export interface Draft {
   props: PropSpot[]
   cores: CoreSpot[]
   startAt: number
+  /**
+   * The rest of the road's settings from its track file, kept exactly as they
+   * are: how its corners bank (how steep, for what speed, and a live bank
+   * slider like the Hyperdrome's) and its barrier walls. A new drawing has none:
+   * it banks automatically and has no walls.
+   */
+  roadSettings?: RoadSettings
+  /** Laps in a race, if the track says (otherwise the player's own setting). */
+  laps?: number
+  /** The energy-core hunt: how many cores each round (otherwise all of them, up to 12). */
+  hunt?: HuntSpec
 }
+
+/** Everything about a track file's road except its points and width (see Draft.roadSettings). */
+export type RoadSettings = Omit<RoadSpec, 'points' | 'width'>
 
 /** The last clean-up's extras: drawn on the map until the road changes some other way. */
 export interface CleanupNotes {
@@ -166,27 +180,8 @@ export function newDraft(baseWorldId = DEFAULT_BASE_WORLD.id): Draft {
   }
 }
 
-/**
- * Turn any track file (built-in, drawn or imported) into a draft. Built-ins
- * become a copy, in exactly the original's world (see worldForCopy).
- */
-export function draftFromFile(file: TrackFile, asCopy: boolean): Draft {
-  const environment = asCopy ? worldForCopy(file) : cloneJson(file.environment)
-  return {
-    id: asCopy ? '' : file.id,
-    name: asCopy ? `${file.name} copy` : file.name,
-    author: file.author ?? '',
-    description: file.description ?? '',
-    points: cloneJson(file.road.points),
-    width: file.road.width ?? 14,
-    baseWorld: 'custom',
-    environment,
-    pieces: cloneJson(file.pieces ?? []),
-    props: cloneJson(file.props ?? []),
-    cores: cloneJson(file.cores ?? []),
-    startAt: file.start?.at ?? 0,
-  }
-}
+/** Turn a track file into a draft (built-ins become a copy that keeps everything): see draftFile.ts. */
+export { draftFromFile }
 
 /** The id a draft previews and saves under (a new draft gets a free one from its name). */
 export function draftId(d: Draft): string {
@@ -199,20 +194,9 @@ export function draftId(d: Draft): string {
   return `${base}-${n}`
 }
 
+/** The track file this draft makes (see fileOfDraft), under its own id unless one is given. */
 export function fileFromDraft(d: Draft, id = draftId(d)): TrackFile {
-  return draftFile({
-    id,
-    name: d.name.trim() || 'My Track',
-    author: d.author.trim() || undefined,
-    description: d.description.trim() || undefined,
-    points: d.points,
-    width: d.width,
-    pieces: d.pieces,
-    props: d.props,
-    cores: d.cores,
-    startAt: d.startAt,
-    environment: d.environment,
-  })
+  return fileOfDraft(d, id)
 }
 
 function readWorking(): { draft: Draft; savedId: string | null; dirty: boolean } | null {
@@ -1195,11 +1179,11 @@ export function setSectionWidth(from: number, to: number, width: number | null):
 
 // ---------------------------------------------------------------- environment
 
-/** Use the world (ground, sky, city, music) of another track. */
+/** Use the world (ground, sky, city, music) of another track: exactly its hills too (see worldForCopy). */
 export function copyEnvironmentFrom(file: TrackFile): void {
   commit((d) => {
     d.baseWorld = `copy:${file.id}`
-    d.environment = cloneJson(file.environment)
+    d.environment = worldForCopy(file)
   })
   say(`Using the world from "${file.name}".`, 'good')
 }
