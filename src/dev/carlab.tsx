@@ -16,6 +16,7 @@
 //                         (default 50: the visible side catches the light)
 //    ?boost=0..1          fire the rocket nozzle (0 = idle)
 //    ?brake=1             tail lights at full brake
+//    ?reverse=1           reverse lights on (backing up)
 //    ?paint=<hex> ?glow=<hex>   colours without the # (default: the player's)
 //    ?dist=<m>            camera distance override
 //    ?at=<z>              aim at this point along the car (1.42 = front wheel)
@@ -40,7 +41,7 @@ import { EffectComposer, Bloom, ToneMapping } from '@react-three/postprocessing'
 import { ToneMappingMode } from 'postprocessing'
 import { GLOW, PALETTE } from '../core/palette'
 import { BODIES } from '../vehicle/bodies/catalog'
-import { buildCarModel, poseCarModel, setCarBoost, setCarBrake, WHEEL_REST_Y } from '../vehicle/carModel'
+import { buildCarModel, poseCarModel, setCarBoost, setCarBrake, setCarReverse, WHEEL_REST_Y } from '../vehicle/carModel'
 import { WHEEL } from '../vehicle/tuning'
 import { SkyDome } from '../world/SkyDome'
 import { SkyEnvironment } from '../world/skyEnv'
@@ -184,6 +185,7 @@ function Lineup() {
         if (paintRow) m.position.set(0, 0.542, ((ids.length - 1) / 2 - i) * 4.8) // nose to tail, so a side view shows every paint
         else m.position.set(ids.length > 1 ? (i - (ids.length - 1) / 2) * 3.4 : 0, 0.542, 0)
         if (params.get('brake') === '1') setCarBrake(m, 1)
+        if (params.get('reverse') === '1') setCarReverse(m, 1)
         if (params.get('clone') === '1') {
           m.traverse((o) => {
             const mesh = o as THREE.Mesh

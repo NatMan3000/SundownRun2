@@ -13,7 +13,8 @@
 //    lights  every glowing part in ONE mesh. `aLight` per vertex
 //            picks the colour in the shader (carModel.ts):
 //              0 livery strips, 1 headlights, 2 tail lights,
-//              3 rocket nozzle core
+//              3 rocket nozzle core, 4 reverse lights (white,
+//              lit only while the car backs up)
 //    plume   the rocket flames (one soft plume per nozzle, all in one
 //            mesh). Drawn only while the car boosts; the shader
 //            stretches each plume out behind its nozzle (carModel.ts)
@@ -176,7 +177,8 @@ const LIGHT_LIVERY = 0
 const LIGHT_HEAD = 1
 const LIGHT_TAIL = 2
 const LIGHT_NOZZLE = 3
-export const LIGHT_KIND = { livery: LIGHT_LIVERY, head: LIGHT_HEAD, tail: LIGHT_TAIL } as const
+const LIGHT_REVERSE = 4
+export const LIGHT_KIND = { livery: LIGHT_LIVERY, head: LIGHT_HEAD, tail: LIGHT_TAIL, reverse: LIGHT_REVERSE } as const
 export type LightKind = keyof typeof LIGHT_KIND
 
 /** Crease angles: panels meeting at less than this are smoothed together; sharper meets stay a crisp line. */

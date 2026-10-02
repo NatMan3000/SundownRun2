@@ -21,6 +21,7 @@
 //    collider  { halfExtents, offset }  the chassis box (net uses it)
 //    anchors   CarAnchors               light / underglow / wheel / bonnet-camera points (look and camera use it)
 //    bodyId
+//    reverseLight  0..1                 how lit the reverse lights are right now (look's ground glow uses it)
 //
 //  8 draw calls per car: paint, glass, trim, lights, 4 wheels, plus the
 //  rocket plume while it boosts (9). The ghost is 6: a depth-only copy of
@@ -31,7 +32,9 @@
 //            endplates) in a deep shade of their glow colour, so every
 //            car is two-tone like a team car
 //    lights  livery strips and the wheel rings in the glow colour, white
-//            headlights, pink-red tail lights
+//            headlights, pink-red tail lights, and a pair of cool white
+//            reverse lights that come on while the car backs up
+//            (setCarReverse; dark clear lenses the rest of the time)
 //    rocket  the nozzle core idles softly in the glow colour; when the
 //            car boosts (CarState.boost, or setCarBoost for a car with
 //            no registry entry) it flares, and a soft plume in the same
@@ -48,7 +51,10 @@
 //  just before the car's lights draw.
 //
 //  Dev: __dev.nozzle(0..1) forces every car's rocket on (nozzle() to
-//  let go); __game.get('carBodies') lists triangles per body.
+//  let go); __dev.reverseLights(0..1) forces every car's reverse
+//  lights (reverseLights() to let go); __game.get('carBodies') lists
+//  triangles per body; __game.get('reverseLights') shows each car's
+//  reverse and tail light levels.
 // ============================================================
 
 import * as THREE from 'three'
@@ -66,6 +72,7 @@ interface LightUniforms {
   uHead: { value: THREE.Color }
   uTail: { value: THREE.Color }
   uNozzle: { value: THREE.Color }
+  uReverse: { value: THREE.Color }
 }
 
 interface PlumeUniforms {
@@ -100,6 +107,11 @@ interface CarRig {
   boost: number
   /** The boost the rocket is showing right now (-1 = not drawn yet). */
   shownBoost: number
+  /** Reverse lights: what the owner asked for (0..1), the eased ramp toward it, what is lit (-1 = not lit yet), and when it last eased (ms, -1 = never). */
+  reverseTarget: number
+  reverseRamp: number
+  reverseShown: number
+  reverseAt: number
   /** Per wheel: how much higher the drawn hub sits than the physics hub (drawn radius - physics radius). */
   hubLift: Float64Array
   /** Per wheel: the highest the drawn hub may go (body space, before lean). */
@@ -148,9 +160,10 @@ function keepPatchOnClone<T extends THREE.Material>(mat: T): T {
 
 /**
  * One material for every glowing part of a car. `aLight` per vertex picks
- * livery (0), headlight (1), tail light (2) or rocket core (3); the colours
- * are HDR uniforms (colour x GLOW tier), so the lights bloom and the brake
- * lights and rocket can flare without touching geometry.
+ * livery (0), headlight (1), tail light (2), rocket core (3) or reverse
+ * light (4); the colours are HDR uniforms (colour x GLOW tier), so the
+ * lights bloom and the brake lights, reverse lights and rocket can change
+ * without touching geometry (and without another draw call).
  */
 function makeLightMaterial(): { mat: THREE.MeshBasicMaterial; uniforms: LightUniforms } {
   const uniforms: LightUniforms = {
@@ -158,6 +171,7 @@ function makeLightMaterial(): { mat: THREE.MeshBasicMaterial; uniforms: LightUni
     uHead: { value: new THREE.Color() },
     uTail: { value: new THREE.Color() },
     uNozzle: { value: new THREE.Color() },
+    uReverse: { value: new THREE.Color() },
   }
   const mat = new THREE.MeshBasicMaterial()
   mat.onBeforeCompile = (shader) => {
@@ -166,7 +180,7 @@ function makeLightMaterial(): { mat: THREE.MeshBasicMaterial; uniforms: LightUni
       .replace('#include <common>', '#include <common>\nattribute float aLight;\nvarying float vLight;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLight = aLight;')
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uLivery;\nuniform vec3 uHead;\nuniform vec3 uTail;\nuniform vec3 uNozzle;\nvarying float vLight;')
+      .replace('#include <common>', '#include <common>\nuniform vec3 uLivery;\nuniform vec3 uHead;\nuniform vec3 uTail;\nuniform vec3 uNozzle;\nuniform vec3 uReverse;\nvarying float vLight;')
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
         [
@@ -174,12 +188,13 @@ function makeLightMaterial(): { mat: THREE.MeshBasicMaterial; uniforms: LightUni
           'if (vLight < 0.5) lightCol = uLivery;',
           'else if (vLight < 1.5) lightCol = uHead;',
           'else if (vLight < 2.5) lightCol = uTail;',
-          'else lightCol = uNozzle;',
+          'else if (vLight < 3.5) lightCol = uNozzle;',
+          'else lightCol = uReverse;',
           'vec4 diffuseColor = vec4( lightCol, opacity );',
         ].join('\n'),
       )
   }
-  mat.customProgramCacheKey = () => 'sr2-car-lights-v3'
+  mat.customProgramCacheKey = () => 'sr2-car-lights-v4'
   return { mat: keepPatchOnClone(mat), uniforms }
 }
 
@@ -615,6 +630,55 @@ registerDev(
   'nozzle(b): force every car rocket to boost b (0..1) - visual only; nozzle() hands it back to the cars',
 )
 
+// ---------------------------------------------------------------- reverse lights
+
+/** How long the reverse lights take to come on or go off, seconds (quick, but never a hard snap). */
+const REVERSE_EASE_S = 0.1
+/**
+ * Reverse light brightness (x the cool white below). Off, they are dark
+ * clear lenses (well under T0, so they never glow). On, a cool white at the
+ * top of the T1 band: a little bloom, clearly dimmer than the headlights (T2).
+ */
+const REVERSE_GLOW = { off: 0.06, on: GLOW.T1 * 1.2 }
+/** Starlight white: a cool white from the palette, not the headlights' cyan-white. */
+const REVERSE_COLOUR = new THREE.Color(PALETTE.stars)
+
+/** __dev.reverseLights(v): force every car's reverse lights to v (-1 = off, follow the cars). */
+let reverseOverride = -1
+
+/**
+ * Ease the reverse lights toward what the car asked for (setCarReverse) and
+ * light them. Runs when the owner sets them and again just before the car's
+ * lights draw (so a model nobody drives, the garage's, still follows
+ * __dev.reverseLights). Works from the clock, so running twice a frame is free.
+ */
+function tickReverse(rig: CarRig): void {
+  const u = rig.lightUniforms
+  if (!u) return
+  const now = performance.now()
+  const dt = rig.reverseAt < 0 ? REVERSE_EASE_S : Math.max(0, (now - rig.reverseAt) / 1000)
+  rig.reverseAt = now
+  const target = reverseOverride >= 0 ? reverseOverride : rig.reverseTarget
+  const step = dt / REVERSE_EASE_S
+  const r = rig.reverseRamp
+  rig.reverseRamp = target > r ? Math.min(target, r + step) : Math.max(target, r - step)
+  const shown = THREE.MathUtils.smoothstep(rig.reverseRamp, 0, 1)
+  if (shown === rig.reverseShown) return
+  rig.reverseShown = shown
+  // fx (the soft glow on the ground behind a reversing car) reads this
+  rig.group.userData.reverseLight = shown
+  u.uReverse.value.copy(REVERSE_COLOUR).multiplyScalar(REVERSE_GLOW.off + (REVERSE_GLOW.on - REVERSE_GLOW.off) * shown)
+}
+
+registerDev(
+  'reverseLights',
+  ((v?: number) => {
+    reverseOverride = typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(1, v) : -1
+    return reverseOverride < 0 ? 'reverse lights follow each car again' : `every car's reverse lights forced to ${reverseOverride}`
+  }) as never,
+  'reverseLights(v): force every car\'s reverse lights to v (0..1) - visual only, garage included; reverseLights() hands them back to the cars',
+)
+
 // ---------------------------------------------------------------- build
 
 export interface BuildOptions {
@@ -767,6 +831,10 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     lastBrake: -1,
     boost: 0,
     shownBoost: -1,
+    reverseTarget: 0,
+    reverseRamp: 0,
+    reverseShown: -1,
+    reverseAt: -1,
     hubLift,
     hubMax,
     spinScale,
@@ -774,9 +842,16 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     spinShown: new Float64Array(4),
   }
   rigs.set(group, rig)
-  if (lightUniforms && lightMesh) lightMesh.onBeforeRender = () => tickRocket(rig)
+  if (lightUniforms && lightMesh) {
+    lightMesh.onBeforeRender = () => {
+      tickRocket(rig)
+      tickReverse(rig)
+    }
+  }
+  group.userData.reverseLight = 0
   setCarColors(group, paint, glow)
   setCarBrake(group, 0)
+  tickReverse(rig)
   return group
 }
 
@@ -810,6 +885,18 @@ export function setCarBrake(group: THREE.Group, brake: number): void {
   if (b === rig.lastBrake) return
   rig.lastBrake = b
   rig.lightUniforms.uTail.value.copy(_c.set(PALETTE.sunBottom)).multiplyScalar(GLOW.T1 + (GLOW.T2 * 1.4 - GLOW.T1) * b)
+}
+
+/**
+ * Reverse lights: 1 while the car is backing up, 0 otherwise (call it every
+ * frame, like setCarBrake). They ease on and off over REVERSE_EASE_S, so a
+ * quick change never snaps. No allocation.
+ */
+export function setCarReverse(group: THREE.Group, amount: number): void {
+  const rig = rigs.get(group)
+  if (!rig || !rig.lightUniforms) return
+  rig.reverseTarget = Number.isFinite(amount) ? THREE.MathUtils.clamp(amount, 0, 1) : 0
+  tickReverse(rig)
 }
 
 /** Rocket nozzle: 0 idle .. 1 full boost, for a model with no car in the registry (garage, car lab). */
@@ -921,3 +1008,36 @@ export function carBodyStats(): Record<string, BodyStats> {
 }
 
 registerInspector('carBodies', carBodyStats)
+
+/** A car's rig: its own model, or (multiplayer) the model hanging from the group it registered. */
+function rigOf(obj: THREE.Object3D | null | undefined): CarRig | undefined {
+  if (!obj) return undefined
+  const own = rigs.get(obj as THREE.Group)
+  if (own) return own
+  for (const child of obj.children) {
+    const r = rigs.get(child as THREE.Group)
+    if (r) return r
+  }
+  return undefined
+}
+
+/**
+ * __game.get('reverseLights'): per car, the reverse lights asked for and lit
+ * (0..1), the reverse uniform's brightest channel, and the tail lights'
+ * (so a check can see braking is unchanged while the reverse lights work).
+ */
+registerInspector('reverseLights', () =>
+  cars.map((c) => {
+    const rig = rigOf(c.object)
+    const u = rig?.lightUniforms
+    const peak = (col: THREE.Color | undefined) => (col ? Math.round(Math.max(col.r, col.g, col.b) * 1000) / 1000 : null)
+    return {
+      id: c.id,
+      kind: c.kind,
+      asked: rig ? rig.reverseTarget : null,
+      lit: rig ? Math.round(Math.max(0, rig.reverseShown) * 1000) / 1000 : null,
+      reverseUniform: peak(u?.uReverse.value),
+      tailUniform: peak(u?.uTail.value),
+    }
+  }),
+)

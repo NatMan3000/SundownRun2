@@ -9,6 +9,11 @@
 //      (same mesh: no extra draw)
 //    - underglow: a glowing strip along each side of the belly, plus
 //      a soft pool of coloured light on the road under the car
+//    - reversing: a soft pool of white light on the road behind the
+//      car while its reverse lights are on (the model says how lit
+//      they are in userData.reverseLight), so you can see where you
+//      are backing at night. Same mesh as the underglow pools: no
+//      extra draw
 //    - headlight beams at night: this hands each lamp's position and
 //      aim to fx/beams.ts, and the post stack draws the beams as soft
 //      volumes of light (post/HeadlightBeamsEffect.ts). The player's
@@ -202,6 +207,16 @@ const _tag = new THREE.Color(PALETTE.tagIt)
 const _fwd = new THREE.Vector3()
 const _left = new THREE.Vector3()
 
+/** The reverse lights' cool white (the same palette white as the lamps on the car). */
+const _reverse = new THREE.Color(PALETTE.stars)
+/**
+ * The glow behind a reversing car: how far its middle sits behind the tail
+ * lights, its half length and how much wider than the belly it spreads
+ * (metres), and how bright it is at sundown and at full night (x GLOW.T0,
+ * so it lights the road without blooming).
+ */
+const REVERSE_POOL = { back: 0.7, halfLength: 1.8, widen: 0.15, dusk: 0.25, night: 0.6 }
+
 /**
  * The Garage trail preview: how fast the parked car "drives" (sets the trail's
  * length), its strength and ripple, and a gentle bend toward the car's left,
@@ -226,7 +241,8 @@ export function CarLights() {
 
     const poolGeo = new THREE.PlaneGeometry(2, 2)
     poolGeo.rotateX(-Math.PI / 2)
-    const pools = instanced(poolGeo, poolVertex, poolFragment, MAX_FX_CARS, true, 'fx-underglow-pools')
+    // two per car: the underglow pool, and the white one behind it while it reverses
+    const pools = instanced(poolGeo, poolVertex, poolFragment, MAX_FX_CARS * 2, true, 'fx-underglow-pools')
 
     const auraGeo = new THREE.SphereGeometry(1, 20, 14)
     const auras = instanced(auraGeo, auraVertex, auraFragment, MAX_FX_CARS, true, 'fx-tag-aura')
@@ -360,6 +376,23 @@ export function CarLights() {
         fx.pools.mesh.setColorAt(pools, f.glow)
         fx.pools.glow[pools] = GLOW.T0 * (0.6 + 0.5 * environment.night) * f.pool
         pools++
+
+        // ---- reversing: soft white light on the road behind the car
+        const rev = car.object ? (car.object.userData.reverseLight as number | undefined) : undefined
+        if (rev !== undefined && Number.isFinite(rev) && rev > 0.01 && tl.length > 0) {
+          let tailZ = 0
+          for (let k = 0; k < tl.length; k++) tailZ += tl[k].z
+          tailZ /= tl.length
+          _v.set(0, groundY + 0.05, tailZ - REVERSE_POOL.back)
+          anchorToWorld(car, _v, _p)
+          _s.set(ug.halfWidth + REVERSE_POOL.widen, 1, REVERSE_POOL.halfLength)
+          _m.compose(_p, car.quaternion, _s)
+          fx.pools.mesh.setMatrixAt(pools, _m)
+          fx.pools.mesh.setColorAt(pools, _reverse)
+          const night = Number.isFinite(environment.night) ? environment.night : 0
+          fx.pools.glow[pools] = GLOW.T0 * (REVERSE_POOL.dusk + (REVERSE_POOL.night - REVERSE_POOL.dusk) * night) * rev * f.pool
+          pools++
+        }
       }
 
       // ---- headlight beams at night: hand each lamp to the post stack
