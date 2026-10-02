@@ -20,7 +20,7 @@ export const CONFIG = {
   paint: '#1b1f3b', //             body paint
   glow: '#19e3ff', //              underglow + light strips
   trail: '#19e3ff', //             the light trail you leave behind
-  trailSeconds: 0.9, //            how long your light trail lasts. 0.3 = a short flick ... 1.5 = a long comet
+  trailSeconds: 0.45, //           how long your light trail lasts. 0.3 = a short flick ... 1.5 = a long comet
 
   // ---------- HANDLING ----------
   grip: 1.0, //        0.7 = slippery drift machine ... 1.4 = glued to the road
