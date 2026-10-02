@@ -6,7 +6,8 @@
 //  (only on a walled track whose stunt park sits in the infield:
 //  play.parkHop), the current track's live sliders
 //  right here (the Hyperdrome's bank angle, so you can tilt the
-//  banking and watch the road change), Road Editor, Report a
+//  banking and watch the road change), the music (Next song, Save
+//  song, All songs / Favourites: SongRows.tsx), Road Editor, Report a
 //  problem (screens/Report.tsx), Quit.
 //
 //  Single player: the world is frozen behind this. Multiplayer:
@@ -24,6 +25,7 @@ import { openScreen } from '../uiStore'
 import { quitToTitle, restartSession } from '../flow'
 import { TrackParamRows } from '../TrackParamRows'
 import { SoundHint } from '../SoundHint'
+import { SongRows } from '../SongRows'
 
 /**
  * The Map button opens the editor's top-down world map over the paused game.
@@ -73,6 +75,7 @@ export function PauseScreen() {
             <div className="pause-params">
               <TrackParamRows idPrefix="pause-track" />
             </div>
+            <SongRows />
             <MenuButton id="editor" label="Road Editor" help="Draw your own track. This run ends." onAccept={openEditor} />
             <MenuButton id="report" label="Report a problem" help="Something broken, or got an idea? Send it to the game's GitHub page. Your car stays right here." onAccept={() => openScreen('report')} />
             <MenuButton id="quit" label="Quit to title" help="Leave this run and go back to the title screen." onAccept={quitToTitle} acceptSound="back" />

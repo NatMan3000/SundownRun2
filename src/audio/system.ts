@@ -9,7 +9,11 @@
 //   - every frame copies telemetry into the engine, spots landings,
 //     works out the music's intensity, and moves the mixer faders
 //     (volumes, pause, title screen);
-//   - runs the music's lookahead timer (music/index.ts);
+//   - runs the music's lookahead timer (music/index.ts), and picks
+//     its songs through the song book (music/songs.ts): Next song
+//     (N / pad B, or the pause menu), favourites, song names;
+//   - lets the band answer big moments (a landing, a best lap, a
+//     race win) through the effects' MusicAnswers hook;
 //   - turns game events into sound effects (rewind's whir included:
 //     rewind.start / rewind.end, with the music muffled while held);
 //   - fades out and parks the context when the tab is hidden;
@@ -26,6 +30,8 @@
 
 import type { AnyGameEvent } from '../core/events'
 import { subscribe } from '../core/events'
+import { controlSignals } from '../core/controls'
+import type { SongInfo, SongList } from '../core/api'
 import { environment, rewind, telemetry } from '../core/telemetry'
 import { getGame } from '../core/store'
 import { getSettings } from '../core/settings'
@@ -48,6 +54,9 @@ import { MusicSystem, SECTIONS, TICK_MS } from './music'
 import type { Section } from './music'
 import { MOODS } from './music/score'
 import type { MoodId } from './music/score'
+import { SongBook } from './music/songs'
+import { MUSIC_STYLES } from './music/style'
+import type { MusicStyle } from './music/style'
 import { Intensity } from './intensity'
 import { getTrack } from '../track/current'
 
@@ -55,6 +64,8 @@ import { getTrack } from '../track/current'
 const ACTIVATION_POLL_MS = 250
 /** Shortest jump that makes a landing thump (seconds in the air). */
 const LANDING_MIN_AIR_S = 0.25
+/** Below this music volume the band is too quiet to carry a fanfare, so the bell one plays instead. */
+const ANSWER_MIN_MUSIC_VOLUME = 0.2
 
 interface Graph {
   ctx: AudioContext
@@ -124,6 +135,10 @@ export class AudioRig {
 
   // music
   private readonly intensity = new Intensity()
+  /** Which song plays, the favourites, and the names. */
+  private readonly songs = new SongBook()
+  /** The last controlSignals.nextSong seen (N / pad B while driving). */
+  private seenNextSong = controlSignals.nextSong
   private musicTimer: ReturnType<typeof setInterval> | null = null
   private lastFrameT = -1
   private trackVersion = -1
@@ -229,10 +244,15 @@ export class AudioRig {
     const effects = new Effects(fxKit, uiKit, (depth, holdS) => duck(mix, depth, holdS, ctx.currentTime))
     let music: MusicSystem | null = null
     if (!this.musicMuted) {
-      music = new MusicSystem(ctx, mix.music, noise)
+      const m = new MusicSystem(ctx, mix.music, noise)
+      music = m
       const tm = trackMusic()
-      music.newSession(tm.mood, tm.bpm, sessionSeed(getGame().trackId))
+      this.startSong(m, tm.mood, tm.bpm, sessionSeed(getGame().trackId))
       this.trackVersion = getGame().trackVersion
+      effects.answers = {
+        landing: (size) => this.bandCanAnswer() && m.answerLanding(ctx.currentTime, size),
+        fanfare: (size) => this.bandCanAnswer() && m.answerFanfare(ctx.currentTime, size),
+      }
     }
     return { ctx, mix, engine, effects, fxKit, uiKit, music }
   }
@@ -307,14 +327,20 @@ export class AudioRig {
       sc.finalLap = this.intensity.finalLap
       sc.night = environment.night
       sc.intensity = level
-      // Browsing tracks on the title screen re-keys the title music to that track's mood.
+      // Browsing tracks on the title screen re-keys the title music to that track's mood
+      // (unless favourites are playing: then the favourite carries on).
       if (game.trackVersion !== this.trackVersion) {
         this.trackVersion = game.trackVersion
-        if (game.phase === 'title') {
+        if (game.phase === 'title' && !this.songs.playingFavourites) {
           const tm = trackMusic()
-          music.newSession(tm.mood, tm.bpm, sessionSeed(game.trackId))
+          this.startSong(music, tm.mood, tm.bpm, sessionSeed(game.trackId))
         }
       }
+    }
+    // N / pad B while driving: skip to another song.
+    if (controlSignals.nextSong !== this.seenNextSong) {
+      this.seenNextSong = controlSignals.nextSong
+      this.nextSong()
     }
 
     updateMix(g.mix, this.mixTargets(false), t)
@@ -398,7 +424,7 @@ export class AudioRig {
     if (!g || g.ctx.state !== 'running' || this.hidden) return
     if (e.type === 'session.start' && g.music) {
       const tm = trackMusic()
-      g.music.newSession(tm.mood, tm.bpm, sessionSeed(e.trackId))
+      this.startSong(g.music, tm.mood, tm.bpm, sessionSeed(e.trackId))
     }
     g.effects.handleEvent(e)
   }
@@ -409,6 +435,49 @@ export class AudioRig {
     const g = this.g
     if (!g || this.hidden) return
     g.effects.ui(kind)
+  }
+
+  // ---------------------------------------------------------------- songs
+
+  /** Pick a song (a fresh seed, or the next favourite) and start it at the next bar. */
+  private startSong(music: MusicSystem, mood: MoodId, bpm: number | undefined, freshSeed: number, fresh = false): void {
+    const s = this.songs.pick(mood, bpm, freshSeed, fresh)
+    music.newSession(s.mood, s.bpm, s.seed)
+  }
+
+  /** May the band play a fanfare or a landing stab right now? Only if it can be heard. */
+  private bandCanAnswer(): boolean {
+    if (this.musicMuted || this.hidden || rewind.active) return false
+    return getSettings().musicVolume >= ANSWER_MIN_MUSIC_VOLUME
+  }
+
+  /** The song playing (or starting at the next bar), or null while there is no music. */
+  song = (): SongInfo | null => {
+    return this.g?.music ? this.songs.info() : null
+  }
+
+  /** Skip to another song: same mood (a fresh seed), or the next favourite. Starts at the next bar. */
+  nextSong = (): void => {
+    const music = this.g?.music
+    if (!music) return
+    const tm = trackMusic()
+    this.startSong(music, tm.mood, tm.bpm, sessionSeed(getGame().trackId))
+  }
+
+  /** Save the song playing as a favourite, or take it out. Returns true if it is saved now. */
+  toggleFavourite = (): boolean => {
+    if (!this.g?.music) return false
+    return this.songs.toggleFavourite()
+  }
+
+  songList = (): { list: SongList; favourites: number } => {
+    return { list: this.songs.list, favourites: this.songs.favourites.length }
+  }
+
+  /** All songs or Favourites. Choosing Favourites while a non-favourite plays starts the first favourite. */
+  setSongList = (list: SongList): void => {
+    this.songs.setList(list)
+    if (list === 'favourites' && this.songs.playingFavourites && !this.songs.isFavourite(this.songs.song)) this.nextSong()
   }
 
   // ---------------------------------------------------------------- dev
@@ -462,8 +531,30 @@ export class AudioRig {
     const music = this.g?.music
     if (!music) return this.musicMuted ? 'music is muted (?nomusic=1)' : 'sound not started'
     if (!(mood in MOODS)) return `unknown mood "${mood}" (${Object.keys(MOODS).join(' | ')})`
-    music.newSession(mood as MoodId, undefined, sessionSeed(mood))
+    this.startSong(music, mood as MoodId, undefined, sessionSeed(mood), true)
     return `mood ${mood} from the next bar`
+  }
+
+  /** Dev: lift the song a key at the next phrase line (the final-lap key change). */
+  liftKey(): string {
+    const music = this.g?.music
+    if (!music) return this.musicMuted ? 'music is muted (?nomusic=1)' : 'sound not started'
+    music.forceLift()
+    return 'key lift at the next phrase line'
+  }
+
+  /** Dev: which band plays the drive, from the next bar ('auto' = back to config.ts musicStyle; no arg = show it). */
+  setMusicStyle(style?: string): string {
+    const music = this.g?.music
+    if (!music) return this.musicMuted ? 'music is muted (?nomusic=1)' : 'sound not started'
+    if (style === undefined) return `${music.readout.style} (the band playing now: ${music.readout.band})`
+    if (style === 'auto') {
+      music.setStyle(null)
+      return `back to config.ts musicStyle (${music.readout.style}) from the next bar`
+    }
+    if (!(MUSIC_STYLES as readonly string[]).includes(style)) return `unknown style "${style}" (${MUSIC_STYLES.join(' | ')} | auto)`
+    music.setStyle(style as MusicStyle)
+    return `${style} from the next bar`
   }
 
   /** Dev: hold a music section ('auto' = let the arranger choose). */
@@ -497,6 +588,8 @@ export class AudioRig {
       music: g?.music
         ? {
             ...g.music.readout,
+            song: this.songs.info(),
+            songList: this.songList(),
             intensity: round3(this.intensity.value),
             intensityTarget: round3(this.intensity.target),
             closeRacing: round3(this.intensity.closeRacing),

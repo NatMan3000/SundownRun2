@@ -151,6 +151,18 @@ export const MOODS: Record<MoodId, Mood> = {
 /** The calm title-screen tempo (any mood). */
 export const TITLE_BPM = 84
 
+/**
+ * A song's key from its seed: the scale first, then the root. These are
+ * the first two numbers a session's seed gives (music/index.ts rolls them
+ * in exactly this order), so songs.ts can say a song's key without
+ * building the band.
+ */
+export function rollKey(m: Mood, rnd: () => number): { scale: ScaleName; root: number } {
+  const scale = m.scales[Math.floor(rnd() * m.scales.length)]
+  const root = m.roots[Math.floor(rnd() * m.roots.length)]
+  return { scale, root }
+}
+
 /** Four-bar chord progressions (scale degrees per bar), by scale. */
 export const PROGRESSIONS: Record<ScaleName, number[][]> = {
   aeolian: [
