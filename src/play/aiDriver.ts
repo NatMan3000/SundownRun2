@@ -31,16 +31,26 @@
 //     10 percent). Enough to keep races close, never enough to feel
 //     like the game is cheating.
 //
-//  5. RECOVERY - stuck against something: reverse out and try again.
+//  5. JUMPS - in the air a car can turn its nose but not its path, so
+//     a long jump lands wherever the take-off pointed. Before a kicker
+//     the brain works out where the car will come down (from its speed
+//     and the ramp's shape) and lines the car's direction of travel up
+//     on that spot, to about a degree, before it leaves the lip.
+//
+//  6. RECOVERY - stuck against something: reverse out and try again.
 //     Still stuck after about 4 seconds, or lying on its roof: reset
-//     to the road, exactly like you pressing R.
+//     to the road, exactly like you pressing R. Too slow just before a
+//     loop: back up for a fresh run-up. It only ever reverses with the
+//     road behind it clear of other cars.
 // ============================================================
 
 import * as THREE from 'three'
 import type { Driver } from '../core/api'
 import type { CarState } from '../core/telemetry'
+import { cars } from '../core/telemetry'
 import { getGame } from '../core/store'
 import { getSettings } from '../core/settings'
+import { frameStats } from '../core/perf'
 import { getTrack } from '../track/current'
 import { SURFACE_CODE } from '../track/types'
 import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
@@ -63,21 +73,81 @@ const REJOIN_RATIO = 5
 /** Trail braking: above this much lock the brake is eased, down to (1 - TRAIL_EASE) at full lock. */
 const TRAIL_FROM = 0.35
 const TRAIL_EASE = 0.8
-/** Ramps: line up on the ramp's lane from this far out; at the end, aim this far past the ramp. */
-const RAMP_AIM_M = 80
-const RAMP_LAND_M = 50
-/** Rough flight time off a kicker, s: the landing aim sits this many seconds of speed past the ramp. */
-const RAMP_FLIGHT_S = 2.6
-/** In the last this-many metres before a ramp, start aiming at the landing. */
-const RAMP_FINAL_M = 15
+/** Ramps: line up for the jump from this far before the ramp's toe, metres. */
+const RAMP_AIM_M = 130
+/** The kicker's face costs a little speed: the car leaves the lip at about this share of its run-in speed (traces on vehicle5's landing catch: 173 -> 168 km/h). */
+const RAMP_KEEP = 0.97
+/** From this far before the ramp's toe until the lip: no brake, and the steering capped (the face jolts the car), metres. */
+const RAMP_STEADY_M = 10
+const RAMP_STEADY_STEER = 0.5
+/**
+ * The last this-many metres before the toe: steer the car's direction of travel
+ * (its velocity, which is what the jump follows) straight at the landing point,
+ * correcting over RAMP_HEADING_D metres. Needs to be right to about a degree.
+ */
+const RAMP_HEADING_M = 50
+const RAMP_HEADING_D = 15
+const RAMP_HEADING_STEER = 0.4
+/** Steer for the landing only while the car will cross the lip at least this far inside the ramp's edges (m); else get onto the ramp first. */
+const RAMP_EDGE_IN = 1.2
+/** In the air: hold the nose up this much more than the landing road (radians), and full throttle holds about this much (the car's own levelling wins beyond it). */
+const AIR_NOSE_UP = 0.03
+const AIR_PITCH_FULL = 0.1
+/** Touching down after a real jump (this long in the air, s): keep the steering gentle for a moment while the suspension takes the landing. */
+const LAND_AIR_S = 0.6
+const LAND_SETTLE_S = 0.2
+const LAND_SETTLE_STEER = 0.5
+/** A jump that meets the road steeper than this (radians between the fall and the road, ~22 deg) can bounce the car back up: take off slower. Afterglow kicker 1 (downhill into a dip) meets it at ~24 deg from 160 km/h; the others ~20. */
+const LAND_IMPACT_MAX = 0.38
+/** Where a jump comes down: aim this far inside the road edge (on top of EDGE_MARGIN), metres. */
+const LAND_MARGIN = 1
+/** ...and only this share of the way from the middle of the road out to the racing line: the most room either side. */
+const LAND_LINE_SHARE = 1
 /** Clearance from a boost pad's edge for the car to miss it, metres. */
 const PAD_CLEAR = 1.6
+/** Half a car's width (the pad fires on the car's centre within 0.6 m of its edge), metres. */
+const PAD_HALF_CAR = 0.3
+/** Which side to pass a pad on: wherever the racing line is, on average, from this far before the pad to its end, metres. */
+const PAD_LINE_BEFORE = 40
+/** Stepping round a pad starts this many metres before it, plus this many per metre of sideways move. */
+const DODGE_LEAD_M = 15
+const DODGE_LEAD_PER_M = 6
+/** Sideways acceleration the brain will use to step round a pad, m/s^2 (sets how late it can still dodge). */
+const DODGE_ALAT = 5
+/** A pad we can't avoid: plan to brake away this much extra speed after it (the 7 m/s kick plus the push that follows), m/s. */
+const PAD_KICK_PLAN = 12
 /** The last stretch before a loop is driven dead centre, metres. */
 const LOOP_CENTRE_M = 45
-/** Loops: the slowest entry worth trying, the distance inside which a too-slow car backs up, and for how long. */
+/** Loops: the slowest entry worth trying, and the distance inside which a too-slow car backs up for a fresh run-up. */
 const LOOP_MIN_KMH = 110
 const LOOP_ABORT_M = 60
-const LOOP_RUNUP_S = 4
+/**
+ * Backing up for a run-up: back to this far before the loop (room to reach
+ * LOOP_MIN_KMH from a standstill), for at most RUNUP_MAX_S, no faster than
+ * RUNUP_REV_MS backwards (m/s).
+ */
+const RUNUP_FROM_M = 140
+const RUNUP_MAX_S = 14
+const RUNUP_REV_MS = 5
+/** Backing up but standing still for this long (reverse asked for, the car not moving): something is in the way, give up on it. */
+const RUNUP_STILL_S = 1.5
+/** At most this many back-ups per loop approach; after that, drive on and take the loop as it comes. */
+const RUNUP_TRIES = 2
+/**
+ * Backing up is only safe with nobody behind. Never reverse with another car
+ * closer than REAR_CLEAR_M behind us (bumper to bumper) in our path, or one
+ * closing on us fast enough to get there within REAR_TTC_S seconds.
+ */
+const REAR_CLEAR_M = 12
+/** A car this close to our line sideways (centre to centre, m) is "in our path": a car's width plus room. */
+const REAR_LANE_M = 3.2
+const REAR_TTC_S = 3
+/** A car's length (m), for bumper-to-bumper gaps measured from centres. */
+const CAR_LEN = 4.2
+/** Wedged and backing out: the smaller gap behind that still lets us reverse, m. */
+const STUCK_REAR_M = 3
+/** Lining up for a loop (no passing): stop at least this far behind a slow car ahead, m. */
+const FOLLOW_GAP_M = 6
 /** Final approach to a loop, metres: one steady lane, then centre. */
 const LOOP_LINEUP_M = 260
 /** No overtaking when the road ahead bends tighter than this (1/m): passing is for straights. */
@@ -150,6 +220,7 @@ const _fwd = new THREE.Vector3()
 const _up = new THREE.Vector3()
 const _right = new THREE.Vector3()
 const _d = new THREE.Vector3()
+const _o = new THREE.Vector3()
 const _frame: TrackFrame = {
   s: 0,
   position: new THREE.Vector3(),
@@ -211,8 +282,70 @@ function planRunInLane(track: TrackRuntime, s: number, toLoop: number, lim: numb
   return best
 }
 
+/**
+ * Every time a brain wanted to back up, and what happened (tuning and race-safety
+ * proof, read with __dev.aiReverse()). Rare, so a plain array is fine.
+ *   backed   - the road behind was clear, so it reversed
+ *   blocked  - a car was behind, so it drove on instead
+ *   stopped  - a car came up behind mid-reverse, so it stopped reversing
+ *   contact  - it touched a car behind it while reversing (should never happen)
+ */
+export const reverseLog = {
+  rows: [] as { id: string; s: number; kmh: number; kind: 'loop' | 'stuck'; what: 'backed' | 'blocked' | 'stopped' | 'contact'; other: string }[],
+  contacts: 0,
+}
+function logReverse(id: string, s: number, kmh: number, kind: 'loop' | 'stuck', what: 'backed' | 'blocked' | 'stopped' | 'contact', other = ''): void {
+  reverseLog.rows.push({ id, s: Math.round(s), kmh: Math.round(kmh), kind, what, other })
+  if (reverseLog.rows.length > 200) reverseLog.rows.shift()
+  if (what === 'contact') reverseLog.contacts++
+}
+
 /** Filled by rampAhead: the ramp we're approaching or on. */
-const rampInfo = { s1: 0, offset: 0, toStart: 0 }
+const rampInfo = { s0: 0, s1: 0, offset: 0, toStart: 0, height: 2.4, length: 12, width: 6 }
+/** The jump plan (planRampLine): the landing point, and the lane to hold before the final run-in. */
+const _rampL = new THREE.Vector3()
+const _rampT = new THREE.Vector3()
+const _rampDir = new THREE.Vector3()
+const rampPlan = { lanePre: 0, sL: 0, vTakeMax: Infinity }
+const _frame2: TrackFrame = {
+  s: 0,
+  position: new THREE.Vector3(),
+  tangent: new THREE.Vector3(),
+  up: new THREE.Vector3(),
+  right: new THREE.Vector3(),
+  halfWidth: 7,
+  bank: 0,
+  curvature: 0,
+  surface: 'road',
+}
+
+/**
+ * Where a car leaving a kicker's lip at speed v (m/s) comes down, metres past
+ * the lip. The face steepens toward the lip (height grows as (x / length)^1.6,
+ * src/track/ramps.ts), so it launches at atan(1.6 x height / length), about 18
+ * degrees; then a plain throw (the sim has no air drag) against the road's own
+ * height below. Checked against traces off Afterglow's second kicker: 160 km/h
+ * lands 131 m out (measured 129-134), 145 km/h 109 m (measured 107-109).
+ */
+function flightDistance(track: TrackRuntime, s1: number, height: number, length: number, v: number): number {
+  // the lip's angle is measured from the road, so a kicker on a downhill launches flatter
+  const theta = Math.atan((1.6 * height) / Math.max(1, length)) + Math.asin(clamp(sampleAt(track, track.samples.ty, s1), -1, 1))
+  const vh = v * Math.cos(theta)
+  const vz = v * Math.sin(theta)
+  const y0 = sampleAt(track, track.samples.py, s1) + height
+  for (let t = 0.2; t < 6; t += 0.05) {
+    const d = vh * t
+    if (y0 + vz * t - 0.5 * GRAVITY * t * t <= sampleAt(track, track.samples.py, s1 + d)) {
+      // how steeply the car meets the road: its fall angle plus the road's climb there
+      flight.impact = Math.atan2(GRAVITY * t - vz, vh) + Math.asin(clamp(sampleAt(track, track.samples.ty, s1 + d), -1, 1))
+      return d
+    }
+  }
+  flight.impact = 0
+  return vh * 6
+}
+/** Filled by flightDistance: the angle (radians) the car meets the road at. */
+const flight = { impact: 0 }
 
 /** If a kicker ramp starts within RAMP_AIM_M ahead (or we're on one), its end s (details in rampInfo); else -1. */
 function rampAhead(track: TrackRuntime, s: number): number {
@@ -223,8 +356,13 @@ function rampAhead(track: TrackRuntime, s: number): number {
     const toStart = track.deltaS(s, p.s0)
     const toEnd = track.deltaS(s, p.s1)
     if ((toStart >= 0 && toStart <= RAMP_AIM_M) || (toStart < 0 && toEnd >= 0)) {
+      rampInfo.s0 = p.s0
       rampInfo.s1 = p.s1
-      rampInfo.offset = (p.source as { offset?: number }).offset ?? 0
+      const src = p.source as { offset?: number; height?: number; length?: number; width?: number }
+      rampInfo.offset = src.offset ?? 0
+      rampInfo.width = src.width ?? 6
+      rampInfo.height = src.height ?? 2.4
+      rampInfo.length = src.length ?? 12
       rampInfo.toStart = toStart
       return p.s1
     }
@@ -300,8 +438,22 @@ export class AiDriver implements Driver {
   private phase: number
   private passOffset = 0
   private dodgingPad = false
+  /** The boost pad (its s0) we've picked a side for, and the side. */
+  private dodgeFor = -1
+  private dodgeLeft = true
+  /** Metres ahead of an unwanted pad we'll cross anyway (-1 = none): the speed plan brakes for its kick first. */
+  private padKickAhead = -1
   private prevLaneErr = 0
   private runUpT = 0
+  /** How long the current back-up has been standing still, and how many back-ups this approach. */
+  private runUpStillT = 0
+  private runUpTries = 0
+  /** Test hook: stop dead just before the next loop (set by __dev.aiStall). */
+  stallAtNextLoop = false
+  /** The loop (its start s) we already gave up backing up for: no second try on this approach. */
+  private runUpBanFor = -1
+  /** Cars we have already logged touching while reversing (this reverse only). */
+  private touched = ''
   private lineupFor = -1
   private lineupLane = 0
   private sideShove = 0
@@ -360,8 +512,10 @@ export class AiDriver implements Driver {
     const prevS = this.s
     this.s = this.hit.s
 
-    // Countdown / no race: hold still (the car is frozen anyway).
-    if (this.opts.raceGated !== false && g.raceState !== 'running' && g.raceState !== 'finished') {
+    // Countdown: hold still, every brain (the demo's too). The car is frozen, and a
+    // brain driving against the freeze thinks it's stuck and starts backing up at GO.
+    // No race running: race-gated brains (the Ai racers) hold still as well.
+    if (g.raceState === 'countdown' || (this.opts.raceGated !== false && g.raceState !== 'running' && g.raceState !== 'finished')) {
       this.mode = 'grid'
       return this.idle()
     }
@@ -407,17 +561,19 @@ export class AiDriver implements Driver {
     // across the road and overshooting the other edge.
     const offLane = Math.abs(this.hit.lateral - this.laneNow)
     if (offLane * REJOIN_RATIO > look) look = Math.min(LOOK_MAX * 1.5, offLane * REJOIN_RATIO)
-    let aimS = this.s + look
-    // Kicker ramps: in the air the car flies straight while the road keeps
-    // turning, so it lands off the side. From RAMP_AIM_M before a ramp until
-    // we're off it, aim at the landing zone instead: take off already pointing
-    // where the road will be.
-    // Run-in: centred on the ramp's own lane, square to the road. Last few metres
-    // and on the ramp: aim at the landing zone (a small heading nudge only, we're
-    // already centred), so the car flies toward where the road will be.
+    const aimS = this.s + look
+    // Kicker ramps: in the air the car can turn its nose but not its path, so a
+    // long jump comes down wherever the take-off pointed (over 130 m, one degree
+    // off is two metres off). From RAMP_AIM_M out, work out where the car will come
+    // down and line up for it (planRampLine, then rampHeadingSteer for the last bit).
     const ramp = rampAhead(track, this.s)
-    const rampFinal = ramp >= 0 && rampInfo.toStart <= RAMP_FINAL_M
-    if (rampFinal) aimS = rampInfo.s1 + Math.max(RAMP_LAND_M, speed * RAMP_FLIGHT_S)
+    if (ramp >= 0) {
+      this.planRampLine(track, speed, pace)
+      this.airLandS = rampPlan.sL
+    } else {
+      this.rampVTake = 0
+      if (!car.airborne && track.deltaS(this.airLandS, this.s) > 0) this.airLandS = -1
+    }
     track.frameAt(aimS, _frame)
     const lineOff = sampleAt(track, track.racingLine.offset, aimS)
     const wander = Math.sin(this.time * 0.37 + this.phase) * this.personality.wander * 0.9
@@ -432,21 +588,78 @@ export class AiDriver implements Driver {
     // Never crawl into a loop: below LOOP_MIN_KMH the car can't stay on, it falls
     // off at the top. If we're close and that slow (after a bump or a reset), back
     // up for a fresh run-up instead.
-    if (lining && toLoop < LOOP_ABORT_M && v * 3.6 < LOOP_MIN_KMH * 0.75 && this.runUpT <= 0) this.runUpT = LOOP_RUNUP_S
+    // Backing up is only for an empty road behind: with a car there (racing up to
+    // the loop, or stopped behind us), drive on and take the loop as it comes.
+    // Once we've given up on backing up for this loop, don't try again until past it.
+    const loopS0 = lining ? track.wrapS(this.s + toLoop) : -1
+    // A fresh approach (further out than any back-up ends) forgets the last one's tries.
+    // Not "no loop ahead": a car sitting in a loop's mouth flickers in and out of that.
+    if (lining && toLoop > RUNUP_FROM_M + 30) {
+      this.runUpBanFor = -1
+      this.runUpTries = 0
+    }
+    // Test hook (__dev.aiStall): stop dead just before the next loop, as if knocked
+    // there, so backing up for a fresh run-up can be proven in traffic.
+    if (this.stallAtNextLoop && lining && toLoop < 45) {
+      if (Math.abs(v) < 0.5) this.stallAtNextLoop = false
+      else {
+        this.throttle = 0
+        this.brake = v > 0 ? 1 : 0
+        this.steer = 0
+        this.handbrake = v < 4
+        return
+      }
+    }
+    // (only from rolling forward or stopped: still rolling back means a run-up just ended)
+    if (lining && toLoop < LOOP_ABORT_M && v > -1 && v * 3.6 < LOOP_MIN_KMH * 0.75 && this.runUpT <= 0 && this.runUpBanFor !== loopS0) {
+      if (this.rearClear(car, REAR_CLEAR_M, REAR_TTC_S)) {
+        this.runUpT = RUNUP_MAX_S
+        this.runUpStillT = 0
+        if (++this.runUpTries >= RUNUP_TRIES) this.runUpBanFor = loopS0
+        this.touched = ''
+        logReverse(this.id, this.s, v * 3.6, 'loop', 'backed')
+      } else {
+        this.runUpBanFor = loopS0
+        logReverse(this.id, this.s, v * 3.6, 'loop', 'blocked', this.rearWho)
+      }
+    }
+    if (this.runUpT > 0 && !this.rearClear(car, REAR_CLEAR_M, REAR_TTC_S)) {
+      // someone came up behind us while we were backing: stop and drive on
+      this.runUpT = 0
+      this.runUpBanFor = loopS0
+      logReverse(this.id, this.s, v * 3.6, 'loop', 'stopped', this.rearWho)
+    }
+    // far enough back for a proper run-up: go for it
+    if (this.runUpT > 0 && (toLoop < 0 || toLoop >= RUNUP_FROM_M)) this.runUpT = 0
+    // Asking for reverse but standing still (wedged against something the rear check
+    // can't see, a barrier say): give up on backing up for this loop and drive on.
+    // (Slowing down from forward speed first is fine: the car is moving then.)
+    if (this.runUpT > 0) this.runUpStillT = Math.abs(v) < 0.5 ? this.runUpStillT + dt : 0
+    if (this.runUpT > 0 && this.runUpStillT > RUNUP_STILL_S) {
+      this.runUpT = 0
+      this.runUpBanFor = loopS0
+      logReverse(this.id, this.s, v * 3.6, 'loop', 'stopped', 'no-room')
+    }
     if (this.runUpT > 0) {
       this.runUpT -= dt
       this.mode = 'reverse'
       this.throttle = 0
-      this.brake = 1 // stopped: brake is reverse
-      this.steer = clamp(-(this.hit.lateral - 0) * 0.15, -0.5, 0.5) // keep it straight and centred backing up
+      this.brake = v > -RUNUP_REV_MS ? 1 : 0 // stopped, the brake is reverse; past a jog, coast
+      // Reversing steers backwards (the tail goes the way the wheel turns), and steering on
+      // where we are alone snakes and runs off the road over a long back-up. Steer on how
+      // fast we drift sideways instead: toward the middle of the road, gently.
+      track.frameAt(this.s, _frame2)
+      const latVel = car.velocity.dot(_frame2.right)
+      this.steer = clamp(0.35 * (-0.5 * this.hit.lateral - latVel), -0.6, 0.6)
       this.handbrake = false
+      this.checkReverseContact(car, 'loop')
       return
     }
     if (lining) {
+      this.padKickAhead = -1
       // One steady lane for the run-in that hits the fewest boost pads (a pad
       // right before a loop only adds speed we'd have to brake away, and the car
       // steers badly while boosted), then dead centre for the last stretch.
-      const loopS0 = track.wrapS(this.s + toLoop)
       if (this.lineupFor !== loopS0) {
         this.lineupFor = loopS0
         this.lineupLane = planRunInLane(track, this.s, toLoop, Math.max(0, track.samples.halfWidth[this.hit.index] - EDGE_MARGIN))
@@ -455,8 +668,8 @@ export class AiDriver implements Driver {
       this.passTarget = 0
       this.sideShove = 0
       this.passOffset += clamp(-this.passOffset, -LANE_SLEW * 2 * dt, LANE_SLEW * 2 * dt)
-      // still never drive into the back of someone
-      followCap = this.racecraft(track, desired, v, dt)
+      // still never drive into the back of someone: no passing here, so follow
+      followCap = Math.min(this.racecraft(track, desired, v, dt), this.followCapAhead(track, desired + this.passOffset, v))
       this.passTarget = 0
       desired += this.passOffset
     } else {
@@ -467,8 +680,10 @@ export class AiDriver implements Driver {
     }
 
     if (ramp >= 0) {
-      // square and centred on the ramp, then the line's lane at the landing
-      desired = rampFinal ? sampleAt(track, track.racingLine.offset, aimS) : rampInfo.offset
+      // Hold the lane that ends up in the middle of the lip once the final run-in has
+      // turned us toward the landing; in the final run-in itself, the ramp's middle
+      // (only steered for if the car is heading off the ramp's top).
+      desired = rampInfo.toStart > RAMP_HEADING_M ? rampPlan.lanePre : rampInfo.offset
       this.passTarget = 0
       this.sideShove = 0
       this.passOffset = 0
@@ -477,7 +692,7 @@ export class AiDriver implements Driver {
     desired = clamp(desired, -lim, lim)
     // slew the lane so lateral changes are smooth, never a twitch (quicker when
     // stepping round a boost pad, or we don't get there in time)
-    const slew = this.dodgingPad ? LANE_SLEW * 3 : LANE_SLEW * 1.5
+    const slew = this.dodgingPad || ramp >= 0 ? LANE_SLEW * 3 : LANE_SLEW * 1.5
     this.laneNow += clamp(desired - this.laneNow, -slew * dt, slew * dt)
     this.aimLateral = this.laneNow
 
@@ -519,6 +734,25 @@ export class AiDriver implements Driver {
       const side = _fwd.x * S.rx[i] + _fwd.y * S.ry[i] + _fwd.z * S.rz[i]
       this.steer = clamp(-AIR_ALIGN_GAIN * Math.atan2(side, along), -0.6, 0.6)
     }
+    // Final run-in to a kicker: steer where the car is actually GOING (velocity, not the
+    // nose), straight at the landing point as seen from the lip. Hitting the face at an
+    // angle jolts the car square to the ramp, so it keeps correcting on the face too.
+    const onKicker = ramp >= 0 && rampInfo.toStart <= RAMP_STEADY_M && !car.airborne
+    if (ramp >= 0 && rampInfo.toStart <= RAMP_HEADING_M && !car.airborne) this.steer = this.rampHeadingSteer(track, car, v, dt)
+    else this.prevHeadErr = NaN
+    // Just landed from a real jump: a big steer while the springs are still taking the
+    // hit unsettles the car (it can float over the next rise with no grip). Ease in.
+    if (car.airborne) {
+      this.airT += dt
+      this.settleT = 0
+    } else {
+      if (this.airT > LAND_AIR_S) this.settleT = LAND_SETTLE_S
+      this.airT = 0
+      if (this.settleT > 0) {
+        this.settleT -= dt
+        this.steer = clamp(this.steer, -LAND_SETTLE_STEER, LAND_SETTLE_STEER)
+      }
+    }
 
     // ---- target speed with braking look-ahead ----
     const magFloor = (settings.magGripKmh / 3.6) * MAG_MARGIN
@@ -527,7 +761,12 @@ export class AiDriver implements Driver {
     // eats into it (g x the slope); uphill it helps. The scan looks further ahead the
     // faster we go, sized for the weakest braking we might have.
     const decel = PLAN_DECEL * (0.92 + 0.16 * this.personality.aggression)
-    const scan = Math.min(SPEED_SCAN_MAX, (speed * speed) / (2 * decel * 0.6) + 25)
+    // A kicker ahead: there's no braking on its face or in the air, so slowing for
+    // anything past the landing has to be done before the toe. Those metres don't
+    // count as braking room (the landing used to scrub off ~40 km/h; it doesn't now).
+    const airFrom = ramp >= 0 ? Math.max(0, rampInfo.toStart) : -1
+    const airTo = ramp >= 0 ? Math.max(airFrom, track.deltaS(this.s, rampPlan.sL)) : -1
+    const scan = Math.min(SPEED_SCAN_MAX, (speed * speed) / (2 * decel * 0.6) + 25) + (ramp >= 0 ? airTo - airFrom : 0)
     const n = track.samples.count
     const ds = track.samples.ds
     let vt = Infinity
@@ -555,11 +794,24 @@ export class AiDriver implements Driver {
       if (surf === SURFACE_CODE.loop) line = Math.max(magFloor, (LOOP_MIN_KMH / 3.6) * 1.08, track.racingLine.speed[idx])
       else if (surf === SURFACE_CODE.wall && line < magFloor) line = magFloor
       const brakeHere = Math.max(MIN_DECEL, decel + GRAVITY * slope)
-      const allowed = Math.sqrt(line * line + 2 * brakeHere * j)
+      const room = airFrom >= 0 && j > airFrom ? airFrom + Math.max(0, j - airTo) : j
+      let allowed = Math.sqrt(line * line + 2 * brakeHere * room)
+      const kickAt = this.padKickAhead
+      if (kickAt >= 0 && j > kickAt) {
+        // a boost pad we can't avoid comes first: its kick has to be braked away too
+        const after = Math.max(0, Math.sqrt(line * line + 2 * brakeHere * (j - kickAt)) - PAD_KICK_PLAN)
+        allowed = Math.min(allowed, Math.sqrt(after * after + 2 * brakeHere * kickAt))
+      }
       if (allowed < vt) vt = allowed
     }
     this.logLoopApproach(track, car, loopAt, v)
     if (followCap < vt) vt = followCap
+    // a kicker that must be taken slower than this to land gently (see planRampLine)
+    if (ramp >= 0 && rampPlan.vTakeMax < Infinity) {
+      const atToe = rampPlan.vTakeMax / RAMP_KEEP
+      const cap = Math.sqrt(atToe * atToe + 2 * decel * airFrom)
+      if (cap < vt) vt = cap
+    }
     // Understeer governor. The car's steering is speed-sensitive: at speed even full
     // lock only turns so tightly. If the brain is asking for most of the lock, the
     // car can't follow the line at this speed, whatever the line says. Slow down
@@ -609,6 +861,15 @@ export class AiDriver implements Driver {
     } else {
       this.throttle = 0.3
       this.brake = 0
+    }
+    // No braking on the kicker (it pitches the nose down as the car leaves the lip).
+    // In the air, throttle tips the nose up and brake tips it down (the car otherwise
+    // levels itself to the road below it). Use that to meet the landing: the road where
+    // we'll come down can climb more steeply than the road we're flying over (a jump
+    // into a dip), and landing nose-first into a rise bounces the car back into the air.
+    if (onKicker) this.brake = 0
+    if (car.airborne) {
+      this.airPitch(track)
     }
     this.handbrake = false
     if (this.mode !== 'pass') this.mode = finished ? 'cooldown' : 'drive'
@@ -736,10 +997,12 @@ export class AiDriver implements Driver {
     const S = track.samples
     _fwd.set(0, 0, 1).applyQuaternion(car.quaternion)
     const hdg = (Math.atan2(_fwd.x * S.rx[i] + _fwd.y * S.ry[i] + _fwd.z * S.rz[i], _fwd.x * S.tx[i] + _fwd.y * S.ty[i] + _fwd.z * S.tz[i]) * 180) / Math.PI
+    const u = car.velocity
+    const vhdg = (Math.atan2(u.x * S.rx[i] + u.y * S.ry[i] + u.z * S.rz[i], u.x * S.tx[i] + u.y * S.ty[i] + u.z * S.tz[i]) * 180) / Math.PI
     aiWatch.rows.push(
-      `${this.id} s${Math.round(this.s)} ${Math.round(v * 3.6)}/${Math.round(vt * 3.6)} lat${this.hit.lateral.toFixed(1)}>${this.laneNow.toFixed(1)} h${this.hit.height.toFixed(1)} hdg${Math.round(hdg)} st${this.steer.toFixed(2)} th${this.throttle.toFixed(1)} br${this.brake.toFixed(1)} ${this.mode}`,
+      `${this.id} s${Math.round(this.s)} ${Math.round(v * 3.6)}/${Math.round(vt * 3.6)} lat${this.hit.lateral.toFixed(1)}>${this.laneNow.toFixed(1)} h${this.hit.height.toFixed(1)} hdg${Math.round(hdg)} v${vhdg.toFixed(1)} st${this.steer.toFixed(2)} th${this.throttle.toFixed(1)} br${this.brake.toFixed(1)} sl${car.slip.toFixed(2)}${car.airborne ? ' AIR' : ''} f${Math.round(frameStats.fpsEma)} ${this.mode}`,
     )
-    if (aiWatch.rows.length > 400) aiWatch.rows.shift()
+    if (aiWatch.rows.length > 3000) aiWatch.rows.shift()
   }
 
   private idle(): void {
@@ -751,35 +1014,170 @@ export class AiDriver implements Driver {
   }
 
   /**
+   * The jump plan for the kicker in rampInfo. The landing point: where a car
+   * taking off at this speed comes down, halfway from the middle of the road
+   * to the racing line there (the most room either side for a landing that's
+   * a little off). The lane to hold before the final run-in: the ramp's middle,
+   * moved over by the drift the car picks up while it turns toward the landing,
+   * so it crosses the lip near the middle.
+   */
+  private planRampLine(track: TrackRuntime, speed: number, pace: number): void {
+    const r = rampInfo
+    // The take-off speed: what we'll have at the toe (now, or the racing line's speed
+    // there if we're still slowing for it), less what the face costs. Held from the
+    // toe on: on the face the car slows, and re-guessing there would swing the plan.
+    if (r.toStart > 0 || this.rampVTake <= 0) {
+      const atToe = Math.min(speed, sampleAt(track, track.racingLine.speed, r.s0) * pace)
+      this.rampVTake = Math.max(15, atToe * RAMP_KEEP)
+    }
+    // Too steep a landing (a downhill kicker into a dip, say) bounces: find the take-off
+    // speed that comes down gently enough, and plan the jump (and the run-in) at that.
+    let vt = this.rampVTake
+    let d = flightDistance(track, r.s1, r.height, r.length, vt)
+    while (flight.impact > LAND_IMPACT_MAX && vt > 20) {
+      vt -= 1
+      d = flightDistance(track, r.s1, r.height, r.length, vt)
+    }
+    rampPlan.vTakeMax = vt < this.rampVTake ? vt : Infinity
+    const sL = r.s1 + d
+    rampPlan.sL = sL
+    track.frameAt(r.s1, _frame2)
+    _rampT.copy(_frame2.right).multiplyScalar(r.offset).add(_frame2.position)
+    track.frameAt(sL, _frame2)
+    const limL = Math.max(0, _frame2.halfWidth - EDGE_MARGIN - LAND_MARGIN)
+    const latL = clamp(sampleAt(track, track.racingLine.offset, sL) * LAND_LINE_SHARE, -limL, limL)
+    _rampL.copy(_frame2.right).multiplyScalar(latL).add(_frame2.position)
+    _rampDir.subVectors(_rampL, _rampT)
+    _rampDir.y = 0
+    _rampDir.normalize()
+    // sideways share of the take-off direction (+ = right), at the lip
+    track.frameAt(r.s1, _frame2)
+    const side = _rampDir.x * _frame2.right.x + _rampDir.z * _frame2.right.z
+    const edge = Math.max(0, r.width * 0.5 - RAMP_EDGE_IN)
+    // (the turn mostly happens early in the final run-in, so most of it counts)
+    rampPlan.lanePre = r.offset - clamp(side * (RAMP_HEADING_M + r.length) * 0.75, -edge, edge)
+  }
+
+  /**
+   * In the air: throttle / brake to tip the nose toward the slope of the road where
+   * we'll land (relative to the road below, which the car levels to by itself), plus a
+   * touch of nose-up so the back wheels touch first.
+   */
+  private airPitch(track: TrackRuntime): void {
+    // where we come down: the jump plan if we've just left a kicker, else a little way on
+    const sL = this.airLandS >= 0 ? this.airLandS : this.s + 20
+    const below = sampleAt(track, track.samples.ty, this.s)
+    const landing = sampleAt(track, track.samples.ty, sL)
+    const want = Math.asin(clamp(landing, -1, 1)) - Math.asin(clamp(below, -1, 1)) + AIR_NOSE_UP
+    this.throttle = clamp(want / AIR_PITCH_FULL, 0, 1)
+    this.brake = clamp(-want / AIR_PITCH_FULL, 0, 1)
+  }
+
+  /** Time in the air so far, and time left in the landing settle (s). */
+  private airT = 0
+  private settleT = 0
+
+  /** Where the jump we're flying (from a kicker) comes down, road distance; -1 = not from a kicker. */
+  private airLandS = -1
+
+  /** Last step's heading error toward the landing (radians), for damping; NaN = none yet. */
+  private prevHeadErr = NaN
+  /** The take-off speed this brain planned its current jump for (m/s), held from the ramp's toe. */
+  private rampVTake = 0
+
+  /**
+   * Steer that turns the car's direction of travel toward the landing point,
+   * seen from where it will leave the lip. + = right, like the steer.
+   */
+  private rampHeadingSteer(track: TrackRuntime, car: CarState, v: number, dt: number): number {
+    const vel = car.velocity
+    const vh = Math.hypot(vel.x, vel.z)
+    if (vh < 5) return this.steer
+    const toLip = Math.max(0, track.deltaS(this.s, rampInfo.s1))
+    const lipX = car.position.x + (vel.x / vh) * toLip
+    const lipZ = car.position.z + (vel.z / vh) * toLip
+    // Heading for a spot off the ramp's top (after a pass, a bump, a reset)? Getting
+    // onto the ramp comes first: keep the line-following steer until we will.
+    track.frameAt(rampInfo.s1, _frame2)
+    const lipLat = (lipX - _frame2.position.x) * _frame2.right.x + (lipZ - _frame2.position.z) * _frame2.right.z
+    if (Math.abs(lipLat - rampInfo.offset) > rampInfo.width * 0.5 - RAMP_EDGE_IN) {
+      this.prevHeadErr = NaN
+      return this.steer
+    }
+    // heading angles in the level plane; a larger angle is further LEFT (right = forward x up)
+    let err = Math.atan2(vel.x, vel.z) - Math.atan2(_rampL.x - lipX, _rampL.z - lipZ)
+    if (err > Math.PI) err -= 2 * Math.PI
+    if (err < -Math.PI) err += 2 * Math.PI
+    // err + = the landing is to our right
+    const rate = Number.isNaN(this.prevHeadErr) ? 0 : clamp((err - this.prevHeadErr) / dt, -2, 2)
+    this.prevHeadErr = err
+    const k = (2 * Math.sin(err)) / RAMP_HEADING_D
+    const lim = rampInfo.toStart <= RAMP_STEADY_M ? RAMP_STEADY_STEER : RAMP_HEADING_STEER
+    return clamp(k / this.steerGain(v) + STEER_DAMP * rate, -lim, lim)
+  }
+
+  /**
    * Boost pads. A pad near our line that the road after it can use: swing
    * onto it. A pad whose extra speed we'd only have to brake away (a loop
    * or a tight corner right after it): steer round it instead.
    */
   private boostLane(track: TrackRuntime, desired: number, v: number, pace: number): number {
     this.dodgingPad = false
+    this.padKickAhead = -1
     const zones = track.boostZones
+    let near = false
     for (let i = 0; i < zones.length; i++) {
       const z = zones[i]
       const ahead = track.deltaS(this.s, z.s0)
       const inside = track.deltaS(z.s0, this.s) >= 0 && track.deltaS(this.s, z.s1) >= 0
       if (!inside && (ahead < 0 || ahead > 140)) continue
+      near = true
       const centre = (z.lat0 + z.lat1) * 0.5
       if (this.boostUseful(track, z.s1, v, pace)) {
         if (Math.abs(centre - desired) <= 5.5) return centre
         continue
       }
-      // not wanted: if our line crosses the pad, pass beside it
+      // Not wanted: if our line crosses the pad, pass beside it. The side is picked
+      // once per pad (re-picking every step flips sides as the line swings across,
+      // and the car ends up on the pad), and switched only if we can no longer get there.
+      if (desired < z.lat0 - PAD_CLEAR && this.dodgeFor !== z.s0) continue
+      if (desired > z.lat1 + PAD_CLEAR && this.dodgeFor !== z.s0) continue
       this.dodgingPad = true
-      const clear = 1.6
-      if (desired < z.lat0 - clear || desired > z.lat1 + clear) continue
       const lim = Math.max(0, track.samples.halfWidth[this.hit.index] - EDGE_MARGIN)
-      const left = z.lat0 - clear
-      const right = z.lat1 + clear
-      const leftOk = left >= -lim
-      const rightOk = right <= lim
-      if (leftOk && (!rightOk || Math.abs(left - desired) <= Math.abs(right - desired))) return left
-      if (rightOk) return right
+      const left = z.lat0 - PAD_CLEAR
+      const right = z.lat1 + PAD_CLEAR
+      const t = Math.max(0, ahead) / Math.max(5, v)
+      const reach = DODGE_ALAT * t * t * 0.25 + 0.3 // sideways metres we can still make before the pad
+      const leftOk = left >= -lim && (inside ? this.hit.lateral <= left + 0.3 : Math.abs(left - this.hit.lateral) <= reach)
+      const rightOk = right <= lim && (inside ? this.hit.lateral >= right - 0.3 : Math.abs(right - this.hit.lateral) <= reach)
+      if (this.dodgeFor !== z.s0) {
+        // The side the racing line is on through the run-up to the pad (from 40 m
+        // before it to its end: the line can be crossing over right at the pad), unless
+        // we can't get there.
+        this.dodgeFor = z.s0
+        let lineAt = 0
+        let count = 0
+        for (let d = -PAD_LINE_BEFORE; d <= track.deltaS(z.s0, z.s1); d += 5) {
+          lineAt += sampleAt(track, track.racingLine.offset, z.s0 + d)
+          count++
+        }
+        lineAt /= Math.max(1, count)
+        const preferLeft = Math.abs(left - lineAt) <= Math.abs(right - lineAt)
+        this.dodgeLeft = preferLeft ? leftOk || !rightOk : !(rightOk || !leftOk)
+      } else if (this.dodgeLeft ? !leftOk && rightOk : !rightOk && leftOk) {
+        this.dodgeLeft = !this.dodgeLeft
+      }
+      // Can't make either side: we'll cross the pad, so the speed plan allows for its kick.
+      if (!leftOk && !rightOk && this.hit.lateral > z.lat0 - 0.6 - PAD_HALF_CAR && this.hit.lateral < z.lat1 + 0.6 + PAD_HALF_CAR) this.padKickAhead = Math.max(0, ahead)
+      // Side picked early, but only start crossing when we need to: well before the pad
+      // the racing line knows best (it may be setting up a bend, or we've just landed).
+      const dodgeLat = this.dodgeLeft ? left : right
+      if (!inside && ahead > DODGE_LEAD_M + DODGE_LEAD_PER_M * Math.abs(dodgeLat - desired)) return desired
+      // already clear on that side: no need to come closer to the pad
+      if (this.dodgeLeft) return Math.min(left, desired)
+      return Math.max(right, desired)
     }
+    if (!near) this.dodgeFor = -1
     return desired
   }
 
@@ -912,7 +1310,12 @@ export class AiDriver implements Driver {
       return true
     }
 
-    // reversing out of something
+    // reversing out of something (but never into a car behind us: if one is
+    // there, stop and let the watchdog reset us if we stay stuck)
+    if (this.reverseT > 0 && !this.rearClear(car, STUCK_REAR_M, 1.5)) {
+      this.reverseT = 0
+      logReverse(this.id, this.s, v * 3.6, 'stuck', 'stopped', this.rearWho)
+    }
     if (this.reverseT > 0) {
       this.reverseT -= dt
       this.mode = 'reverse'
@@ -920,19 +1323,95 @@ export class AiDriver implements Driver {
       this.brake = 1 // at a standstill the brake is reverse
       this.steer = this.reverseSteer
       this.handbrake = false
+      this.checkReverseContact(car, 'stuck')
       return true
     }
 
-    // wedged: trying to go but not moving
-    if (Math.abs(v) < STUCK_SPEED) this.stuckT += dt
+    // wedged: trying to go but not moving (waiting on purpose behind a car that
+    // hasn't moved yet, on the grid say, isn't stuck: the target speed is ~0 then)
+    if (Math.abs(v) < STUCK_SPEED && this.targetKmh > 10) this.stuckT += dt
     else this.stuckT = 0
     if (this.stuckT > STUCK_TRIGGER_S) {
       this.stuckT = 0
+      if (!this.rearClear(car, STUCK_REAR_M, 1.5)) {
+        logReverse(this.id, this.s, v * 3.6, 'stuck', 'blocked', this.rearWho)
+        return false
+      }
       this.reverseT = REVERSE_S
       this.reverseSteer = this.steer >= 0 ? -1 : 1
+      this.touched = ''
+      logReverse(this.id, this.s, v * 3.6, 'stuck', 'backed')
       return true
     }
     return false
+  }
+
+  /** Who blocked the last rearClear check (for the log). */
+  private rearWho = ''
+
+  /**
+   * Is the road behind us clear to back up? Not if another car sits within
+   * clearM behind us in our path (bumper to bumper), or is closing on us fast
+   * enough to get that close within ttc seconds. "Behind" is in the car's own
+   * frame, so it works whichever way the car points.
+   */
+  private rearClear(me: CarState, clearM: number, ttc: number): boolean {
+    for (let i = 0; i < cars.length; i++) {
+      const o = cars[i]
+      if (o === me || o.kind === 'ghost') continue
+      _o.subVectors(o.position, me.position)
+      const along = _o.dot(_fwd) // - = behind us
+      if (along > CAR_LEN * 0.5 || along < -250) continue
+      if (Math.abs(_o.dot(_right)) > REAR_LANE_M || Math.abs(_o.dot(_up)) > 4) continue
+      const gap = -along - CAR_LEN
+      // + = the gap is shrinking: it's catching us, or we're backing into it
+      const closing = o.velocity.dot(_fwd) - me.velocity.dot(_fwd)
+      if (gap < clearM || (closing > 0 && gap < clearM + closing * ttc)) {
+        this.rearWho = o.id
+        return false
+      }
+    }
+    return true
+  }
+
+  /** While reversing: log any car we touch (the proof that backing up is safe). */
+  private checkReverseContact(me: CarState, kind: 'loop' | 'stuck'): void {
+    for (let i = 0; i < cars.length; i++) {
+      const o = cars[i]
+      if (o === me || o.kind === 'ghost') continue
+      _o.subVectors(o.position, me.position)
+      const along = _o.dot(_fwd)
+      // two 4 m x 1.8 m boxes touch when their centres are this close (plus a little
+      // for the render pose lagging the physics)
+      if (along < -(CAR_LEN + 0.4) || along > 0.5) continue
+      if (Math.abs(_o.dot(_right)) > 2.1 || Math.abs(_o.dot(_up)) > 2.5) continue
+      if (this.touched.includes(o.id + ',')) continue
+      this.touched += o.id + ','
+      logReverse(this.id, this.s, me.velocity.dot(_fwd) * 3.6, kind, 'contact', o.id)
+    }
+  }
+
+  /**
+   * Lining up for a loop there's no passing, so a slow or stopped car ahead in
+   * our lane (one backing up for its own run-up, say) is followed: the fastest
+   * speed from which we can still stop FOLLOW_GAP_M behind it. Infinity if none.
+   */
+  private followCapAhead(track: TrackRuntime, lane: number, v: number): number {
+    let cap = Infinity
+    const list = raceBook.racers
+    const reach = (v * v) / (2 * PLAN_DECEL) + 40
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i]
+      if (o.id === this.id) continue
+      const gap = track.deltaS(this.s, o.s) - CAR_LEN
+      if (gap < -CAR_LEN * 0.5 || gap > reach) continue
+      if (Math.abs(o.lateral - lane) > 2.6 && Math.abs(o.lateral - this.hit.lateral) > 2.6) continue
+      const ov = Math.max(0, o.speed)
+      if (ov >= v) continue
+      const c = Math.sqrt(ov * ov + 2 * PLAN_DECEL * Math.max(0, gap - FOLLOW_GAP_M))
+      if (c < cap) cap = c
+    }
+    return cap
   }
 }
 

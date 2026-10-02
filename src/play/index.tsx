@@ -27,7 +27,7 @@ import { registerDev, registerInspector } from '../core/devHandles'
 import { getGame } from '../core/store'
 import { getTrack } from '../track/current'
 import { recentEvents } from '../core/events'
-import { aiWatch } from './aiDriver'
+import { aiWatch, reverseLog } from './aiDriver'
 import { ModeController, devFinish, devRace, newRound, restartSession } from './ModeController'
 import { AiRacers } from './AiRacers'
 import { CrashProps } from './CrashProps'
@@ -111,7 +111,9 @@ function raceSummary(): string {
   const racers = raceBook.racers.map((r) => `${r.name}:${r.lapsDone}L/${Math.round(r.dist)}m${r.finished ? `/F${(r.finishMs / 1000).toFixed(1)}s` : ''}`)
   const ai = [...drivers.values()].map((d) => `${d.id}:${d.mode}@${Math.round(d.targetKmh)}r${d.resets}L${d.loopsDone}/${d.loopsDone + d.loopsMissed}`)
   const resets = recentEvents().filter((e) => e.type === 'reset').length
-  return `t=${Math.round(performance.now() / 1000)}s stage=${flow.stage} phase=${g.phase} pos=${g.racePosition}/${g.raceRacers} | ${racers.join(' ')} | ${ai.join(' ')} | resets=${resets}`
+  const rev = reverseLog.rows
+  const count = (what: string) => rev.filter((r) => r.what === what).length
+  return `t=${Math.round(performance.now() / 1000)}s stage=${flow.stage} phase=${g.phase} pos=${g.racePosition}/${g.raceRacers} | ${racers.join(' ')} | ${ai.join(' ')} | resets=${resets} | reverse backed=${count('backed')} blocked=${count('blocked')} stopped=${count('stopped')} contacts=${reverseLog.contacts}`
 }
 
 export function PlayLayer() {
@@ -149,6 +151,17 @@ export function PlayLayer() {
         'aiWatch(s0, s1): trace every Ai every 5 m through that stretch (read with aiWatchGet)',
       ),
       registerDev('aiWatchGet', () => aiWatch.rows.join('\n'), 'the aiWatch trace so far'),
+      registerDev(
+        'aiStall',
+        ((n: number) => {
+          const d = drivers.get(`ai-${n}`)
+          if (!d) return `no ai-${n}`
+          d.stallAtNextLoop = true
+          return `ai-${n} will stop dead just before its next loop`
+        }) as never,
+        'aiStall(n): Ai racer n stops dead just before its next loop (tests backing up for a run-up in traffic)',
+      ),
+      registerDev('aiReverse', () => reverseLog.rows.map((r) => `${r.id} ${r.kind} ${r.what}${r.other ? ' ' + r.other : ''} @${r.s}m ${r.kmh}kmh`).join(' | ') + ` | contacts=${reverseLog.contacts}`, 'every time a driver wanted to back up: backed / blocked (car behind) / stopped (car came up) / contact'),
       registerDev('raceSummary', () => raceSummary(), 'one-line race status: stage, each racer laps/metres, Ai modes, resets'),
       registerInspector('play', inspectPlay),
     ]
