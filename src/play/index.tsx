@@ -38,6 +38,7 @@ import { EnergyCores } from './EnergyCores'
 import { SpeedTraps } from './SpeedTraps'
 import { StuntPark } from './stunts/StuntPark'
 import { doParkHop, parkHop } from './stunts/parkReset'
+import { parkZones } from './stunts/parkLive'
 import { playFlags } from './modes'
 import { drivers, flow } from './flow'
 import { raceBook } from './raceBook'
@@ -122,7 +123,7 @@ function raceSummary(): string {
 
 export function PlayLayer() {
   useEffect(() => {
-    installPlay({ newRound, restartSession, parkHop, doParkHop })
+    installPlay({ newRound, restartSession, parkHop, doParkHop, parkZones })
     const offs = [
       registerDev('round', () => newRound(), 'new round of the current mode (props and cores re-scatter)'),
       registerDev('race', ((n: number) => devRace(n)) as never, 'race(n): start a race now with n Ai racers (0-5)'),

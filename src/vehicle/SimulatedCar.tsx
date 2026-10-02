@@ -33,7 +33,7 @@ import type { CarKind, CarState } from '../core/telemetry'
 import { getTrack } from '../track/current'
 import { bodyEntry } from './bodies/catalog'
 import { CarSim } from './carSim'
-import { buildCarModel, disposeCarModel, poseCarModel, setCarBrake, setCarColors } from './carModel'
+import { buildCarModel, disposeCarModel, poseCarModel, setCarBrake, setCarColors, setCarReverse } from './carModel'
 import type { LapTracker } from './lapTracker'
 import { startPose } from './trackNav'
 import { CHASSIS, VISUAL } from './tuning'
@@ -77,6 +77,29 @@ const _spawnQuat = new THREE.Quaternion()
 const CHASSIS_ROUND = 0.25
 const _hit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
 
+/**
+ * Reverse lights. They come on the moment the car reverses (brake held from
+ * a stop: carSim's `reversing`), like putting a real car in reverse, and stay
+ * on while it is still backing up with no throttle: the Ai coasts between
+ * pushes when it backs up for a fresh run at a loop, and letting go of S
+ * still rolls you back, so they must not blink off and on. They also stay on
+ * while the brake is still held near a stop (on a slope a car can tip between
+ * braking and reversing). Throttle, or coming to rest, turns them off.
+ *   backingMs  rolling backward faster than this (m/s) counts as backing up
+ *   holdMs     with the brake held, below this forward speed (m/s) they stay on
+ */
+const REVERSE_LAMP = { backingMs: 0.3, holdMs: 1.5 }
+
+function reverseLightsOn(sim: CarSim, wasOn: boolean): boolean {
+  if (sim.reversing) return true
+  if (!wasOn || sim.frozen) return false
+  const c = sim.controls
+  if (Number.isFinite(c.throttle) && c.throttle >= 0.1) return false
+  const v = Number.isFinite(sim.forwardSpeed) ? sim.forwardSpeed : 0
+  const braking = Number.isFinite(c.brake) && c.brake > 0.05
+  return v < -REVERSE_LAMP.backingMs || (braking && v < REVERSE_LAMP.holdMs)
+}
+
 export function SimulatedCar(props: SimulatedCarProps) {
   const { id, kind, name, body, paint, glow, trail, gridSlot, sim, lap, shadows } = props
   const { world, rapier } = useRapier()
@@ -87,6 +110,7 @@ export function SimulatedCar(props: SimulatedCarProps) {
   const hooks = useRef(props)
   hooks.current = props
   const spring = useRef({ roll: 0, rollV: 0, pitch: 0, pitchV: 0 }).current
+  const lamps = useRef({ reverse: false }).current
 
   // Spawn pose: computed once, at mount. Later moves go through the sim (teleport / reset).
   const spawn = useMemo(() => {
@@ -264,6 +288,8 @@ export function SimulatedCar(props: SimulatedCarProps) {
     if (!Number.isFinite(spring.roll + spring.pitch)) spring.roll = spring.rollV = spring.pitch = spring.pitchV = 0
     poseCarModel(model, { wheelHubY: sim.wheelHubY, wheelSpin: sim.wheelSpin, steerAngle: sim.steerAngle, roll: spring.roll, pitch: spring.pitch })
     setCarBrake(model, sim.brakeLight)
+    lamps.reverse = reverseLightsOn(sim, lamps.reverse)
+    setCarReverse(model, lamps.reverse ? 1 : 0)
     hooks.current.onFrame?.(sim, car, dt)
   }, -40)
 

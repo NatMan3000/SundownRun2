@@ -7,13 +7,16 @@
 //    - the road is drawn ONCE into an offscreen canvas when the
 //      track loads (from track.minimap, the decimated centreline);
 //    - each frame we copy that picture and draw a dot per car,
-//      about 30 times a second, with no allocation.
+//      about 30 times a second, with no allocation;
+//    - in Free Roam and Stunt Attack, each stunt-park zone gets a
+//      small amber marker (play.parkZones).
 //
 //  The HUD's animation loop calls drawMinimap(); this file only
 //  holds the drawing code and the canvas element.
 // ============================================================
 
 import { PALETTE } from '../../core/palette'
+import { play } from '../../core/api'
 import { cars, telemetry } from '../../core/telemetry'
 import type { TrackFrame, TrackRuntime } from '../../track/types'
 import * as THREE from 'three'
@@ -146,6 +149,30 @@ export function drawMinimap(track: TrackRuntime | null, trackStamp: number): boo
   if (map.base) ctx.drawImage(map.base, 0, 0)
 
   const edgePad = 5 * dpr
+  // The stunt park's zones (Free Roam and Stunt Attack): a small amber marker in the middle of
+  // each lane, lying along it, kept inside the frame like the cars. Drawn every frame (a handful
+  // of strokes), so they come and go with the park.
+  const zones = play.parkZones()
+  if (zones.length > 0) {
+    ctx.lineCap = 'round'
+    const half = 5 * dpr
+    for (let i = 0; i < zones.length; i++) {
+      const z = zones[i]
+      let x = (z.x + z.dx * z.length * 0.5) * s + ox
+      let y = (z.z + z.dz * z.length * 0.5) * s + oz
+      x = x < edgePad + half ? edgePad + half : x > w - edgePad - half ? w - edgePad - half : x
+      y = y < edgePad + half ? edgePad + half : y > h - edgePad - half ? h - edgePad - half : y
+      ctx.beginPath()
+      ctx.moveTo(x - z.dx * half, y - z.dz * half)
+      ctx.lineTo(x + z.dx * half, y + z.dz * half)
+      ctx.strokeStyle = PALETTE.uiPanelSolid
+      ctx.lineWidth = 5.5 * dpr
+      ctx.stroke()
+      ctx.strokeStyle = PALETTE.ramp
+      ctx.lineWidth = 3 * dpr
+      ctx.stroke()
+    }
+  }
   // Other cars first, so the player's arrow is always on top.
   for (let i = 0; i < cars.length; i++) {
     const c = cars[i]

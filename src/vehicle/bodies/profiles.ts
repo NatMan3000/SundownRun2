@@ -157,6 +157,8 @@ function dart(b: BodyBuilder): void {
   b.light(plateFront([[0.46, 0.25], [0.8, 0.18], [0.8, 0.1], [0.52, 0.15]], 0.03, 2.065, 1), 'head', { mirror: true })
   b.headAt(0.66, 0.19, 2.07)
   b.light(plateFront([[0.5, 0.62], [0.96, 0.62], [0.96, 0.3], [0.89, 0.3], [0.89, 0.55], [0.5, 0.55]], 0.03, -2.065, -1), 'tail', { mirror: true })
+  // reverse lights: an angular white lamp tucked inside each hook
+  b.light(plateFront([[0.62, 0.47], [0.84, 0.47], [0.84, 0.37], [0.68, 0.37]], 0.03, -2.065, -1), 'reverse', { mirror: true })
   b.tailAt(0.92, 0.46, -2.08)
   // trim: splitter, nose intake, bonnet vents, side scoops, diffuser
   b.trim(rbox(1.62, 0.035, 0.24, 0, -0.275, 1.98, 0.012))
@@ -248,6 +250,8 @@ function blade(b: BodyBuilder): void {
   b.headAt(0.32, 0.07, 2.1)
   b.light(plateFront([[-0.72, 0.72], [0.72, 0.72], [0.72, 0.68], [-0.72, 0.68]], 0.03, -2.055, -1), 'tail')
   b.light(plateFront([[0.82, 0.72], [0.96, 0.72], [0.96, 0.36], [0.82, 0.42]], 0.03, -2.055, -1), 'tail', { mirror: true })
+  // reverse lights: a white slit under the bar, just inside each hook
+  b.light(plateFront([[0.52, 0.6], [0.76, 0.6], [0.76, 0.555], [0.56, 0.555]], 0.03, -2.055, -1), 'reverse', { mirror: true })
   b.tailAt(0.9, 0.54, -2.06)
   // trim: a wide blade splitter, side blades ahead of the rear wheels, diffuser
   b.trim(rbox(1.74, 0.03, 0.32, 0, -0.28, 1.98, 0.01))
@@ -343,6 +347,8 @@ function brick(b: BodyBuilder): void {
   b.light(rbox(1.1, 0.05, 0.06, 0, 1.24, 0.8, 0.012), 'head')
   b.headAt(0.63, 0.28, 2.08)
   b.light(plateFront([[0.8, 0.16], [0.93, 0.16], [0.93, 0.6], [0.8, 0.6]], 0.03, -2.045, -1), 'tail', { mirror: true })
+  // reverse lights: a square white lamp beside the top of each stack
+  b.light(plateFront([[0.62, 0.46], [0.74, 0.46], [0.74, 0.58], [0.62, 0.58]], 0.03, -2.045, -1), 'reverse', { mirror: true })
   b.tailAt(0.86, 0.38, -2.06)
   b.wells(0.54)
   // night signature: the arches, the roof slab's edge, the waist
@@ -428,6 +434,8 @@ function manta(b: BodyBuilder): void {
   b.headAt(0.62, 0.04, 2.2)
   b.light(plateFront([[-0.58, 0.44], [0.58, 0.44], [0.58, 0.4], [-0.58, 0.4]], 0.03, -2.055, -1), 'tail')
   b.light(plateFront([[0.62, 0.34], [0.96, 0.34], [0.96, 0.28], [0.62, 0.28]], 0.03, -2.215, -1), 'tail', { mirror: true })
+  // reverse lights: a white slit on each wing-tip pod, under its tail lamp
+  b.light(plateFront([[0.66, 0.235], [0.92, 0.235], [0.92, 0.195], [0.66, 0.195]], 0.03, -2.215, -1), 'reverse', { mirror: true })
   b.tailAt(0.8, 0.31, -2.22)
   b.trim(rbox(1.0, 0.03, 0.26, 0, -0.25, 1.9, 0.01))
   b.trim(rbox(1.2, 0.12, 0.2, 0, -0.22, -1.97, 0.02))
@@ -520,6 +528,11 @@ function pulse(b: BodyBuilder): void {
   lamp.rotateY(Math.PI)
   lamp.translate(0.64, 0.2, -2.045)
   b.light(lamp, 'tail', { mirror: true })
+  // reverse lights: a smaller round white lamp below and inside each tail lamp
+  const reverseLamp = new THREE.CircleGeometry(0.045, 16)
+  reverseLamp.rotateY(Math.PI)
+  reverseLamp.translate(0.5, 0.06, -2.045)
+  b.light(reverseLamp, 'reverse', { mirror: true })
   b.tailAt(0.64, 0.2, -2.06)
   b.wells(0.55)
   // night signature: a visor ring round the bubble and the four round arches

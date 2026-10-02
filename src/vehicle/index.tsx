@@ -40,7 +40,7 @@ import '../dev/fakePad'
 import '../dev/tune'
 import '../dev/rayProbe'
 import { BODIES } from './bodies/catalog'
-import { buildCarModel, disposeCarModel } from './carModel'
+import { buildCarModel, disposeCarModel, setCarReverse } from './carModel'
 import { cameraState } from './camera/CameraRig'
 import { GhostCar } from './GhostCar'
 import { links } from './links'
@@ -61,6 +61,7 @@ installVehicle({
   bodies: () => BODIES,
   buildModel: (bodyId, paint, glow) => buildCarModel(bodyId, paint, glow),
   disposeModel: (model) => disposeCarModel(model),
+  setReverse: (model, amount) => setCarReverse(model, amount),
 })
 
 /** Keyboard + gamepad. Polled once per frame BEFORE physics and every useFrame. */

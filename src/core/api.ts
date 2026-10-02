@@ -101,6 +101,8 @@ export interface VehicleApi {
    */
   buildModel: (bodyId: string, paint: string, glow: string) => THREE.Group
   disposeModel: (model: THREE.Group) => void
+  /** A model's reverse lights, 0..1 (the model eases them). Multiplayer cars set it from how they move. */
+  setReverse: (model: THREE.Group, amount: number) => void
 }
 
 // ---------------------------------------------------------------- simulated cars (owner: vehicle)
@@ -181,6 +183,7 @@ export const vehicle: VehicleApi = {
     throw new Error('vehicle API not installed yet')
   },
   disposeModel: noop,
+  setReverse: noop,
 }
 const NO_ZONES: readonly ParkZoneMark[] = []
 export const play: PlayApi = { newRound: noop, restartSession: noop, parkHop: () => null, doParkHop: noop, parkZones: () => NO_ZONES }

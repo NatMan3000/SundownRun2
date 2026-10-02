@@ -4,7 +4,8 @@
 //  The 3D view under the editor is the real track. On top of it this
 //  draws, in crisp screen pixels, what a map needs: the road outline
 //  when zoomed out, which way you drive, the start line, bridges,
-//  every piece as an icon, props and cores, what is selected, and
+//  every piece as an icon, props and cores, the stunt park's zones
+//  (world map only), what is selected, and
 //  pins on anything the game wants you to check (its track checks
 //  come from checks.ts; a failing one gets a red tag by its pin).
 //  The shaping tools draw their previews here too: the stretch Bend
@@ -16,6 +17,7 @@
 // ============================================================
 
 import { FONTS, PALETTE } from '../core/palette'
+import { play } from '../core/api'
 import { cars, telemetry } from '../core/telemetry'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
 import { FILL_MAX } from '../track/road'
@@ -145,6 +147,7 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
   drawCores(ctx, d.cores, s.selection, x.hoverPick)
   if (x.ghost) drawGhost(ctx, x.ghost, d.width)
   if (s.mode === 'map') {
+    drawParkZones(ctx)
     drawLabels(ctx, s, g.rc)
     drawCars(ctx)
   }
@@ -965,6 +968,57 @@ function drawLabels(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve
   for (const p of d.pieces) label(pieceLabel(p).toUpperCase(), piecePlace(rc, p).p, pieceColour(p), -26)
   for (const p of d.props) label('CRASH PROPS', p, PALETTE.propCrate, -24)
   d.cores.forEach((c, i) => label(`CORE ${i + 1}`, c, PALETTE.core, -20))
+  // The stunt park's zones (Free Roam and Stunt Attack), named in the middle of each lane.
+  for (const z of play.parkZones()) label(z.name, { x: z.x + z.dx * z.length * 0.5, z: z.z + z.dz * z.length * 0.5 }, PALETTE.ramp, -18)
+}
+
+/**
+ * The stunt park's zones (Free Roam and Stunt Attack only; play.parkZones is empty otherwise):
+ * each lane as a dashed amber outline, with a chevron at its start pointing the way in.
+ */
+function drawParkZones(ctx: CanvasRenderingContext2D): void {
+  const zones = play.parkZones()
+  if (zones.length === 0) return
+  ctx.save()
+  ctx.strokeStyle = PALETTE.ramp
+  ctx.fillStyle = PALETTE.ramp
+  ctx.lineJoin = 'round'
+  for (const z of zones) {
+    // Corners: start left, start right, end right, end left (right = the heading turned clockwise).
+    const rx = -z.dz * z.halfWidth
+    const rz = z.dx * z.halfWidth
+    const ex = z.x + z.dx * z.length
+    const ez = z.z + z.dz * z.length
+    const c = [worldToScreen(z.x - rx, z.z - rz), worldToScreen(z.x + rx, z.z + rz), worldToScreen(ex + rx, ez + rz), worldToScreen(ex - rx, ez - rz)]
+    ctx.beginPath()
+    ctx.moveTo(c[0].sx, c[0].sy)
+    for (let i = 1; i < 4; i++) ctx.lineTo(c[i].sx, c[i].sy)
+    ctx.closePath()
+    ctx.globalAlpha = 0.1
+    ctx.fill()
+    ctx.globalAlpha = 0.8
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([6, 5])
+    ctx.stroke()
+    ctx.setLineDash([])
+    // The way in: a chevron a little way up the lane from its start.
+    const tip = worldToScreen(z.x + z.dx * z.halfWidth * 1.4, z.z + z.dz * z.halfWidth * 1.4)
+    const back = worldToScreen(z.x + z.dx * z.halfWidth * 0.6, z.z + z.dz * z.halfWidth * 0.6)
+    const ux = tip.sx - back.sx
+    const uy = tip.sy - back.sy
+    const L = Math.hypot(ux, uy) || 1
+    const k = Math.min(9, Math.max(5, L))
+    const ax = (ux / L) * k
+    const ay = (uy / L) * k
+    ctx.globalAlpha = 0.95
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(tip.sx - ax - ay * 0.8, tip.sy - ay + ax * 0.8)
+    ctx.lineTo(tip.sx, tip.sy)
+    ctx.lineTo(tip.sx - ax + ay * 0.8, tip.sy - ay - ax * 0.8)
+    ctx.stroke()
+  }
+  ctx.restore()
 }
 
 /** Every car: the player as a big cyan arrow with a "YOU" tag, the others as small coloured arrows. */

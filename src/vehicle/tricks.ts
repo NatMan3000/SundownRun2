@@ -109,6 +109,8 @@ export interface AirJudge {
   land(tricks: Trick[], airS: number, clean: boolean): number
   /** Points the judge's tricks would add right now (a wipeout's lostPoints counts them). */
   pending(): number
+  /** Links the judge's tricks add to the combo so far, mid-air (rings flown through: 1), for the HUD's "Combo x". */
+  links(): number
   /** The jump ended without scoring (too short, a wipeout, a reset). */
   drop(): void
 }
@@ -484,7 +486,8 @@ export class TrickDetector {
     trickState.spinDeg = this.yaw * RAD2DEG
     trickState.flipDeg = this.pitch * RAD2DEG
     trickState.rollDeg = this.roll * RAD2DEG
-    const links = liveLinks(airS, this.yaw, this.pitch, this.roll, this.wallCarry !== null)
+    // The stunt park's rings count as soon as you fly through them (one link, however long the chain).
+    const links = liveLinks(airS, this.yaw, this.pitch, this.roll, this.wallCarry !== null) + (airJudge ? airJudge.links() : 0)
     trickState.links = links
     if (links !== this.links) {
       this.links = links
