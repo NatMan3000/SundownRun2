@@ -47,6 +47,23 @@ export interface FxApi {
 
 export type UiSound = 'move' | 'select' | 'back' | 'toggle' | 'slide' | 'start' | 'error' | 'countdown' | 'go'
 
+/** Which songs the music picks from: every song, or only the ones saved as favourites. */
+export type SongList = 'all' | 'favourites'
+
+/** The song the music is playing (or will play from the next bar, after Next song). */
+export interface SongInfo {
+  /** Goes up by one each time a song is picked, so a replayed favourite still counts as new. */
+  id: number
+  /** The seed: the same seed always gives the same song and the same name. */
+  seed: number
+  /** Its generated name, e.g. "Midnight Overdrive". */
+  name: string
+  /** Its key in words, e.g. "A minor". */
+  key: string
+  /** Saved in the favourites. */
+  favourite: boolean
+}
+
 export interface AudioApi {
   /** Menu sounds. */
   ui: (kind: UiSound) => void
@@ -54,6 +71,15 @@ export interface AudioApi {
   unlock: () => void
   /** True once sound is actually running. */
   isRunning: () => boolean
+  /** The current song, or null while no music is playing (sound not started yet, or ?nomusic=1). */
+  song: () => SongInfo | null
+  /** Skip to another song (same mood, or the next favourite), starting at the next bar. */
+  nextSong: () => void
+  /** Save the current song as a favourite, or take it out again. Returns true if it is saved now. */
+  toggleFavourite: () => boolean
+  /** Which songs are picked from, and how many favourites there are. */
+  songList: () => { list: SongList; favourites: number }
+  setSongList: (list: SongList) => void
 }
 
 // ---------------------------------------------------------------- vehicle catalog (owner: vehicle)
@@ -126,7 +152,16 @@ export interface PlayApi {
 const noop = () => {}
 
 export const fx: FxApi = { shards: noop, sparks: noop, pulse: noop }
-export const audio: AudioApi = { ui: noop, unlock: noop, isRunning: () => false }
+export const audio: AudioApi = {
+  ui: noop,
+  unlock: noop,
+  isRunning: () => false,
+  song: () => null,
+  nextSong: noop,
+  toggleFavourite: () => false,
+  songList: () => ({ list: 'all', favourites: 0 }),
+  setSongList: noop,
+}
 export const vehicle: VehicleApi = {
   bodies: () => [],
   buildModel: () => {
@@ -142,7 +177,7 @@ export function installFx(impl: FxApi): void {
   Object.assign(fx, impl)
   installed.fx = true
 }
-export function installAudio(impl: AudioApi): void {
+export function installAudio(impl: Partial<AudioApi>): void {
   Object.assign(audio, impl)
   installed.audio = true
 }

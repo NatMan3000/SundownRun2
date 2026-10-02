@@ -95,6 +95,8 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 | Camera cycle | C | RB |
 | Reset to road | R | Y |
 | Restart at start line | Shift+R | View (Back) |
+| Rewind (hold) | Backspace | LB |
+| Next song | N | B |
 | Menu | Esc | Menu (Start) |
 
 ## 4. Verification protocol
@@ -153,3 +155,4 @@ Each item here cost v1 a rework round. A checker tests every one on both the key
 - 2026-10-02: rewind (GitHub #6, Josh's idea): `driveInput` gains `rewind` (held Backspace / LB, drive context only); events gain `rewind.start` and `rewind.end`; telemetry gains the `rewind` state block (writer: `src/vehicle/rewind.ts`); Settings gains `rewindSeconds`, defaulted from the new `config.ts` knob.
 - 2026-10-02: stunt park (Nathan): `TrickName` gains `ring`, `gap` and `target`; events gain `stunt.ring`, `stunt.gap` and `stunt.target`; `config.ts` gains `stuntPark` and `megaRampHeight` (read from CONFIG directly, not settings).
 - 2026-10-02: `PlayApi` gains `parkHop()` and `doParkHop()` (the pause menu's hop between the road and a walled track's infield stunt park), and `installPlay` takes a partial implementation so play can install its parts as they land.
+- 2026-10-02: music (Nathan's picks): `controlSignals` gains `nextSong` (N / pad B, drive context); `AudioApi` gains `song()`, `nextSong()`, `toggleFavourite()`, `songList()` and `setSongList()` with the `SongInfo` and `SongList` types, and `installAudio` takes a partial implementation. The section 3 controls table gains Rewind and Next song.

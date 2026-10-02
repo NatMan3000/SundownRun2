@@ -9,7 +9,7 @@
 //                    and rewind (held Backspace / LB)
 //                    (only in the 'drive' context; zero elsewhere)
 //    controlSignals  edge-triggered nonces: reset, restart, camera,
-//                    pause, screenshot, race
+//                    pause, screenshot, race, nextSong
 //    menuBus         up / down / left / right / accept / back / tabs
 //                    (only in the 'menu' context, with key repeat)
 //
@@ -322,6 +322,9 @@ function onKeyDown(e: KeyboardEvent): void {
     case 'KeyG':
       controlSignals.race++
       break
+    case 'KeyN':
+      controlSignals.nextSong++
+      break
     default:
       handled = code === 'Escape'
   }
@@ -469,6 +472,7 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
       if (rising(PAD.VIEW)) controlSignals.restart++
       if (rising(PAD.RB) && !padSuppressed[PAD.RB]) controlSignals.cameraCycle++
       if (rising(PAD.X)) controlSignals.race++
+      if (rising(PAD.B) && !padSuppressed[PAD.B]) controlSignals.nextSong++
     } else if (ctx === 'menu') {
       if (rising(PAD.A)) sendMenu('accept', 'gamepad')
       if (rising(PAD.B)) sendMenu('back', 'gamepad')
