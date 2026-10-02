@@ -80,19 +80,36 @@ export const SUSPENSION = {
  *  LANDING CATCH - the other half of forgiving landings. A big jump comes down faster than
  *  0.4 m of suspension can stop (a 3 s jump lands at 17-20 m/s, 0.3 m a step), so the body
  *  slammed into the road: that hit scrubbed 20-45 km/h off the landing, and pushing the body
- *  back out of the road threw the car into the air again for 0.3-0.5 s. Now, when a wheel
- *  closes on the ground faster than its spring can stop it in the travel left, the car gets a
- *  push along the ground's normal at that wheel, just enough to stop it `margin` short of the
- *  body touching. It only ever slows the approach (never pushes back, so nothing bounces) and
- *  carries no tyre load (so it scrubs no speed). The 26 kN spring cap above stays.
+ *  back out of the road threw the car into the air again for 0.3-0.5 s. Now each wheel on the
+ *  ground, and each bottom corner of the body over an axle that is down, checks whether the
+ *  springs can stop it within the room it has left (travel for a wheel, clearance for the body),
+ *  stopping `margin` short. If not, the car's fall is slowed at its centre of mass, along the
+ *  ground's normal, and if the car is spinning into the ground (nose dropping, rolling onto its
+ *  far wheels) that spin is damped. It only ever takes speed and spin away: it never pushes the
+ *  car back up, never starts a rotation, and carries no tyre load (so it scrubs no speed). The
+ *  26 kN spring cap above stays.
+ *  (The first catch pushed at the wheels that touched. On one axle that was a kick about the
+ *  centre of mass: a nose-first ramp landing pitched at 9 rad/s and rolled onto its side.)
  */
 export const LANDING = {
   /** Travel kept spare, m: the catch stops the corner this far before the body would touch. */
   margin: 0.06,
-  /** Closing speeds under this (m/s) are ordinary bumps the springs deal with. */
-  minApproach: 1,
+  /** Closing speeds under this (m/s) are ordinary bumps the springs deal with (1 m/s had it working off-road). */
+  minApproach: 3,
   /** Only ground facing the car's underside: car up . ground normal at least this (0.6 = 53 deg). */
   minFacing: 0.6,
+  /**
+   * Look-ahead: coming down faster than minApproach, the wheel rays reach this many seconds of
+   * the fall further (at most lookMax m), so the catch starts a few steps BEFORE the wheels touch
+   * and the stop is spread out. Without it an 18 m/s landing had 0.1 m of room left at the nose
+   * when the rays first saw the road, and the whole stop happened in one step (-14 km/h, a hop).
+   */
+  lookSeconds: 0.08,
+  lookMax: 1.5,
+  /** The catch leaves the car this much of its fall, m/s, for its springs to settle it onto all four wheels. */
+  sink: 1.5,
+  /** The catch only damps a spin that drives a point into the ground faster than this, m/s. */
+  minSpin: 0.5,
 }
 
 export const TYRE = {

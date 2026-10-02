@@ -98,6 +98,12 @@ const _rv = { x: 0, y: 0, z: 0 }
 const _rp = { x: 0, y: 0, z: 0 }
 const _rq = { x: 0, y: 0, z: 0, w: 1 }
 const WORLD_UP = new THREE.Vector3(0, 1, 0)
+/** Landing catch (stepLandingCatch): ground normal, pitch + roll spin, axle plane point / normal, a body corner. */
+const _lcN = new THREE.Vector3()
+const _lcW = new THREE.Vector3()
+const _lcP = new THREE.Vector3()
+const _lcA = new THREE.Vector3()
+const _lcC = new THREE.Vector3()
 
 /**
  * A chassis contact point counts as touching only within this gap, metres. Soft CCD
@@ -145,6 +151,14 @@ const ANCHORS: readonly THREE.Vector3[] = [
   new THREE.Vector3(-WHEEL.halfTrack, WHEEL.anchorY, WHEEL.halfBase),
   new THREE.Vector3(WHEEL.halfTrack, WHEEL.anchorY, -WHEEL.halfBase),
   new THREE.Vector3(-WHEEL.halfTrack, WHEEL.anchorY, -WHEEL.halfBase),
+]
+
+/** The body box's bottom corners, chassis-local: FL, FR, RL, RR (same order as the wheels). */
+const BODY_CORNERS: readonly THREE.Vector3[] = [
+  new THREE.Vector3(CHASSIS.halfExtents.x, CHASSIS.offsetY - CHASSIS.halfExtents.y, CHASSIS.halfExtents.z),
+  new THREE.Vector3(-CHASSIS.halfExtents.x, CHASSIS.offsetY - CHASSIS.halfExtents.y, CHASSIS.halfExtents.z),
+  new THREE.Vector3(CHASSIS.halfExtents.x, CHASSIS.offsetY - CHASSIS.halfExtents.y, -CHASSIS.halfExtents.z),
+  new THREE.Vector3(-CHASSIS.halfExtents.x, CHASSIS.offsetY - CHASSIS.halfExtents.y, -CHASSIS.halfExtents.z),
 ]
 
 // ---------------------------------------------------------------- helpers
@@ -335,8 +349,10 @@ export class CarSim {
   /** Dev: world-vertical sum of this step's wheel forces (suspension + tyre), N. */
   debugWheelForceY = 0
   debugSuspSum = 0
-  /** Dev: the landing catch's total push this step, N (stepLandingCatch; 0 almost always). */
+  /** Dev: the landing catch's push this step, N (stepLandingCatch; 0 almost always). */
   debugLandCatch = 0
+  /** Dev: how much of the pitch and roll rate the landing catch took out this step, 0..1. */
+  debugLandDamp = 0
   /** Dev: loop guidance this step [lateral m, lateral speed m/s, commanded accel m/s^2, heading error rad]. */
   readonly debugGuide = new Float32Array(4)
   /** Dev: per wheel (FL, FR, RL, RR) x [slip angle rad, lateral force N, longitudinal force N, load N]. */
@@ -428,8 +444,13 @@ export class CarSim {
   private readonly wheelOmega = new Float64Array(WHEELS)
   private readonly longClip = new Float64Array(WHEELS)
   private readonly driveShare = new Float64Array(WHEELS)
-  /** The landing catch's push per wheel this step, N (stepLandingCatch). */
-  private readonly landF = new Float64Array(WHEELS)
+  /** The landing catch's points this step (catchPoint): [speed to cut, push share, spin's part] each. */
+  private readonly lcData = new Float64Array(8 * 3)
+  private lcCount = 0
+  /** Landing look-ahead per wheel: ray length to ground the wheel can't reach yet (-1 = none), where, and its normal. */
+  private readonly nearToi = new Float64Array(WHEELS).fill(-1)
+  private readonly nearPts = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
+  private readonly nearNormals = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
   private readonly contactPts = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
   private readonly wheelNormals = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
   private readonly wheelFwd = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
@@ -793,12 +814,39 @@ export class CarSim {
     ray.dir.x = -up.x
     ray.dir.y = -up.y
     ray.dir.z = -up.z
+    // Landing look-ahead: coming down fast, the rays reach further so the landing catch sees the
+    // ground a few steps before the wheels touch it (LANDING.lookSeconds). A hit past the wheel's
+    // own reach is only for the catch: no support, no grip, no contact.
+    // The fall is measured against the surface below (the road's up, or world up off it), not the
+    // car's own up: a car landing nose-down is falling along its nose as much as along its down.
+    const su = this.surfaceUp
+    const fall = Math.max(-linvel.dot(up), -linvel.dot(su))
+    const reach = fall > LANDING.minApproach ? RAY_LENGTH + Math.min((fall * LANDING.lookSeconds) / Math.max(up.dot(su), 0.5), LANDING.lookMax) : RAY_LENGTH
+    let near = 0
     for (let i = 0; i < WHEELS; i++) {
       _anchor.copy(ANCHORS[i]).applyQuaternion(this.quat).add(pos)
       ray.origin.x = _anchor.x
       ray.origin.y = _anchor.y
       ray.origin.z = _anchor.z
-      const hit = world.castRayAndGetNormal(ray, RAY_LENGTH, true, undefined, GROUPS.wheelRay, undefined, body)
+      const hit = world.castRayAndGetNormal(ray, reach, true, undefined, GROUPS.wheelRay, undefined, body)
+      this.nearToi[i] = -1
+      if (hit && hit.timeOfImpact > RAY_LENGTH) {
+        // Ground coming up below a wheel (not a barrier, and not a loop or wall: those carry their own).
+        const ns = surfaceOf(hit.collider.handle)
+        const nn = this.nearNormals[i].set(hit.normal.x, hit.normal.y, hit.normal.z)
+        if (ns !== 'barrier' && !isMagnetic(ns) && finiteV(nn) && nn.lengthSq() > 0.5) {
+          this.nearToi[i] = hit.timeOfImpact
+          this.nearPts[i].copy(up).multiplyScalar(-hit.timeOfImpact).add(_anchor)
+          near++
+        }
+        this.wheelContact[i] = false
+        this.compression[i] = 0
+        this.suspForce[i] = 0
+        this.rayToi[i] = RAY_LENGTH
+        this.prevToi[i] = -1
+        this.suspCap[i] = 0
+        continue
+      }
       // A barrier is never ground: a wheel whose ray meets one gets no support and no grip, and only
       // the body touches it (scrape and slide along it, upright). Gripping the barrier's face, a car
       // driving into the flat Hyperdrome's outer wall at full throttle rolled 90 deg onto it and rode
@@ -909,8 +957,8 @@ export class CarSim {
 
     // ---- landing catch: never let a hard landing slam the body into the ground ----
     // Not while any wheel is on a loop or wall ride: the loop and the wall carry their own turn.
-    if (grounded > 0 && magWheels === 0 && !this.magGrip) this.stepLandingCatch(body, mass, massRatio, grounded, comX, comY, comZ)
-    else this.debugLandCatch = 0
+    if ((grounded > 0 || near > 0) && magWheels === 0 && !this.magGrip) this.stepLandingCatch(body, mass, massRatio, speed, grounded, comX, comY, comZ)
+    else this.debugLandCatch = this.debugLandDamp = 0
 
     // ---- limited-slip diff: torque goes where the load is ----
     // A flat 50/50 split saturates the unloaded inside rear mid-corner and the
@@ -1387,81 +1435,155 @@ export class CarSim {
   }
 
   /**
-   * The landing catch (LANDING in tuning.ts). For each wheel on the ground: how fast is that
-   * corner closing on the ground, and can its spring stop it in the travel it has left? If not,
-   * push along the ground's normal at that wheel with just enough to stop it in time (and never
-   * more than stops it dead this step, so it can't throw the car back up). The push is sized
-   * with the corner's effective mass (how hard that point is to stop, rotation included) and
-   * never carries tyre load.
+   * The landing catch (LANDING in tuning.ts). Each wheel on the ground, and each bottom corner
+   * of the body over an axle that is down, asks: how fast am I closing on the ground, and can
+   * the springs stop me in the room I have left (spring travel for a wheel, clearance for the
+   * body)? If not, the car gets just enough extra to stop that point in time, in two parts:
+   *  - a push at the centre of mass along the ground's normal (never more than stops the whole
+   *    car's approach: it slows the fall, it never throws the car back up), and
+   *  - if that is not enough because the car is ROTATING into the ground (a nose dropping, a
+   *    roll onto the far wheels), a damping of the car's pitch and roll rate.
+   * Neither part can add energy or start a rotation. The old catch pushed at the wheels that
+   * touched: on one axle that was a kick about the centre of mass, and a nose-first ramp
+   * landing (feel-3 F4) came off the road pitching at 9 rad/s and rolling onto its side.
    */
-  private stepLandingCatch(body: RapierRigidBody, mass: number, massRatio: number, grounded: number, comX: number, comY: number, comZ: number): void {
+  private stepLandingCatch(body: RapierRigidBody, mass: number, massRatio: number, speed: number, grounded: number, comX: number, comY: number, comZ: number): void {
     const up = this.up
-    const ix = CHASSIS.inertia.x * massRatio
-    const iy = CHASSIS.inertia.y * massRatio
-    const iz = CHASSIS.inertia.z * massRatio
-    const lf = this.landF
-    let total = 0
-    let springsN = 0
+    const sf = this.suspForce
+    // The ground the car is coming down on: the wheels on (or above) ground facing its underside
+    // (a ray grazing the side of a ramp or a kerb's face must never become a wall that stops it).
+    const gn = _lcN.set(0, 0, 0)
+    let springs = 0
     for (let i = 0; i < WHEELS; i++) {
-      lf[i] = 0
-      if (!this.wheelContact[i]) continue
-      const n = this.wheelNormals[i]
-      const upN = up.dot(n)
-      springsN += this.suspForce[i] * Math.max(upN, 0)
-      const cpi = this.contactPts[i]
-      _arm.set(cpi.x - comX, cpi.y - comY, cpi.z - comZ)
-      _pointVel.crossVectors(this.angvel, _arm).add(this.linvel)
-      const vIn = -_pointVel.dot(n) // closing speed on the ground, m/s
-      if (!(vIn > LANDING.minApproach)) continue
-      // Only ground the car is coming down ONTO (facing its underside): a ray grazing the side of
-      // a ramp or a kerb's face must never become a wall that stops the car.
-      if (upN < LANDING.minFacing) continue
-      // Travel left before the body would touch, measured along the ground's normal.
-      const rem = Math.max((WHEEL.restLength - this.compression[i] - LANDING.margin) * upN, 0.005)
-      // Effective mass at this point along n: 1 / (1/m + sum over the car's axes of (r x n)^2 / I).
-      _tmp.crossVectors(_arm, n)
-      const cx = _tmp.dot(this.right) // the car's pitch axis (its +X is -right; squared, the sign is moot)
-      const cy = _tmp.dot(up)
-      const cz = _tmp.dot(this.fwd)
-      const effM = Math.min(1 / (1 / mass + (cx * cx) / ix + (cy * cy) / iy + (cz * cz) / iz), mass / grounded)
-      const aGrav = GRAVITY * Math.max(n.y, 0) //          gravity pressing it in
-      const aHave = (this.suspForce[i] * upN) / effM //     the spring's own push along n
-      const aNeed = (vIn * vIn) / (2 * rem) //              to stop within what is left
-      let aExtra = aNeed + aGrav - aHave
-      if (!(aExtra > 0)) continue
-      aExtra = Math.min(aExtra, vIn / DT + aGrav - aHave) // at most: stopped dead this step
-      if (!(aExtra > 0)) continue
-      lf[i] = effM * aExtra
-      total += lf[i]
+      if (this.wheelContact[i]) springs += sf[i]
+      const n = this.groundAt(i)
+      if (n && up.dot(n) >= LANDING.minFacing) gn.add(n)
     }
-    if (total <= 0) {
-      this.debugLandCatch = 0
-      return
+    this.debugLandCatch = 0
+    this.debugLandDamp = 0
+    if (gn.lengthSq() < 1e-6) return
+    gn.normalize()
+    const upN = up.dot(gn)
+    // What slows the car along the normal right now: the springs, against gravity and downforce.
+    const aHave = ((springs - (grounded > 0 ? AERO.downforce * speed * speed : 0)) * upN) / mass - GRAVITY * gn.y
+    const fMax = SUSPENSION.maxForce * massRatio
+    // The pitch and roll part of the spin (yaw about the car's own up is left alone).
+    const w = this.angvel
+    _lcW.copy(w).addScaledVector(up, -w.dot(up))
+    this.lcCount = 0
+    for (let axle = 0; axle < 2; axle++) {
+      const a = axle * 2
+      // This axle: the most its springs can stop (both at their cap), how far it still falls
+      // before a wheel touches (0 once one has), and the ground under it.
+      let cap = 0
+      let gap = 9
+      let k = 0
+      _lcP.set(0, 0, 0)
+      _lcA.set(0, 0, 0)
+      for (let i = a; i < a + 2; i++) {
+        const n = this.groundAt(i)
+        if (!n) continue
+        const un = up.dot(n)
+        if (un < LANDING.minFacing) continue
+        cap += fMax * un
+        gap = Math.min(gap, this.wheelContact[i] ? 0 : (this.nearToi[i] - RAY_LENGTH) * un)
+        _lcP.add(this.wheelContact[i] ? this.contactPts[i] : this.nearPts[i])
+        _lcA.add(n)
+        k++
+      }
+      if (k === 0 || _lcA.lengthSq() < 1e-6) continue
+      const aCap = cap / mass - GRAVITY * gn.y
+      _lcP.multiplyScalar(1 / k)
+      _lcA.normalize()
+      // Its wheels: the gap, then the spring travel left.
+      for (let i = a; i < a + 2; i++) {
+        const n = this.groundAt(i)
+        if (!n) continue
+        const un = up.dot(n)
+        if (un < LANDING.minFacing) continue
+        if (this.wheelContact[i]) this.catchPoint(this.contactPts[i], n, 0, (WHEEL.restLength - this.compression[i] - LANDING.margin) * un, aCap, aHave, gn, comX, comY, comZ)
+        else this.catchPoint(this.nearPts[i], n, (this.nearToi[i] - RAY_LENGTH) * un, (WHEEL.restLength - LANDING.margin) * un, aCap, aHave, gn, comX, comY, comZ)
+      }
+      // Its two bottom corners of the body: a nose-down landing touches with the nose (2 m out)
+      // before the front springs run out of travel.
+      for (let c = a; c < a + 2; c++) {
+        _lcC.copy(BODY_CORNERS[c]).applyQuaternion(this.quat).add(this.pos)
+        const room = _tmp2.subVectors(_lcC, _lcP).dot(_lcA) - LANDING.margin
+        this.catchPoint(_lcC, _lcA, Math.min(gap, Math.max(room, 0)), room - gap, aCap, aHave, gn, comX, comY, comZ)
+      }
     }
-    // Each wheel is sized as if it stopped its own corner, but they all push the same body: on a
-    // three-wheel landing their sum stopped the car and threw it back up at 2-5 m/s. So together
-    // they never take more than stops the whole car's approach (along the mean ground normal).
-    const gn = this.groundNormal
+    if (this.lcCount === 0) return
+    // Part 1: slow the whole car's approach, at the centre of mass (no turn). It never stops it
+    // quite dead (LANDING.sink): a car down on one wheel or one axle keeps settling, and its own
+    // springs tip the rest of it onto the ground. Stopped dead, it hung on that wheel and the
+    // spring's roll lifted it off again before the other side landed.
     const vC = -this.linvel.dot(gn)
-    const cap = Math.max(0, mass * (Math.max(vC, 0) / DT + GRAVITY * Math.max(gn.y, 0)) - springsN)
-    const scale = total > cap ? cap / total : 1
-    total = 0
-    for (let i = 0; i < WHEELS; i++) {
-      const f = lf[i] * scale
-      if (!(f > 0)) continue
-      const cpi = this.contactPts[i]
-      _force.copy(this.wheelNormals[i]).multiplyScalar(f)
-      if (!finiteV(_force) || !finiteV(cpi)) continue
-      _rv.x = _force.x
-      _rv.y = _force.y
-      _rv.z = _force.z
-      _rp.x = cpi.x
-      _rp.y = cpi.y
-      _rp.z = cpi.z
-      body.addForceAtPoint(_rv, _rp, true)
-      total += f
+    const lc = this.lcData
+    let dv = 0
+    for (let p = 0; p < this.lcCount; p++) dv = Math.max(dv, lc[p * 3] / Math.max(lc[p * 3 + 1], 0.5))
+    dv = clamp(dv, 0, Math.max(vC - LANDING.sink, 0))
+    // Part 2: what the push leaves undone at a point the car's spin is driving into the ground
+    // is taken out of the pitch and roll rate (0..1 of it, so it only ever slows the spin).
+    let damp = 0
+    for (let p = 0; p < this.lcCount; p++) {
+      const left = lc[p * 3] - dv * lc[p * 3 + 1]
+      const rot = lc[p * 3 + 2]
+      // Only a spin that really drives the point down: damping all of a slight spin to shave a
+      // few cm/s off a point held the car up on two wheels on rough ground.
+      if (left > 1e-3 && rot > LANDING.minSpin) damp = Math.max(damp, left / rot)
     }
-    this.debugLandCatch = total
+    damp = Math.min(damp, 1)
+    if (dv > 0) {
+      const f = (mass * dv) / DT
+      this.addForce(body, gn.x * f, gn.y * f, gn.z * f)
+      this.debugLandCatch = f
+    }
+    if (damp > 0) {
+      // Torque = -damp x I w / DT on the pitch (car's X) and roll (car's Z) axes only.
+      const r = this.right
+      const f = this.fwd
+      const wx = -_lcW.dot(r) //  the car's +X is its left
+      const wz = _lcW.dot(f)
+      const kx = (-damp * CHASSIS.inertia.x * massRatio * wx) / DT
+      const kz = (-damp * CHASSIS.inertia.z * massRatio * wz) / DT
+      this.addTorque(body, -r.x * kx + f.x * kz, -r.y * kx + f.y * kz, -r.z * kx + f.z * kz)
+      this.debugLandDamp = damp
+    }
+  }
+
+  /** The ground normal under wheel i for the landing catch: touching, or seen by the look-ahead. Null = none. */
+  private groundAt(i: number): THREE.Vector3 | null {
+    if (this.wheelContact[i]) return this.wheelNormals[i]
+    return this.nearToi[i] > 0 ? this.nearNormals[i] : null
+  }
+
+  /**
+   * One point for the landing catch: `p` (world) closing on ground with normal `n`. It has `gap`
+   * metres to fall before its springs start to work, then `room` metres in which they (at most
+   * `aCap`, m/s^2) must stop it. Records how much closing speed to take off this step beyond what
+   * already slows it (`aHave`), how much a push along `gn` counts here, and how fast the car's
+   * pitch / roll spin (_lcW) drives this point into the ground.
+   *  - Still above the ground: slow it just enough to arrive at a speed the springs can stop.
+   *  - On it: stop it within the room left.
+   */
+  private catchPoint(p: THREE.Vector3, n: THREE.Vector3, gap: number, room: number, aCap: number, aHave: number, gn: THREE.Vector3, comX: number, comY: number, comZ: number): void {
+    if (this.lcCount >= 8) return
+    _arm.set(p.x - comX, p.y - comY, p.z - comZ)
+    _pointVel.crossVectors(this.angvel, _arm).add(this.linvel)
+    const vIn = -_pointVel.dot(n) // closing speed, m/s
+    if (!(vIn > LANDING.minApproach)) return
+    const r = Math.max(room, 0.005)
+    const aNeed = gap > 0.005 ? (vIn * vIn - 2 * Math.max(aCap, 0) * r) / (2 * gap) : (vIn * vIn) / (2 * r)
+    // On the ground the springs firm up as they compress: only a point they could not stop even
+    // at full force is the catch's business (it was topping up every bump off the road).
+    if (gap <= 0.005 && !(aNeed > aCap)) return
+    const cut = clamp((aNeed - aHave) * DT, 0, vIn) // never more than stops it dead
+    if (!(cut > 0)) return
+    const o = this.lcCount * 3
+    this.lcData[o] = cut
+    this.lcData[o + 1] = n.dot(gn)
+    this.lcData[o + 2] = -_tmp.crossVectors(_lcW, _arm).dot(n)
+    this.lcCount++
   }
 
   /**
