@@ -33,11 +33,17 @@ const lensFragment = /* glsl */ `
 uniform float uAmount;
 uniform float uMaxOffset;
 
-// HDR guard: a pixel that overflowed half-float (infinity) or went NaN would
-// otherwise poison bloom and tone mapping. This effect runs first in the pass.
+// HDR guard: a pixel that overflowed half-float or went NaN would otherwise
+// poison bloom and tone mapping. This effect runs first in the pass.
+// "Overflowed" is tested as 65504 (the biggest half-float) or more, not only
+// as Infinity: a Mac GPU stores an overflow as Infinity, but Direct3D (Windows)
+// stores 65504, which used to slip past an isinf() test and draw a white-hot
+// dot (GitHub issue #2). Tested on the bits, which no compiler can optimise away.
+bool sr2Bad(float x) {
+  return (floatBitsToUint(x) & 0x7fffffffu) >= 0x477fe000u; // |x| >= 65504, Infinity or NaN
+}
 vec3 sr2Safe(vec3 c) {
-  bvec3 bad = bvec3(isnan(c.r) || isinf(c.r), isnan(c.g) || isinf(c.g), isnan(c.b) || isinf(c.b));
-  return any(bad) ? vec3(0.0) : min(c, vec3(64.0));
+  return (sr2Bad(c.r) || sr2Bad(c.g) || sr2Bad(c.b)) ? vec3(0.0) : min(c, vec3(64.0));
 }
 
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
@@ -130,12 +136,16 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   float r = length(d);
   // Only toward the edges: the middle of the screen is where you look.
   float edge = smoothstep(0.38, 0.85, r);
-  if (edge <= 0.0) return;
 
+  // The spoke pattern and its screen derivative come before the return below:
+  // a derivative taken after a return only some pixels make is undefined.
+  // (At the exact centre atan(0, 0) has no answer, so nudge x there.)
   const float SPOKES = 160.0;
-  float a = atan(d.y, d.x) / 6.2831853 + 0.5;
+  float a = atan(d.y, d.x + step(abs(d.x) + abs(d.y), 0.0)) / 6.2831853 + 0.5;
   float cell = floor(a * SPOKES);
   float across = abs(fract(a * SPOKES) - 0.5) * 2.0; // 0 at the spoke's centre line
+  float w = fwidth(across) * 1.2;
+  if (edge <= 0.0) return;
 
   // Each spoke runs its own streak outward and re-rolls every cycle.
   float h = sr2Hash(cell);
@@ -147,8 +157,7 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   float len = 0.12 + 0.18 * sr2Hash(cell + cycle * 3.3);
   float along = smoothstep(head - len, head, r) * (1.0 - smoothstep(head, head + 0.02, r));
 
-  // Thin line, anti-aliased by its own screen-space footprint.
-  float w = fwidth(across) * 1.2;
+  // Thin line, anti-aliased by its own screen-space footprint (w, above).
   float thick = 0.08 + 0.12 * h;
   float line = 1.0 - smoothstep(thick - w, thick + w, across);
 
@@ -208,8 +217,11 @@ varying vec2 vUv;
 
 void main() {
   vec4 texel = texture2D(inputBuffer, vUv);
-  // never let an overflowed (infinite) or NaN pixel into the blur chain
-  bool bad = isnan(texel.r) || isnan(texel.g) || isnan(texel.b) || isinf(texel.r) || isinf(texel.g) || isinf(texel.b);
+  // never let an overflowed or NaN pixel into the blur chain: tested on the
+  // bits, with "overflowed" meaning 65504 or more (Direct3D stores an overflow
+  // as 65504, a Mac as Infinity; see sr2Safe in the boost lens above)
+  uvec3 bits = floatBitsToUint(texel.rgb) & 0x7fffffffu;
+  bool bad = any(greaterThanEqual(bits, uvec3(0x477fe000u)));
   texel.rgb = bad ? vec3(0.0) : min(texel.rgb, vec3(64.0));
   float m = max(max(texel.r, texel.g), texel.b);
   float knee = max(smoothing, 1e-4);

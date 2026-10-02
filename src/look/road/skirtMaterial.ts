@@ -29,7 +29,7 @@
 
 import * as THREE from 'three'
 import { PALETTE } from '../../core/palette'
-import { MAX_RANGES } from './roadMaterial'
+import { MAX_RANGES, fragmentClamp } from './roadMaterial'
 import type { RoadUniforms } from './roadMaterial'
 import { ROAD_GLSL } from './glsl'
 
@@ -110,10 +110,10 @@ const fragmentEmissive = /* glsl */ `
   // A soft rim where the slab turns away from you, so its silhouette never
   // reads as a black hole. T0.
   // (geometric normal from screen derivatives: exact for this face whatever
-  // the mesh's normal attribute says)
-  vec3 faceN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
-  float facing = abs(dot(faceN, normalize(vViewPosition)));
-  float rim = pow(1.0 - facing, 3.5);
+  // the mesh's normal attribute says; sr2Facing keeps it 0..1, never NaN)
+  float facing = sr2Facing(vViewPosition);
+  float grazing = 1.0 - facing;
+  float rim = pow(grazing, 3.5);
   totalEmissiveRadiance += lineCol * rim * mix(0.22, 0.05, inLoop);
 
   // the lip line, continuing the road's edge strip down the side
@@ -130,7 +130,7 @@ const fragmentEmissive = /* glsl */ `
   // Satin sheen: the upper face catches the sky's colour (strongest at a
   // glancing angle), so far away the deck melts toward the haze instead of
   // cutting a dark slab across it.
-  float sheen = exp(-vLipDist / 0.8) * (0.14 + 0.5 * pow(1.0 - facing, 2.0));
+  float sheen = exp(-vLipDist / 0.8) * (0.14 + 0.5 * grazing * grazing);
   totalEmissiveRadiance += uHorizon * sheen * sideFace;
   // The underside light strip: a thin tube along the slab's bottom corner,
   // wrapping onto the underside, with a soft glow either side. Only where
@@ -171,7 +171,8 @@ export function makeSkirtMaterial(uniforms: RoadUniforms): THREE.MeshStandardMat
       .replace('#include <common>', `#include <common>\n${fragmentPars}`)
       .replace('#include <roughnessmap_fragment>', fragmentFields)
       .replace('#include <emissivemap_fragment>', fragmentEmissive)
+      .replace('#include <opaque_fragment>', fragmentClamp)
   }
-  mat.customProgramCacheKey = () => 'sr2-skirt-v6'
+  mat.customProgramCacheKey = () => 'sr2-skirt-v7'
   return mat
 }

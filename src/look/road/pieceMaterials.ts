@@ -25,7 +25,8 @@
 
 import * as THREE from 'three'
 import { GLOW, PALETTE } from '../../core/palette'
-import { ROAD_GLSL } from './glsl'
+import { NAN_TAG, ROAD_GLSL } from './glsl'
+import { fragmentClamp } from './roadMaterial'
 
 // ---------------------------------------------------------------- ramps
 
@@ -76,6 +77,7 @@ export function makeRampMaterial(time: { value: number }): THREE.MeshStandardMat
       uGlowT0: { value: GLOW.T0 },
       uGlowT1: { value: GLOW.T1 },
       uGlowT2: { value: GLOW.T2 },
+      uSr2NanTag: NAN_TAG,
     })
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${rampVertexPars}`)
@@ -83,8 +85,9 @@ export function makeRampMaterial(time: { value: number }): THREE.MeshStandardMat
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${rampFragmentPars}`)
       .replace('#include <emissivemap_fragment>', rampFragmentEmissive)
+      .replace('#include <opaque_fragment>', fragmentClamp)
   }
-  mat.customProgramCacheKey = () => 'sr2-ramp-v1'
+  mat.customProgramCacheKey = () => 'sr2-ramp-v2'
   return mat
 }
 
@@ -139,7 +142,8 @@ const wallFragmentEmissive = /* glsl */ `
   float onFace = smoothstep(0.15, 0.45, u) * (1.0 - smoothstep(uRailU - 0.6, uRailU - 0.2, u));
   float wAA = max(wU, 0.02);                              // never thinner than a smooth pixel edge
   float stripe = sr2Line(u - 0.95, 0.06, wAA * 1.5);
-  float glow = exp(-pow((u - 0.95) / 0.32, 2.0));
+  float gx = (u - 0.95) / 0.32;                           // (x * x, not pow(x, 2.0): pow of a negative number is NaN)
+  float glow = exp(-gx * gx);
   float band = run * onFace * (stripe + glow * 0.32);
   band *= 1.0 - smoothstep(0.5, 2.0, wV); // fades out where it would shimmer far away
   totalEmissiveRadiance += uRailColor * (rail * uGlowT1 * 0.7 + railEdge * uGlowT2 + base * uGlowT1)
@@ -151,9 +155,8 @@ const wallFragmentEmissive = /* glsl */ `
   float outer = smoothstep(-wU, wU, down);
   float outerEdge = sr2Line(down - 0.05, 0.03, wU);
   float wash = exp(-max(down, 0.0) / 0.4);
-  vec3 faceN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
-  float facing = abs(dot(faceN, normalize(vViewPosition)));
-  float sheen = exp(-max(down, 0.0) / 1.1) * (0.14 + 0.5 * pow(1.0 - facing, 2.0));
+  float grazing = 1.0 - sr2Facing(vViewPosition);   // 0 square-on .. 1 edge-on, never NaN
+  float sheen = exp(-max(down, 0.0) / 1.1) * (0.14 + 0.5 * grazing * grazing);
   // road level on the outer face is one barrier height below its top
   float roadLine = sr2Line(down - uRailU + 0.15, 0.035, wU);
   totalEmissiveRadiance += outer * (uRailColor * (outerEdge * uGlowT1 + wash * uGlowT0 * 0.3 + roadLine * uGlowT1 * 0.7) + uHorizon * sheen);
@@ -178,6 +181,7 @@ export function makeBarrierMaterial(
       uGlowT1: { value: GLOW.T1 },
       uGlowT2: { value: GLOW.T2 },
       uHorizon: horizon,
+      uSr2NanTag: NAN_TAG,
     })
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${wallVertexPars}`)
@@ -185,7 +189,8 @@ export function makeBarrierMaterial(
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${wallFragmentPars}`)
       .replace('#include <emissivemap_fragment>', wallFragmentEmissive)
+      .replace('#include <opaque_fragment>', fragmentClamp)
   }
-  mat.customProgramCacheKey = () => 'sr2-barrier-v6'
+  mat.customProgramCacheKey = () => 'sr2-barrier-v7'
   return mat
 }

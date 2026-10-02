@@ -6,8 +6,8 @@
 //    CarFx      every car's light: trails, underglow, headlights
 //    FxSystem   the reflection map + pooled shards, sparks, pulses
 //    PostStack  bloom, tone mapping, vignette, SMAA, boost lens,
-//               headlight beams, plus the quality manager and the
-//               F9 screenshot
+//               headlight beams, plus the quality manager, the
+//               F9 screenshot and the NaN pixel counter (NanCheck)
 //  App.tsx mounts all four inside the Canvas, and
 //    BridgePylonColliders  the solid bridge pylons, inside <Physics>
 //
@@ -21,6 +21,7 @@ import { EnvironmentMap } from './EnvironmentMap'
 import { QualityManager } from './QualityManager'
 import { Screenshot } from './Screenshot'
 import { DevPick } from './DevPick'
+import { NanCheck } from './NanCheck'
 import { PostStack as Post } from './post/PostStack'
 import { FxPools } from './fx/FxPools'
 import { CarLights } from './fx/CarLights'
@@ -52,6 +53,7 @@ export function PostStack() {
       <QualityManager />
       <Screenshot />
       <DevPick />
+      <NanCheck />
       <Post />
     </>
   )

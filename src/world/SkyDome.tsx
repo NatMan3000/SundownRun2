@@ -61,11 +61,13 @@ varying vec3 vDir;
 vec4 cloudLayer( vec3 d ) {
   float el = d.y;
   float band = smoothstep( 0.012, 0.06, el ) * ( 1.0 - smoothstep( 0.12, 0.3, el ) );
-  if ( band <= 0.0 ) return vec4( 0.0 );
   // Azimuth as 0..1 around the compass. It jumps where the angle wraps, so
   // the texture's mip level comes from explicit gradients taken from whichever
   // of two copies (seams on opposite sides) is smooth at this pixel.
-  float a = atan( d.x, -d.z ) * 0.15915494;
+  // All of it comes BEFORE the early return: a derivative after a return only
+  // some pixels of a 2x2 block make is undefined (garbage on Windows GPUs).
+  // (Straight up, atan(0, 0) has no answer, so nudge z there.)
+  float a = atan( d.x, -d.z + step( abs( d.x ) + abs( d.z ), 0.0 ) ) * 0.15915494;
   float b = fract( a + 1.0 );
   float dax = dFdx( a );
   float day = dFdy( a );
@@ -73,6 +75,7 @@ vec4 cloudLayer( vec3 d ) {
   float dby = dFdy( b );
   vec2 du = vec2( abs( dax ) < abs( dbx ) ? dax : dbx, abs( day ) < abs( dby ) ? day : dby );
   vec2 dv = vec2( dFdx( el ), dFdy( el ) );
+  if ( band <= 0.0 ) return vec4( 0.0 );
   // Soft streaks: the gradients are scaled up, which blurs (a higher mip).
   vec2 s1 = vec2( 3.0, 6.0 ) * 2.6;
   vec2 s2 = vec2( 7.0, 14.0 ) * 2.0;
@@ -98,18 +101,26 @@ void main() {
   vec3 col = skyColor( d );
 
   float c = dot( d, uSunDir );
+  // The sun's card position and every screen derivative the disc needs are
+  // worked out for EVERY pixel, before the if() below: a derivative inside a
+  // branch only some pixels of a 2x2 block take is undefined, and Windows
+  // (Direct3D) GPUs can return garbage there: sun-coloured dots on the ring
+  // where the branch starts (a suspect in GitHub issue #2). max() keeps d / c
+  // finite away from the sun.
+  // Project onto a card facing us: q is -1..1 across the disc.
+  vec3 p = d / max( c, 0.1 ) - uSunDir;
+  vec2 q = vec2( dot( p, uSunRight ), dot( p, uSunUp ) ) / uSunTan;
+  float r = length( q );
+  float aa = fwidth( r ) * 1.2;
+  float bandW = fwidth( q.y / 0.13 ) * 0.75;   // 0.13 = the cut bands' period below
+  float hw = fwidth( d.y ) * 0.75;
   if ( c > 0.6 && uSunVisible > 0.0 ) {
-    // Project onto a card facing us: q is -1..1 across the disc.
-    vec3 p = d / c - uSunDir;
-    vec2 q = vec2( dot( p, uSunRight ), dot( p, uSunUp ) ) / uSunTan;
-    float r = length( q );
 
     // The halo: a soft warm bloom just outside the rim (sky-level, no HDR).
     float outside = max( r - 1.0, 0.0 );
     col += uSunHalo * ( exp( -outside * 7.0 ) * 0.3 + exp( -outside * 1.8 ) * 0.1 ) * uSunVisible;
 
-    // The disc, antialiased with screen-space derivatives.
-    float aa = fwidth( r ) * 1.2;
+    // The disc, antialiased with screen-space derivatives (aa, above).
     float disc = 1.0 - smoothstep( 1.0 - aa, 1.0 + aa * 0.5, r );
 
     // The cut bands: holes that start thin just above the middle and widen
@@ -119,7 +130,7 @@ void main() {
     float ph = fract( ( y + uTime * 0.016 ) / period );
     float g = clamp( ( 0.85 - y ) / 1.85, 0.0, 1.0 );
     float gapHalf = ( g * 0.75 + g * g * 0.25 ) * 0.5;
-    float w = fwidth( y / period ) * 0.75;
+    float w = bandW;
     float cut = 1.0 - smoothstep( gapHalf - w, gapHalf + w, abs( ph - 0.5 ) );
     cut *= smoothstep( 0.0, 0.03, gapHalf );
     disc *= 1.0 - cut;
@@ -128,8 +139,7 @@ void main() {
     vec3 sunCol = mix( uSunBottom, uSunMid, smoothstep( -0.2, 0.45, y ) );
     sunCol = mix( sunCol, uSunTop, smoothstep( 0.45, 0.95, y ) );
 
-    // Nothing of the disc below the horizon line.
-    float hw = fwidth( d.y ) * 0.75;
+    // Nothing of the disc below the horizon line (hw, above).
     float above = smoothstep( -hw, hw, d.y );
     col = mix( col, sunCol, disc * above * uSunVisible );
   }

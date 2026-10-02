@@ -102,13 +102,15 @@ void main() {
   // Where this pixel's ray passes the planet's centre plane (metres, across the line of sight).
   vec3 p = ( vLocal.x * uRight + vLocal.y * uUp ) * uHalf;
   float d = length( p ) / uRadius;
+  // the rim's antialias width, taken before the if() below (a derivative inside
+  // a branch only some pixels of a 2x2 block take is undefined on Windows GPUs)
+  float aa = fwidth( d ) * 1.2;
 
   // ---- the ball ----
   vec3 planetCol = vec3( 0.0 );
   float planetA = 0.0;
   float front = 0.0; // how far in front of the centre plane the ball's surface is, metres
   if ( d < 1.02 ) {
-    float aa = fwidth( d ) * 1.2;
     planetA = 1.0 - smoothstep( 1.0 - aa, 1.0 + aa * 0.5, d );
     float z = sqrt( max( 1.0 - d * d, 0.0 ) ) * uRadius;
     front = z;

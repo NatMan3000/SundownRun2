@@ -187,7 +187,7 @@ varying float vBright;
 void main() {
   // A slow, eased blink: about 2.6 s per cycle, never a hard snap.
   float s = 0.5 + 0.5 * sin( uTime * 2.4 + aPhase * 6.2831 );
-  vBright = pow( s, 6.0 ) * uOn;
+  vBright = pow( max( s, 0.0 ), 6.0 ) * uOn; // max: sin() rounding can dip s a hair below 0 (pow of that is NaN)
   gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
   gl_PointSize = vBright > 0.01 ? 4.0 : 0.0;
 }

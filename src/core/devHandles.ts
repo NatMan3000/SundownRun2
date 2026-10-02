@@ -22,6 +22,10 @@
 //    ?ai=<n>            Ai racer count override (play)
 //    ?mp=1&name=&color= multiplayer (net)
 //    ?nomusic=1         mute music (audio) - handy for checkers
+//    ?engine=<voicing>  muscle | rally | hover engine sound (audio)
+//    ?motor=nodes       the node-built engine LAN guests get (audio)
+//    ?nancheck=1        on-screen broken-pixel counts (look)
+//    ?hide=<a>,<b>      hide scene layers by name (look)
 // ============================================================
 
 import { cars, telemetry } from './telemetry'

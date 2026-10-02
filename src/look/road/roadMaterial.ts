@@ -32,7 +32,7 @@
 import * as THREE from 'three'
 import { GLOW, PALETTE } from '../../core/palette'
 import { SURFACE_CODE } from '../../track/types'
-import { ROAD_GLSL } from './glsl'
+import { NAN_TAG, ROAD_GLSL } from './glsl'
 
 /** Most boost pads / speed traps one track can show (extra ones are skipped with a warning). */
 export const MAX_BOOSTS = 32
@@ -107,6 +107,8 @@ export function makeRoadUniforms(look: RoadLook) {
     uCityCool: { value: c(PALETTE.cityWindowCool) },
     /** The sky's horizon colour right now (environment.horizon), for the slab and barrier sheen. */
     uHorizon: { value: new THREE.Color(PALETTE.skyHorizonDusk) },
+    /** What a NaN pixel draws as (glsl.ts NAN_TAG: 0, or nancheck's marker). Shared by every road material. */
+    uSr2NanTag: NAN_TAG,
   }
 }
 
@@ -234,12 +236,20 @@ float hw = max(vHalf, 0.5);
 float s = vS;
 float wLat = max(fwidth(lat), 1e-4);
 float wS = max(fwidth(s), 1e-4);
+// Every screen derivative the road needs is taken HERE, before any if() or
+// loop. Inside a branch that only some pixels of a 2x2 block take, a
+// derivative is undefined, and on Windows (Direct3D) GPUs it can be garbage
+// there (a suspect for the flickering dots in GitHub issue #2).
+vec2 rp = vec2(lat, s);
+vec2 rpDx = dFdx(rp);                // (lat, s) change one pixel right...
+vec2 rpDy = dFdy(rp);                // ...and one pixel down
+vec3 posDx = dFdx(-vViewPosition);   // the surface point's, for the ripple normal
+vec3 posDy = dFdy(-vViewPosition);
 // Far away (or at a grazing angle) a pixel covers metres: fade fine detail out.
 float detailFade = 1.0 - smoothstep(0.05, 0.25, max(wLat, wS));
 float dEdge = hw - abs(lat); // metres inside the drivable edge
 
 // ---- wetness: big puddle patches stretched along the road + smaller ones
-vec2 rp = vec2(lat, s);
 float n1 = sr2Noise(rp * vec2(0.16, 0.045));
 float n2 = sr2Noise(rp * vec2(0.55, 0.22) + 17.0);
 float wet = smoothstep(0.42, 0.78, n1 * 0.7 + n2 * 0.3);
@@ -247,7 +257,8 @@ float grain = sr2Noise(rp * vec2(5.0, 5.0) + 3.0) - 0.5;
 
 float roughnessFactor = mix(0.24, 0.045, wet) + grain * 0.10 * detailFade * (1.0 - wet);
 // Shoulder beyond the drivable width (if the ribbon has one): drier, rougher.
-roughnessFactor = mix(roughnessFactor, 0.5, smoothstep(0.0, -0.4, dEdge));
+// (smoothstep needs its first edge below its second, or the result is undefined)
+roughnessFactor = mix(roughnessFactor, 0.5, 1.0 - smoothstep(-0.4, 0.0, dEdge));
 diffuseColor.rgb *= mix(1.0, 0.7, wet) * (1.0 + grain * 0.35 * detailFade);
 
 // ---- edge strips: a neon tube 0.3 m inside each edge
@@ -271,7 +282,9 @@ float lane = sr2Line(laneDist, 0.06, wLat) * inner
 float chev = 0.0;
 float chevPulse = 0.0;
 float bend = smoothstep(1.0 / 160.0, 1.0 / 70.0, abs(vCurv)) * isRoad;
-if (bend > 0.001) {
+{
+  // The chevron's shape is worked out for EVERY pixel, so fwidth(d) runs in
+  // step with the neighbouring pixels; only the cheap part waits for the bend test.
   // Outside of a right-hander (+curvature) is the left edge.
   float outside = vCurv > 0.0 ? -1.0 : 1.0;
   float xo = lat * outside;                  // + toward the outside edge
@@ -286,11 +299,14 @@ if (bend > 0.001) {
   float k = (0.72 * BAND_W) / ARM;
   float yc = 0.86 * BAND_W - k * abs(ts);    // a ">" pointing into the corner
   float d = abs(y - yc) / sqrt(1.0 + k * k);
-  float inBand = step(0.0, y) * step(y, BAND_W) * (1.0 - smoothstep(ARM * 0.9, ARM, abs(ts)));
-  chev = sr2Line(d, 0.16, max(fwidth(d), 1e-4)) * inBand * bend;
-  // A comet of light runs forward through the chevrons, one every 6.
-  float lag = fract((uTime * 9.0 - cell) / 6.0);
-  chevPulse = exp(-lag * 5.5);
+  float wD = max(fwidth(d), 1e-4);
+  if (bend > 0.001) {
+    float inBand = step(0.0, y) * step(y, BAND_W) * (1.0 - smoothstep(ARM * 0.9, ARM, abs(ts)));
+    chev = sr2Line(d, 0.16, wD) * inBand * bend;
+    // A comet of light runs forward through the chevrons, one every 6.
+    float lag = fract((uTime * 9.0 - cell) / 6.0);
+    chevPulse = exp(-lag * 5.5);
+  }
 }
 
 // ---- loops: rings of light every 3 m; wall rides: ribs every 2.5 m
@@ -324,7 +340,11 @@ for (int i = 0; i < ${MAX_BOOSTS}; i++) {
   float q = a + abs(b) * AK;
   float ph = fract(q / AP - uTime * 2.9);
   float dq = abs(ph - 0.5) * AP / sqrt(1.0 + AK * AK);
-  float arrow = sr2Line(dq, 0.2, max(fwidth(dq), 1e-4)) * smoothstep(0.3, 0.5, dIn);
+  // fwidth(dq) from the derivatives taken before the loop (a pad's 'continue'
+  // makes this loop a branch): q = a + |b| AK, a moves with s, b with lat.
+  vec2 dqD = (vec2(rpDx.y, rpDy.y) + AK * sign(b) * vec2(rpDx.x, rpDy.x)) / sqrt(1.0 + AK * AK);
+  float wq = max(abs(dqD.x) + abs(dqD.y), 1e-4);
+  float arrow = sr2Line(dq, 0.2, wq) * smoothstep(0.3, 0.5, dIn);
   // hotter toward the front of the pad: it reads as "go"
   boostArrow = max(boostArrow, arrow * (0.55 + 0.45 * clamp(a / len, 0.0, 1.0)));
 }
@@ -377,8 +397,8 @@ const fragmentNormal = /* glsl */ `
     vec3 r2 = sr2NoiseD((TURN * rp) * SC2);
     // slope of the height in metres: d/dlat, d/ds
     vec2 g = r1.yz * SC1 + 0.35 * ((r2.yz * SC2) * TURN);
-    vec2 dHdxy = vec2(g.x * dFdx(rp.x) + g.y * dFdx(rp.y), g.x * dFdy(rp.x) + g.y * dFdy(rp.y));
-    normal = sr2Perturb(-vViewPosition, normal, dHdxy * amp, faceDirection);
+    vec2 dHdxy = vec2(dot(g, rpDx), dot(g, rpDy));
+    normal = sr2PerturbD(posDx, posDy, normal, dHdxy * amp, faceDirection);
   }
 }
 `
@@ -443,9 +463,11 @@ const fragmentEmissive = /* glsl */ `
 
 // HDR safety: a mirror-wet highlight can exceed what a half-float pixel holds
 // (65504) and turn into infinity, which bloom then smears over the whole frame.
-// Nothing on the road needs to be brighter than this.
-const fragmentClamp = /* glsl */ `
-outgoingLight = min(outgoingLight, vec3(48.0));
+// Nothing on the road needs to be brighter than this. A NaN pixel turns black
+// here, never into the cap (min(NaN, 48) is 48: issue #2's white dots).
+export const ROAD_LIGHT_CAP = 48
+export const fragmentClamp = /* glsl */ `
+outgoingLight = sr2SafeLight(outgoingLight, ${ROAD_LIGHT_CAP.toFixed(1)});
 #include <opaque_fragment>
 `
 
@@ -515,7 +537,7 @@ export function makeRoadMaterial(uniforms: RoadUniforms): THREE.MeshStandardMate
       .replace('#include <lights_fragment_end>', fragmentLightsEnd)
   }
   // One program for every road material (the shader text never changes).
-  mat.customProgramCacheKey = () => 'sr2-road-v7'
+  mat.customProgramCacheKey = () => 'sr2-road-v8'
   return mat
 }
 

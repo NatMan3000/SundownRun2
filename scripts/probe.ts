@@ -28,6 +28,10 @@
 //                        default 60) and print the report
 //    --gpuinfo           print the WebGL renderer string (check it's the GPU)
 //    --headed            show the window (default headless)
+//    --angle <backend>   the GPU backend Chrome draws with (default metal).
+//                        swiftshader = Google's CPU renderer, whose maths
+//                        (pow, NaN) behaves like a Windows Direct3D GPU's
+//                        more than the Mac's does; slow, but a few frames do
 //    --chrome <path>     Chrome binary (default: $CHROME_PATH, puppeteer's
 //                        cache, then Chrome Canary / Chrome in /Applications)
 //
@@ -96,7 +100,8 @@ const browser = await puppeteer.launch({
   defaultViewport: { width, height, deviceScaleFactor: 1 },
   args: [
     `--window-size=${width},${height}`,
-    '--use-angle=metal',
+    `--use-angle=${arg('angle') ?? 'metal'}`,
+    ...(arg('angle') === 'swiftshader' ? ['--enable-unsafe-swiftshader'] : []),
     '--enable-gpu',
     '--ignore-gpu-blocklist',
     '--enable-webgl',

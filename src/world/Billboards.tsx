@@ -109,7 +109,8 @@ void main() {
   // Fine scanlines drifting up, and a slow bright band sweeping the panel.
   float scan = 0.8 + 0.2 * sin( vUv.y * 170.0 - uTime * 5.0 );
   float sweepY = fract( uTime * 0.11 + vSeed );
-  float sweep = 1.0 + 0.45 * exp( -pow( ( vUv.y - sweepY ) * 9.0, 2.0 ) );
+  float sx = ( vUv.y - sweepY ) * 9.0; // squared as x * x: pow() of a negative number is NaN
+  float sweep = 1.0 + 0.45 * exp( -sx * sx );
   // A gentle flicker, different on every panel (never a hard blink).
   float flicker = 0.93 + 0.07 * sin( uTime * 19.0 + vSeed * 40.0 ) * sin( uTime * 6.1 + vSeed * 11.0 );
   // A faint frame of light so the panel reads as a solid sheet of hologram.

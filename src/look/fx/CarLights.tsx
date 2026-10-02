@@ -107,7 +107,9 @@ void main() {
   mat4 mv = modelViewMatrix * instanceMatrix;
   vec4 p = mv * vec4(position, 1.0);
   vec3 n = normalize(mat3(mv) * normal);
-  vRim = 1.0 - abs(dot(n, normalize(-p.xyz)));
+  // clamped: rounding can push abs(dot) a hair over 1, and pow() of the
+  // negative leftover (in the fragment shader) is NaN
+  vRim = clamp(1.0 - abs(dot(n, normalize(-p.xyz))), 0.0, 1.0);
   gl_Position = projectionMatrix * p;
 }
 `
@@ -116,7 +118,7 @@ varying float vGlow;
 varying vec3 vColor;
 varying float vRim;
 void main() {
-  float a = pow(vRim, 2.5) * vGlow;
+  float a = pow(max(vRim, 0.0), 2.5) * vGlow;
   if (a < 0.002) discard;
   gl_FragColor = vec4(vColor * a, 1.0);
 }
