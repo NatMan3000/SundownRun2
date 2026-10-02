@@ -519,6 +519,42 @@ export const HOLD = {
   launchFadeLo: 40,
   launchFadeHi: 60,
   launchSeconds: 6,
+  /**
+   * The hold (and the roll-back catch) only work on a slope a car could park on: never with the
+   * car or the ground under it tilted more than this, degrees off level. The steepest road in the
+   * game is the Hyperdrome's banking at its 30 deg default (every other road is under 15), so 35
+   * keeps that with room for the car's lean on its springs, and it sits under the 42 deg that
+   * mu 0.9 could hold anyway. Wedged at 55 deg against a loop's slab, the hold parked a car there
+   * for good (feel-3 F1).
+   */
+  maxTiltDeg: 35,
+}
+
+/**
+ *  BEACHED. A car nearly stopped with no pedal down, resting on its body with only some of its
+ *  wheels on the ground - high-centred on a ribbon's edge, or leaning on a slab in the gap beside
+ *  a loop - slides off under gravity instead of hanging there. The body's own friction is 0.1, but
+ *  against a road's 1.0 the two average to 0.55, enough to hold a crawling car on two wheels on the
+ *  edge of a loop's climb for as long as you like (feel-3 F1). While beached the lower of the two
+ *  counts, so the body slides like the smooth underside it is.
+ */
+export const BEACH = {
+  /** Beached below this speed (m/s)... */
+  speed: 1,
+  /** ...and it stays beached while sliding off, up to this speed (m/s). */
+  releaseSpeed: 2.5,
+  /**
+   * The same goes for a car stopped on a loop's ribbon, too slow for its magnet, where the ribbon
+   * tilts more than loopTiltDeg (the foot of the way-out leg leans 14 deg with the corkscrew): the
+   * tyres on it keep only loopGrip of their grip, so it slides down instead of parking on the loop.
+   */
+  loopTiltDeg: 10,
+  loopGrip: 0.1,
+  /**
+   * Belly down only: car up . world up above this (and with no wheel down, the surface it rests on
+   * . car up too). On its side or roof it is a wipeout, not a slide.
+   */
+  minUp: 0.2,
 }
 
 /**

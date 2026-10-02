@@ -226,6 +226,8 @@ export function VehicleLayer() {
           surface: s.surface,
           chassis: { touching: s.chassisTouching, supportUp: +s.chassisSupportUp.toFixed(2) },
           holding: s.holding,
+          beached: s.beached,
+          loopSlide: s.loopSlide,
           rollbackBrake: +s.rollbackBrake.toFixed(2),
           reseats: { ...s.reseats },
           onRoad: s.onRoad,
@@ -259,6 +261,8 @@ export function VehicleLayer() {
         position: cameraState.position.toArray().map((v) => +v.toFixed(2)),
         rendered: cameraState.rendered.toArray().map((v) => +v.toFixed(2)),
         up: cameraState.up.toArray().map((v) => +v.toFixed(3)),
+        arm: { want: +cameraState.armWant.toFixed(2), got: +cameraState.arm.toFixed(2), clear: Number.isFinite(cameraState.armClear) ? +cameraState.armClear.toFixed(2) : null, soft: Number.isFinite(cameraState.armSoft) ? +cameraState.armSoft.toFixed(2) : null, slab: Number.isFinite(cameraState.armSlab) ? +cameraState.armSlab.toFixed(2) : null, pivotUp: +cameraState.pivotUp.toFixed(2), rise: cameraState.rise },
+        ceiling: Number.isFinite(cameraState.ceiling) ? +cameraState.ceiling.toFixed(2) : null,
       })),
       registerInspector('input', () => ({ ...inputDebug, keys: { ...inputDebug.keys } })),
     ]

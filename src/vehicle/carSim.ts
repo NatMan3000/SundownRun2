@@ -41,6 +41,7 @@ import { quatFromFrame, roadResetPose, startPose } from './trackNav'
 import {
   AERO,
   ASSIST,
+  BEACH,
   BOOST,
   CHASSIS,
   DRIVE,
@@ -117,6 +118,17 @@ interface Manifold {
   subshape1(): number
   subshape2(): number
 }
+/** How a collider combines its friction with what it touches (rapier's CoefficientCombineRule). */
+type CombineRule = Parameters<RapierCollider['setFrictionCombineRule']>[0]
+/** The rule every collider starts with: the two frictions averaged. */
+const COMBINE_AVERAGE = 0 as CombineRule
+/** The lower of the two frictions. */
+const COMBINE_MIN = 1 as CombineRule
+/** HOLD.maxTiltDeg as the lowest car up . world up (and ground normal . world up) the hold works on. */
+const HOLD_MIN_UP = Math.cos((HOLD.maxTiltDeg * Math.PI) / 180)
+/** BEACH.loopTiltDeg as a ground normal . world up: tilted more than this, a loop's ribbon can't hold a stopped car. */
+const LOOP_SLIDE_UP = Math.cos((BEACH.loopTiltDeg * Math.PI) / 180)
+
 /** Really touching: a point inside the gap, or one the last solve pushed on (a hit that bounced apart). */
 function manifoldTouches(m: Manifold): boolean {
   const n = m.numContacts()
@@ -273,6 +285,11 @@ export class CarSim {
   private readonly prevLinvelForDebug = new THREE.Vector3()
   /** Last step's velocity change, while it is being judged as a crash or not. */
   private readonly hitDv = new THREE.Vector3()
+  /**
+   * The velocity change the loop and wall supports asked for on purpose last step (addTurn),
+   * m/s. It is taken off before a step's velocity change is judged as an impact or a crash.
+   */
+  private readonly turnDv = new THREE.Vector3()
 
   // ---- outputs (telemetry for the player, CarState for everyone) ----
   speed = 0 //          m/s, full 3D
@@ -309,6 +326,10 @@ export class CarSim {
    * on its belly (upright), ~0 = on its side, ~-1 = on its roof.
    */
   chassisSupportUp = 1
+  /** Nearly stopped, no pedal, resting on its body with a wheel or more off the ground: it slides (BEACH). */
+  beached = false
+  /** Stopped on a loop's tilted ribbon, too slow for its magnet, no pedal: the tyres let it slide (BEACH.loopGrip). */
+  loopSlide = false
   /** "Up" of the surface under the car: the wheels' ground normal, or in the air the road's own up (bank included) when over the road. */
   readonly surfaceUp = new THREE.Vector3(0, 1, 0)
   /** Dev: world-vertical sum of this step's wheel forces (suspension + tyre), N. */
@@ -643,11 +664,18 @@ export class CarSim {
     }
 
     // ---- impact: |dv| in one step (dv x mass IS the collision impulse) ----
+    // Less the turn the loop or wall itself put on the car last step (addTurn): round a 13 m loop
+    // at 200 km/h that is 4-4.6 m/s a step, and read as a hit it shook the camera all the way
+    // round a clean loop (feel-3 F3). A real hit on a loop still counts in full. Whichever is
+    // smaller counts, with or without the turn taken off: if something stopped the turn (the car
+    // left the wall that step), taking it off anyway would add a hit that never happened.
     let crashCheck = false
     if (this.settleSteps > 0) {
       this.settleSteps--
     } else {
       _tmp.subVectors(linvel, this.prevLinvel)
+      _turnV.subVectors(_tmp, this.turnDv)
+      if (_turnV.lengthSq() < _tmp.lengthSq()) _tmp.copy(_turnV)
       const dv = _tmp.length()
       const hit = clamp((dv - STATE.impactThreshold) / STATE.impactRange, 0, 1)
       if (hit > this.impact) this.impact = hit // camera kick + landing thump (landings included)
@@ -659,6 +687,7 @@ export class CarSim {
       }
     }
     this.prevLinvel.copy(linvel)
+    this.turnDv.set(0, 0, 0)
     if (this.crashCooldown > 0) this.crashCooldown -= DT
     this.impact = Math.max(0, this.impact - STATE.impactDecay * DT)
 
@@ -832,6 +861,23 @@ export class CarSim {
     this.barrierRays = barrierRays
     // Wheels up: is the body itself resting on something? (Only checked while no wheel is down.)
     this.chassisTouching = grounded === 0 && chassis !== null && this.touchingWorld(world, chassis)
+    // A slope a car could park on (HOLD.maxTiltDeg): the auto-hold and the roll-back catch work only there.
+    const parkable = Math.min(up.y, this.groundNormal.y) >= HOLD_MIN_UP
+    // Beached (BEACH): nearly stopped with no pedal down, resting on its body with some or all of
+    // its wheels off the ground, belly down. Its body slides on its own low friction, so gravity
+    // takes it off the edge.
+    let beached = false
+    if (chassis && !this.frozen && grounded < WHEELS && up.y > BEACH.minUp && throttle <= 0.02 && brake <= 0.02 && speed < (this.beached ? BEACH.releaseSpeed : BEACH.speed)) {
+      beached = grounded === 0 ? this.chassisTouching && this.chassisSupportUp > BEACH.minUp : this.bodyResting(world, chassis)
+    }
+    this.setBeached(chassis, beached)
+    // Stopped with no pedal on a loop's ribbon where it tilts (the foot of the way-out leg leans
+    // 14 deg with the corkscrew), too slow for the magnet: a loop can't hold a car too slow for it,
+    // so the tyres there keep only BEACH.loopGrip of their grip and it slides down the ribbon. Left
+    // with full grip, a weave crawl that rolled back off the climb sat sideways on the leg for good.
+    this.loopSlide =
+      !this.frozen && magWheels > 0 && this.magSurface === 'loop' && !this.magGrip && throttle <= 0.02 && brake <= 0.02 &&
+      speed < (this.loopSlide ? BEACH.releaseSpeed : BEACH.speed) && this.groundNormal.y < LOOP_SLIDE_UP
     // Dev: the body scraping the world with wheels down too (a trace channel; off by default).
     this.debugChassisContact = this.debugProbeChassis && chassis !== null && this.probeBodyDebug(world, chassis)
     const airborne = grounded === 0
@@ -878,7 +924,7 @@ export class CarSim {
     // See ROLLBACK in tuning.ts. Once it is slow enough the auto-hold (further down) takes over.
     // Not on a loop or wall ride (a car too slow for one must roll off it) and not in the air.
     this.rollbackBrake = 0
-    if (this.rollbackCatch && !this.frozen && throttle <= 0.02 && brake <= 0.02 && vLongCar < -0.3 && grounded >= 2 && magWheels === 0 && !this.magGrip) {
+    if (this.rollbackCatch && !this.frozen && throttle <= 0.02 && brake <= 0.02 && vLongCar < -0.3 && grounded >= 2 && magWheels === 0 && !this.magGrip && !this.beached && parkable) {
       const backKmh = -vLongCar * 3.6
       let amt = ROLLBACK.brake * (1 - smoothstep(ROLLBACK.fullKmh, ROLLBACK.fadeKmh, backKmh))
       // Steering the roll on purpose: let it roll, but never run away.
@@ -934,7 +980,9 @@ export class CarSim {
 
       // ---- lateral: slip angle -> curve -> force ----
       const alpha = Math.atan2(Math.abs(vLat), Math.max(Math.abs(vLong), TYRE.slipSpeedFloor))
-      let mu = (isFront ? TYRE.muFront : TYRE.muRear) * grip
+      // Stopped on a tilted loop ribbon with no pedal (loopSlide): only BEACH.loopGrip of the grip.
+      const slide = this.loopSlide && this.wheelSurface[i] === 'loop' ? BEACH.loopGrip : 1
+      let mu = (isFront ? TYRE.muFront : TYRE.muRear) * grip * slide
       if (!isFront && handbrake) mu *= TYRE.handbrakeGrip
       // On a wall ride below the minimum the magnet keeps a light pull on so the car can't tip
       // off (MAG.wallSlideStick); that pull is not weight the tyres grip with, or the car would
@@ -942,7 +990,7 @@ export class CarSim {
       const gripLoad = this.wallSlideAccel > 0 && this.wheelSurface[i] === 'wall' ? Math.max(0, load - this.wallSlideAccel * quarterMass) : load
       const maxF = mu * gripLoad
       let fLat = -Math.sign(vLat) * maxF * tyreCurve(alpha, isFront ? TYRE.slideFrontFrac : TYRE.slideRearFrac, peakSlip)
-      if (speed < 2) fLat -= vLat * gripLoad * ASSIST.lowSpeedLateral
+      if (speed < 2) fLat -= vLat * gripLoad * ASSIST.lowSpeedLateral * slide
       this.wheelSlip[i] = clamp((alpha - peakSlip) / (TYRE.tailSlip - peakSlip), 0, 1)
 
       // ---- longitudinal: drive + brakes + rolling resistance ----
@@ -1028,9 +1076,10 @@ export class CarSim {
     // or wall ride, magnet or not: a car that stalls on a loop's climb rolls back down it
     // (holding there, it parked at 42 deg with the magnet off).
     // Parked after a reset (HOLD.resetLift): held fully, whatever the slope, until a pedal or a shove.
+    // Otherwise not on a slope too steep to park on (HOLD.maxTiltDeg), and not while beached: it must slide off.
     const pedal = throttle > 0.02 || brake > 0.02
     if (throttle > HOLD.parkedPedal || brake > HOLD.parkedPedal || this.frozen || this.magGrip || speed > HOLD.parkedRelease) this.parked = false
-    if (this.frozen || pedal || grounded < 3 || this.magGrip || magWheels > 0) this.holding = false
+    if (this.frozen || pedal || grounded < 3 || this.magGrip || magWheels > 0 || (!parkable && !this.parked) || beached) this.holding = false
     else if (speed < HOLD.engageSpeed || this.parked) this.holding = true
     else if (speed > HOLD.releaseSpeed) this.holding = false
     if (this.holding) {
@@ -1333,6 +1382,8 @@ export class CarSim {
       }
     }
     this.addForce(body, a.x * mass, a.y * mass, a.z * mass)
+    // Remembered so the next step's impact test knows this change of velocity was meant.
+    if (finiteV(a)) this.turnDv.addScaledVector(a, DT)
   }
 
   /**
@@ -2116,6 +2167,31 @@ export class CarSim {
     this.barrierHit = false
     world.contactPairsWith(chassis, this.onBarrierPair)
     return this.barrierHit
+  }
+
+  /** True if the chassis box is resting on (touching) the world right now. Unlike touchingWorld, it leaves chassisSupportUp alone. */
+  private bodyResting(world: RapierWorld, chassis: RapierCollider): boolean {
+    this.probeWorld = world
+    this.probeChassis = chassis
+    this.probeHit = false
+    this.probeSupport = -2
+    world.contactPairsWith(chassis, this.onPair)
+    return this.probeHit
+  }
+
+  /**
+   * Beached or not (BEACH). While beached the body's friction combines with the ground's by the
+   * lower of the two (its own 0.1), not their average, so it slides; otherwise back to the average.
+   */
+  private setBeached(chassis: RapierCollider | null, on: boolean): void {
+    const was = this.beached
+    this.beached = on
+    if (!chassis) return
+    if (on) {
+      if (chassis.frictionCombineRule() !== COMBINE_MIN) chassis.setFrictionCombineRule(COMBINE_MIN)
+    } else if (was) {
+      chassis.setFrictionCombineRule(COMBINE_AVERAGE)
+    }
   }
 
   /** True if the chassis box is in contact with a world collider right now (sets chassisSupportUp). */

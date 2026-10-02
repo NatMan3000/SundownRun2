@@ -135,10 +135,35 @@ export const CAMERA = {
   wallPad: 0.35,
   /** The clip test looks from this far above the car (m, along the camera's up). */
   pivotHeight: 1.1,
-  /** Under a slab overhead (an overpass) the camera's target is kept this far below its underside, m. */
+  /** Under a slab overhead (an overpass) the camera's target is kept this far below its underside, m... */
   ceilingPad: 0.6,
+  /** ...eased in; but never closer than this (m), at once: the near plane (0.1 m) stays out of the slab. */
+  ceilingMin: 0.2,
+  /** And never closer than this (m) to any face of a road, loop, wall or ramp slab, from any side. */
+  slabClear: 0.3,
   /** A wall that appears between car and camera pulls the arm in at this rate (1/s: ~95% in 3 frames at 60 fps)... */
   clipInRate: 60,
+  /**
+   * A slab (road, loop, wall, ramp) about to swing in between car and camera is seen this far
+   * (m) beside the camera, and the arm closes in ahead of it: eased at clipSoftRate (1/s) and
+   * never faster than clipInMax m/s (0.35 m a frame at 60 fps), so it never has to jump in front
+   * of one.
+   */
+  clipLookRadius: 1.2,
+  /** The look-ahead runs only while the car is slower than this, km/h (crawling about beside slabs). */
+  clipLookKmh: 55,
+  clipSoftRate: 10,
+  clipInMax: 21,
+  /**
+   * A slab's side face (|normal . up| under sideFace) between the car and the camera's spot lifts the
+   * spot over it by the first of these heights (m) that gives a clear view of the car.
+   */
+  riseSteps: [0.8, 1.6, 2.6, 4] as readonly number[],
+  sideFace: 0.6,
+  /** The look-ahead also tests the line as it will be this many seconds from now (two horizons). */
+  clipAhead: [0.12, 0.3] as readonly number[],
+  /** After the look-ahead last saw a slab coming, the arm holds (doesn't ease back out) this long, seconds. */
+  clipHold: 0.6,
   /** ...and once clear it lets the arm back out at this speed, m/s. */
   clipOutSpeed: 6,
 }

@@ -15,7 +15,11 @@
 //       and steep banks the up vector springs toward the car's up
 //    3. never clip: a ray from the car to the camera pulls it in
 //       front of any road, wall or barrier, and it stays above the
-//       terrain
+//       terrain. A slab (road, loop, wall, ramp) is never let inside:
+//       lines just beside the camera and a moment ahead see one
+//       coming, so the arm eases in before it arrives instead of
+//       jumping, and a slab's side between car and camera lifts the
+//       camera over it
 //    4. FOV = setting + speed + boost kick; speed shake; impact kick
 //
 //  Zero allocation per frame.
@@ -37,6 +41,7 @@ import { computeShot } from './bookmarks'
 import type { Shot } from './bookmarks'
 import { CAMERA, CAMERA_MODES, RIGS, TRANSITION_S } from './rigs'
 import type { CameraRigSpec } from './rigs'
+import type { TrackFrame } from '../../track/types'
 
 // ---------------------------------------------------------------- module temps
 
@@ -63,6 +68,37 @@ const _rendered = new THREE.Vector3()
 const _sight = new THREE.Vector3()
 const _leadAxis = new THREE.Vector3()
 const _leadQ = new THREE.Quaternion()
+const _armDir = new THREE.Vector3()
+const _side = new THREE.Vector3()
+const _lift = new THREE.Vector3()
+const _probe = new THREE.Vector3()
+const _rel = new THREE.Vector3()
+const _relVel = new THREE.Vector3()
+const _pivotAhead = new THREE.Vector3()
+/** Where the camera stood relative to the clip pivot last frame (for its swing, see CAMERA.clipAhead). */
+const _prevRel = new THREE.Vector3()
+const _rise = new THREE.Vector3()
+/** The road frame under the car (is it on a bank, or tipped over off the road?). */
+const _carFrame: TrackFrame = {
+  s: 0,
+  position: new THREE.Vector3(),
+  tangent: new THREE.Vector3(),
+  up: new THREE.Vector3(),
+  right: new THREE.Vector3(),
+  halfWidth: 7,
+  bank: 0,
+  curvature: 0,
+  surface: 'road',
+}
+/** The slabs the camera must never sit inside: the road and everything built like it. */
+function isSlab(collider: { handle: number }): boolean {
+  const k = surfaceOf(collider.handle)
+  return k === 'road' || k === 'loop' || k === 'wall' || k === 'ramp' || k === 'skirt'
+}
+
+/** The arm limits the look-ahead found at each of CAMERA.clipAhead's times (scratch, per frame). */
+const ahead = [Infinity, Infinity]
+
 /** Fractions of its height above the pivot tried, highest first, when ducking the target under a slab. */
 const DUCK_STEPS = [0.6, 0.3, 0] as const
 
@@ -122,6 +158,18 @@ export const cameraState = {
   clipped: false,
   /** Metres from the car's pivot up to a slab overhead (Infinity = none within reach): see CAMERA.ceilingPad. */
   ceiling: Infinity,
+  /** The camera arm this frame, metres from the pivot: what the springs want, and what it got after the clip. */
+  armWant: 0,
+  arm: 0,
+  /** The look-ahead's arm limit (soft) and the slab on the line itself (Infinity = none), metres. */
+  armSoft: Infinity,
+  armSlab: Infinity,
+  /** How far above the car the clip's pivot is this frame, metres (CAMERA.pivotHeight unless a slab is closer). */
+  pivotUp: 1.1,
+  /** Metres the target was lifted over a slab's side this frame (0 = not needed, -1 = needed but no lift cleared it). */
+  rise: 0,
+  /** How far the line from the car to the camera is clear, metres (Infinity = all of it). */
+  armClear: Infinity,
   /** The sprung camera position, before the wall clip and the impact kick. */
   position: _camPos,
   /** Where the camera really is this frame (after the clip and the kick). */
@@ -138,6 +186,13 @@ function smoothDamp(current: number, target: number, i: number, smoothTime: numb
   const temp = (springVel[i] + omega * change) * dt
   springVel[i] = (springVel[i] - omega * temp) * exp
   return target + (change + temp) * exp
+}
+
+/** True if the car is on the road and sitting with the road's up (a bank), not tipped over beside it. */
+function onTheRoad(track: ReturnType<typeof getTrack>): boolean {
+  if (!track) return true
+  track.frameAt(telemetry.trackS, _carFrame)
+  return Math.abs(telemetry.lateral) <= _carFrame.halfWidth + 0.5 && telemetry.carUp.dot(_carFrame.up) > CAMERA.steepCos
 }
 
 /** Move the look target `metres` to the camera's left (on the ground plane), so the car sits right of centre. */
@@ -208,6 +263,16 @@ export function CameraRig() {
     clipArm: Infinity,
     /** The player's last re-seat this camera has carried itself through (CarSim.seatMove.tick). */
     seatTick: -1,
+    /** How far the camera is lowered to keep clear of a slab's underside right now, metres. */
+    underDuck: 0,
+    /** _prevRel holds last frame's camera-from-pivot (false after a cut). */
+    prevRelOk: false,
+    /** Seconds the look-ahead's pull is held after it last saw a slab coming (CAMERA.clipHold). */
+    softHold: 0,
+    /** Still cutting after a reset (until the first frame after the next physics step): see the snap below. */
+    snapping: false,
+    /** links.playerStepAt when the reset was seen. */
+    snapStep: 0,
   }).current
   const camera = useThree((st) => st.camera) as THREE.PerspectiveCamera
   const ray = useRef<InstanceType<NonNullable<typeof links.rapier>['Ray']> | null>(null)
@@ -247,6 +312,53 @@ export function CameraRig() {
     if (kind === 'terrain' || kind === 'floor' || kind === 'barrier') return Infinity
     if (downDot < 1 && -(hit.normal.x * _up.x + hit.normal.y * _up.y + hit.normal.z * _up.z) < downDot) return Infinity
     return hit.timeOfImpact
+  }
+  /**
+   * Distance along `dir` (unit) from `from` to the first road, loop, wall, ramp or skirt face within
+   * `reach` (Infinity if none): the slabs the camera must never sit inside. Terrain, barriers and
+   * anything else (a billboard's post) are left out.
+   */
+  const slabAlong = (from: THREE.Vector3, dir: THREE.Vector3, reach: number): number => {
+    const r = getRay()
+    if (!r || !links.world) return Infinity
+    r.origin.x = from.x
+    r.origin.y = from.y
+    r.origin.z = from.z
+    r.dir.x = dir.x
+    r.dir.y = dir.y
+    r.dir.z = dir.z
+    const hit = links.world.castRay(r, reach, true, undefined, GROUPS.wheelRay, undefined, links.playerBody ?? undefined, isSlab)
+    return hit ? hit.timeOfImpact : Infinity
+  }
+  /**
+   * The clip's pivot: CAMERA.pivotHeight above the car along the camera's up, or less if a slab is
+   * closer than that over the car (a car tipped into the slot beside a loop): every clip ray starts
+   * here, and one that starts inside a slab cannot see the faces round it.
+   */
+  const setPivot = (): void => {
+    _pivot.copy(telemetry.carPosition)
+    const room = slabAlong(_pivot, _up, CAMERA.pivotHeight + CAMERA.wallPad)
+    const h = Math.max(Math.min(CAMERA.pivotHeight, room - CAMERA.wallPad), 0.2)
+    cameraState.pivotUp = h
+    _pivot.addScaledVector(_up, h)
+  }
+  /** True if the first slab on the straight line from `a` to `b` meets it on a side face (its skirt, not its top or underside). */
+  const sideBlocked = (a: THREE.Vector3, b: THREE.Vector3): boolean => {
+    const r = getRay()
+    if (!r || !links.world) return false
+    _sight.subVectors(b, a)
+    const len = _sight.length()
+    if (len < 0.3) return false
+    _sight.divideScalar(len)
+    r.origin.x = a.x
+    r.origin.y = a.y
+    r.origin.z = a.z
+    r.dir.x = _sight.x
+    r.dir.y = _sight.y
+    r.dir.z = _sight.z
+    const hit = links.world.castRayAndGetNormal(r, len + CAMERA.wallPad, true, undefined, GROUPS.wheelRay, undefined, links.playerBody ?? undefined, isSlab)
+    if (!hit) return false
+    return Math.abs(hit.normal.x * _up.x + hit.normal.y * _up.y + hit.normal.z * _up.z) < CAMERA.sideFace
   }
   /** True if the straight line from `a` to `b` is blocked by a slab overhead (a face turned down). */
   const blockedFromAbove = (a: THREE.Vector3, b: THREE.Vector3): boolean => {
@@ -402,7 +514,10 @@ export function CameraRig() {
     } else {
       cameraState.shot = 'drive'
       // Up vector: the car's own up on loops, wall rides and steep banks; world up otherwise.
-      followUp = telemetry.magGrip || (!telemetry.airborne && telemetry.carUp.dot(WORLD_UP) < CAMERA.steepCos)
+      // Steep ground means a bank, a loop or a wall: the car on the road and sitting with the road's
+      // up. A car tipped over off the road (leaning on a slab in the slot beside a loop) keeps the
+      // world's up: following it rolled the camera 55 deg and swung it into the slab.
+      followUp = telemetry.magGrip || (!telemetry.airborne && telemetry.carUp.dot(WORLD_UP) < CAMERA.steepCos && onTheRoad(track))
       _targetUp.copy(followUp ? telemetry.carUp : WORLD_UP)
       // A spring trails a steady turn by about its own smooth time: round a 13 m loop at
       // 200 km/h the car's up turns 4.6 rad/s and the camera's up hung 63-77 deg behind it
@@ -464,7 +579,7 @@ export function CameraRig() {
       cameraState.ceiling = Infinity
       const clipW = cameraState.mode === 'bonnet' ? 1 - ease : cameraState.from === 'bonnet' ? ease : 1
       if (clipW > 0.001) {
-        _pivot.copy(telemetry.carPosition).addScaledVector(_up, CAMERA.pivotHeight)
+        setPivot()
         const hT = _tmp.subVectors(_targetPos, _pivot).dot(_up)
         if (hT > 0.05) {
           const cap = ceilingAbove(_pivot, hT + CAMERA.ceilingPad)
@@ -487,11 +602,39 @@ export function CameraRig() {
             }
           }
         }
+        // A slab's side between the car and that spot (the car down in the slot beside a loop's
+        // ribbon, the camera behind and above it): lift the target over it - the lowest of a few
+        // higher spots with a clear view of the car - so the camera rises over the slab instead of
+        // the clip pulling the arm in to nothing. A road's top surface (a dip) is left to the clip.
+        cameraState.rise = 0
+        if (sideBlocked(_pivot, _targetPos)) {
+          cameraState.rise = -1
+          for (let k = 0; k < CAMERA.riseSteps.length; k++) {
+            _rise.copy(_targetPos).addScaledVector(_up, CAMERA.riseSteps[k])
+            if (slabAlong(_pivot, _dir.subVectors(_rise, _pivot).normalize(), _rise.distanceTo(_pivot) + CAMERA.wallPad) === Infinity) {
+              _targetPos.addScaledVector(_up, CAMERA.riseSteps[k] * clipW)
+              cameraState.rise = CAMERA.riseSteps[k]
+              break
+            }
+          }
+        }
       }
     }
 
     // ---- 3. springs (or the one sanctioned snap) ----
-    if (!s.ready || s.resetTick !== links.resetTick) {
+    // A reset cuts on every frame until the first one after the next physics step: the car's drawn
+    // pose is blended between steps, so until then it still shows the car part of the way from
+    // where it was, and cutting to that once left the camera to fly 100 m to the car.
+    let cut = !s.ready
+    if (s.resetTick !== links.resetTick) {
+      s.snapping = true
+      s.snapStep = links.playerStepAt
+      cut = true
+    } else if (s.snapping) {
+      cut = true
+      if (links.playerStepAt !== s.snapStep) s.snapping = false
+    }
+    if (cut) {
       s.ready = true
       s.resetTick = links.resetTick
       _camPos.copy(_targetPos)
@@ -500,6 +643,9 @@ export function CameraRig() {
       springVel.fill(0)
       s.clipPull = 0
       s.clipArm = Infinity
+      s.underDuck = 0
+      s.prevRelOk = false
+      s.softHold = 0
     } else {
       _camPos.x = smoothDamp(_camPos.x, _targetPos.x, 0, posSmooth, dt)
       _camPos.y = smoothDamp(_camPos.y, _targetPos.y, 1, posSmooth, dt)
@@ -527,43 +673,138 @@ export function CameraRig() {
     cameraState.clipped = false
     const clipWeight = cameraState.mode === 'bonnet' ? 1 - ease : cameraState.from === 'bonnet' ? ease : 1
     if (clipWeight > 0.001) {
-      _pivot.copy(telemetry.carPosition).addScaledVector(_up, CAMERA.pivotHeight)
-      _tmp.subVectors(outPos, _pivot)
-      const want = _tmp.length()
-      let free = want
+      setPivot()
+      _armDir.subVectors(outPos, _pivot)
+      const want = _armDir.length()
+      let free = Infinity
+      let slabFree = Infinity
+      let soft = Infinity
+      ahead[0] = ahead[1] = Infinity
+      cameraState.armClear = Infinity
       const r = want > 0.3 ? getRay() : null
       if (links.world && r) {
-        _tmp.divideScalar(want)
+        _armDir.divideScalar(want)
+        // The line from the car to the camera: the first thing on it of any kind...
         r.origin.x = _pivot.x
         r.origin.y = _pivot.y
         r.origin.z = _pivot.z
-        r.dir.x = _tmp.x
-        r.dir.y = _tmp.y
-        r.dir.z = _tmp.z
+        r.dir.x = _armDir.x
+        r.dir.y = _armDir.y
+        r.dir.z = _armDir.z
         const hit = links.world.castRay(r, want + CAMERA.wallPad, true, undefined, GROUPS.wheelRay, undefined, links.playerBody ?? undefined)
-        if (hit) free = Math.max(0.6, hit.timeOfImpact - CAMERA.wallPad)
+        if (hit) {
+          free = Math.max(0.6, hit.timeOfImpact - CAMERA.wallPad)
+          cameraState.armClear = hit.timeOfImpact
+          // ...and the first slab on it (the same hit, unless something else stands in front).
+          const slabT = isSlab(hit.collider) ? hit.timeOfImpact : slabAlong(_pivot, _armDir, want + CAMERA.wallPad)
+          if (Number.isFinite(slabT)) slabFree = Math.max(slabT - CAMERA.wallPad, 0.1)
+        }
+        // A slab about to swing into that line: lines to points CAMERA.clipLookRadius beside the
+        // camera (left, right and above it, square to the arm). Whatever they meet, the arm will
+        // meet in a moment, so it starts closing in now instead of all at once when it does.
+        // Only for a slow car (CAMERA.clipLookKmh), the one that creeps about beside slabs: at speed
+        // the camera sits in open road behind the car, and round a loop these lines met the loop
+        // itself and pulled the arm in on every lap.
+        const looking = telemetry.speedKmh < CAMERA.clipLookKmh
+        if (looking) {
+          _side.crossVectors(_armDir, _up)
+          if (_side.lengthSq() < 1e-6) _side.set(1, 0, 0)
+          _side.normalize()
+          _lift.crossVectors(_side, _armDir).normalize()
+          for (let k = 0; k < 3; k++) {
+            _probe.copy(outPos).addScaledVector(k === 2 ? _lift : _side, k === 1 ? -CAMERA.clipLookRadius : CAMERA.clipLookRadius).sub(_pivot)
+            const len = _probe.length()
+            if (!(len > 0.3)) continue
+            _probe.divideScalar(len)
+            const t = slabAlong(_pivot, _probe, len)
+            if (Number.isFinite(t)) soft = Math.min(soft, (t * want) / len - CAMERA.wallPad)
+          }
+          // And the line as it will be a moment from now (CAMERA.clipAhead seconds), from where the
+          // car will be to where the camera's swing is taking it: a slab that line meets has to be
+          // in front of the camera by then, so the arm closes in at the pace that gets it there.
+          _rel.subVectors(outPos, _pivot)
+          if (s.prevRelOk) _relVel.subVectors(_rel, _prevRel).divideScalar(Math.max(dt, 1e-3))
+          else _relVel.set(0, 0, 0)
+          for (let k = 0; k < CAMERA.clipAhead.length; k++) {
+            const T = CAMERA.clipAhead[k]
+            _pivotAhead.copy(telemetry.carVelocity).multiplyScalar(T)
+            const move = _pivotAhead.length()
+            if (move > 0.05) {
+              // the car's own path there must be clear, or the line from it means nothing
+              _probe.copy(_pivotAhead).divideScalar(move)
+              if (slabAlong(_pivot, _probe, move) < Infinity) continue
+            }
+            _pivotAhead.add(_pivot)
+            _probe.copy(_rel).addScaledVector(_relVel, T)
+            const len = _probe.length()
+            if (!(len > 0.3)) continue
+            _probe.divideScalar(len)
+            const t = slabAlong(_pivotAhead, _probe, len + CAMERA.wallPad)
+            if (Number.isFinite(t)) {
+              const armThen = (t * want) / len - CAMERA.wallPad
+              if (armThen < ahead[k]) ahead[k] = armThen
+            }
+          }
+        }
       }
-      // The arm length this frame is the shortest of what the camera wants and two limits:
-      //  - the wall: never past it. The camera swinging INTO a wall stops at it, but a wall that
-      //    APPEARS in front of where the camera already is (a post flicking past) is closed in a
-      //    few frames (clipInRate), a quick glide instead of a one-frame cut;
+      _prevRel.subVectors(outPos, _pivot)
+      s.prevRelOk = true
+      // The arm length this frame is the shortest of what the camera wants and these limits:
+      //  - a slab on the line: never past it, ever (the camera never sits inside road);
+      //  - a slab about to cross the line (soft, and the line a moment ahead): the arm closes in
+      //    ahead of it, eased (clipSoftRate) or at the pace the look-ahead needs, never faster
+      //    than clipInMax m/s, so when the slab arrives the arm is already short (a crawl turning
+      //    under a loop's way-out leg cut the arm 2.5 m in one frame, feel-3 F2);
+      //  - anything else on the line (a billboard's post flicking past): closed in a few frames
+      //    (clipInRate), a quick glide instead of a one-frame cut;
       //  - the release: a pull lets go at clipOutSpeed, so passing a post doesn't make it pump.
       //    It is measured as a shortening of the arm, so the arm itself growing (a mode change,
       //    more speed) never reads as a clip.
-      let wallArm = free
-      if (Number.isFinite(s.clipArm) && s.clipArm > free) wallArm = s.clipArm + (free - s.clipArm) * (1 - Math.exp(-CAMERA.clipInRate * dt))
-      const releaseArm = want - Math.max(0, s.clipPull - dt * CAMERA.clipOutSpeed)
-      const arm = Math.max(Math.min(want, 0.6), Math.min(want, wallArm, releaseArm))
+      const prevArm = Number.isFinite(s.clipArm) ? s.clipArm : want
+      let step = soft < prevArm ? (prevArm - soft) * (1 - Math.exp(-CAMERA.clipSoftRate * dt)) : 0
+      for (let k = 0; k < CAMERA.clipAhead.length; k++) {
+        if (ahead[k] < prevArm) step = Math.max(step, ((prevArm - ahead[k]) * dt) / CAMERA.clipAhead[k])
+      }
+      const softArm = step > 0 ? prevArm - Math.min(step, CAMERA.clipInMax * dt) : Infinity
+      const glideArm = free < prevArm ? prevArm + (free - prevArm) * (1 - Math.exp(-CAMERA.clipInRate * dt)) : free
+      // The look-ahead flickers as a slab edge slides along its lines: let go at once and the arm
+      // swung back out between sightings, then had too far to come in when the slab arrived.
+      s.softHold = step > 0 ? CAMERA.clipHold : Math.max(0, s.softHold - dt)
+      const releaseArm = want - Math.max(0, s.clipPull - (s.softHold > 0 ? 0 : dt * CAMERA.clipOutSpeed))
+      // Shortest arm 0.6 m, unless a slab is closer than that (a car jammed against one).
+      const arm = Math.max(Math.min(want, 0.6, slabFree), Math.min(want, softArm, glideArm, releaseArm, slabFree))
+      cameraState.armSoft = Math.min(soft, ahead[0], ahead[1])
+      cameraState.armSlab = slabFree
       s.clipArm = arm
       s.clipPull = want - arm
+      cameraState.armWant = want
+      cameraState.arm = arm
       const pull = s.clipPull * clipWeight
       if (pull > 0.01) {
-        outPos.copy(_pivot).addScaledVector(_tmp.normalize(), want - pull)
+        outPos.copy(_pivot).addScaledVector(_armDir, want - pull)
         cameraState.clipped = true
       }
-      // Never pressed against a slab's underside: keep CAMERA.ceilingPad below it.
+      // Never touching a slab anywhere: kept CAMERA.slabClear off its nearest face (the arm's own
+      // clip only looks along the arm, so a camera could graze a ribbon's edge from the side).
+      if (links.world) {
+        _probe.copy(outPos)
+        const proj = links.world.projectPoint(_probe, false, undefined, GROUPS.wheelRay, undefined, links.playerBody ?? undefined, isSlab)
+        if (proj) {
+          _side.set(outPos.x - proj.point.x, outPos.y - proj.point.y, outPos.z - proj.point.z)
+          const d = _side.length()
+          if (d > 1e-3 && d < CAMERA.slabClear) outPos.addScaledVector(_side, ((CAMERA.slabClear - d) / d) * clipWeight)
+        }
+      }
+      // Never pressed against a slab's underside: keep CAMERA.ceilingPad below it. Eased like the
+      // arm (clipSoftRate, clipInMax): an underside appearing overhead as the camera slides in
+      // under a slab's edge dropped it 0.47 m in one frame. Only the last CAMERA.ceilingMin is
+      // taken at once, so the camera's near plane never cuts into the slab.
       const over = ceilingAbove(outPos, CAMERA.ceilingPad)
-      if (over < CAMERA.ceilingPad) outPos.addScaledVector(_up, -(CAMERA.ceilingPad - over) * clipWeight)
+      const need = over < CAMERA.ceilingPad ? CAMERA.ceilingPad - over : 0
+      if (need > s.underDuck) s.underDuck += Math.min((need - s.underDuck) * (1 - Math.exp(-CAMERA.clipSoftRate * dt)), CAMERA.clipInMax * dt)
+      else s.underDuck = Math.max(need, s.underDuck - CAMERA.clipOutSpeed * dt)
+      if (over < CAMERA.ceilingMin) s.underDuck = Math.max(s.underDuck, CAMERA.ceilingMin - over)
+      if (s.underDuck > 0.001) outPos.addScaledVector(_up, -s.underDuck * clipWeight)
       // And stay above the ground.
       if (track) {
         const gy = track.terrainHeight(outPos.x, outPos.z)
@@ -573,6 +814,9 @@ export function CameraRig() {
       // Bolted to the bonnet: nothing between the camera and the car.
       s.clipPull = 0
       s.clipArm = Infinity
+      s.underDuck = 0
+      s.prevRelOk = false
+      s.softHold = 0
     }
 
     // ---- 5. impact kick, aim, speed shake ----

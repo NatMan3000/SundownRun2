@@ -97,3 +97,31 @@ registerDev(
 )
 
 registerDev('surfaceAt', surfaceAt as never, 'surfaceAt(s, lateral = 0, above = 2): cast a wheel-style ray at the road frame; gap = real collider vs the frame (m), normalVsUp = their alignment')
+
+/**
+ * Every collider a straight line passes through, nearest first: from (ox, oy, oz) along (dx, dy, dz)
+ * for `len` metres, with the same filter the wheels use (the player's own body left out). Each hit:
+ * how far along (m), the surface, and its normal. Handy for "what is the camera inside?" and "what
+ * is under this wheel?" questions.
+ */
+function raysAlong(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, len = 20): unknown {
+  const world = links.world
+  const rapier = links.rapier
+  if (!world || !rapier) return 'no physics'
+  const d = new THREE.Vector3(Number(dx), Number(dy), Number(dz))
+  if (!(d.lengthSq() > 1e-9)) return 'no direction'
+  d.normalize()
+  const out: { at: number; surface: string; n: number[] }[] = []
+  let from = 0
+  for (let k = 0; k < 16 && from < len; k++) {
+    const ray = new rapier.Ray({ x: ox + d.x * from, y: oy + d.y * from, z: oz + d.z * from }, { x: d.x, y: d.y, z: d.z })
+    const hit = world.castRayAndGetNormal(ray, len - from, false, undefined, GROUPS.wheelRay, undefined, links.playerBody ?? undefined)
+    if (!hit) break
+    const at = from + hit.timeOfImpact
+    out.push({ at: +at.toFixed(3), surface: surfaceOf(hit.collider.handle), n: [+hit.normal.x.toFixed(3), +hit.normal.y.toFixed(3), +hit.normal.z.toFixed(3)] })
+    from = at + 0.01
+  }
+  return out
+}
+
+registerDev('raysAlong', raysAlong as never, 'raysAlong(ox, oy, oz, dx, dy, dz, len = 20): every surface a line passes through, nearest first (m along it, surface, normal)')
