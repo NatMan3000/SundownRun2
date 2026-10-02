@@ -30,6 +30,7 @@ import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMix, re
 import type { MixStem, MotorChoice } from './render'
 import { ENGINE_SOUND_IDS, isEngineSound, resolveEngineSound } from './engineVoicings'
 import { isTestDrive } from './sweep'
+import type { TestDriveId } from './sweep'
 import type { MoodId } from './music/score'
 
 const DEV_HELP = [
@@ -44,7 +45,8 @@ const DEV_HELP = [
   "audio('engine-sound', id)          play another engine now: muscle rally hover, or 'auto' (back to ?engine= / config.ts)",
   "audio('sweep')                      18 s scripted test drive: idle, blips, gears, cruise, lift-off, jump (free-rev), landing, drift, boost, off-road, mag grip",
   "audio('sweep', 'drift')             19 s tyre test drive: a long drift at 60 km/h, a big one at 120, a small slide, a slide on the grass",
-  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift (the tyre test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1) | mix (arg: all | engine | music | fx)",
+  "audio('sweep', 'speed')             19 s top speed test drive: every gear to 250 km/h, held, a boost pad, a lift",
+  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed (the engine, tyre or top speed test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1) | mix (arg: all | engine | music | fx)",
 ].join('\n')
 
 export function AudioSystem() {
@@ -103,7 +105,7 @@ function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unkn
       return rig.setEngineSound(String(a))
     case 'sweep': {
       const drive = a === undefined ? 'sweep' : String(a)
-      if (!isTestDrive(drive)) return `unknown drive "${drive}" (sweep | drift)`
+      if (!isTestDrive(drive)) return `unknown drive "${drive}" (sweep | drift | speed)`
       return rig.startSweep(drive)
     }
     case 'mood':
@@ -126,15 +128,9 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const buf = await renderMix(stem)
     return { ...measure(buf), stem, wav: toBase64(encodeWav(buf)) }
   }
-  if (what === 'engine' || what === 'drift') {
-    // 'rally' or 'rally:nodes'. 'engine' records the engine test drive, 'drift' the tyre test drive.
-    const [name, how] = String(arg ?? '').split(':')
-    if (name && !isEngineSound(name)) return `unknown engine "${name}" (${ENGINE_SOUND_IDS.join(' | ')})`
-    const id = resolveEngineSound(name)
-    const motor: MotorChoice = how === 'nodes' ? 'nodes' : 'worklet'
-    const { buf, log } = await renderEngineSweep(id, motor, what === 'drift' ? 'drift' : 'sweep')
-    return { ...measure(buf), engine: id, motor, drive: what === 'drift' ? 'drift' : 'sweep', log, wav: toBase64(encodeWav(buf)) }
-  }
+  // 'engine' records the engine test drive (named 'sweep'); 'drift' and 'speed' the others.
+  const drive = what === 'engine' ? 'sweep' : what
+  if (isTestDrive(drive)) return renderDrive(drive, arg)
   if (what === 'effects') {
     const buf = await renderEffectsReel()
     return { ...measure(buf), wav: toBase64(encodeWav(buf)) }
@@ -143,5 +139,15 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const { buf, log } = await renderMusic(what as MoodId | 'title', Number.isFinite(night) ? night : 0)
     return { ...measure(buf), log, wav: toBase64(encodeWav(buf)) }
   }
-  return `unknown render "${what}" (engine | drift | effects | mix | ${MUSIC_RENDERS.join(' | ')})`
+  return `unknown render "${what}" (engine | drift | speed | effects | mix | ${MUSIC_RENDERS.join(' | ')})`
+}
+
+/** Record one of the scripted drives through the engine. arg: 'rally' or 'rally:nodes'. */
+async function renderDrive(drive: TestDriveId, arg: unknown): Promise<unknown> {
+  const [name, how] = String(arg ?? '').split(':')
+  if (name && !isEngineSound(name)) return `unknown engine "${name}" (${ENGINE_SOUND_IDS.join(' | ')})`
+  const id = resolveEngineSound(name)
+  const motor: MotorChoice = how === 'nodes' ? 'nodes' : 'worklet'
+  const { buf, log } = await renderEngineSweep(id, motor, drive)
+  return { ...measure(buf), engine: id, motor, drive, log, wav: toBase64(encodeWav(buf)) }
 }

@@ -428,7 +428,8 @@ export class AudioRig {
 
   /**
    * Run a scripted test drive: 'sweep' (idle, gears, jump, drift, boost, off-road, mag)
-   * or 'drift' (the tyres: long drifts, a small slide, off-road). Returns its length in seconds.
+   * 'drift' (the tyres: long drifts, a small slide, off-road) or 'speed' (every gear to
+   * 250 km/h, held, a boost pad, a lift). Returns its length in seconds.
    */
   startSweep(drive: TestDriveId = 'sweep'): number {
     const g = this.g

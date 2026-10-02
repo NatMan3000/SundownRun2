@@ -208,7 +208,7 @@ const RALLY: EngineVoicing = {
   },
   layers: {
     spool: 1,
-    spoolHz: [380, 1050],
+    spoolHz: [340, 800],
     whoosh: 0.45,
     blowOff: 1,
     flutter: true,
@@ -258,7 +258,7 @@ const HOVER: EngineVoicing = {
   },
   layers: {
     spool: 0.35,
-    spoolHz: [320, 760],
+    spoolHz: [300, 650],
     whoosh: 0.4,
     blowOff: 0,
     flutter: false,

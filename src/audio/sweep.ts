@@ -10,6 +10,8 @@
 //
 //  driftInput() further down is a second run, all about the tyres:
 //  long drifts, a big one, a small slide and a slide on the grass.
+//  speedInput() is a third, all about going fast: every gear up to
+//  250 km/h, held there, a boost pad, then a lift.
 // ============================================================
 
 import type { EngineInput } from './engine'
@@ -244,14 +246,109 @@ export function driftInput(s: number, out: EngineInput): void {
   out.drifting = out.slip > 0.25
 }
 
-/** The scripted drives, by name: the engine test drive and the tyre test drive. */
+// ============================================================
+//  TOP SPEED TEST DRIVE - 19 seconds of going fast
+// ------------------------------------------------------------
+//  __dev.audio('sweep', 'speed') plays it live and
+//  __dev.audio('render', 'speed', 'muscle') records it. Full throttle
+//  through all six gears to 250 km/h, hold it, hit a boost pad, lift.
+//  The rpm in each gear is what the real gearbox gives at that speed.
+// ============================================================
+
+/** How long the top speed test drive lasts, seconds. */
+export const SPEED_SECONDS = 19
+
+/**
+ * Top speed of each gear, km/h. A copy of GEAR_TOP_KMH in src/vehicle/tuning.ts
+ * (audio keeps its own so it does not reach into the car's files).
+ */
+const GEAR_TOP = [56, 96, 138, 178, 218, 270]
+
+/** Where each part of the top speed drive starts (seconds), and the moments the checks measure. */
+export const SPEED_MARKS = {
+  pull: 0.4, //    full throttle from a standstill
+  at150: 4.7, //   passing 150 km/h in 4th
+  at200: 7.5, //   passing 200 km/h in 5th
+  hold: 11.0, //   250 km/h in 6th, held
+  boost: 14.0, //  a boost pad
+  lift: 15.5, //   off the throttle
+} as const
+
+/** Seconds spent in each gear on the pull (the last one ends at 250 km/h). */
+const GEAR_TIME = [1.0, 1.2, 1.5, 2.0, 2.5, 2.4]
+
+/** The rpm the gearbox gives at this speed in this gear (carSim.ts updateGearAndRpm). */
+function gearRpm(gear: number, kmh: number): number {
+  const lo = gear === 1 ? 0 : GEAR_TOP[gear - 2]
+  const hi = GEAR_TOP[gear - 1]
+  const frac = Math.min(1, Math.max(-0.19, (kmh - lo) / (hi - lo)))
+  return Math.max(0.14, 0.2 + 0.78 * frac)
+}
+
+/**
+ * The top speed test drive, as a function of seconds since start.
+ * Writes into `out` (no allocation). See SPEED_MARKS for the timeline.
+ */
+export function speedInput(s: number, out: EngineInput): void {
+  const M = SPEED_MARKS
+  out.airborne = false
+  out.onRoad = true
+  out.offRoad = false
+  out.magStrength = 0
+  out.boost = 0
+  out.slip = 0
+  out.drifting = false
+  if (s < M.pull) {
+    out.gear = 1
+    out.speedKmh = 0
+    out.throttle = 0
+    out.rpm = 0.1
+    return
+  }
+  if (s < M.hold) {
+    // The pull: each gear from its bottom speed to its top (6th stops at 250).
+    let u = s - M.pull
+    let gear = 1
+    while (gear < 6 && u >= GEAR_TIME[gear - 1]) {
+      u -= GEAR_TIME[gear - 1]
+      gear++
+    }
+    const lo = gear === 1 ? 0 : GEAR_TOP[gear - 2]
+    const hi = gear === 6 ? 250 : GEAR_TOP[gear - 1]
+    out.gear = gear
+    out.throttle = 1
+    out.speedKmh = lo + (hi - lo) * Math.min(1, u / GEAR_TIME[gear - 1])
+    out.rpm = gearRpm(gear, out.speedKmh)
+    return
+  }
+  out.gear = 6
+  if (s < M.boost) {
+    out.throttle = 1
+    out.speedKmh = 250
+  } else if (s < M.lift) {
+    // A boost pad: the kick fades over 1.5 s and carries the car past 250.
+    const u = (s - M.boost) / (M.lift - M.boost)
+    out.throttle = 1
+    out.boost = 1 - smoothstep(0, 1, u)
+    out.speedKmh = 250 + 14 * Math.sin(Math.PI * Math.min(1, u * 0.8))
+  } else {
+    // Lift: the car coasts down from top speed.
+    out.throttle = 0
+    out.speedKmh = 252 - 45 * smoothstep(M.lift, SPEED_SECONDS, s)
+  }
+  out.rpm = gearRpm(6, out.speedKmh)
+}
+
+/** The scripted drives, by name: the engine, the tyres, and top speed. */
 export const TEST_DRIVES = {
   sweep: { seconds: SWEEP_SECONDS, input: sweepInput },
   drift: { seconds: DRIFT_SECONDS, input: driftInput },
+  speed: { seconds: SPEED_SECONDS, input: speedInput },
 } as const
 
 export type TestDriveId = keyof typeof TEST_DRIVES
 
 export function isTestDrive(id: string): id is TestDriveId {
-  return id in TEST_DRIVES
+  // hasOwnProperty, not `in`: 'toString' is "in" every object.
+  return Object.prototype.hasOwnProperty.call(TEST_DRIVES, id)
 }

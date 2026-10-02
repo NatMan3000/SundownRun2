@@ -17,12 +17,12 @@
 //
 //    THE LAYERS AROUND IT:
 //      turbo spool     a soft whoosh-tone that builds with boost and load
-//      intake whoosh   air rushing in under load
+//      intake whoosh   air rushing in under load (dark: under about 800 Hz)
 //      blow-off        the "pssh" (or "stu-tu-tu") when you lift off a spooled turbo
 //      jet turbine     the hover-jet's smooth tone, a fifth above the motor
-//      boost jet       a rushing surge while a boost pad's kick lasts
-//      wind            noise through a band that climbs with speed
-//      road hiss       smooth wet-glass hiss on the road
+//      boost jet       a low "whoomp" of air while a boost pad's kick lasts
+//      wind            a low rush of air that swells and buffets, louder with speed
+//      road roar       the low roar of tyres rolling on the surface
 //      terrain rumble  low, lumpy noise off-road
 //      mag hum         a deep electric thrum while magnetic grip holds you
 //      tyres           a broad, rough scrub of rubber that grows with slip,
@@ -113,6 +113,34 @@ const TYRE = {
   barkGapS: 0.5,
 } as const
 
+/**
+ * The sounds of going fast: wind, road and the boost surge. All of them are kept
+ * low (mostly under 600 Hz) and moving: a steady hiss up high is what sounded like
+ * "white noise" at top speed. Pairs of numbers are [standing still, full speed].
+ */
+const SPEED_SOUNDS = {
+  /** Loudness of the wind at full speed (it grows with the square of speed). */
+  wind: 0.3,
+  /** The top of the wind's sound, Hz. Higher = brighter, more "hiss". */
+  windHz: [220, 600],
+  /** The slow swell of the wind: how much it moves the volume, and how often (times a second). */
+  swell: 0.45,
+  swellHz: 0.8,
+  /** How far a gust opens the wind up, Hz. */
+  gustHz: 70,
+  /** Buffeting, the faster knocks of air on the car at speed: depth at full speed, and how often. */
+  buffet: 0.35,
+  buffetHz: 7,
+  /** Loudness of the road roar at speed. */
+  road: 0.136,
+  /** Middle of the road roar's band, Hz. */
+  roadHz: [140, 360],
+  /** How much the tread's grain shakes the road roar (0 = smooth). */
+  tread: 0.3,
+  /** Loudness of the boost surge at the moment of the kick. */
+  boost: 0.34,
+} as const
+
 /** Where the motor is running: on the audio thread, built from nodes, or still loading. */
 export type MotorKind = 'loading' | 'worklet' | 'nodes'
 
@@ -181,6 +209,7 @@ export class EngineVoice {
     spoolHz: Knob
     spool: Knob
     whooshHz: Knob
+    whooshHz2: Knob
     whoosh: Knob
     jetHz: Knob
     jet: Knob
@@ -188,13 +217,15 @@ export class EngineVoice {
     boost: Knob
     windHz: Knob
     wind: Knob
+    buffet: Knob
+    roadHz: Knob
     road: Knob
     rumble: Knob
     scrubHz: Knob
     scrubQ: Knob
     scrub: Knob
     body: Knob
-    grain: Knob
+    tread: Knob
     magHz: Knob
     magBHz: Knob
     mag: Knob
@@ -259,6 +290,16 @@ export class EngineVoice {
       o.start(t0)
       return o
     }
+    // White noise played back very slowly is a random wobble: a new random value
+    // about `hz` times a second, sliding from one to the next. Used to move volumes.
+    const randomWobble = (hz: number, offset: number): AudioBufferSourceNode => {
+      const n = src(ctx.createBufferSource())
+      n.buffer = noise
+      n.loop = true
+      n.playbackRate.value = hz / noise.sampleRate
+      n.start(t0, offset)
+      return n
+    }
 
     // ================= the motor slot =================
     // The motor itself arrives in attachMotor(), once the browser has said whether
@@ -271,17 +312,24 @@ export class EngineVoice {
     motor.connect(out)
 
     // ================= turbo spool: a low whoosh-tone, never a whistle =================
-    const spoolBand = filter('bandpass', 400, 5)
+    // (Q 3.5: wide enough to be air, not a note. The 1.2 kHz top keeps the band's
+    // edges from spraying hiss up high.)
+    const spoolBand = filter('bandpass', 400, 3.5)
+    const spoolTop = filter('lowpass', 1200, -3)
     const spool = gain(0)
     noiseLoop(0.19).connect(spoolBand)
-    spoolBand.connect(spool)
+    spoolBand.connect(spoolTop)
+    spoolTop.connect(spool)
     spool.connect(out)
 
     // ================= intake whoosh: air rushing in under load =================
+    // Two low-pass filters in a row make a steep top, so almost nothing gets above it.
     const whooshLp = filter('lowpass', 400, 0.8)
+    const whooshLp2 = filter('lowpass', 400, -3)
     const whoosh = gain(0)
     noiseLoop(0.41).connect(whooshLp)
-    whooshLp.connect(whoosh)
+    whooshLp.connect(whooshLp2)
+    whooshLp2.connect(whoosh)
     whoosh.connect(out)
 
     // ================= blow-off: silent until you lift off a spooled turbo =================
@@ -310,34 +358,71 @@ export class EngineVoice {
     jetLp.connect(jet)
     jet.connect(out)
 
-    // ================= boost jet: a rushing surge while a boost pad's kick lasts =================
-    const boostBand = filter('bandpass', 600, 1.2)
+    // ================= boost jet: a low surge of air while a boost pad's kick lasts =================
+    // A band that starts at 700 Hz and sinks as the kick fades, under a 1 kHz top: a
+    // "whoomp" you feel, not a hiss.
+    const boostBand = filter('bandpass', 700, 0.9)
+    const boostTop = filter('lowpass', 1000, -3)
     const boost = gain(0)
     noiseLoop(0.11).connect(boostBand)
-    boostBand.connect(boost)
+    boostBand.connect(boostTop)
+    boostTop.connect(boost)
     boost.connect(out)
 
-    // ================= wind: a broad band climbing with speed, wobbled slowly so it gusts =================
-    const windBp = filter('bandpass', 400, 0.55)
-    const windWobble = lfo(0.31)
-    const windWobbleDepth = gain(90)
-    windWobble.connect(windWobbleDepth)
-    windWobbleDepth.connect(windBp.frequency)
-    // A soft top filter after the band, so fast driving sounds like rushing air, not hiss.
-    const windTop = filter('lowpass', 1400, 0.7)
+    // ================= wind: a low rush of air that swells and buffets =================
+    // Noise under two soft low-pass filters (steep: almost nothing gets over the top),
+    // whose top rises with speed. A slow random swell moves its volume (a gust also
+    // opens it up a little), and faster random knocks join in at speed: buffeting.
+    // (Both filters' frequency is 0 + whatever is plugged into it: windTopHz sets the top,
+    // the gust below adds to it, so one knob moves both.)
+    const windLpA = filter('lowpass', 0, -3)
+    const windLpB = filter('lowpass', 0, -3)
+    const windTopHz = src(ctx.createConstantSource())
+    windTopHz.offset.value = SPEED_SOUNDS.windHz[0]
+    windTopHz.start(t0)
+    windTopHz.connect(windLpA.frequency)
+    windTopHz.connect(windLpB.frequency)
+    const windAmp = gain(1)
     const wind = gain(0)
-    noiseLoop(0.53).connect(windBp)
-    windBp.connect(windTop)
-    windTop.connect(wind)
+    noiseLoop(0.53).connect(windLpA)
+    windLpA.connect(windLpB)
+    windLpB.connect(windAmp)
+    windAmp.connect(wind)
     wind.connect(out)
+    const swell = randomWobble(SPEED_SOUNDS.swellHz, 0.61)
+    const swellDepth = gain(SPEED_SOUNDS.swell)
+    swell.connect(swellDepth)
+    swellDepth.connect(windAmp.gain)
+    const gust = gain(SPEED_SOUNDS.gustHz)
+    swell.connect(gust)
+    gust.connect(windLpA.frequency)
+    gust.connect(windLpB.frequency)
+    const buffetWobble = randomWobble(SPEED_SOUNDS.buffetHz, 1.13)
+    const buffet = gain(0)
+    buffetWobble.connect(buffet)
+    buffet.connect(windAmp.gain)
 
-    // ================= road: smooth, wet hiss =================
-    // Centred at 2 kHz (it was 2.6): still the hiss of wet glass, a little less fizz.
-    const roadBp = filter('bandpass', 2000, 0.6)
+    // ================= road: the low roar of tyres rolling on the surface =================
+    // A wide low band (140-360 Hz, rising with speed) under a steep 900 Hz top, given a light
+    // grain by the tread. It used to be a hiss at 2 kHz, which at top speed was the
+    // "white noise": nothing in the motor covers sound that high.
+    const roadBp = filter('bandpass', SPEED_SOUNDS.roadHz[0], 0.6)
+    const roadTop = filter('lowpass', 900, -3)
+    const roadTop2 = filter('lowpass', 900, -3)
+    const roadAmp = gain(1)
     const road = gain(0)
     noiseLoop(0.97).connect(roadBp)
-    roadBp.connect(road)
+    roadBp.connect(roadTop)
+    roadTop.connect(roadTop2)
+    roadTop2.connect(roadAmp)
+    roadAmp.connect(road)
     road.connect(out)
+    // The tread: a fast random shake (TYRE.grainHz times a second), shared with the
+    // tyre scrub below. The road gets a little of it, a slide gets a lot.
+    const tread = randomWobble(TYRE.grainHz[0], 0.29)
+    const treadDepth = gain(SPEED_SOUNDS.tread)
+    tread.connect(treadDepth)
+    treadDepth.connect(roadAmp.gain)
 
     // ================= terrain: low lumpy rumble (two slow sines make the bumps irregular) =================
     const rumbleLp = filter('lowpass', 170, 1.1)
@@ -377,16 +462,10 @@ export class EngineVoice {
     const body = gain(0)
     tyreNoise.connect(bodyLp)
     bodyLp.connect(body)
-    // The shake: white noise played back very slowly turns into a random wobble
-    // (a new random value grainHz times a second), and the wobble moves the volume.
-    const grain = src(ctx.createBufferSource())
-    grain.buffer = noise
-    grain.loop = true
-    grain.playbackRate.value = TYRE.grainHz[0] / noise.sampleRate
-    grain.start(t0, 0.29)
+    // The shake: the tread's random wobble (made with the road roar above) moves the volume.
     const rough = gain(1)
     const roughDepth = gain(TYRE.roughness)
-    grain.connect(roughDepth)
+    tread.connect(roughDepth)
     roughDepth.connect(rough.gain)
     scrub.connect(rough)
     body.connect(rough)
@@ -434,20 +513,23 @@ export class EngineVoice {
       spoolHz: new Knob(spoolBand.frequency, 0.08, 3),
       spool: new Knob(spool.gain, 0.06, 0.0003),
       whooshHz: new Knob(whooshLp.frequency, 0.08, 4),
+      whooshHz2: new Knob(whooshLp2.frequency, 0.08, 4),
       whoosh: new Knob(whoosh.gain, 0.06, 0.0003),
       jetHz: new Knob(jetBus.offset, 0.25, 0.5), // slow on purpose: a turbine lags the motor
       jet: new Knob(jet.gain, 0.08, 0.0003),
       boostHz: new Knob(boostBand.frequency, 0.08, 5),
       boost: new Knob(boost.gain, 0.06, 0.0005),
-      windHz: new Knob(windBp.frequency, 0.15, 3),
+      windHz: new Knob(windTopHz.offset, 0.3, 2),
       wind: new Knob(wind.gain, 0.12, 0.0005),
+      buffet: new Knob(buffet.gain, 0.3, 0.005),
+      roadHz: new Knob(roadBp.frequency, 0.3, 2),
       road: new Knob(road.gain, 0.08, 0.0005),
       rumble: new Knob(rumble.gain, 0.06, 0.0005),
       scrubHz: new Knob(scrubBp.frequency, 0.1, 4),
       scrubQ: new Knob(scrubBp.Q, 0.1, 0.01),
       scrub: new Knob(scrub.gain, 0.06, 0.0003),
       body: new Knob(body.gain, 0.08, 0.0003),
-      grain: new Knob(grain.playbackRate, 0.2, 0.5 / noise.sampleRate),
+      tread: new Knob(tread.playbackRate, 0.2, 0.5 / noise.sampleRate),
       magHz: new Knob(magA.frequency, 0.2, 0.3),
       magBHz: new Knob(magB.frequency, 0.2, 0.3),
       mag: new Knob(mag.gain, 0.1, 0.0005),
@@ -564,27 +646,34 @@ export class EngineVoice {
     // (Filtered noise is far quieter than a tone at the same gain: a narrow band of it
     // keeps only a sliver of the noise, hence the big numbers.)
     k.spool.to(1.1 * L.spool * sp * sp * (0.4 + 0.6 * throttle), t)
-    k.whooshHz.to(280 + 650 * sp + 250 * throttle, t)
-    k.whoosh.to(0.5 * L.whoosh * (0.3 * throttle + 0.7 * sp) * (0.35 + 0.65 * rpm), t)
+    // The whoosh opens up with the turbo and the throttle, but never past about 800 Hz (dark air, not hiss).
+    const whooshHz = 260 + 400 * sp + 140 * throttle
+    k.whooshHz.to(whooshHz, t)
+    k.whooshHz2.to(whooshHz, t)
+    k.whoosh.to(0.63 * L.whoosh * (0.3 * throttle + 0.7 * sp) * (0.35 + 0.65 * rpm), t)
 
     // ---------- jet turbine (hover): a fifth above the motor, lagging behind it ----------
     const jetHz = hz * L.jetRatio
     k.jetHz.to(jetHz, t)
     k.jet.to(0.045 * L.jet * (0.45 + 0.55 * throttle) * (0.3 + 0.7 * rpm), t)
 
-    // ---------- boost pad surge ----------
-    k.boostHz.to(600 + 1000 * boostNow, t)
-    k.boost.to(0.14 * boostNow * boostNow, t)
+    // ---------- boost pad surge: starts at 700 Hz and sinks as the kick fades ----------
+    k.boostHz.to(300 + 400 * boostNow, t)
+    k.boost.to(SPEED_SOUNDS.boost * boostNow * boostNow, t)
 
     // ---------- wind: rises with the square of speed, a bit more in the air ----------
-    // The band stays low (about 670 Hz at 190 km/h): a rush of air, not a hiss.
-    const wind = 0.15 * speedN * speedN * (grounded ? 1 : 1.35)
-    k.windHz.to(220 + 620 * Math.min(speedN, 1.3), t)
+    // Its top climbs from 220 to 600 Hz at full speed: a low rush, never a hiss.
+    // The buffeting comes in from about 80 km/h.
+    const W = SPEED_SOUNDS
+    const wind = W.wind * speedN * speedN * (grounded ? 1 : 1.35)
+    k.windHz.to(W.windHz[0] + (W.windHz[1] - W.windHz[0]) * Math.min(speedN, 1.2), t)
     k.wind.to(wind, t)
+    k.buffet.to(W.buffet * smoothstep(80, 250, speed), t)
 
     // ---------- surface ----------
     const contact = grounded ? 1 : 0
-    const roadLevel = e.offRoad ? 0 : contact * 0.032 * smoothstep(0, 140, speed)
+    const roadLevel = e.offRoad ? 0 : contact * W.road * smoothstep(0, 160, speed)
+    k.roadHz.to(W.roadHz[0] + (W.roadHz[1] - W.roadHz[0]) * Math.min(speedN, 1), t)
     const rumbleLevel = e.offRoad ? contact * 0.2 * smoothstep(2, 90, speed) : 0
     k.road.to(roadLevel, t)
     k.rumble.to(rumbleLevel, t)
@@ -601,7 +690,7 @@ export class EngineVoice {
     k.scrubQ.to(TYRE.scrubQ[0] + (TYRE.scrubQ[1] - TYRE.scrubQ[0]) * depth, t)
     k.scrub.to(TYRE.scrub * slipAmt * (0.8 + 0.2 * fast) * surface, t)
     k.body.to(TYRE.body * depth * depth * (0.35 + 0.65 * fast) * surface, t)
-    k.grain.to((TYRE.grainHz[0] + (TYRE.grainHz[1] - TYRE.grainHz[0]) * Math.min(speed / 150, 1)) / this.noise.sampleRate, t)
+    k.tread.to((TYRE.grainHz[0] + (TYRE.grainHz[1] - TYRE.grainHz[0]) * Math.min(speed / 150, 1)) / this.noise.sampleRate, t)
     this.watchGrip(t, slipAmt, speed, grounded && !e.offRoad)
 
     // ---------- mag hum ----------
