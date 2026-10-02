@@ -115,6 +115,10 @@ export interface PlayApi {
   newRound: () => void
   /** Restart the current session from the countdown/start (results screen "Again"). */
   restartSession: () => void
+  /** Stunt park on a walled track (the Hyperdrome): where the pause menu's hop goes right now. 'park' = into the infield stunt park, 'track' = back onto the road, null = no hop (open track, race, time trial, no park). */
+  parkHop: () => 'park' | 'track' | null
+  /** Do that hop: the player's car is placed there, stopped (the one sanctioned snap). */
+  doParkHop: () => void
 }
 
 // ---------------------------------------------------------------- registry
@@ -130,7 +134,7 @@ export const vehicle: VehicleApi = {
   },
   disposeModel: noop,
 }
-export const play: PlayApi = { newRound: noop, restartSession: noop }
+export const play: PlayApi = { newRound: noop, restartSession: noop, parkHop: () => null, doParkHop: noop }
 
 const installed = { fx: false, audio: false, vehicle: false, play: false }
 
@@ -146,7 +150,7 @@ export function installVehicle(impl: VehicleApi): void {
   Object.assign(vehicle, impl)
   installed.vehicle = true
 }
-export function installPlay(impl: PlayApi): void {
+export function installPlay(impl: Partial<PlayApi>): void {
   Object.assign(play, impl)
   installed.play = true
 }
