@@ -170,9 +170,12 @@ export function raisedTops(points: readonly RoadPoint[], crossings: readonly Roa
   return out
 }
 
-/** How many bridges the road has: crossings with a road on top, plus raised road away from any crossing. */
-export function bridgeCount(points: readonly RoadPoint[], crossings: readonly RoadCrossing[]): number {
-  return crossings.filter((c) => c.over !== null).length + raisedTops(points, crossings).length
+/**
+ * How many bridges the road has: crossings with a road on top. Raised road away from any
+ * crossing is a hill (the map labels it RAISED), not a bridge, so it isn't counted.
+ */
+export function bridgeCount(_points: readonly RoadPoint[], crossings: readonly RoadCrossing[]): number {
+  return crossings.filter((c) => c.over !== null).length
 }
 
 // ---------------------------------------------------------------- the bridge's shape (the clean-up's own)
