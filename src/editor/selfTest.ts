@@ -61,6 +61,7 @@ import { checkBuiltTrack, checkVerdict, gateItems } from './checks'
 import type { Draft } from './draft'
 import { BRIDGE_GAP, type GroundFn, buildAndCheck, builtGapAt, crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
 import { fixAndRaiseRows, setFixActions } from './selfTestFixes'
+import { look3dRows } from './selfTest3d'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
 type EditorStore = typeof import('./draft')
@@ -1580,6 +1581,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- raising a stretch, and Fix it (selfTestFixes.ts)
 
   fixAndRaiseRows(check, store, { shaky, opts })
+
+  // ---------------------------------------------------------------- the 3D view's camera (selfTest3d.ts)
+
+  look3dRows(check)
 
   return results
 }

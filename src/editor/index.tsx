@@ -3,7 +3,8 @@
 // ------------------------------------------------------------
 //  App.tsx mounts two things while the game is in the 'editor' phase:
 //
-//    <EditorScene />  inside the 3D canvas: the top-down camera. The
+//    <EditorScene />  inside the 3D canvas: the top-down camera (and the
+//                     3D view's camera, look3d.ts). The
 //                     world and road keep rendering the current track,
 //                     which IS the draft (it is rebuilt as you edit).
 //                     On an empty map the world is built around a hidden
@@ -23,6 +24,8 @@
 //                   save, test drive
 //    draftFile.ts   the draft as a real track file, and the base worlds
 //    view.ts        where the map is looking (pan and zoom)
+//    look3d.ts      the 3D view: look round the real track (look only);
+//                   look3dMath.ts, Look3dUi.tsx, look3dMarks.tsx
 //    Overlay.tsx    mouse and keyboard on the map, per tool
 //    mapDraw.ts     everything drawn on the map
 //    EditorUi.tsx   tool rail, piece palette, status line
@@ -41,6 +44,7 @@ import { useEffect } from 'react'
 import { setInputContext } from '../core/controls'
 import { TopDownCamera } from './TopDownCamera'
 import { EmptyRoadHider } from './emptyMap'
+import { Look3dMarks } from './look3dMarks'
 import { EditorUi as EditorOverlayUi } from './EditorUi'
 import { onEditorOpen } from './draft'
 import { isMapOpen } from './worldMap'
@@ -53,6 +57,7 @@ export function EditorScene() {
   return (
     <>
       <TopDownCamera />
+      <Look3dMarks />
       <EmptyRoadHider />
     </>
   )

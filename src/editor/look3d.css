@@ -1,0 +1,158 @@
+/* ============================================================
+   3D VIEW STYLES - the compass and 3D button, the note, the
+   surface that takes the mouse in 3D, and the map's tools waiting
+   ------------------------------------------------------------
+   Colours come only from the CSS variables EditorUi.tsx sets from
+   src/core/palette.ts (the same as editor.css).
+   ============================================================ */
+
+/* Top right of the map, just left of the panel: the compass and the 3D button. */
+.sre {
+  /* The corner's width and the gap left of it (the 3D note keeps clear of it). */
+  --corner-w: 172px;
+}
+.sre-look-corner {
+  position: absolute;
+  top: 18px;
+  right: calc(var(--panel-w) + 32px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 2;
+}
+
+.sre-compass {
+  display: block;
+  flex: none;
+}
+.sre-compass-face {
+  fill: var(--panel);
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.sre-compass-north {
+  fill: var(--accent2);
+}
+.sre-compass-n {
+  fill: var(--text);
+  font: 700 10px var(--font-body);
+}
+
+.sre-look-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+  border-radius: 999px;
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--text);
+}
+.sre-look-btn:hover {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-solid));
+}
+.sre-look-btn svg {
+  color: var(--accent);
+}
+.sre-look-btn kbd {
+  font: 600 0.8em var(--font-mono);
+  color: var(--dim);
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+/* In 3D the button is the way back: lit, like an active tool. */
+.sre-look-btn.is-on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-solid));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* A short window: the empty map's note (editor.css, centred over the map) reaches the corner, so
+   the corner steps down under it while the note is there. */
+@media (max-width: 1700px) {
+  .sre:has(.sre-empty) .sre-look-corner {
+    top: 92px;
+  }
+}
+
+/* In 3D: one line across the top of the map, centred in the strip between the rail and the
+   corner (left, right, a fitted width and auto margins centre it; a long line wraps). */
+.sre-look-note {
+  position: absolute;
+  top: 18px;
+  left: 96px;
+  right: calc(var(--panel-w) + 32px + var(--corner-w));
+  width: fit-content;
+  margin-inline: auto;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 14px;
+  padding: 8px 8px 8px 20px;
+  border-radius: 999px;
+  background: var(--glass);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 40px color-mix(in srgb, var(--panel-solid) 70%, transparent);
+  z-index: 2;
+}
+.sre-look-kicker {
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: 0.8em;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.sre-look-text {
+  color: var(--text);
+}
+.sre-look-note .sre-btn {
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 1em;
+}
+
+/* The see-through layer that takes the mouse in 3D (the map's canvas waits underneath). */
+.sre-look-surface {
+  position: absolute;
+  inset: 0;
+  cursor: move;
+  touch-action: none;
+}
+.sre-look-marks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* While the 3D view shows (or tilts in or out): the map's flat drawing, the empty map's note
+   and the chosen tool's settings box are hidden, and the rail waits, dimmed, until you go back
+   (a click on it says how). */
+.sre.is-3d .sre-overlay,
+.sre.is-3d .sre-empty,
+.sre.is-3d .sre-options,
+.sre.is-3d .sre-palette {
+  visibility: hidden;
+}
+.sre.is-3d .sre-tools {
+  opacity: 0.4;
+  filter: grayscale(0.7);
+  transition: opacity 200ms var(--ease);
+}
+.sre.is-3d .sre-tools * {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sre.is-3d .sre-tools {
+    transition: none;
+  }
+}

@@ -168,7 +168,6 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
   if (x.stroke.length > 1) drawStroke(ctx, x.stroke, x.pencil ?? null, d.width, x.pen?.to ?? x.stroke[x.stroke.length - 1])
   if (x.pen) drawPen(ctx, x.pen.at, x.pen.to)
   drawScaleBar(ctx)
-  drawCompass(ctx)
   if (x.hover) drawReadout(ctx, x.hover)
 }
 
@@ -995,7 +994,7 @@ function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['
   drawPieceIcon(ctx, ghost.kind, sx, sy, ghost.dir, sizes[ghost.kind] ?? { length: 16, width: roadWidth }, toolFor(ghost.kind).colour, 0.55)
 }
 
-// ---------------------------------------------------------------- pins, scale, compass
+// ---------------------------------------------------------------- pins and scale (the compass is beside the 3D button, Look3dUi.tsx)
 
 /**
  * Pins for clean-up notes, validator warnings and the game's track checks (checks.ts)
@@ -1125,31 +1124,6 @@ function drawScaleBar(ctx: CanvasRenderingContext2D): void {
   ctx.fillStyle = PALETTE.uiText
   ctx.textBaseline = 'bottom'
   ctx.fillText(metres >= 1000 ? `${metres / 1000} km` : `${metres} m`, x + px + 8, y + 2)
-  ctx.restore()
-}
-
-function drawCompass(ctx: CanvasRenderingContext2D): void {
-  const x = view.width - 412
-  const y = 40
-  ctx.save()
-  ctx.fillStyle = PALETTE.uiPanel
-  ctx.beginPath()
-  ctx.arc(x, y, 18, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.strokeStyle = PALETTE.uiLine
-  ctx.stroke()
-  ctx.fillStyle = PALETTE.uiAccent2
-  ctx.beginPath()
-  ctx.moveTo(x, y - 13)
-  ctx.lineTo(x - 5, y)
-  ctx.lineTo(x + 5, y)
-  ctx.closePath()
-  ctx.fill()
-  ctx.fillStyle = PALETTE.uiText
-  ctx.font = `700 11px ${FONTS.body}`
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText('N', x, y + 8)
   ctx.restore()
 }
 

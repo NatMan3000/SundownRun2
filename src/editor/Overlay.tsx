@@ -92,6 +92,7 @@ import { selectProblem } from './fixActions'
 import { type RedrawPlan, type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, planRedraw, wrapAt } from './road'
 import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
 import { view, panBy, screenToWorld, setView, worldToScreen, zoomAt, fitBox } from './view'
+import { look3dOn } from './look3d'
 
 /** Pixels the pointer must move before the pencil adds another point. */
 const PENCIL_STEP_PX = 3
@@ -691,6 +692,8 @@ export function Overlay() {
     const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyG: 'bend', KeyL: 'straight', KeyC: 'curve', KeyV: 'select', KeyB: 'section' }
     const onKeyDown = (e: KeyboardEvent) => {
       if (typing(e)) return
+      // The 3D view has its own keys (Look3dUi.tsx); the map's wait, so nothing is edited by accident.
+      if (look3dOn()) return
       const mod = e.ctrlKey || e.metaKey
       // Mid-bend, Undo would pull the road out from under your hand: let go first (or Esc).
       if (mod && bending && (e.code === 'KeyZ' || e.code === 'KeyY')) {
@@ -798,6 +801,14 @@ export function Overlay() {
         for (let i = 0; i < pad.buttons.length; i++) padWas[i] = pad.buttons[i].pressed
         return
       }
+      if (look3dOn()) {
+        // The 3D view drives the controller (Look3dUi.tsx). Keep track of what is held, so the
+        // B that goes back to the map can't also count as a press here when it comes up.
+        clearArmed = false
+        viewHeldFor = 0
+        for (let i = 0; i < pad.buttons.length; i++) padWas[i] = pad.buttons[i].pressed
+        return
+      }
       const dead = (v: number) => (Math.abs(v) < 0.18 ? 0 : (v - Math.sign(v) * 0.18) / 0.82)
       const lx = dead(pad.axes[0] ?? 0)
       const ly = dead(pad.axes[1] ?? 0)
@@ -844,6 +855,12 @@ export function Overlay() {
       const dt = Math.min(0.05, (t - lastT) / 1000)
       lastT = t
       pollPad(dt)
+      if (look3dOn()) {
+        // The 3D view is showing: the flat map neither pans nor draws, and redraws when it comes back.
+        needsDraw = true
+        raf = requestAnimationFrame(loop)
+        return
+      }
       let px = 0
       let py = 0
       if (held.has('KeyA') || held.has('ArrowLeft')) px += 1

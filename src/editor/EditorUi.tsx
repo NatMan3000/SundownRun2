@@ -20,9 +20,13 @@
 //  then the Library. There is no hand tool: the right mouse button
 //  drags the map with every tool (so do the middle button and Space).
 //
-//  Esc (or the pad's Menu button): first closes a dialog, then stops a
-//  bend or a half-made Straight or Curve, then clears a selection, then
-//  leaves the editor. Work is never lost: the draft is kept.
+//  Esc (or the pad's Menu button): first closes a dialog, then goes back
+//  from the 3D view to the map, then stops a bend or a half-made Straight
+//  or Curve, then clears a selection, then leaves the editor. Work is
+//  never lost: the draft is kept.
+//
+//  Top right of the map: the compass and the 3D button (Look3dUi.tsx).
+//  In 3D the rail waits, dimmed, until you go back to the map.
 //
 //  Beside the rail, the chosen tool's own settings (ToolOptions): the
 //  pencil's steady hand, Bend's reach, the steps of Straight and Curve.
@@ -41,6 +45,8 @@ import { closeWorldMap } from './worldMap'
 import { PLACE_TOOLS, type PlaceKind } from './pieces'
 import { setView, view, zoomAt } from './view'
 import { ClearAllDialog, askClearAll, askRandomTrack, clearAllTakesPause, setClearAllBlocked } from './ClearAll'
+import { Look3dUi } from './Look3dUi'
+import { closeLook3d, useLook3d } from './look3d'
 import { BendIcon, ClearIcon, CurveIcon, DiceIcon, FitIcon, GlobeIcon, LibraryIcon, MinusIcon, PencilIcon, PiecesIcon, PlusIcon, SectionIcon, SelectIcon, StraightIcon, UndoIcon } from './icons'
 import { getTrackFile } from '../track/registry'
 import { loadTrackById } from '../track/current'
@@ -94,6 +100,8 @@ function needsRoad(tool: EditorTool): boolean {
 export function EditorUi() {
   const mode = useEditor((s) => s.mode)
   const [library, setLibrary] = useState(false)
+  // In the 3D view the map's drawing and tools wait (look3d.css dims them).
+  const look3d = useLook3d((s) => s.mode !== 'map')
 
   // Esc / the pad's Menu button: close a dialog, then clear the selection, then leave.
   useEffect(() => {
@@ -106,7 +114,9 @@ export function EditorUi() {
         if (clearAllTakesPause(seen)) {
           // The "Clear the whole track?" box used this press to close.
         } else if (library) setLibrary(false)
-        else if (cancelBend() || cancelShaping()) {
+        else if (closeLook3d()) {
+          // Esc went back from the 3D view to the map.
+        } else if (cancelBend() || cancelShaping()) {
           // Esc stopped a bend or a half-made Straight or Curve.
         }
         else if (useEditor.getState().selection) useEditor.setState({ selection: null })
@@ -123,8 +133,9 @@ export function EditorUi() {
   }, [mode])
 
   return (
-    <div className="sre" style={cssVars} data-testid="editor-ui">
+    <div className={look3d ? 'sre is-3d' : 'sre'} style={cssVars} data-testid="editor-ui">
       <Overlay />
+      <Look3dUi />
       <EmptyMapNote />
       <Toolbar onLibrary={() => setLibrary(true)} />
       <Palette />
