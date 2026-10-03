@@ -16,6 +16,13 @@
 //    trackInfo()           summary of the current track build
 //    trackRebuild(bank?)   rebuild the road live (optionally at a bank angle)
 //  Inspector (window.__game.get('track')): the current TrackRuntime.
+//  Inspector (window.__game.get('trackColliders')): every collider in the
+//    live physics world, how many read as part of a tunnel, and how many
+//    tags the track's colliders hold. A collider handle is only a number
+//    each new world counts from the start, so a tag left by the last track
+//    would land on this one's colliders (its ground read as a tunnel's roof
+//    by the camera): after a track change, tunnel colliders must be exactly
+//    the new track's own.
 //
 //  Each frame it also writes telemetry.tunnel: how far inside a
 //  covered tunnel the player's car is (0..1).
@@ -28,7 +35,9 @@ import { telemetry } from '../core/telemetry'
 import { useGame } from '../core/store'
 import { registerDev, registerInspector } from '../core/devHandles'
 import { getTrack, setTrackParam, useTrack } from './current'
-import { createRoadColliders, createWorldColliders, removeColliderSet } from './colliders'
+import { createRoadColliders, createWorldColliders, isTunnelCollider, liveColliderCount, removeColliderSet } from './colliders'
+import { surfaceOf } from '../core/physics'
+import type { World } from './rapierTypes'
 import { trackInternals } from './build'
 import { tunnelCoverAt } from './tunnelCover'
 import { createTerrainTiles, removeTerrainTiles, updateTerrainTiles, type TerrainTiles } from './terrainTiles'
@@ -36,6 +45,8 @@ import type { TrackRuntime } from './types'
 
 /** Collider build timings, for trackInfo(). */
 const timing = { worldMs: 0, roadMs: 0, tilesRebuilt: 0 }
+/** The physics world the track is mounted in (for the trackColliders inspector only). */
+let liveWorld: World | null = null
 
 export function TrackPhysics() {
   const { world, rapier } = useRapier()
@@ -45,6 +56,7 @@ export function TrackPhysics() {
 
   // World edge, catch floor and the ground: once per track (this component remounts with <Physics>).
   useEffect(() => {
+    liveWorld = world
     const t = getTrack()
     if (!t) return
     const t0 = performance.now()
@@ -89,6 +101,21 @@ export function TrackPhysics() {
 
 // ---- dev affordances (module level: registered once) ----
 registerInspector('track', () => getTrack())
+registerInspector('trackColliders', () => {
+  const w = liveWorld
+  if (!w) return null
+  let colliders = 0
+  let tunnel = 0
+  const kinds: Record<string, number> = {}
+  w.forEachCollider((c) => {
+    colliders++
+    if (isTunnelCollider(c.handle)) tunnel++
+    const k = surfaceOf(c.handle)
+    kinds[k] = (kinds[k] ?? 0) + 1
+  })
+  const t = getTrack()
+  return { track: t?.id ?? null, tunnelsBuilt: t?.tunnels.length ?? 0, colliders, tunnel, kinds, tags: liveColliderCount() }
+})
 // The world edge as the world worker needs it: ridge height round the compass, and the sunset notch.
 registerInspector('trackRidge', () => {
   const t = getTrack()

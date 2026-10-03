@@ -39,18 +39,23 @@
 //      (the drive-through, 3b). Where a road crosses over a tunnel's roof, cars
 //      dropped on it and on the roof beside it stay on top, and boxes slide
 //      along it over the roof without hitting a face (3b again).
+//  12. A clean exit: every collider the test tagged is forgotten with its
+//      world, so checking several tracks in one run gives each its own answer.
+//  (3b also slides boxes over every bridge's foot, where the road leaves the
+//   ground or comes back down onto it: in the middle and in both outer lanes,
+//   both ways along the road.)
 //
 //  The checks that need no physics (line, winding, smooth, banking,
 //  bridges, loops, tracking, ground) live in gates.ts, shared with the
 //  road editor.
 // ============================================================
 
-import type { Collider, Rapier, RigidBody } from './rapierTypes'
+import type { Collider, Rapier, RigidBody, World } from './rapierTypes'
 import type { TrackRuntime, NearestHit, TrackFrame } from './types'
 import { SURFACE_CODE } from './types'
 import { BIGAIR_LAYOUT } from './terrain'
-import { createRoadColliders, createWorldColliders, isTunnelCollider } from './colliders'
-import { createTerrainTiles, groundHoleAt, removeTerrainTiles, updateTerrainTiles } from './terrainTiles'
+import { createRoadColliders, createWorldColliders, isTunnelCollider, liveColliderCount, removeColliderSet, type ColliderSet } from './colliders'
+import { createTerrainTiles, groundHoleAt, removeTerrainTiles, updateTerrainTiles, type TerrainTiles } from './terrainTiles'
 import { buildTrack, trackInternals } from './build'
 import { SIDE_RUN } from './ramps'
 import { LOOP_RUN_IN, loopShape } from './road'
@@ -58,6 +63,9 @@ import { roadOverTunnels } from './tunnels'
 import { where } from './gates'
 import { surfaceOf } from '../core/physics'
 import * as THREE from 'three'
+
+/** What to do about a box that hits something at a bridge's foot. */
+const BRIDGE_FOOT_WHY = "the ground comes up under the road where it comes down off a bridge (or leaves the ground for one). A builder bug, not your file: nothing in a track file can fix it, so report it"
 
 /** Half extents of a car-sized test box, metres (a car is about 1.9 x 1.2 x 4.3). */
 const CAR = { hx: 0.95, hy: 0.55, hz: 2.15 }
@@ -117,10 +125,11 @@ export interface SelfTestResult {
 export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestResult {
   const lines: string[] = []
   let ok = true
+  // Colliders tagged before this test began (none in tracks:check): it must end with the same count.
+  const liveBefore = liveColliderCount()
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
-  createWorldColliders(world, RAPIER, t)
-  createRoadColliders(world, RAPIER, t)
-  createTerrainTiles(world, RAPIER, t)
+  const worldSets = [createWorldColliders(world, RAPIER, t), createRoadColliders(world, RAPIER, t)]
+  const worldTiles = createTerrainTiles(world, RAPIER, t)
   world.step() // builds the query structures
 
   // ---- 1. the ground collider matches terrainHeight() ----
@@ -384,7 +393,9 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     // A steered run ends when it reaches `until`. A hands-off run ends after `metres` of
     // travel, or (when `mouthS` is set) as soon as it is riding up the loop past mouthS.
     type HandsOff = { metres: number; mouthS?: number }
-    type Run = { what: string; s: number; until: number; v: number; lat?: number; headDeg?: number; handsOff?: HandsOff; why?: string; turn?: boolean }
+    // `back`: driven the wrong way along the road (from s back down to until).
+    // `settle`: seconds after the box is set down that don't count (it drops the few centimetres onto the road).
+    type Run = { what: string; s: number; until: number; v: number; lat?: number; headDeg?: number; handsOff?: HandsOff; why?: string; turn?: boolean; back?: boolean; settle?: number }
     const runs: Run[] = []
     const rampZones: { s0: number; s1: number; off: number; reach: number }[] = []
     const HANDS_OFF = [
@@ -460,6 +471,48 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       // (At 45 m/s, and flat out: a car's soft CCD looks further ahead the faster it goes.)
       for (const v of [45, 70]) for (const lat of [0, -(frame.halfWidth - CAR.hx - 0.6), frame.halfWidth - CAR.hx - 0.6]) runs.push({ what: `over a tunnel's roof at ${v} m/s (lateral ${lat.toFixed(1)} m)`, s: s0, until: s0 + len, v, lat, turn: true })
     }
+    // Over every bridge's foot (where the road leaves the ground for a bridge or a raised stretch,
+    // or comes back down onto it), in the middle and both outer lanes, both ways along the road. The
+    // ground climbs to meet the road there, along it as well as across it, and a face under the
+    // deck ahead is a wall to a car's one-step look-ahead (soft CCD). The checkpoint runs keep to the
+    // middle, and an outer lane is where a car meets the ground first.
+    {
+      const S = t.samples
+      const feet: number[] = []
+      for (let i = 0; i < S.count; i++) {
+        const j = (i + 1) % S.count
+        if (S.surface[i] !== SURFACE_CODE.road || S.surface[j] !== SURFACE_CODE.road || S.grounded[i] === S.grounded[j]) continue
+        const sf = j * S.ds
+        // (Samples run in order round the lap, so these are plain distances along it.)
+        if (!feet.length || sf - feet[feet.length - 1] > 30) feet.push(sf)
+      }
+      // The last and the first can be one foot, across the start line.
+      if (feet.length > 1 && feet[0] + t.length - feet[feet.length - 1] <= 30) feet.pop()
+      const FOOT_BEFORE = 25
+      const FOOT_AFTER = 35
+      // A box set down beside the road's outer edge drops onto it over the lip of ground just under the
+      // edge (5 cm down, on purpose: a car drives back on from the grass without a kerb); that first
+      // moment is the setting down, not the foot, so it starts this much further back and isn't judged.
+      const FOOT_SETTLE = 0.25
+      const FOOT_V = 45
+      const lead = FOOT_BEFORE + FOOT_V * FOOT_SETTLE
+      for (const sf of feet) {
+        // Only on plain road: a loop, wall ride or ramp in the way has runs of its own.
+        let plain = true
+        for (let d = -FOOT_AFTER; d <= FOOT_AFTER && plain; d += 1) {
+          const i = Math.round((((sf + d) % t.length) + t.length) % t.length / S.ds) % S.count
+          if (S.surface[i] !== SURFACE_CODE.road) plain = false
+        }
+        for (const z of rampZones) if (t.deltaS(sf - FOOT_AFTER, z.s1 + 2) >= 0 && t.deltaS(z.s0 - 2, sf + FOOT_AFTER) >= 0) plain = false
+        if (!plain) continue
+        t.frameAt(sf, frame)
+        const outer = frame.halfWidth - CAR.hx - 0.6
+        for (const lat of [0, -outer, outer]) {
+          runs.push({ what: `over a bridge's foot (lateral ${lat.toFixed(1)} m)`, s: sf - lead, until: sf + FOOT_AFTER, v: FOOT_V, lat, turn: true, why: BRIDGE_FOOT_WHY, settle: FOOT_SETTLE })
+          runs.push({ what: `over a bridge's foot the wrong way (lateral ${lat.toFixed(1)} m)`, s: sf + lead, until: sf - FOOT_AFTER, v: FOOT_V, lat, turn: true, back: true, why: BRIDGE_FOOT_WHY, settle: FOOT_SETTLE })
+        }
+      }
+    }
     // Plus a plain run at every checkpoint (straight road joints, bridges, the seam).
     // One that would cross a ramp's footprint runs in the clear lane beside the ramp
     // instead (the ramp's own runs cover the ramp), or is left to them if there is none.
@@ -487,8 +540,9 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     const aim = new THREE.Vector3()
     for (const r of runs) {
       t.frameAt(r.s, frame)
-      // Heading: along the road, turned headDeg to the right (about the road's up).
-      aim.copy(frame.tangent).applyAxisAngle(frame.up, (-(r.headDeg ?? 0) * Math.PI) / 180)
+      const dir = r.back ? -1 : 1
+      // Heading: along the road (or back along it), turned headDeg to the right (about the road's up).
+      aim.copy(frame.tangent).multiplyScalar(dir).applyAxisAngle(frame.up, (-(r.headDeg ?? 0) * Math.PI) / 180)
       negRight.crossVectors(frame.up, aim).normalize() // the box's left
       basis.makeBasis(negRight, frame.up, aim)
       quat.setFromRotationMatrix(basis)
@@ -508,12 +562,12 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       let sNow = r.s
       let travelled = 0
       const ho = r.handsOff
-      const steps = Math.ceil(((ho ? ho.metres : t.deltaS(r.s, r.until) + 5) / r.v) * 60 * 1.6)
+      const steps = Math.ceil(((ho ? ho.metres : (r.back ? t.deltaS(r.until, r.s) : t.deltaS(r.s, r.until)) + 5) / r.v) * 60 * 1.6)
       for (let i = 0; i < steps; i++) {
         world.step()
         const lv = body.linvel()
         const v = Math.hypot(lv.x, lv.y, lv.z)
-        worstDecel = Math.max(worstDecel, (prevV - v) * 60)
+        if (i >= (r.settle ?? 0) * 60) worstDecel = Math.max(worstDecel, (prevV - v) * 60)
         prevV = v
         const p = body.translation()
         travelled = Math.hypot(p.x - p0.x, p.y - p0.y, p.z - p0.z)
@@ -527,7 +581,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
           if (ho.mouthS !== undefined && riding && t.deltaS(ho.mouthS, sNow) >= 0) break
           continue
         }
-        if (t.deltaS(r.until, sNow) >= 0) break
+        if ((r.back ? t.deltaS(sNow, r.until) : t.deltaS(r.until, sNow)) >= 0) break
         // Steer like a driver: keep the box heading along the road (drop any sideways
         // drift), so it follows bends instead of sliding off the outside of them.
         t.frameAt(sNow, frame)
@@ -540,8 +594,9 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         const ang = body.angvel()
         if (Math.abs(ang.y) > 0) body.setAngvel({ x: ang.x, y: 0, z: ang.z }, true)
         if (r.turn) {
-          negRight.crossVectors(frame.up, frame.tangent).normalize()
-          basis.makeBasis(negRight, frame.up, frame.tangent)
+          aim.copy(frame.tangent).multiplyScalar(dir)
+          negRight.crossVectors(frame.up, aim).normalize()
+          basis.makeBasis(negRight, frame.up, aim)
           quat.setFromRotationMatrix(basis)
           body.setRotation({ x: quat.x, y: quat.y, z: quat.z, w: quat.w }, true)
         }
@@ -716,6 +771,18 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     lines.push(`${pass ? 'ok  ' : 'FAIL'} big-air run at (${f.x}, ${f.z}): starting on the big hill's top (u ${(BIGAIR_LAYOUT.bigHillU * k).toFixed(0)}), the kicker crest is at u ${crestU.toFixed(0)}. ${results.join('; ')}`)
   }
 
+  // ---- 11 (run now, printed last). tunnels: walls to slide along, a roof to drive on ----
+  // It needs this world, and the cases below each make a world of their own: the two must never
+  // be alive at once. A collider's handle is only a number counted from the start in every world,
+  // so the surface tags (core/physics.ts) and the tunnel list (colliders.ts) would mix them up.
+  const tunnelLines: string[] = []
+  if (t.tunnels.length) {
+    const tt = tunnelPhysics(t, RAPIER, world, spawnBox, run, SOFT_CCD)
+    if (!tt.ok) ok = false
+    tunnelLines.push(...tt.lines)
+  }
+  freeWorld(world, worldSets, worldTiles)
+
   // ---- 8. live bank rebuilds: the physics ground follows the road every time ----
   const adj = t.file.road.banking.adjustable
   if (adj) {
@@ -758,8 +825,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       }
       prev = tb
     }
-    removeTerrainTiles(w2, tiles)
-    w2.free()
+    freeWorld(w2, [], tiles)
     const pass = worst < 0.01
     if (!pass) ok = false
     lines.push(
@@ -784,9 +850,8 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       const tb = buildTrack(t.file, { ...t.params, bankDeg: b }, t)
       const S = tb.samples
       const w3 = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
-      createWorldColliders(w3, RAPIER, tb)
-      createRoadColliders(w3, RAPIER, tb)
-      createTerrainTiles(w3, RAPIER, tb)
+      const w3Sets = [createWorldColliders(w3, RAPIER, tb), createRoadColliders(w3, RAPIER, tb)]
+      const w3Tiles = createTerrainTiles(w3, RAPIER, tb)
       w3.step()
       // The steepest sample of each banked end (two ends, far apart), or two flat spots on a flat road.
       const spots: number[] = []
@@ -844,7 +909,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         }
       }
       results.push(`${b}`)
-      w3.free()
+      freeWorld(w3, w3Sets, w3Tiles)
     }
     if (fails) ok = false
     lines.push(
@@ -879,7 +944,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     for (const b of banks) {
       const tb = Number.isFinite(b) ? buildTrack(t.file, { ...t.params, bankDeg: b }, t) : t
       const w4 = new RAPIER.World({ x: 0, y: 0, z: 0 })
-      createRoadColliders(w4, RAPIER, tb)
+      const w4Set = createRoadColliders(w4, RAPIER, tb)
       w4.step()
       for (const kmh of [200, 300]) {
         for (const side of [-1, 1] as const) {
@@ -948,7 +1013,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         }
       }
       results.push(Number.isFinite(b) ? `${b}` : 'its own')
-      w4.free()
+      freeWorld(w4, [w4Set])
     }
     const bad = snagRuns + stops
     if (bad) ok = false
@@ -956,14 +1021,25 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       `${bad ? 'FAIL' : 'ok  '} barriers smooth to slide along, at bank ${results.join(' / ')} deg: ${runs} car bodies pressed into a barrier at 200 and 300 km/h, ${snagRuns} pushed back along the road, ${stops} stopped (the most speed any lost in one step: ${worstDrop.toFixed(1)} km/h)${worstTxt ? ` (first: ${worstTxt}; a builder bug, not your file)` : ''}`,
     )
   }
-  // ---- 11. tunnels: walls to slide along, a roof to drive on, nothing to fall through ----
-  if (t.tunnels.length) {
-    const tt = tunnelPhysics(t, RAPIER, world, spawnBox, run, SOFT_CCD)
-    if (!tt.ok) ok = false
-    lines.push(...tt.lines)
-  }
-  world.free()
+  // ---- 11. tunnels (run above, before the main world was freed) ----
+  lines.push(...tunnelLines)
+
+  // ---- 12. a clean exit: nothing this test tagged outlives its worlds ----
+  // Checking several tracks in one run (tracks:check --physics) must give exactly the answers
+  // each gives alone. A tag left behind lands on the next world's collider with the same handle
+  // (fit tracks checked before the Hyperdrome made 2 of its ground rays miss: its ground read as
+  // a tunnel's roof).
+  const left = liveColliderCount() - liveBefore
+  if (left !== 0) ok = false
+  lines.push(`${left === 0 ? 'ok  ' : 'FAIL'} clean exit: every collider this test made was forgotten with its world${left === 0 ? '' : ` (${left} still tagged: a later track in the same run would read them; a checker bug, not your file)`}`)
   return { ok, lines }
+}
+
+/** Remove a test world's colliders (and forget their tags), then free the world. */
+function freeWorld(w: World, sets: ColliderSet[], tiles?: TerrainTiles): void {
+  for (const set of sets) removeColliderSet(w, set)
+  if (tiles) removeTerrainTiles(w, tiles)
+  w.free()
 }
 
 /** If (x, y, z) is inside a covered tunnel (under its ceiling, between its walls), a height just under that ceiling; else null. */

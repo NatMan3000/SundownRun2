@@ -104,8 +104,12 @@ export const TUNNEL_BUILDER_VERSION = 2
  *     ground can slope down from it to that road (road.ts spanTheDrop). Of the built-ins only
  *     Afterglow has a bridge (its ground beside it changes); Neon Pocket and the Hyperdrome
  *     keep their keys.
+ *   2 (tunnel4): a bridge's foot. Over the last metres before the road comes down off a bridge
+ *     onto the ground (or leaves it), the ground under the road eases deeper instead of climbing
+ *     to just under the outer lanes in one grid cell, a face a car coming off the bridge met as a
+ *     wall (terrain.ts BRIDGE_FOOT_LIP_FROM). Again only tracks with a bridge, Afterglow included.
  */
-export const BRIDGE_BUILDER_VERSION = 1
+export const BRIDGE_BUILDER_VERSION = 2
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7

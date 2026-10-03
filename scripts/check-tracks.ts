@@ -57,6 +57,9 @@ async function loadGameRapier() {
 }
 
 let failed = 0
+/** The first track checked with --physics: re-checked after the rest, it must answer exactly the same. */
+let isolationFailed = false
+let firstPhysics: { name: string; build: () => ReturnType<typeof buildTrack>; lines: string[] } | null = null
 for (const path of targets) {
   const name = path.split('/').pop()
   let json: unknown
@@ -185,10 +188,30 @@ for (const path of targets) {
     const r = sel.runPhysicsSelfTest(t, await loadGameRapier())
     for (const line of r.lines) console.log(`    physics   ${line}`)
     if (!r.ok) trackFailed = true
+    const file = v.track
+    const params = { ...t.params }
+    if (!firstPhysics) firstPhysics = { name: name ?? path, build: () => buildTrack(file, params), lines: r.lines }
   }
   if (trackFailed) failed++
   console.log(`    result    ${trackFailed ? '✗ FAILED (see the FAIL rows above)' : '✓ OK'}`)
 }
 
+// Several tracks in one run must each get the answers they get alone: nothing one track's test
+// leaves behind (a tag on a collider handle, a cache) may change the next. Re-check the first
+// track after all the others; every physics line must match its first run exactly.
+if (physics && firstPhysics && targets.length > 1) {
+  const sel = await import('../src/track/selftest')
+  const again = sel.runPhysicsSelfTest(firstPhysics.build(), await loadGameRapier()).lines
+  const differ = again.filter((l, k) => l !== firstPhysics!.lines[k]).length + Math.abs(again.length - firstPhysics.lines.length)
+  console.log(`\nisolation ${differ ? 'FAIL' : 'ok  '} ${firstPhysics.name} re-checked after the other ${targets.length - 1} track(s): ${differ ? `${differ} physics line(s) changed (something carries over between tracks in one run: a checker bug, not your file)` : 'every physics line the same as its first run'}`)
+  if (differ) {
+    for (let k = 0; k < Math.max(again.length, firstPhysics.lines.length); k++) {
+      if (again[k] !== firstPhysics.lines[k]) console.log(`    was       ${firstPhysics.lines[k] ?? '(none)'}\n    now       ${again[k] ?? '(none)'}`)
+    }
+    isolationFailed = true
+  }
+}
+
 console.log(failed ? `\n${failed} of ${targets.length} track(s) failed.` : `\nAll ${targets.length} track(s) OK.`)
-process.exit(failed ? 1 : 0)
+if (isolationFailed) console.log('The isolation check failed (see above).')
+process.exit(failed || isolationFailed ? 1 : 0)

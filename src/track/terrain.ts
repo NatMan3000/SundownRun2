@@ -568,6 +568,26 @@ const BRIDGE_SIDE_REACH = 40
  * that pass: it holds the road's lip, so the grass beside a road stays flush with its edge.
  */
 const BRIDGE_SIDE_KEEP = 0.75
+/**
+ * A bridge's foot, where the road comes down off a bridge onto the ground (or leaves it). Under a
+ * bridge the ground is cut well below the deck; under the road on the ground it hides only 0.6 m
+ * down, and 5 cm under the outer lanes (the lip). Where the two meet, the ground climbs to the road
+ * along it, in one 3 m grid cell, under the lanes. A car coming down off the bridge meets that face
+ * ahead of it, and its one-step look-ahead (soft CCD: about a metre at 250 km/h) takes the face
+ * for a wall across the road: a box in an outer lane stopped dead at 1 in 6 of the editor's bridge
+ * feet and at Afterglow's. So over the last metres before a foot the ground under the road
+ * eases deeper (its climb then stays far enough under the car for the look-ahead to slide over):
+ * the lip under the outer lanes is gone within BRIDGE_FOOT_LIP_FROM metres of the bridge, back in
+ * full by BRIDGE_FOOT_LIP_FULL...
+ */
+const BRIDGE_FOOT_LIP_FROM = 4
+const BRIDGE_FOOT_LIP_FULL = 8
+/** ...and right at the foot the hidden ground sits this much further down (metres), easing back over BRIDGE_FOOT_EASE metres. */
+const BRIDGE_FOOT_HIDE = 0.6
+const BRIDGE_FOOT_EASE = 6
+/** ...and the ground just past the edge eases down with it out to BRIDGE_FOOT_OUT_FROM metres, fading by BRIDGE_FOOT_OUT. */
+const BRIDGE_FOOT_OUT_FROM = 0.5
+const BRIDGE_FOOT_OUT = 1.5
 
 /** Per-sample road info the flattener needs beyond TrackSamples. */
 export interface FlattenInput {
@@ -916,9 +936,11 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
           // Under the road: hidden, rising to just under the lip over the last metre
           // (so driving back on from the grass is smooth)...
           // (Not by a bridge's end, except right at the edge: see BRIDGE_JOIN_FLAT and BRIDGE_JOIN_LIP.)
-          const joinLip = smoothstep(-BRIDGE_JOIN_LIP - BRIDGE_JOIN_LIP_RISE, -BRIDGE_JOIN_LIP, beyond)
+          // (And not at a bridge's foot at all: see BRIDGE_FOOT_LIP_FROM.)
+          const joinLip = smoothstep(-BRIDGE_JOIN_LIP - BRIDGE_JOIN_LIP_RISE, -BRIDGE_JOIN_LIP, beyond) * smoothstep(BRIDGE_FOOT_LIP_FROM, BRIDGE_FOOT_LIP_FULL, toRaised[ig])
           const lipRise = smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond) * Math.max(joinLip, smoothstep(BRIDGE_JOIN_FLAT, BRIDGE_JOIN_FLAT + BRIDGE_JOIN_EASE, toRaised[ig]))
           h = surfY - EDGE_DEPTH - (HIDE_DEPTH - EDGE_DEPTH) * (1 - lipRise)
+          h -= BRIDGE_FOOT_HIDE * (1 - smoothstep(0, BRIDGE_FOOT_EASE, toRaised[ig]))
           // ...but never above a level floor at the LOW edge's height within EDGE_REACH of
           // it (on a bank the deck rises away from that edge): a car's wheels just off the low
           // edge meet level ground at the edge's height. Further in, the floor climbs twice as
@@ -947,6 +969,16 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
         // a cut's wall rising straight from the edge made a valley right at the edge, which the
         // 3 m ground triangles bridged above the road, and the safety pass then dug it out.
         h = openShoulderY(S, ig, lat, gradeY, h)
+        // At a bridge's foot the ground just past the edge eases down with the ground under it (see
+        // BRIDGE_FOOT_LIP_FROM): a grid vertex there at the lip's height, its neighbour along the road
+        // under the bridge metres lower, made the same face under the outer lane (fit-3). Never beside
+        // a bank's low edge, where a car off the edge must find level ground (the `lowedge` check).
+        const lowBank = Math.sign(lat) === lowSide ? smoothstep(0.5, 1.5, (Math.abs(S.bank[ig]) * 180) / Math.PI) : 0
+        const footOut = (1 - smoothstep(BRIDGE_FOOT_OUT_FROM, BRIDGE_FOOT_OUT, beyond)) * (1 - lowBank)
+        if (footOut > 0) {
+          const lipGone = (HIDE_DEPTH - EDGE_DEPTH) * (1 - smoothstep(BRIDGE_FOOT_LIP_FROM, BRIDGE_FOOT_LIP_FULL, toRaised[ig]))
+          h -= footOut * (lipGone + BRIDGE_FOOT_HIDE * (1 - smoothstep(0, BRIDGE_FOOT_EASE, toRaised[ig])))
+        }
         // A tunnel's approach or roof: a wall of ground stands straight up from the edge (all
         // of it under the roof, `w` of it along an approach, blending from the usual shoulder),
         // reaching TUNNEL_WALL metres out. Under it the ground stays down at the road edge's height

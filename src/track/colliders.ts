@@ -73,7 +73,32 @@ export function add(world: World, R: Rapier, set: ColliderSet, desc: ColliderDes
   if (kind === 'barrier' || kind === 'floor') desc.setFrictionCombineRule(R.CoefficientCombineRule.Min)
   const c = world.createCollider(desc, set.body)
   tagSurface(c.handle, kind)
+  liveHandles.add(c.handle)
   set.handles.push(c.handle)
+}
+
+/**
+ * Every collider handle tagged by add() and not yet forgotten. A handle is only a number, and a
+ * new physics world numbers its colliders from the start again, so a tag left behind by a world
+ * that was thrown away lands on whatever collider the next world gives that number: the ground
+ * read as a tunnel's roof, say. Whoever removes colliders must forget them (removeColliderSet,
+ * forgetCollider), and this count says whether everything was.
+ */
+const liveHandles = new Set<number>()
+
+/** Forget one collider's tags (its surface kind, and whether it is part of a tunnel). Call it when the collider goes. */
+export function forgetCollider(handle: number): void {
+  untagSurface(handle)
+  tunnelHandles.delete(handle)
+  liveHandles.delete(handle)
+}
+
+/**
+ * How many tags are still held: colliders made by add() and not forgotten, plus marks in the tunnel
+ * list (the physics self-test checks this ends where it started).
+ */
+export function liveColliderCount(): number {
+  return liveHandles.size + tunnelHandles.size
 }
 
 /**
@@ -460,10 +485,7 @@ function addWallSegment(world: World, R: Rapier, set: ColliderSet, x0: number, z
 
 /** Remove a set (safe after the physics world itself has been torn down). */
 export function removeColliderSet(world: World, set: ColliderSet): void {
-  for (const h of set.handles) {
-    untagSurface(h)
-    tunnelHandles.delete(h)
-  }
+  for (const h of set.handles) forgetCollider(h)
   set.handles.length = 0
   // react-three-rapier replaces a freed world with a fresh one; only remove from the world that owns it.
   if (world.getRigidBody(set.body.handle) === set.body) world.removeRigidBody(set.body)

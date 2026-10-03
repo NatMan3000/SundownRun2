@@ -48,6 +48,8 @@ const BAND = [0, 1.5, 3, 4.5, 6, 7.5, 9]
 const WALL_FOOT = 0.3
 /** The short faces round the tube's outer edges and ends reach this far down into the ground. */
 const SKIRT_DOWN = 1
+/** Where a wall's top stands no more than this (metres) over the ground under it, its end cap is left out of physics. */
+const CAP_LOW = 0.15
 /** Columns across the roof over the road: no wider apart than this, metres. */
 const ROOF_STEP = 2
 /**
@@ -205,6 +207,11 @@ export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, hillGrid: 
       }
     }
     const topAt = (r: number, sd: number, c: number) => topY[(r * 2 + sd) * nb + c]
+    /** Does the wall's top at this row, side and column stand no more than CAP_LOW over the ground under it? */
+    const lowCap = (r: number, sd: number, c: number) => {
+      const k = (r * 2 + sd) * nb + c
+      return topY[k] - gridHeight(ground, posX[k], posZ[k]) <= CAP_LOW
+    }
 
     // ---- physics builders for this tunnel ----
     const wallP = new MeshBuilder([])
@@ -272,7 +279,14 @@ export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, hillGrid: 
                 capTop.push(mb.vertex(posX[k], topY[k], posZ[k], nx / nl, 0, nz / nl, BAND[c], i * S.ds))
                 mb.vertex(posX[k], Math.min(topY[k], edgeY[q * 2 + sd]) - SKIRT_DOWN, posZ[k], nx / nl, 0, nz / nl, BAND[c], i * S.ds)
               }
-              for (let c = 0; c < nb - 1; c++) mb.quad(capTop[c], capTop[c + 1], capTop[c + 1] + 1, capTop[c] + 1)
+              for (let c = 0; c < nb - 1; c++) {
+                // In physics, not where the wall has barely started: a cap standing a lip over the
+                // ground faces back down the road at its edge, and a car's look-ahead (soft CCD) takes
+                // that face's plane for a wall across the lane (a box at the edge stopped dead at a
+                // wall's start, tb-25). Nothing can get under a top this low, so it needs no cap.
+                if (mb === topP && lowCap(q, sd, c) && lowCap(q, sd, c + 1)) continue
+                mb.quad(capTop[c], capTop[c + 1], capTop[c + 1] + 1, capTop[c] + 1)
+              }
               if (mb === topP) {
                 for (let c = 1; c < nb; c++) {
                   const k = (q * 2 + sd) * nb + c

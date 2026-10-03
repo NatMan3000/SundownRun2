@@ -23,9 +23,8 @@
 //  gave a car's body something to catch on through the road.
 // ============================================================
 
-import { untagSurface } from '../core/physics'
 import type { TrackRuntime } from './types'
-import { add, type ColliderSet } from './colliders'
+import { add, forgetCollider, type ColliderSet } from './colliders'
 import { trackInternals } from './build'
 
 import type { Rapier, RigidBody, World } from './rapierTypes'
@@ -132,7 +131,7 @@ function buildTile(world: World, R: Rapier, tiles: TerrainTiles, t: TrackRuntime
   const old = tiles.handles[k]
   if (old >= 0) {
     const c = world.getCollider(old)
-    untagSurface(old)
+    forgetCollider(old)
     if (c) world.removeCollider(c, false)
   }
   const m = tileMesh(t, tx, tz)
@@ -207,7 +206,7 @@ export function updateTerrainTiles(world: World, R: Rapier, tiles: TerrainTiles,
 
 /** Remove all tiles (safe after the physics world has been torn down). */
 export function removeTerrainTiles(world: World, tiles: TerrainTiles): void {
-  for (let k = 0; k < tiles.handles.length; k++) if (tiles.handles[k] >= 0) untagSurface(tiles.handles[k])
+  for (let k = 0; k < tiles.handles.length; k++) if (tiles.handles[k] >= 0) forgetCollider(tiles.handles[k])
   tiles.handles.fill(-1)
   if (world.getRigidBody(tiles.body.handle) === tiles.body) world.removeRigidBody(tiles.body)
 }
