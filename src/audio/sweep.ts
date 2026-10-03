@@ -15,6 +15,7 @@
 //  shiftsInput() is a fourth, all about gear changes: the turbo's
 //  "pssh" on every upshift, and none on a downshift.
 //  liftoffInput() is a fifth: full load, then a lift (the blow-off).
+//  highrevsInput() is a sixth: the motor held near the rev limiter.
 // ============================================================
 
 import type { EngineInput } from './engine'
@@ -446,6 +447,81 @@ export function shiftsInput(s: number, out: EngineInput): void {
 }
 
 // ============================================================
+//  HIGH REVS TEST DRIVE - 12 seconds near the rev limiter
+// ------------------------------------------------------------
+//  __dev.audio('render', 'highrevs', 'rally') records it: flat
+//  out through 1st and 2nd, then the motor held at the top of 3rd
+//  (climbing a hill), a jump with the throttle held (in the air
+//  the motor free-revs to the top), the landing still flat out,
+//  and a lift. Made to hunt down a "wind" Nathan heard up there.
+// ============================================================
+
+/** How long the high revs test drive lasts, seconds. */
+export const HIGHREVS_SECONDS = 12
+
+/** Where each part of the high revs drive starts (seconds). */
+export const HIGHREVS_MARKS = {
+  pull: 0.4, //  flat out: 1st, 2nd, then 3rd
+  hold: 3.6, //  held at the top of 3rd, up a hill
+  jump: 6.6, //  airborne, throttle held: the motor free-revs
+  land: 8.6, //  landed, still at the top of 3rd
+  lift: 10.6, // off the throttle
+} as const
+
+/** Seconds in 1st, 2nd and 3rd on the pull (3rd stops short of its top). */
+const HIGHREVS_PULL_TIME = [1.0, 1.2, 1.0]
+
+/**
+ * The high revs test drive, as a function of seconds since start.
+ * Writes into `out` (no allocation). See HIGHREVS_MARKS for the timeline.
+ */
+export function highrevsInput(s: number, out: EngineInput): void {
+  const M = HIGHREVS_MARKS
+  out.airborne = false
+  out.onRoad = true
+  out.offRoad = false
+  out.magStrength = 0
+  out.boost = 0
+  out.slip = 0
+  out.drifting = false
+  if (s < M.pull) {
+    out.gear = 1
+    out.speedKmh = 0
+    out.throttle = 0
+    out.rpm = 0.1
+    return
+  }
+  if (s < M.hold) {
+    let u = s - M.pull
+    let gear = 1
+    while (gear < 3 && u >= HIGHREVS_PULL_TIME[gear - 1]) {
+      u -= HIGHREVS_PULL_TIME[gear - 1]
+      gear++
+    }
+    const lo = gear === 1 ? 0 : GEAR_TOP[gear - 2]
+    // 3rd only climbs to 136 km/h in its second (the hill), not to its 138 km/h top.
+    const hi = gear === 3 ? 136 : GEAR_TOP[gear - 1]
+    out.gear = gear
+    out.throttle = 1
+    out.speedKmh = lo + (hi - lo) * Math.min(1, u / HIGHREVS_PULL_TIME[gear - 1])
+    out.rpm = gearRpm(gear, out.speedKmh)
+    return
+  }
+  out.gear = 3
+  out.speedKmh = 136
+  if (s < M.lift) {
+    out.throttle = 1
+    out.airborne = s >= M.jump && s < M.land
+    // In the air the motor free-revs to idle + 0.85 x throttle (carSim.ts, RPM.airRev).
+    out.rpm = out.airborne ? 0.95 : gearRpm(3, 136)
+    return
+  }
+  out.throttle = 0
+  out.speedKmh = 136 - 6 * (s - M.lift)
+  out.rpm = gearRpm(3, out.speedKmh)
+}
+
+// ============================================================
 //  LIFT-OFF TEST DRIVE - 6 seconds: full load, then off the throttle
 // ------------------------------------------------------------
 //  __dev.audio('render', 'liftoff', 'rally') records it: flat out
@@ -482,13 +558,14 @@ export function liftoffInput(s: number, out: EngineInput): void {
   out.rpm = gearRpm(4, out.speedKmh)
 }
 
-/** The scripted drives, by name: the engine, the tyres, top speed, gear changes and a lift-off. */
+/** The scripted drives, by name: the engine, the tyres, top speed, gear changes, a lift-off and high revs. */
 export const TEST_DRIVES = {
   sweep: { seconds: SWEEP_SECONDS, input: sweepInput },
   drift: { seconds: DRIFT_SECONDS, input: driftInput },
   speed: { seconds: SPEED_SECONDS, input: speedInput },
   shifts: { seconds: SHIFTS_SECONDS, input: shiftsInput },
   liftoff: { seconds: LIFTOFF_SECONDS, input: liftoffInput },
+  highrevs: { seconds: HIGHREVS_SECONDS, input: highrevsInput },
 } as const
 
 export type TestDriveId = keyof typeof TEST_DRIVES

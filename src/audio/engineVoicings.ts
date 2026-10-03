@@ -9,7 +9,7 @@
 //
 //    muscle   a deep V8 muscle car: lumpy idle, big low growl
 //    rally    a turbo five-cylinder rally car: raspy, revs high,
-//             turbo whoosh and a "pssh" when you lift off or
+//             and its turbo goes "pssh" when you lift off or
 //             change up a gear
 //    hover    a futuristic hover-jet: a smooth deep motor with a
 //             jet turbine humming on top
@@ -85,8 +85,22 @@ export interface LayerSpec {
   spool: number
   /** Where the spool sits: Hz when it starts to build, Hz when it is fully spooled. Kept low on purpose. */
   spoolHz: [number, number]
+  /**
+   * How much of the spool tone you hear while you are on the throttle (1 = all of it, 0 = none).
+   * Off the throttle it plays as before. At 0 the turbo's steady hiss under load is gone: at
+   * high revs it sat above the motor and sounded like wind. (The "pssh" when you lift off or
+   * change up is the blow-off, a separate sound, and is not affected.)
+   */
+  spoolUnderLoad: number
   /** Intake and air rush under load (0 = none). */
   whoosh: number
+  /**
+   * How much of the intake rush you hear while you are on the throttle (1 = all of it). Off
+   * the throttle it always plays, so its fall after a lift is unchanged. Below 1 keeps it
+   * under the motor at high revs, where the motor's notes spread apart and a full-strength
+   * rush showed through the gaps as wind.
+   */
+  whooshUnderLoad: number
   /** The "pssh" when you lift off a spooled turbo, and on every upshift (0 = none). */
   blowOff: number
   /** The blow-off stutters ("stu-tu-tu") instead of one hiss. */
@@ -165,7 +179,9 @@ const MUSCLE: EngineVoicing = {
   layers: {
     spool: 0,
     spoolHz: [300, 650],
+    spoolUnderLoad: 1,
     whoosh: 0,
+    whooshUnderLoad: 1,
     blowOff: 0,
     flutter: false,
     shiftLiftS: 0,
@@ -216,7 +232,9 @@ const RALLY: EngineVoicing = {
   layers: {
     spool: 1,
     spoolHz: [340, 800],
+    spoolUnderLoad: 0,
     whoosh: 0.45,
+    whooshUnderLoad: 0.33,
     blowOff: 1,
     flutter: true,
     shiftLiftS: 0.25,
@@ -267,7 +285,9 @@ const HOVER: EngineVoicing = {
   layers: {
     spool: 0.35,
     spoolHz: [300, 650],
+    spoolUnderLoad: 1,
     whoosh: 0.4,
+    whooshUnderLoad: 1,
     blowOff: 0,
     flutter: false,
     shiftLiftS: 0,

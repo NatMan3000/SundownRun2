@@ -63,7 +63,8 @@ const DEV_HELP = [
   "audio('sweep', 'speed')             19 s top speed test drive: every gear to 250 km/h, held, a boost pad, a lift",
   "audio('sweep', 'shifts')            14.5 s gear change test drive: flat-out upshifts, two quick ones on a boost pad, a gentle one, a lift right after a shift, a lift and a shift together, downshifts (the turbo's pssh on each upshift)",
   "audio('sweep', 'liftoff')           6 s lift-off test drive: flat out in 4th, lift at 2.5 s (the blow-off), coast",
-  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed | shifts | liftoff (the engine, tyre, top speed, gear change or lift-off test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1 and/or a style, e.g. 0.6, 'house' or 'house:0.6') | mix (arg: all | engine | music | fx) | rewind (rewind held 2-5 s over a cruise: adds the rewind sound's numbers) | reactions (race music answering a big landing, a hop, a flip, a best lap, the final lap's key lift and a race win; arg: a style)",
+  "audio('sweep', 'highrevs')          12 s high revs test drive: flat out to the top of 3rd, held there, a jump with the throttle held, a lift",
+  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed | shifts | liftoff | highrevs (the engine, tyre, top speed, gear change, lift-off or high revs test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1 and/or a style, e.g. 0.6, 'house' or 'house:0.6') | mix (arg: all | engine | music | fx) | rewind (rewind held 2-5 s over a cruise: adds the rewind sound's numbers) | reactions (race music answering a big landing, a hop, a flip, a best lap, the final lap's key lift and a race win; arg: a style)",
 ].join('\n')
 
 export function AudioSystem() {
@@ -131,7 +132,7 @@ function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unkn
       return rig.setEngineSound(String(a))
     case 'sweep': {
       const drive = a === undefined ? 'sweep' : String(a)
-      if (!isTestDrive(drive)) return `unknown drive "${drive}" (sweep | drift | speed | shifts | liftoff)`
+      if (!isTestDrive(drive)) return `unknown drive "${drive}" (sweep | drift | speed | shifts | liftoff | highrevs)`
       return rig.startSweep(drive)
     }
     case 'mood':
@@ -186,7 +187,7 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const buf = await renderMix(stem)
     return { ...measure(buf), stem, wav: toBase64(encodeWav(buf)) }
   }
-  // 'engine' records the engine test drive (named 'sweep'); 'drift', 'speed', 'shifts' and 'liftoff' the others.
+  // 'engine' records the engine test drive (named 'sweep'); 'drift', 'speed', 'shifts', 'liftoff' and 'highrevs' the others.
   const drive = what === 'engine' ? 'sweep' : what
   if (isTestDrive(drive)) return renderDrive(drive, arg)
   if (what === 'rewind') {
@@ -207,7 +208,7 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const { buf, log } = await renderMusic(what as MoodId | 'title', night, undefined, style)
     return { ...measure(buf), log, wav: toBase64(encodeWav(buf)) }
   }
-  return `unknown render "${what}" (engine | drift | speed | shifts | liftoff | effects | mix | rewind | reactions | ${MUSIC_RENDERS.join(' | ')})`
+  return `unknown render "${what}" (engine | drift | speed | shifts | liftoff | highrevs | effects | mix | rewind | reactions | ${MUSIC_RENDERS.join(' | ')})`
 }
 
 /** Record one of the scripted drives through the engine. arg: 'rally' or 'rally:nodes'. */

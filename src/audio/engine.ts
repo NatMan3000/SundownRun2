@@ -715,12 +715,15 @@ export class EngineVoice {
     k.spoolHz.to(L.spoolHz[0] + (L.spoolHz[1] - L.spoolHz[0]) * sp, t)
     // (Filtered noise is far quieter than a tone at the same gain: a narrow band of it
     // keeps only a sliver of the noise, hence the big numbers.)
-    k.spool.to(1.1 * L.spool * sp * sp * (0.4 + 0.6 * load), t)
+    // On the throttle only spoolUnderLoad of it plays (the rally's is 0: its steady hiss at high
+    // revs sounded like wind); off the throttle all of it, so the spool-down after a lift stays.
+    k.spool.to(1.1 * L.spool * sp * sp * (0.4 + 0.6 * load) * (1 - (1 - L.spoolUnderLoad) * load), t)
     // The whoosh opens up with the turbo and the throttle, but never past about 800 Hz (dark air, not hiss).
     const whooshHz = 260 + 400 * sp + 140 * load
     k.whooshHz.to(whooshHz, t)
     k.whooshHz2.to(whooshHz, t)
-    k.whoosh.to(0.63 * L.whoosh * (0.3 * load + 0.7 * sp) * (0.35 + 0.65 * rpm), t)
+    // On the throttle only whooshUnderLoad of it plays (see engineVoicings.ts).
+    k.whoosh.to(0.63 * L.whoosh * (0.3 * load + 0.7 * sp) * (0.35 + 0.65 * rpm) * (1 - (1 - L.whooshUnderLoad) * load), t)
 
     // ---------- jet turbine (hover): a fifth above the motor, lagging behind it ----------
     const jetHz = hz * L.jetRatio

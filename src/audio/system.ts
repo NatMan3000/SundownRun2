@@ -531,7 +531,8 @@ export class AudioRig {
    * Run a scripted test drive: 'sweep' (idle, gears, jump, drift, boost, off-road, mag)
    * 'drift' (the tyres: long drifts, a small slide, off-road), 'speed' (every gear to
    * 250 km/h, held, a boost pad, a lift) 'shifts' (gear changes: the turbo's pssh on
-   * each upshift) or 'liftoff' (full load, then a lift). Returns its length in seconds.
+   * each upshift), 'liftoff' (full load, then a lift) or 'highrevs' (held near the rev
+   * limiter). Returns its length in seconds.
    */
   startSweep(drive: TestDriveId = 'sweep'): number {
     const g = this.g
