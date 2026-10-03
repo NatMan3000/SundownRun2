@@ -31,8 +31,8 @@
 //    EditorUi.tsx   tool rail, piece palette, status line
 //    Panel.tsx      this track, the selected thing, checks, map key
 //    Library.tsx    open, new, copy, import, export
-//    ClearAll.tsx   "Clear the whole track?" (the rail's eraser, pad B),
-//                   and "Make a random track?" (the rail's dice)
+//    askFirst.ts    "Save it first?" before New track, the dice, opening
+//                   another track or leaving (AskFirstBox.tsx draws it)
 //    randomTrack.ts the dice: a random road that passes every check
 //    emptyMap.tsx   hides the empty map's stand-in road
 //    fields.tsx     the panel's sliders and boxes; icons.tsx its icons

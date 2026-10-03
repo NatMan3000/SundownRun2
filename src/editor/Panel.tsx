@@ -2,7 +2,8 @@
 //  EDITOR PANEL - the right-hand side: this track, and what's selected
 // ------------------------------------------------------------
 //  Top to bottom:
-//    the name and a few numbers (length, pieces, bridges)
+//    the name, whether it is saved (TrackSave.tsx), and a few numbers
+//    (length, pieces, bridges)
 //    SELECTED  settings for whatever you clicked on the map: a piece,
 //              a crash-prop pile, an energy core, a road point, a
 //              stretch of road (its height, bank or width: whichever of
@@ -13,12 +14,12 @@
 //    CHECKS    anything the game wants you to look at; click one to select
 //              it (and see where it is), or Fix all
 //    MAP KEY   what the marks on the map mean (and which ones to click)
-//    Save / Library / Test drive / Exit
+//    what Save will do, then Save / Save as new track / Test drive /
+//    Library / Exit (TrackSave.tsx)
 // ============================================================
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { PALETTE } from '../core/palette'
-import { audio } from '../core/api'
 import { listTracks } from '../track/registry'
 import { TRACK_DEFAULTS, type Piece } from '../track/schema'
 import { ROAD_SMOOTHING_MAX, ROAD_SMOOTHING_MIN } from '../track/terrain'
@@ -29,7 +30,6 @@ import {
   copyEnvironmentFrom,
   deletePoint,
   deleteSelection,
-  saveDraft,
   sectionPoints,
   setAuthor,
   setBaseWorld,
@@ -42,7 +42,6 @@ import {
   setTimeOfDay,
   setWidth,
   smoothRoad,
-  testDrive,
   updateCore,
   updatePiece,
   updateProp,
@@ -69,6 +68,7 @@ import { startDriveToDraw } from './driveToDraw'
 import { metresBetween, roadLength } from './road'
 import { cornerAt, roadLine } from './shape'
 import { setView, view } from './view'
+import { SaveStateLine, TrackActions } from './TrackSave'
 
 /** Edge-strip colours a track can pick (the road's light strips). */
 const EDGE_COLOURS = [PALETTE.roadEdge, PALETTE.roadEdgeAlt, PALETTE.boost, PALETTE.chevron, PALETTE.wallRide, PALETTE.aiColors[0]]
@@ -76,8 +76,6 @@ const EDGE_COLOURS = [PALETTE.roadEdge, PALETTE.roadEdgeAlt, PALETTE.boost, PALE
 export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
   const mode = useEditor((s) => s.mode)
   const draft = useEditor((s) => s.draft)
-  const dirty = useEditor((s) => s.dirty)
-  const savedId = useEditor((s) => s.savedId)
   const preview = useEditor((s) => s.preview)
   const gateFails = useEditor((s) => s.checkedDraft === s.draft && !!s.gates?.some((g) => g.level === 'fail'))
   const selection = useEditor((s) => s.selection)
@@ -112,9 +110,13 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
       <header className="sre-head">
         <div className="sre-kicker">
           Road editor
-          <span className={`sre-state is-${gateFails && preview === 'built' ? 'failed' : preview}`}>{preview === 'pending' ? 'building...' : preview === 'failed' || gateFails ? 'needs fixing' : dirty ? 'not saved' : savedId ? 'saved' : 'new'}</span>
+          {/* How the live build is doing; whether the track is saved is on its own line under the name. */}
+          {(preview === 'pending' || preview === 'failed' || gateFails) && (
+            <span className={`sre-state is-${preview === 'pending' ? 'pending' : 'failed'}`}>{preview === 'pending' ? 'building...' : 'needs fixing'}</span>
+          )}
         </div>
         <TextField label="Track name" value={draft.name} onCommit={setName} big />
+        <SaveStateLine />
         <div className="sre-stats">
           <Stat label="Length" value={`${(length / 1000).toFixed(2)} km`} />
           <Stat label="Pieces" value={String(draft.pieces.length + draft.props.length + draft.cores.length)} />
@@ -171,21 +173,7 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
         {!isEmptyDraft(draft) && <Legend editing />}
       </div>
 
-      <div className="sre-actions">
-        {isEmptyDraft(draft) && <p className="sre-help sre-actions-why">Draw a road first, then you can save it and test drive it.</p>}
-        <button type="button" className="sre-btn" onClick={() => saveDraft() && audio.ui('select')} disabled={isEmptyDraft(draft)}>
-          Save
-        </button>
-        <button type="button" className="sre-btn" onClick={props.onLibrary}>
-          Library
-        </button>
-        <button type="button" className="sre-btn is-primary" onClick={testDrive} disabled={isEmptyDraft(draft)} data-testid="editor-test-drive">
-          Test drive
-        </button>
-        <button type="button" className="sre-btn is-quiet" onClick={props.onExit}>
-          Exit
-        </button>
-      </div>
+      <TrackActions onLibrary={props.onLibrary} onExit={props.onExit} />
     </aside>
   )
 }

@@ -11,17 +11,25 @@
 //                                          circle | eight | square | hairpin | kidney
 //    __dev.editor('file')                  the draft as a track file
 //    __dev.editor('save')                  save it; returns the track id
+//    __dev.editor('saveAsNew')             press Save as new track; returns the copy's id
 //    __dev.editor('testDrive')             save, then drive it
-//    __dev.editor('new', 'grid-flats')     start a new track in a base world
-//    __dev.editor('open', id)              open a saved drawn track
+//    __dev.editor('new', 'grid-flats')     set up a new track in a base world (no asking, history cleared)
+//    __dev.editor('open', id)              open a saved drawn track (no asking)
 //    __dev.editor('undo') / ('redo')
-//    __dev.editor('clear')                 ask "Clear the whole track?" (the rail's
-//                                          eraser); answer with ('clearYes') / ('clearNo')
-//    __dev.editor('clearNow')              clear all without asking (one undo step): an empty map
+//    __dev.editor('newTrack', world?)      press New track (the rail's, or with a world the
+//                                          Library's): asks "Save it first?" if there are changes
+//                                          not saved; answer with ('answer', 'save' | 'discard' | 'cancel')
+//    __dev.editor('newTrackNow', world?)   New track without asking (one undo step)
+//    __dev.editor('ask')                   the question box: open, kind, next, name, its words
+//    __dev.editor('answer', a)             press one of its buttons: save | discard | cancel | yes
+//    __dev.editor('library')               the saved tracks: id, name, and which one is open
+//    __dev.editor('clear') / ('clearYes') / ('clearNo') / ('clearNow')   old names for
+//                                          newTrack / answer discard (or yes) / answer cancel / newTrackNow
 //    __dev.editor('random', seed?)         Random track without asking (one undo step); the same
-//                                          seed makes the same track. Returns tries, ms and the shape
-//    __dev.editor('askRandom')             press the rail's dice (asks first if there is a road;
-//                                          answer with ('clearYes') / ('clearNo'))
+//                                          seed makes the same track (on a saved track, a new track).
+//                                          Returns tries, ms and the shape
+//    __dev.editor('askRandom')             press the rail's dice (asks first if there is something to
+//                                          lose; answer with ('answer', ...))
 //    __dev.editor('pencilPlan', [[x,z]...]) what letting go of that pencil line would do (road.ts
 //                                          planRedraw): redraw (and how much road goes) or nothing (why)
 //    __dev.editor('fit')                   frame the track
@@ -93,13 +101,15 @@ import {
   applyStraight,
   applyStroke,
   beginBend,
-  clearAll,
   draftCrossings,
   randomRoad,
   draftFromFile,
   selectCrossing,
   swapBridge,
   draftId,
+  newTrack,
+  saveAsNewTrack,
+  saveState,
   endBend,
   fileFromDraft,
   moveBend,
@@ -127,7 +137,8 @@ import { currentProblems, findFixesNow, fixAll, fixOffer, fixProblem, liveRuntim
 import { runEditorSelfTest } from './selfTest'
 import { checkVerdict } from './checks'
 import { cancelDriveToDraw, clearLaidRoad, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
-import { answerClearAll, askClearAll, askRandomTrack, useClearAsk } from './ClearAll'
+import { type AskAnswer, answerAsk, askNewTrack, askRandomTrack, useAsk } from './askFirst'
+import { listDrawnTracks } from '../track/registry'
 import { isEmptyDraft } from './draftFile'
 import { closeWorldMap, isMapOpen, openWorldMap } from './worldMap'
 import { setView, view, worldToScreen } from './view'
@@ -226,7 +237,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -237,6 +248,8 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     }
     case 'save':
       return saveDraft()
+    case 'saveAsNew':
+      return saveAsNewTrack()
     case 'testDrive':
       return testDrive()
     case 'new':
@@ -254,14 +267,23 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     case 'redo':
       redo()
       return useEditor.getState().future.length
+    case 'newTrack':
     case 'clear':
-      return askClearAll()
-    case 'clearYes':
-    case 'clearNo':
-      answerClearAll(cmd === 'clearYes')
-      return { undoSteps: useEditor.getState().past.length, points: useEditor.getState().draft.points.length }
+      return askNewTrack(typeof arg === 'string' ? arg : undefined, typeof arg === 'string' ? () => {} : undefined)
+    case 'newTrackNow':
     case 'clearNow':
-      return clearAll()
+      return newTrack(typeof arg === 'string' ? arg : undefined)
+    case 'ask':
+      return askSummary()
+    case 'answer':
+    case 'clearYes':
+    case 'clearNo': {
+      const answer: AskAnswer = cmd === 'clearNo' ? 'cancel' : cmd === 'clearYes' ? (useAsk.getState().kind === 'random' ? 'yes' : 'discard') : (String(arg) as AskAnswer)
+      answerAsk(answer)
+      return { ask: useAsk.getState().open, undoSteps: useEditor.getState().past.length, points: useEditor.getState().draft.points.length, ...trackSummary() }
+    }
+    case 'library':
+      return { tracks: listDrawnTracks().map((t) => ({ id: t.id, name: t.name, points: t.road.points.length })), ...trackSummary() }
     case 'random': {
       const seed = Number(arg)
       const r = Number.isFinite(seed) && arg !== undefined ? randomRoad(seed >>> 0) : randomRoad()
@@ -548,6 +570,19 @@ function checksSummary() {
   }
 }
 
+/** Which track is open: its saved id (null if new), its name, its state in the header's words. */
+function trackSummary() {
+  const s = useEditor.getState()
+  return { savedId: s.savedId, name: s.draft.name, saveState: saveState(s), dirty: s.dirty, message: s.message?.text ?? null }
+}
+
+/** The question box, and the words it is showing. */
+function askSummary() {
+  const a = useAsk.getState()
+  const box = typeof document !== 'undefined' ? document.querySelector('[data-testid="editor-ask"]') : null
+  return { ...a, title: box?.querySelector('h2')?.textContent ?? null, buttons: box ? [...box.querySelectorAll('button')].map((b) => b.textContent) : [] }
+}
+
 function summary() {
   const s = useEditor.getState()
   return {
@@ -565,7 +600,8 @@ function summary() {
     steady: s.steady,
     shaping: s.shaping,
     selection: s.selection,
-    clearAsk: useClearAsk.getState().open,
+    ask: useAsk.getState().open,
+    saveState: saveState(s),
     pieces: s.draft.pieces.length,
     props: s.draft.props.length,
     cores: s.draft.cores.length,

@@ -10,12 +10,12 @@
 //    right       Panel.tsx (this track, the selected thing, checks)
 //    bottom      one status line in plain words
 //    dialog      Library.tsx (open, new, copy, import, export), and
-//                ClearAll.tsx ("Clear the whole track?" and "Make a
-//                random track?")
+//                AskFirstBox.tsx ("Save it first?" before leaving a track
+//                with changes not saved, and "Make a random track?")
 //
 //  The rail, top to bottom: the tools in the order Josh reaches for
 //  them (Select, Pencil, Straight, Curve, Bend, Height, Bank, Width,
-//  Place pieces), then the whole-road buttons (Undo, Redo, Clear all,
+//  Place pieces), then the whole-road buttons (Undo, Redo, New track,
 //  Random track), then the view (Zoom in, Zoom out, Fit track, Whole
 //  world), then the Library. Every button shows its name in words, and
 //  hovering one shows straight away what it does and its key (RAIL).
@@ -24,8 +24,9 @@
 //
 //  Esc (or the pad's Menu button): first closes a dialog, then goes back
 //  from the 3D view to the map, then stops a bend or a half-made Straight
-//  or Curve, then clears a selection, then leaves the editor. Work is
-//  never lost: the draft is kept.
+//  or Curve, then clears a selection, then leaves the editor (asking
+//  "Save it first?" if the track has changes not saved; askFirst.ts).
+//  Work is never lost: the draft is kept.
 //
 //  Top right of the map: the compass and the 3D button (Look3dUi.tsx).
 //  In 3D the rail waits, dimmed, until you go back to the map.
@@ -47,10 +48,11 @@ import { Library } from './Library'
 import { closeWorldMap } from './worldMap'
 import { PLACE_TOOLS, type PlaceKind } from './pieces'
 import { setView, view, zoomAt } from './view'
-import { ClearAllDialog, askClearAll, askRandomTrack, clearAllTakesPause, setClearAllBlocked } from './ClearAll'
+import { AskFirstDialog } from './AskFirstBox'
+import { askBeforeLeavingTrack, askNewTrack, askRandomTrack, askTakesPause, setAskBlocked } from './askFirst'
 import { Look3dUi } from './Look3dUi'
 import { closeLook3d, useLook3d } from './look3d'
-import { BankIcon, BendIcon, ClearIcon, CurveIcon, DiceIcon, FitIcon, GlobeIcon, HeightIcon, LibraryIcon, MinusIcon, PencilIcon, PiecesIcon, PlusIcon, SelectIcon, StraightIcon, UndoIcon, WidthIcon } from './icons'
+import { BankIcon, BendIcon, CurveIcon, DiceIcon, FitIcon, GlobeIcon, HeightIcon, LibraryIcon, MinusIcon, PencilIcon, PiecesIcon, NewTrackIcon, PlusIcon, SelectIcon, StraightIcon, UndoIcon, WidthIcon } from './icons'
 import { getTrackFile } from '../track/registry'
 import { loadTrackById } from '../track/current'
 import { lastPlayedTrackId } from '../core/session'
@@ -101,8 +103,8 @@ const RAIL = {
   place: { name: 'Place pieces', tip: 'Boost pads, ramps, loops, the start line and more: pick one, then click the road.', key: '1-0' },
   undo: { name: 'Undo', tip: 'Take back the last change.', key: 'Ctrl+Z' },
   redo: { name: 'Redo', tip: 'Put back what Undo took away.', key: 'Ctrl+Shift+Z' },
-  clear: { name: 'Clear all', tip: 'Wipe the map to start again. One Undo brings it all back.', key: 'pad B' },
-  random: { name: 'Random track', tip: 'Roll the dice for a whole new road that passes every check.', key: '' },
+  newTrack: { name: 'New track', tip: 'Start a brand new track on an empty map. The track you were on stays in your Library (it asks first if it has changes not saved).', key: 'pad B' },
+  random: { name: 'Random track', tip: 'Roll the dice for a whole new road that passes every check. On a saved track it makes a new track, so the saved one stays.', key: '' },
   zoomIn: { name: 'Zoom in', tip: 'See the map closer up. The mouse wheel zooms too.', key: '+' },
   zoomOut: { name: 'Zoom out', tip: 'See more of the map.', key: '-' },
   fit: { name: 'Fit track', tip: 'Fit the whole track on the screen.', key: 'F' },
@@ -136,14 +138,14 @@ export function EditorUi() {
 
   // Esc / the pad's Menu button: close a dialog, then clear the selection, then leave.
   useEffect(() => {
-    setClearAllBlocked(library)
+    setAskBlocked(library)
     let seen = controlSignals.pause
     let raf = 0
     const tick = () => {
       if (controlSignals.pause !== seen) {
         seen = controlSignals.pause
-        if (clearAllTakesPause(seen)) {
-          // The "Clear the whole track?" box used this press to close.
+        if (askTakesPause(seen)) {
+          // The "Save it first?" box used this press to close.
         } else if (library) setLibrary(false)
         else if (closeLook3d()) {
           // Esc went back from the 3D view to the map.
@@ -174,17 +176,26 @@ export function EditorUi() {
       <Panel onLibrary={() => setLibrary(true)} onExit={leaveEditor} />
       <StatusLine />
       {library && <Library onClose={() => setLibrary(false)} />}
-      <ClearAllDialog />
+      <AskFirstDialog />
     </div>
   )
 }
 
-/** Leave: the world map goes back to the paused game; the editor goes to the title screen (the draft is kept). */
+/**
+ * Leave: the world map goes back to the paused game; the editor goes to the
+ * title screen (the draft is kept), after asking "Save it first?" if the
+ * track has changes not saved.
+ */
 export function leaveEditor(): void {
   if (useEditor.getState().mode === 'map') {
     closeWorldMap()
     return
   }
+  askBeforeLeavingTrack('exit', goToTitle)
+}
+
+/** Leave the editor for the title screen, now. */
+function goToTitle(): void {
   audio.ui('back')
   // A rebuild still waiting from the last edit would land behind the title screen: drop it.
   cancelPendingPreview()
@@ -259,7 +270,7 @@ function Toolbar(props: { onLibrary: () => void }) {
           <div className="sre-tools-gap" />
           <ToolButton id="undo" disabled={!canUndo} onClick={undo} icon={<UndoIcon />} />
           <ToolButton id="redo" disabled={!canRedo} onClick={redo} icon={<UndoIcon flip />} />
-          <ToolButton id="clear" onClick={askClearAll} icon={<ClearIcon />} />
+          <ToolButton id="newTrack" onClick={() => askNewTrack()} icon={<NewTrackIcon />} />
           <ToolButton id="random" onClick={() => askRandomTrack()} icon={<DiceIcon />} />
           <div className="sre-tools-gap" />
         </>

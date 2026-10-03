@@ -7,11 +7,12 @@
 //  of the world, a line that never comes back - and checks that
 //  every result is a road a car can drive. It also checks the
 //  editing maths, that the Checks panel's verdict (checks.ts)
-//  agrees with the game's own track gates, that Clear all leaves an
+//  agrees with the game's own track gates, that New track leaves an
 //  empty map whose world still builds in every kind of world (and
 //  that every tool copes with it), that the pencil only ever edits
-//  the road that is there, and that Random track only ever hands
-//  over roads that pass every check.
+//  the road that is there, that Random track only ever hands over
+//  roads that pass every check, and that saving never writes over
+//  another track (selfTestTracks.ts).
 //
 //  Run it two ways:
 //    bun src/editor/selfTest.ts          (prints a pass/fail table)
@@ -65,6 +66,7 @@ import { look3dRows } from './selfTest3d'
 import { setStretchTools, toolRows } from './selfTestTools'
 import { setSmoothTools, smoothRows } from './selfTestSmooth'
 import { builderRows } from './selfTestBuilder'
+import { setTrackModules, trackRows } from './selfTestTracks'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
 type EditorStore = typeof import('./draft')
@@ -986,12 +988,12 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
       const r = file.road
       kept.push(`${file.id} (bank ${r.banking?.maxDeg ?? 10} deg for ${r.banking?.designSpeedKmh ?? 120} km/h${r.banking?.adjustable ? ', bank slider' : ''}${r.barriers === 'walls' ? `, ${r.barrierHeight ?? 2.2} m walls` : ''}${file.laps ? `, ${file.laps} laps` : ''}${file.hunt ? `, hunt ${file.hunt.count}` : ''})`)
     }
-    // 3. Clear all on a copy keeps the track's hunt, but the file never asks for more cores than it has
+    // 3. Emptying the map of a copy (clearedDraft, what New track starts from) keeps the track's hunt, but the file never asks for more cores than it has
     //    (here: a new road drawn on the cleared map, with no cores yet).
     const copy = draftFromFile(neonPocketJson as unknown as TrackFile, true)
     const cleared = clearedDraft(copy)
     const cv = validateTrack(fileOfDraft({ ...cleared, points: copy.points }, 'neon-pocket-cleared'))
-    if (!cleared.hunt) bad.push('Clear all dropped the hunt from the draft')
+    if (!cleared.hunt) bad.push('emptying the map dropped the hunt from the draft')
     for (const w of cv.warnings) if (w.path.startsWith('hunt')) bad.push(`a cleared copy warns: ${w.message}`)
     info = `all of every built-in comes back (only id and name change): ${kept.join('; ')}`
     return bad
@@ -1370,16 +1372,16 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     return { ...d, id: 'selftest-empty', name: 'Self-test empty', pieces: [{ type: 'boost', at: 5 }], props: [{ x: 30, z: 200 }], cores: [{ x: -40, z: 210 }], startAt: 2 }
   }
 
-  check('Empty map: Clear all, then every tool, Save and Test drive cope with no road, and one Undo brings it all back (the real editor store)', () => {
+  check('Empty map: New track, then every tool, Save and Test drive cope with no road, and one Undo brings it all back (the real editor store)', () => {
     if (!store) return 'skipped: needs the editor store (run `bun src/editor/selfTest.ts`); in the game it would change your draft'
     const bad: string[] = []
     store.replaceDraft(roadDraft(), null)
     const before = store.useEditor.getState().draft
-    if (!store.clearAll()) return ['Clear all refused a map with a road on it']
+    if (!store.newTrack()) return ['New track refused a map with a road on it']
     const empty = store.useEditor.getState().draft
     const steps = store.useEditor.getState().past.length
-    if (empty.points.length || empty.pieces.length || empty.props.length || empty.cores.length) bad.push('Clear all left something on the map')
-    if (store.useEditor.getState().past[steps - 1] !== before) bad.push('Clear all is not one Undo step')
+    if (empty.points.length || empty.pieces.length || empty.props.length || empty.cores.length) bad.push('New track left something on the map')
+    if (store.useEditor.getState().past[steps - 1] !== before) bad.push('New track is not one Undo step')
     // The empty world builds (hidden stand-in road), with nothing to check.
     const built = store.previewNow()
     const st = store.useEditor.getState()
@@ -1478,7 +1480,7 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   check('Pencil on the empty map draws the whole road, which builds and passes the checks; one Undo empties it again (the real editor store)', () => {
     if (!store) return 'skipped: needs the editor store (run `bun src/editor/selfTest.ts`); in the game it would change your draft'
     store.replaceDraft(roadDraft(), null)
-    store.clearAll()
+    store.newTrack()
     const empty = store.useEditor.getState().draft
     const stroke = shaky((t) => ({ x: 30 + 230 * Math.cos(t * TAU), z: -20 + 170 * Math.sin(t * TAU) }), 500, 4, 7, 0, 1.04)
     const res = store.applyStroke(stroke, 1.5)
@@ -1570,7 +1572,7 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     if (verdict !== 'pass') bad.push(`the live preview's checks say ${verdict}`)
     store.undo()
     if (JSON.stringify(store.useEditor.getState().draft) !== JSON.stringify(before)) bad.push('Undo did not bring the old track back exactly')
-    store.clearAll()
+    store.newTrack()
     const empty = store.useEditor.getState().draft
     if (!store.randomRoad(77)) bad.push('Random track refused the empty map')
     else {
@@ -1600,6 +1602,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- Smooth the bumps here, and wall rides on the map (selfTestSmooth.ts)
 
   smoothRows(check, store)
+
+  // ---------------------------------------------------------------- which track this is: New track, Save, Save as new (selfTestTracks.ts)
+
+  trackRows(check, store)
 
   return results
 }
@@ -1673,6 +1679,10 @@ async function loadStoreForBun(): Promise<EditorStore | undefined> {
   const toolsPath = './stretchTools.ts'
   setStretchTools((await import(/* @vite-ignore */ toolsPath)) as typeof import('./stretchTools'))
   setSmoothTools((await import(/* @vite-ignore */ toolsPath)) as typeof import('./stretchTools'))
+  // The Library and the "Save it first?" questions, for the saving rows (selfTestTracks.ts).
+  const registryPath = '../track/registry.ts'
+  const askPath = './askFirst.ts'
+  setTrackModules({ registry: (await import(/* @vite-ignore */ registryPath)) as typeof import('../track/registry'), askFirst: (await import(/* @vite-ignore */ askPath)) as typeof import('./askFirst') })
   return store
 }
 

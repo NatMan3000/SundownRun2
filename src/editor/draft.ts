@@ -16,16 +16,23 @@
 //  with the track registry (src/track/registry.ts), exactly like a
 //  built-in track, so a test drive plays it the normal way.
 //
-//  A draft with no road points is the empty map (a new track, or after
-//  Clear all): the pencil's first loop, Random track or Drive to draw
-//  give it a road, and until then every road tool says so instead.
+//  A draft with no road points is the empty map (a new track): the
+//  pencil's first loop, Random track or Drive to draw give it a road,
+//  and until then every road tool says so instead.
+//
+//  Which track this is: `savedId` is the saved track the draft belongs
+//  to (null for a new track that was never saved). Save only ever writes
+//  to that one track, and a name another track already has gets a
+//  number. New track and Save as new start a different track; Undo
+//  steps back across that line to the track you were on (trackLine).
 // ============================================================
 
 import { create } from 'zustand'
 import { TRACK_DEFAULTS, type CoreSpot, type EnvironmentSpec, type HuntSpec, type Piece, type PropSpot, type RoadPoint, type RoadSpec, type TrackFile, type TrackIssue } from '../track/schema'
 import { getCurrentTrackFile, getTrack, setTrackFromFile } from '../track/current'
 import type { TrackGate } from '../track/gates'
-import { freeTrackId, getTrackSource, listDrawnTracks, saveDrawnTrack } from '../track/registry'
+import { freeTrackId, getTrackFile, getTrackSource, listDrawnTracks, listTracks, saveDrawnTrack } from '../track/registry'
+import { hashString } from '../track/noise'
 import { validateTrack } from '../track/validate'
 import { ROAD_SMOOTHING_MAX, ROAD_SMOOTHING_MIN } from '../track/terrain'
 import { startSession } from '../core/session'
@@ -207,9 +214,13 @@ export { draftFromFile }
 
 /** The id a draft previews and saves under (a new draft gets a free one from its name). */
 export function draftId(d: Draft): string {
-  if (d.id) return d.id
+  return d.id || freeIdFor(d.name)
+}
+
+/** An id made from a track's name that no saved or built-in track has ("Canyon Run" -> canyon-run, or canyon-run-2...). */
+export function freeIdFor(name: string): string {
   const taken = new Set(listDrawnTracks().map((t) => t.id))
-  const base = freeTrackId(d.name)
+  const base = freeTrackId(name)
   if (!taken.has(base)) return base
   let n = 2
   while (taken.has(`${base}-${n}`) || getTrackSource(`${base}-${n}`) === 'builtin') n++
@@ -323,8 +334,13 @@ export function undo(): void {
   const s = useEditor.getState()
   if (!s.past.length || s.mode === 'map') return
   const prev = s.past[s.past.length - 1]
-  useEditor.setState({ draft: prev, past: s.past.slice(0, -1), future: [s.draft, ...s.future], dirty: true, notes: null, selection: null, shaping: null })
-  writeWorking({ draft: prev, savedId: s.savedId, dirty: true })
+  // Leaving the first draft of a new track goes back to the track before it (see trackLine).
+  const crossed = trackLine.has(s.draft)
+  const savedId = crossTrackLine(s.draft, s.savedId)
+  const dirty = differsFromSaved(prev, savedId)
+  useEditor.setState({ draft: prev, past: s.past.slice(0, -1), future: [s.draft, ...s.future], dirty, savedId, notes: null, selection: null, shaping: null })
+  writeWorking({ draft: prev, savedId, dirty })
+  if (crossed) say(`Undo: back on "${prev.name}"${savedId ? ', the track saved in your Library' : ''}. Redo goes back to the new one.`, 'info')
   audio.ui('back')
   schedulePreview()
 }
@@ -333,8 +349,13 @@ export function redo(): void {
   const s = useEditor.getState()
   if (!s.future.length || s.mode === 'map') return
   const next = s.future[0]
-  useEditor.setState({ draft: next, past: [...s.past, s.draft], future: s.future.slice(1), dirty: true, notes: null, selection: null, shaping: null })
-  writeWorking({ draft: next, savedId: s.savedId, dirty: true })
+  // Stepping onto the first draft of a new track goes forward onto that track again.
+  const crossed = trackLine.has(next)
+  const savedId = crossTrackLine(next, s.savedId)
+  const dirty = differsFromSaved(next, savedId)
+  useEditor.setState({ draft: next, past: [...s.past, s.draft], future: s.future.slice(1), dirty, savedId, notes: null, selection: null, shaping: null })
+  writeWorking({ draft: next, savedId, dirty })
+  if (crossed) say(`Redo: on "${next.name}" again.`, 'info')
   audio.ui('select')
   schedulePreview()
 }
@@ -344,6 +365,233 @@ export function replaceDraft(draft: Draft, savedId: string | null): void {
   useEditor.setState({ draft, past: [], future: [], dirty: false, savedId, notes: null, mode: 'edit', selection: null, shaping: null })
   writeWorking({ draft, savedId, dirty: false })
   previewNow()
+}
+
+// ---------------------------------------------------------------- which track this is
+
+/**
+ * Where the undo history crosses from one track to another. New track and
+ * Save as new make a commit whose draft is the FIRST draft of a different
+ * track; this remembers, for that draft, the saved id on the other side of
+ * the line. Undo leaving that draft, or Redo arriving on it, swaps the two
+ * (crossTrackLine), so Undo after New track is back on the old track (and
+ * Save then updates the old track, never a new one), and Redo is back on the
+ * new track, saved or not. A WeakMap, so forgotten history is forgotten here too.
+ */
+const trackLine = new WeakMap<Draft, string | null>()
+
+/** Step across the line at `lineDraft` (if it is one): returns the saved id on the other side, and remembers this side's. */
+function crossTrackLine(lineDraft: Draft, savedIdHere: string | null): string | null {
+  if (!trackLine.has(lineDraft)) return savedIdHere
+  const there = trackLine.get(lineDraft) ?? null
+  trackLine.set(lineDraft, savedIdHere)
+  return there
+}
+
+/** The draft object changed but it is the same step in the history (Save gave it an id): keep its place on the line. */
+function keepTrackLine(was: Draft, now: Draft): void {
+  if (trackLine.has(was)) trackLine.set(now, trackLine.get(was) ?? null)
+}
+
+/** True when the draft is not exactly what is saved under `savedId` (always, for a track never saved). */
+function differsFromSaved(d: Draft, savedId: string | null): boolean {
+  if (!savedId) return true
+  const saved = getTrackFile(savedId)
+  return !saved || JSON.stringify(fileOfDraft(d, savedId)) !== JSON.stringify(saved)
+}
+
+/** The three things the header can say about the open track. */
+export type SaveState = 'new' | 'saved' | 'changed'
+
+/** In Josh's words, for the header, the Library and the questions. */
+export const SAVE_STATE_WORDS: Record<SaveState, string> = {
+  new: 'New, not saved yet',
+  saved: 'Saved',
+  changed: 'Changes not saved',
+}
+
+/** Is the open track new (never saved), saved, or saved with changes since? */
+export function saveState(s: Pick<EditorState, 'savedId' | 'dirty'> = useEditor.getState()): SaveState {
+  if (!s.savedId) return 'new'
+  return s.dirty ? 'changed' : 'saved'
+}
+
+/**
+ * True when leaving this track now would lose work: there is a road, and it
+ * has changes that aren't saved (or it was never saved). An empty map has
+ * nothing to lose (and nothing Save could keep).
+ */
+export function hasUnsavedWork(s: Pick<EditorState, 'draft' | 'dirty'> = useEditor.getState()): boolean {
+  return s.dirty && !isEmptyDraft(s.draft)
+}
+
+/** The longest name a track can have (the name box stops there too). */
+const NAME_MAX = 40
+
+/** A name for comparing: trimmed, any case ("Canyon Run" and "canyon run " are the same name). */
+function nameKey(name: string): string {
+  return name.trim().toLowerCase()
+}
+
+/**
+ * `want`, or the first of "want 2", "want 3"... that no track in the game is
+ * called (saved, built-in or from the host; the track with id `except`
+ * doesn't count, and every name in `alsoTaken` does). A name that already
+ * ends in a number counts on from it ("Canyon Run 2" -> "Canyon Run 3").
+ */
+export function freeName(want: string, except: string | null = null, alsoTaken: readonly string[] = []): string {
+  const taken = new Set(listTracks().filter((t) => t.id !== except).map((t) => nameKey(t.name)))
+  for (const n of alsoTaken) taken.add(nameKey(n))
+  const base = (want.trim() || 'My Track').slice(0, NAME_MAX)
+  if (!taken.has(nameKey(base))) return base
+  const stem = base.replace(/\s+\d+$/, '') || base
+  for (let n = 2; ; n++) {
+    const tail = ` ${n}`
+    const name = `${stem.slice(0, NAME_MAX - tail.length).trimEnd()}${tail}`
+    if (!taken.has(nameKey(name))) return name
+  }
+}
+
+/**
+ * Keep the draft's hills where they are when its id changes. A world with no
+ * `seed` takes its hills from the track's id (see worldForCopy in
+ * draftFile.ts), so a new track or a copy gets the old id's seed written in.
+ */
+function pinHills(d: Draft, id: string): void {
+  if (d.environment.seed === undefined) d.environment = { ...d.environment, seed: hashString(id) }
+}
+
+/**
+ * The first draft of a new track made from `d`: an empty map called `name`.
+ * With no `baseWorldId` it keeps the world and every setting (road width,
+ * banking, walls, time of day, edge lights, laps, the maker), on the same
+ * hills; with one, it starts fresh in that world (keeping only the maker).
+ * The blurb ("About this track") belonged to the old track, so it goes.
+ */
+function freshTrack(d: Draft, oldId: string, name: string, baseWorldId?: string): Draft {
+  const next = baseWorldId ? { ...newDraft(baseWorldId), author: d.author } : { ...clearedDraft(d), description: '' }
+  next.id = ''
+  next.name = name
+  pinHills(next, baseWorldId ? draftId(next) : oldId)
+  return next
+}
+
+/** Inside a commit: make the draft being changed exactly `next` (every field, none left over from before). */
+function becomes(d: Draft, next: Draft): void {
+  const fields = d as unknown as Record<string, unknown>
+  for (const k of Object.keys(fields)) delete fields[k]
+  Object.assign(d, cloneJson(next))
+}
+
+/**
+ * The draft just committed is the first draft of a different track: mark the
+ * line for Undo and Redo (trackLine), and forget the old track's saved id, so
+ * nothing this track does can ever be saved over the old one.
+ */
+function startedNewTrack(oldSavedId: string | null, dirty: boolean): void {
+  const d = useEditor.getState().draft
+  trackLine.set(d, oldSavedId)
+  useEditor.setState({ savedId: null, dirty })
+  writeWorking({ draft: d, savedId: null, dirty })
+}
+
+/** The name the track is saved under (its saved file's name), or null if it was never saved. */
+export function savedName(savedId: string | null = useEditor.getState().savedId): string | null {
+  return savedId ? getTrackFile(savedId)?.name ?? null : null
+}
+
+/**
+ * New track (the rail's New track, the Library's New track, the pad's B):
+ * an empty map for a brand new, unsaved track with a name no track has yet
+ * ("My Track 2"). The track that was open stays in the Library exactly as it
+ * was last saved; nothing here writes to it. It is ONE commit, so one Undo
+ * brings back the old road AND puts you back on the old track (trackLine).
+ * Asking first about changes not saved is askFirst.ts's job.
+ * Returns false if there was nothing to do (this is already a new, empty track).
+ */
+export function newTrack(baseWorldId?: string): boolean {
+  const s = useEditor.getState()
+  if (s.mode !== 'edit') return false
+  if (!s.savedId && isBlankDraft(s.draft) && (!baseWorldId || baseWorldId === s.draft.baseWorld)) {
+    say(`This is already a new track. ${EMPTY_MAP_HINT}`, 'info')
+    return false
+  }
+  const was = savedName(s.savedId)
+  const name = freeName('My Track', null, [s.draft.name])
+  const fresh = freshTrack(s.draft, s.savedId ?? draftId(s.draft), name, baseWorldId)
+  commit((d) => becomes(d, fresh))
+  startedNewTrack(s.savedId, false)
+  useEditor.setState({ selection: null, tool: 'pencil' })
+  say(
+    was
+      ? `New track "${name}": draw a loop with the pencil, or press Random track. "${was}" is safe in your Library.`
+      : `New track "${name}": draw a loop with the pencil, or press Random track. Undo brings back what you had.`,
+    'good',
+  )
+  audio.ui('select')
+  return true
+}
+
+/**
+ * Save as new track: save the draft as a copy under a new name (its own name
+ * if no other track has it, else the next free number: "Canyon Run 2") and
+ * carry on working on the copy. The track it came from stays exactly as it was
+ * last saved, and the copy sits on the same hills. One Undo goes back to the
+ * old track. A track never saved has nothing to copy: Save already makes it a
+ * new track. Returns the copy's id, or null if it couldn't be saved.
+ */
+export function saveAsNewTrack(): string | null {
+  const s = useEditor.getState()
+  if (s.mode !== 'edit') return null
+  if (!s.savedId) return saveDraft()
+  if (isEmptyDraft(s.draft)) {
+    say("There's no road to save yet. Draw a loop with the pencil, or press Random track.", 'warn')
+    audio.ui('error')
+    return null
+  }
+  const oldId = s.savedId
+  const was = savedName(oldId) ?? s.draft.name
+  const name = freeName(s.draft.name)
+  // The same checks Save makes, before anything changes.
+  const trial: Draft = { ...s.draft, id: '', name }
+  pinHills(trial, oldId)
+  const v = validateTrack(fileFromDraft(trial))
+  if (!v.ok) {
+    say(`Can't save yet: ${v.errors[0]?.message ?? 'the track has a problem'}.`, 'bad')
+    audio.ui('error')
+    useEditor.setState({ errors: v.errors, warnings: v.warnings })
+    return null
+  }
+  commit((d) => {
+    d.id = ''
+    d.name = name
+    pinHills(d, oldId)
+  })
+  startedNewTrack(oldId, true)
+  const id = saveDraft()
+  if (!id) {
+    // Out of storage: step back onto the old track, as if nothing happened (saveDraft said why).
+    const why = useEditor.getState().message
+    undo()
+    useEditor.setState({ message: why })
+    return null
+  }
+  say(`Saved a copy called "${name}" in your Library. You're working on the copy now; "${was}" is just as you last saved it.`, 'good')
+  return id
+}
+
+/**
+ * A saved track was deleted from the Library. If it is the open one, the open
+ * one becomes a new, unsaved track with the same road (Save puts it back).
+ */
+export function forgetDeletedTrack(id: string): void {
+  const s = useEditor.getState()
+  if (s.savedId !== id) return
+  // Same road, just no longer saved: the checks already run on it still count.
+  const draft = { ...s.draft, id: '' }
+  keepTrackLine(s.draft, draft)
+  useEditor.setState({ savedId: null, dirty: true, draft, checkedDraft: s.checkedDraft === s.draft ? draft : s.checkedDraft })
+  writeWorking({ draft, savedId: null, dirty: true })
 }
 
 // ---------------------------------------------------------------- live preview
@@ -474,7 +722,7 @@ export function strokeOptions(d: Draft, metresPerPixel: number) {
 export const PENCIL_NOTHING: Record<'start' | 'end' | 'together' | 'short', string> = {
   start: 'Nothing changed: start your line on the road, then end it back on the road.',
   end: 'Nothing changed: end your line back on the road to redraw the bit in between.',
-  together: 'Nothing changed: end your line further along the road (a whole new road starts from Clear all).',
+  together: 'Nothing changed: end your line further along the road (a whole new road starts from New track).',
   short: 'Nothing changed: draw a longer line, from the road back to the road.',
 }
 
@@ -505,7 +753,7 @@ export function applyStroke(raw: readonly P[], metresPerPixel: number): CleanRes
   }
   commit(
     (d) => {
-      // The map was empty, so there are no pieces to keep (Clear all took them with the road).
+      // The map was empty, so there are no pieces to keep (a new track starts with none).
       d.points = res.points
       d.startAt = 0
     },
@@ -524,7 +772,7 @@ export function applyStroke(raw: readonly P[], metresPerPixel: number): CleanRes
 
 export function setName(name: string): void {
   commit((d) => {
-    d.name = name.slice(0, 40)
+    d.name = name.slice(0, NAME_MAX)
   })
 }
 export function setAuthor(author: string): void {
@@ -579,7 +827,17 @@ export function setEdgeColour(hex: string): void {
 
 // ---------------------------------------------------------------- save, test drive
 
-/** Save the draft as a drawn track in this browser. Returns the id, or null if it can't be saved. */
+/**
+ * Save the draft as a drawn track in this browser (its Library). Returns the
+ * id, or null if it can't be saved.
+ *
+ * It only ever writes to the track you are on: the saved track it came from
+ * (savedId), or for a new track a brand new id no other track has (draftId).
+ * Renaming a saved track and saving renames that same track. A name another
+ * track already has gets the next free number ("Canyon Run 2"), and the
+ * status line says so: two tracks with one name in the track list would be
+ * a guessing game, and a question box every save would be worse.
+ */
 export function saveDraft(): string | null {
   const s = useEditor.getState()
   if (isEmptyDraft(s.draft)) {
@@ -588,7 +846,12 @@ export function saveDraft(): string | null {
     return null
   }
   const id = s.savedId ?? draftId(s.draft)
-  const file = fileFromDraft(s.draft, id)
+  const wanted = s.draft.name.trim() || 'My Track'
+  const name = freeName(wanted, id)
+  const renamed = nameKey(name) !== nameKey(wanted)
+  const was = savedName(s.savedId)
+  const named = renamed ? { ...s.draft, name } : s.draft
+  const file = fileFromDraft(named, id)
   const v = validateTrack(file)
   if (!v.ok) {
     say(`Can't save yet: ${v.errors[0]?.message ?? 'the track has a problem'}.`, 'bad')
@@ -601,11 +864,14 @@ export function saveDraft(): string | null {
     audio.ui('error')
     return null
   }
-  const draft = { ...s.draft, id }
+  const draft = { ...named, id }
+  keepTrackLine(s.draft, draft)
   // Same road, new id: the checks already run on it still count.
   useEditor.setState({ draft, savedId: id, dirty: false, checkedDraft: s.checkedDraft === s.draft ? draft : s.checkedDraft })
   writeWorking({ draft, savedId: id, dirty: false })
-  say(`Saved "${file.name}".`, 'good')
+  if (renamed) say(`Saved "${file.name}" in your Library. There's already a track called "${wanted}", so this one got a number.`, 'good')
+  else if (was && nameKey(was) !== nameKey(file.name)) say(`Saved "${file.name}" in your Library (it was called "${was}").`, 'good')
+  else say(`Saved "${file.name}" in your Library.`, 'good')
   return id
 }
 
@@ -1254,53 +1520,35 @@ export function endBend(): void {
 }
 
 /**
- * Clear all: wipe the map back to empty (no road, pieces, props, cores or
- * start line; see clearedDraft) so Josh can start again with the pencil or
- * Random track. It is ONE commit, so one Undo brings the whole track back exactly.
- *
- * Only the open draft changes. Tracks saved in the library and the built-in
- * tracks are never touched; a saved track only changes if he presses Save
- * (or Test drive) afterwards, like any other edit. The working copy kept in
- * this browser follows along: commit() writes the cleared draft, and Undo
- * writes the old one back. Returns false if there was nothing to clear.
- */
-export function clearAll(): boolean {
-  const s = useEditor.getState()
-  if (s.mode !== 'edit') return false
-  if (isBlankDraft(s.draft)) {
-    say(`Already clear. ${EMPTY_MAP_HINT}`, 'info')
-    return false
-  }
-  commit((d) => {
-    Object.assign(d, clearedDraft(d))
-  })
-  useEditor.setState({ selection: null, tool: 'pencil' })
-  say('Cleared. Draw a loop with the pencil or press Random track for your new road, or Undo to bring the old one back.', 'good')
-  audio.ui('back')
-  return true
-}
-
-/**
  * Random track: a whole new road in this world (randomTrack.ts), that has
  * already passed every check the game has. It replaces the road, pieces,
- * start line, props and cores (the world, name and settings stay), as ONE
- * commit, so one Undo brings back what was there. `seed` picks the track
- * (the same seed, the same track); without one the dice are rolled.
+ * start line, props and cores (the world and settings stay), as ONE commit,
+ * so one Undo brings back what was there. `seed` picks the track (the same
+ * seed, the same track); without one the dice are rolled.
+ *
+ * On a track that is saved in the Library it never touches that track: the
+ * new road is a new track (like New track, then the dice, in one Undo step),
+ * and the saved one stays as it was. On a new track (never saved) the road
+ * is simply swapped, name and all kept, so pressing it again re-rolls.
  * Returns how many shapes it tried and how long it took, or null if none
  * passed (then nothing changes).
  */
 export function randomRoad(seed = Math.floor(Math.random() * 2 ** 32)): { tries: number; ms: number; shape: string } | null {
   const s = useEditor.getState()
   if (s.mode !== 'edit') return null
-  const d = s.draft
-  const id = s.savedId ?? draftId(d)
+  const asNew = !!s.savedId
+  const was = savedName(s.savedId)
+  const d = asNew ? freshTrack(s.draft, s.savedId!, freeName('My Track', null, [s.draft.name])) : s.draft
+  const id = asNew ? draftId(d) : s.savedId ?? draftId(d)
   const t = getTrack()
+  // The live preview's world (the empty map's world too) is this world: its edge is known. A new
+  // track made here sits in the very same world (same hills), just under its own id.
+  const built = t && (t.id === id || (asNew && t.id === s.savedId)) ? t : null
   const res = randomTrack(d, {
     seed,
     id,
-    // The live preview's world (the empty map's world too) is built under the same id: its edge is known.
-    playRadius: t && t.id === id ? t.world.playRadius : undefined,
-    params: t && t.id === id ? { ...t.params } : {},
+    playRadius: built ? built.world.playRadius : undefined,
+    params: built ? { ...built.params } : {},
   })
   if (!res.ok || !res.pick) {
     say("The dice didn't find a good road this time. Press Random track again.", 'warn')
@@ -1309,12 +1557,14 @@ export function randomRoad(seed = Math.floor(Math.random() * 2 ** 32)): { tries:
   }
   const pick = res.pick
   commit((x) => {
+    if (asNew) becomes(x, d)
     x.points = pick.points
     x.pieces = pick.pieces
     x.startAt = pick.startAt
     x.props = []
     x.cores = []
   })
+  if (asNew) startedNewTrack(s.savedId, true)
   useEditor.setState({ selection: null })
   // Build it straight away (the button should feel instant): it already passed the checks.
   previewNow()
@@ -1322,7 +1572,8 @@ export function randomRoad(seed = Math.floor(Math.random() * 2 ** 32)): { tries:
   const what = { blob: 'a swoopy loop', eight: 'a figure eight', bowtie: 'a bow tie', circuit: 'a circuit', peanut: 'a peanut-shaped loop' }[pick.shape]
   const extras = [pick.bridges ? `${pick.bridges === 1 ? 'a bridge' : `${pick.bridges} bridges`}` : '', pick.pieces.some((p) => p.type === 'speedtrap') ? 'a speed trap' : '', pick.pieces.some((p) => p.type === 'boost') ? 'a boost pad' : ''].filter(Boolean)
   const list = extras.length > 1 ? `${extras.slice(0, -1).join(', ')} and ${extras[extras.length - 1]}` : extras[0]
-  say(`Random track: ${what}, ${km} km${list ? ` with ${list}` : ''}. Press it again for another, or Undo.`, 'good')
+  const newOne = asNew ? ` It's a new track, "${d.name}"${was ? `; "${was}" is safe in your Library` : ''}.` : ''
+  say(`Random track: ${what}, ${km} km${list ? ` with ${list}` : ''}.${newOne} Press it again for another, or Undo.`, 'good')
   audio.ui('select')
   return { tries: res.tries, ms: res.ms, shape: pick.shape }
 }

@@ -1,7 +1,7 @@
 // ============================================================
 //  EMPTY MAP - hide the stand-in road while the map has no road
 // ------------------------------------------------------------
-//  After Clear all (or for a brand new track) the map is empty. The
+//  A brand new track (New track) starts with an empty map. The
 //  game still needs a road to build a world around, so the editor
 //  builds the world with a small hidden loop in the middle
 //  (draftFile.ts emptyWorldFile: no posts, no billboards). This

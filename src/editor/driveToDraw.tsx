@@ -7,7 +7,7 @@
 //  the same clean-up as a pencil stroke and opens in the editor.
 //
 //  It makes a whole new road, so like the pencil's first loop it is
-//  for an empty map only (Clear all first): every tool edits the road
+//  for an empty map only (New track first): every tool edits the road
 //  that is there, and nothing replaces a road by surprise. The road
 //  it makes lands in the same track (name, world, settings) as one
 //  Undo step, so Undo gives the empty map back.
@@ -76,7 +76,7 @@ const useDrive = create<{ active: boolean; metres: number; note: string | null; 
 export function startDriveToDraw(): boolean {
   const draft = useEditor.getState().draft
   if (!isEmptyDraft(draft)) {
-    say('Drive to draw makes a whole new road. Press Clear all first, then Drive to draw.', 'warn')
+    say('Drive to draw makes a whole new road. Press New track first, then Drive to draw.', 'warn')
     audio.ui('error')
     return false
   }

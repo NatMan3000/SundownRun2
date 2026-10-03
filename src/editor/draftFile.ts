@@ -10,7 +10,7 @@
 //  A base world is just an `environment` block: the ground, the sky,
 //  the city, the music. Pick one and the draft gets a copy of it.
 //
-//  It also knows what "Clear all" leaves behind (an empty map: the
+//  It also knows what a new track starts as (an empty map: the
 //  world with no road yet), and the hidden stand-in road the game
 //  builds that world with while the map is empty.
 // ============================================================
@@ -311,7 +311,8 @@ export function emptyWorldFile(d: Draft, id: string): TrackFile {
 }
 
 /**
- * "Clear all": the same track with nothing on the map. The road goes (so
+ * The track with nothing on the map (what New track starts from, see
+ * draft.ts newTrack: it then gets a new name and no blurb). The road goes (so
  * every per-stretch bank, width and height goes with it), and so do every
  * piece, crash-prop pile, energy core and the start line. What the track IS
  * stays: its name, maker, blurb, world, time of day, edge lights, road width,
@@ -328,7 +329,7 @@ export function clearedDraft(d: Draft): Draft {
   }
 }
 
-/** True when "Clear all" would change nothing (the map is already empty). */
+/** True when the map is already empty (nothing on it but the world). */
 export function isBlankDraft(d: Draft): boolean {
   return JSON.stringify(clearedDraft(d)) === JSON.stringify(d)
 }

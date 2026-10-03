@@ -193,7 +193,7 @@ function round3(v: number): number {
  *               'short'    it is too short to be a line yet
  *
  * A pencil line never replaces the whole road: a brand new road starts from
- * an empty map (Clear all, then draw a loop).
+ * an empty map (New track, then draw a loop).
  */
 export type RedrawPlan =
   | { kind: 'redraw'; loop: P[]; replaced: P[] }

@@ -113,12 +113,19 @@ export const UndoIcon = (p: { flip?: boolean }) => (
     <path d="M4 9h10a6 6 0 010 12h-3" />
   </Svg>
 )
-/** An eraser rubbing out a line: Clear all. */
-export const ClearIcon = () => (
+/** A fresh sheet with its corner folded and a plus on it: New track. */
+export const NewTrackIcon = () => (
   <Svg>
-    <path d="M8.5 19.5L4 15a1.6 1.6 0 010-2.3l8.7-8.7a1.6 1.6 0 012.3 0l5 5a1.6 1.6 0 010 2.3l-8 8.2" />
-    <path d="M8.5 9.2l6.3 6.3" />
-    <path d="M8.5 19.5H20" />
+    <path d="M14 3H6.5A1.5 1.5 0 005 4.5v15A1.5 1.5 0 006.5 21h11a1.5 1.5 0 001.5-1.5V8z" />
+    <path d="M14 3v5h5" />
+    <path d="M12 11v6M9 14h6" />
+  </Svg>
+)
+/** An arrow going down into a tray: Save (the "Save it first?" question). */
+export const SaveIcon = () => (
+  <Svg>
+    <path d="M12 3v11M7.5 9.5L12 14l4.5-4.5" />
+    <path d="M4 14v4.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V14" />
   </Svg>
 )
 /** Fit track: a loop of road with the screen's corners closing in round it. */

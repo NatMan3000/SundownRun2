@@ -229,6 +229,58 @@
   color: var(--accent);
 }
 
+/* Whether this track is saved: a line under its name (TrackSave.tsx). The mark and the words carry
+   it; the colour agrees (cyan new, mint saved, amber changes not saved). */
+.sre-save-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  font-size: 0.92em;
+  color: var(--dim);
+}
+.sre-save-state svg {
+  flex: none;
+}
+.sre-save-state strong {
+  font-weight: 700;
+}
+.sre-save-state.is-new svg,
+.sre-save-state.is-new strong {
+  color: var(--accent);
+}
+.sre-save-state.is-saved svg,
+.sre-save-state.is-saved strong {
+  color: var(--good);
+}
+.sre-save-state.is-changed svg,
+.sre-save-state.is-changed strong {
+  color: var(--warn);
+}
+
+/* The same three states as a chip (the Library). */
+.sre-save-chip {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 1px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-family: var(--font-body);
+  font-size: 0.78em;
+  font-weight: 600;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+.sre-save-chip.is-new {
+  color: var(--accent);
+}
+.sre-save-chip.is-saved {
+  color: var(--good);
+}
+.sre-save-chip.is-changed {
+  color: var(--warn);
+}
+
 .sre-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -526,8 +578,24 @@
   grid-column: 1 / -1;
   margin: 0;
 }
-.sre-actions .sre-btn.is-quiet {
-  grid-column: 1 / -1;
+/* Save, with changes not saved: an amber edge, the same amber as "Changes not saved" in the header. */
+.sre-actions .sre-btn.is-due {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.sre-actions .sre-btn.is-due:hover {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+}
+/* Save as new track: the quieter twin of Save (no fill, but an edge so it still reads as a button). */
+.sre-actions .sre-btn.sre-save-new {
+  border-color: var(--line);
+}
+.sre-actions .sre-btn.sre-save-new:hover {
+  color: var(--text);
+}
+.sre-actions .sre-btn.sre-save-new:disabled {
+  border-style: dashed;
 }
 
 /* ---------------------------------------------------------------- status line */
@@ -574,6 +642,8 @@
 .sre-modal {
   position: absolute;
   inset: 0;
+  /* Over the tool rail (z-index 3) too: while a box is asking, nothing behind it can be pressed. */
+  z-index: 10;
   display: grid;
   place-items: center;
   background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
@@ -609,6 +679,26 @@
   border-top: 1px solid var(--line);
   justify-content: flex-start;
 }
+/* Across the top of the Library: the track you are editing now, and whether it is saved. */
+.sre-lib-now {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.sre-lib-now strong {
+  font-family: var(--font-display);
+  font-size: 1.15em;
+}
+.sre-lib-now .sre-save-chip {
+  margin-left: 0;
+}
+.sre-lib-now .sre-help {
+  flex-basis: 100%;
+}
 .sre-lib-new {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -639,6 +729,11 @@
   padding: 10px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
 }
+/* The track that is open now: a faint tint (the chip beside its name says it in words). */
+.sre-lib-row.is-open {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-radius: 10px;
+}
 .sre-lib-name {
   display: flex;
   flex-direction: column;
@@ -652,7 +747,7 @@
   gap: 6px;
 }
 
-/* ---------------------------------------------------------------- clear all question */
+/* ---------------------------------------------------------------- the ask first box (AskFirstBox.tsx) */
 
 .sre-confirm {
   width: min(440px, calc(100vw - 80px));
@@ -689,6 +784,18 @@
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 8px;
+}
+/* Three answers (Cancel, Don't save, Save it) side by side. */
+.sre-confirm-acts.is-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+.sre-confirm-acts .sre-btn.is-primary {
+  grid-column: auto;
+}
+.sre-confirm-icon.is-save {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 /* The focused button always shows, mouse or not: it is the one Enter, Space or A presses. */
 .sre-confirm .sre-btn:focus {
