@@ -49,7 +49,7 @@ export const PLACE_TOOLS: readonly PlaceTool[] = [
   {
     kind: 'tunnel',
     label: 'Tunnel',
-    blurb: 'A real tunnel: the road dips into the ground and the hill goes back over it. Needs clear road either side for its ramps. Click: its middle goes there. Or drag along the road to draw how long it is.',
+    blurb: "A real tunnel: the road dips into the ground and the hill goes back over it. It needs a long stretch of plain road: a ramp down at each end (90-280 m) as well as the covered part, with nothing on it but boost pads and speed traps, and no other road right beside it. The map shows it all before you click (amber where it won't fit, and why). Click: it goes there, or to the nearest spot that fits. Or drag along the road to draw how long it is.",
     colour: PALETTE.grid,
     onRoad: true,
     key: '',

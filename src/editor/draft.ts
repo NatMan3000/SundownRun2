@@ -46,8 +46,9 @@ import { keepBridgesClear } from './bankBridges'
 import { type StretchTool, isStretchTool } from './stretchRuns'
 import type { P } from './geom'
 import { type PlaceKind, TUNNEL_EDIT_MAX, TUNNEL_EDIT_MIN, WALLRIDE_MAX, WALLRIDE_MIN, makeCore, makeProp, makeRoadPiece, toolFor, tunnelFromDrag, tunnelMiddle, tunnelStartFor, wallRideFromDrag, wallRideResized, wallRideSide } from './pieces'
-import { judgeTunnel, tunnelWords } from './tunnelPlace'
-import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
+import { type QuickTunnel, type TunnelFit, fitTunnelAt, fitWords, judgeTunnel, quickTunnelCheck, tunnelBlocker, tunnelWhy, tunnelWords } from './tunnelPlace'
+import type { TunnelFootprint } from './mapDraw'
+import { advanceAt, atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
 import {
   type ShapeResult,
   type ShapeWorld,
@@ -137,6 +138,8 @@ export interface EditorState {
   gates: TrackGate[] | null
   /** The draft the gates (and errors/warnings) were worked out for; the verdict only counts while it is still the draft. */
   checkedDraft: Draft | null
+  /** The Height panel's "Make it a tunnel" is under the pointer: the map draws the tunnel's footprint on this stretch. */
+  tunnelPreview: { from: number; to: number } | null
   /** How long the last gate run took, ms. */
   gatesMs: number
   /** 'pending' while the live preview waits to rebuild. */
@@ -298,6 +301,7 @@ export const useEditor = create<EditorState>(() => ({
   warnings: [],
   gates: null,
   checkedDraft: null,
+  tunnelPreview: null,
   gatesMs: 0,
   preview: 'pending',
   message: null,
@@ -1019,13 +1023,10 @@ export function placeAt(q: P): boolean {
     const piece = makeRoadPiece(kind, hit, d.width / 2, rc)
     if (!piece) return false
     if (piece.type === 'tunnel') {
-      return tryTunnel(
-        (x) => {
-          x.pieces.push(piece)
-        },
-        d.pieces.length,
-        (w) => `Tunnel placed, its middle where you clicked: ${w}. Drag along the road instead to draw how long it is.`,
-      )
+      // Its middle where the click is, or the nearest spot (or length) that fits.
+      return fitTunnel(hit.at, piece.length ?? TRACK_DEFAULTS.tunnelLength, (w, f) =>
+        f.moved || f.length < f.asked ? `Tunnel placed. ${fitWords(f)} ${capitalise(w)}.` : `Tunnel placed, its middle where you clicked: ${w}. Drag along the road instead to draw how long it is.`,
+      ) !== null
     }
     let note = piece.type === 'wallride' ? `${tool.label} placed, its middle where you clicked. Drag along the road instead to draw how long it is.` : `${tool.label} placed.`
     if (piece.type === 'loop') {
@@ -1122,28 +1123,126 @@ function tryTunnel(change: (d: Draft) => void, index: number, done: (words: stri
   return true
 }
 
+/** The draft's id, its live settings and its checks as they are now (when the preview has them), for judging a tunnel. */
+function tunnelContext(): { id: string; params: Record<string, number>; t: ReturnType<typeof getTrack>; before: Parameters<typeof fitTunnelAt>[6] } {
+  const s = useEditor.getState()
+  const id = s.savedId ?? draftId(s.draft)
+  const t = getTrack()
+  const params = t && t.id === id ? { ...t.params } : {}
+  const fresh = s.checkedDraft === s.draft && s.preview === 'built' && t && t.id === id && s.gates
+  return { id, params, t, before: fresh && t && s.gates ? { runtime: t, gates: s.gates, errors: s.errors, warnings: s.warnings } : undefined }
+}
+
+/**
+ * Place a tunnel `length` metres long with its middle at `middle`, or the nearest one that fits
+ * (tunnelPlace.ts fitTunnelAt: along the road, then shorter), built for real and judged. One Undo
+ * step; it ends up selected. Refused in plain words (why, and what to try) if nothing nearby fits.
+ * Returns where it went, or null.
+ */
+function fitTunnel(middle: number, length: number, done: (words: string, fit: Extract<TunnelFit, { ok: true }>) => string): { at: number; length: number } | null {
+  const s = useEditor.getState()
+  const c = tunnelContext()
+  const f = fitTunnelAt(s.draft, middle, length, c.id, c.params, c.t, c.before)
+  if (!f.ok) {
+    say(f.message, 'warn')
+    audio.ui('error')
+    return null
+  }
+  const index = s.draft.pieces.length
+  commit((x) => {
+    x.pieces.push(f.piece)
+  })
+  useEditor.setState({ selection: { kind: 'piece', index } })
+  say(done(tunnelWords(f.verdict), f), 'good')
+  audio.ui('select')
+  return { at: f.piece.at, length: f.length }
+}
+
+function capitalise(text: string): string {
+  return text.length ? text[0].toUpperCase() + text.slice(1) : text
+}
+
+/**
+ * What the planner says about a tunnel `length` metres long starting at `at` on the draft (the
+ * hover ghost and the Height panel use it before any click): whether it fits, its ramps, and why not.
+ */
+export function tunnelVerdictAt(at: number, length: number): QuickTunnel {
+  const s = useEditor.getState()
+  const c = tunnelContext()
+  return quickTunnelCheck(s.draft, at, length, c.id, c.params)
+}
+
+/**
+ * The tunnel footprints the map draws now: the Tunnel tool's ghost (`ghost`, with the pointer at
+ * `mouse`), the selected tunnel, and the Height panel's "Make it a tunnel" under the pointer. Each
+ * with its ramps, whether it fits, and if not why and what is in the way (tunnelPlace.ts).
+ */
+export function tunnelFootprints(ghost?: { at: number; length: number } | null, mouse?: P | null): TunnelFootprint[] {
+  const s = useEditor.getState()
+  if (s.mode !== 'edit' || isEmptyDraft(s.draft)) return []
+  const out: TunnelFootprint[] = []
+  const rc = roadCurve(s.draft.points)
+  const make = (at: number, length: number, q: QuickTunnel, covered: boolean, pill: P | null): TunnelFootprint => {
+    const w = q.ok ? null : tunnelWhy(q, length)
+    return { at, length, rampIn: q.rampIn, rampOut: q.rampOut, ok: q.ok, why: w?.why ?? null, hint: w?.hint ?? null, blocker: tunnelBlocker(q), covered, pill }
+  }
+  if (ghost && s.tool === 'place' && s.placeKind === 'tunnel') {
+    // (Asked at the nearest 5 m, so a moving pointer reuses the answers.)
+    const middle = advanceAt(rc, ghost.at, ghost.length / 2)
+    const snapped = advanceAt(rc, 0, Math.round(metresBetween(rc, 0, middle) / 5) * 5)
+    const at = tunnelStartFor(rc, snapped, ghost.length)
+    out.push(make(ghost.at, ghost.length, tunnelVerdictAt(at, ghost.length), false, mouse ?? null))
+  }
+  const sel = s.selection
+  if (sel?.kind === 'piece') {
+    const p = s.draft.pieces[sel.index]
+    const q = tunnelVerdictOf(sel.index)
+    if (p?.type === 'tunnel' && q) out.push(make(p.at, p.length ?? TRACK_DEFAULTS.tunnelLength, q, false, null))
+  }
+  // A stretch picked with Height that is under a roof: that tunnel's ramps too.
+  if (sel?.kind === 'section' && s.tool === 'height' && !s.tunnelPreview) {
+    for (const index of tunnelsOnStretch(s.draft, sel.from, sel.to)) {
+      const p = s.draft.pieces[index]
+      const q = tunnelVerdictOf(index)
+      if (p?.type === 'tunnel' && q) out.push(make(p.at, p.length ?? TRACK_DEFAULTS.tunnelLength, q, false, null))
+    }
+  }
+  if (s.tunnelPreview) {
+    const span = tunnelFromDrag(rc, s.tunnelPreview.from, s.tunnelPreview.to)
+    const q = tunnelVerdictAt(span.at, span.length)
+    out.push(make(span.at, span.length, q, true, frameAt(rc, advanceAt(rc, span.at, span.length / 2)).p))
+  }
+  return out
+}
+
+/** The same for tunnel piece `index` the draft already has (its footprint when it is selected). */
+export function tunnelVerdictOf(index: number): QuickTunnel | null {
+  const s = useEditor.getState()
+  const p = s.draft.pieces[index]
+  if (p?.type !== 'tunnel') return null
+  const c = tunnelContext()
+  return quickTunnelCheck(s.draft, p.at, p.length ?? TRACK_DEFAULTS.tunnelLength, c.id, c.params, index)
+}
+
 /**
  * Place tool, Tunnel picked, and a drag along the road from `a` to `b` (both `at` values): a
- * tunnel covering the stretch dragged (pieces.ts tunnelFromDrag), if it fits there.
+ * tunnel covering the stretch dragged (pieces.ts tunnelFromDrag), or the nearest that fits.
  */
 export function placeTunnelSpan(a: number, b: number): boolean {
   const d = useEditor.getState().draft
   if (isEmptyDraft(d)) return false
-  const span = tunnelFromDrag(roadCurve(d.points), a, b)
-  const piece: Piece = { type: 'tunnel', at: span.at }
-  if (span.length !== TRACK_DEFAULTS.tunnelLength) piece.length = span.length
+  const rc = roadCurve(d.points)
+  const span = tunnelFromDrag(rc, a, b)
   const cut =
     span.cut === 'short'
       ? ` That was shorter than a tunnel can be, so it's ${TUNNEL_EDIT_MIN} m long, in the middle of what you dragged.`
       : span.cut === 'long'
         ? ` That was longer than a tunnel can be, so it's ${TUNNEL_EDIT_MAX} m long, in the middle of what you dragged.`
         : ''
-  return tryTunnel(
-    (x) => {
-      x.pieces.push(piece)
-    },
-    d.pieces.length,
-    (w) => `Tunnel placed, ${span.length} m long: ${w}.${cut}`,
+  return (
+    fitTunnel(advanceAt(rc, span.at, span.length / 2), span.length, (w, f) =>
+      f.moved || f.length < f.asked ? `Tunnel placed. ${fitWords(f)} ${capitalise(w)}.${cut}` : `Tunnel placed, ${span.length} m long: ${w}.${cut}`,
+    ) !== null
   )
 }
 
@@ -1171,26 +1270,37 @@ export function tunnelOnStretch(from: number, to: number): boolean {
   const s = useEditor.getState()
   const d = s.draft
   if (isEmptyDraft(d) || s.selection?.kind !== 'section') return false
-  const sel = s.selection
-  const span = tunnelFromDrag(roadCurve(d.points), from, to)
-  const piece: Piece = { type: 'tunnel', at: span.at }
-  if (span.length !== TRACK_DEFAULTS.tunnelLength) piece.length = span.length
+  const rc = roadCurve(d.points)
+  const span = tunnelFromDrag(rc, from, to)
   const cut =
     span.cut === 'short'
       ? ` The stretch was shorter than a tunnel can be, so it's ${TUNNEL_EDIT_MIN} m long, in its middle.`
       : span.cut === 'long'
         ? ` The stretch was longer than a tunnel can be, so it's ${TUNNEL_EDIT_MAX} m long, in its middle.`
         : ''
-  const ok = tryTunnel(
-    (x) => {
-      x.pieces.push(piece)
-    },
-    d.pieces.length,
-    (w) => `Made it a tunnel, ${span.length} m long: ${w}.${cut} "Take the roof off" puts it back.`,
+  const placed = fitTunnel(advanceAt(rc, span.at, span.length / 2), span.length, (w, f) =>
+    f.moved || f.length < f.asked
+      ? `Made it a tunnel. ${fitWords(f)} ${capitalise(w)}.${cut} "Take the roof off" puts it back.`
+      : `Made it a tunnel, ${span.length} m long: ${w}.${cut} "Take the roof off" puts it back.`,
   )
-  // Keep the stretch picked (tryTunnel selects the new piece): its panel has "Take the roof off".
-  if (ok) useEditor.setState({ selection: sel })
-  return ok
+  // Pick the tunnel's own stretch (fitTunnel selects the new piece): its panel has "Take the roof off".
+  if (placed) useEditor.setState({ selection: { kind: 'section', from: placed.at, to: advanceAt(roadCurve(useEditor.getState().draft.points), placed.at, placed.length) }, tunnelPreview: null })
+  return !!placed
+}
+
+/**
+ * The Height panel's tunnel Length slider: tunnel `index` grows or shrinks from its middle, if it
+ * still fits (setPieceLength's rules), and its new covered stretch stays picked in the Height tool.
+ */
+export function setTunnelLengthOnStretch(index: number, length: number): void {
+  const before = useEditor.getState().selection
+  setPieceLength(index, length)
+  const st = useEditor.getState()
+  const p = st.draft.pieces[index]
+  if (p?.type === 'tunnel' && st.selection?.kind === 'piece') {
+    const rc = roadCurve(st.draft.points)
+    useEditor.setState({ selection: { kind: 'section', from: p.at, to: advanceAt(rc, p.at, p.length ?? TRACK_DEFAULTS.tunnelLength) } })
+  } else if (before) useEditor.setState({ selection: before })
 }
 
 /** The stretch panel's "Take the roof off": every Tunnel piece on the picked stretch goes, in one Undo step. */

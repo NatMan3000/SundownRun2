@@ -67,6 +67,8 @@ export interface MapExtras {
   pencil?: RedrawPlan | 'new' | null
   /** The stretches changed by Height, Bank and Width (stretchRuns.ts): marked, labelled and clickable. */
   marks?: StretchMarks | null
+  /** Tunnels whose whole footprint shows: the Tunnel tool's ghost, a selected tunnel, the Height panel's preview (draft.ts tunnelFootprints). */
+  tunnels?: readonly TunnelFootprint[]
   /** Height, Bank or Width, pointer over the road: the stretch a click there would pick, and its words. */
   stretchHover?: { from: number; to: number; label: string } | null
 }
@@ -81,6 +83,26 @@ export interface GhostWall {
   dragged: { from: number; to: number } | null
   /** The drag was too short or too long, so the wall ride sits on its middle at the nearest allowed length. */
   cut: 'short' | 'long' | null
+}
+
+/**
+ * A tunnel's whole footprint (draft.ts tunnelFootprints): the covered part from `at` for `length`
+ * metres, the ramp down before it and the ramp up after it, whether it fits, and if not, why (in
+ * Josh's words), what to try, and where on the road the thing in the way is.
+ */
+export interface TunnelFootprint {
+  at: number
+  length: number
+  rampIn: number
+  rampOut: number
+  ok: boolean
+  why: string | null
+  hint: string | null
+  blocker: { from: number; to: number } | null
+  /** Draw the covered part too (the Height panel's preview; the ghost and a placed tunnel have theirs). */
+  covered: boolean
+  /** Where to put the reason's pill (the pointer), if anywhere. */
+  pill: P | null
 }
 
 /** Place tool, Tunnel: the stretch a click (or the drag so far) would cover. */
@@ -193,6 +215,7 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
   drawProps(ctx, d.props, s.selection, x.hoverPick)
   drawCores(ctx, d.cores, s.selection, x.hoverPick)
   if (x.ghost) drawGhost(ctx, x.ghost, d.width, g.rc)
+  if (x.tunnels && g.rc.curve.length) for (const f of x.tunnels) drawTunnelFootprint(ctx, g.rc, f, d.width)
   if (s.mode === 'map') {
     drawParkZones(ctx)
     drawLabels(ctx, s, g.rc)
@@ -1081,6 +1104,83 @@ function drawTunnel(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, le
     const f = frameAt(rc, advanceAt(rc, at, length / 2))
     const m = worldToScreen(f.p.x, f.p.z)
     placePill(ctx, `TUNNEL ${Math.round(length)} m`, m.sx + f.right.x * 44, m.sy + f.right.z * 44, [0, 24, -24, 48], PALETTE.grid)
+  }
+}
+
+/**
+ * A band `metres` wide along pts in the current stroke style: on the map a thick line, never
+ * thinner than `minPx`. (The same as editor16's wideLine on the map; in the 3D view that lays it on
+ * the road, and this becomes wideLine once both are in.)
+ */
+function footprintBand(ctx: CanvasRenderingContext2D, pts: readonly P[], metres: number, minPx: number): void {
+  ctx.lineWidth = Math.max(minPx, metres / view.mpp)
+  line(ctx, pts, false)
+  ctx.stroke()
+}
+
+/** Points along the road's middle from `at` for `metres` (negative: backwards), every 4 m or so. */
+function roadAlong(rc: RoadCurve, at: number, metres: number): P[] {
+  const steps = Math.max(4, Math.ceil(Math.abs(metres) / 4))
+  const pts: P[] = []
+  for (let k = 0; k <= steps; k++) pts.push(frameAt(rc, advanceAt(rc, at, (metres * k) / steps)).p)
+  return pts
+}
+
+/**
+ * A tunnel's whole footprint: each ramp down beyond the covered part in a lighter shade of the
+ * tunnel's colour with its length ("ramp 200 m"), the covered part ("TUNNEL 150 m": drawn here only
+ * for the Height panel's preview), all in amber where it can't go, whatever is in the way marked
+ * amber where it sits ("IN THE WAY"), and the reason with what to try in pills by the pointer.
+ */
+function drawTunnelFootprint(ctx: CanvasRenderingContext2D, rc: RoadCurve, f: TunnelFootprint, roadWidth: number): void {
+  const colour = f.ok ? PALETTE.grid : PALETTE.chevron
+  const half = roadWidth / 2 + TUNNEL_WALL
+  if (f.covered) drawTunnel(ctx, rc, f.at, f.length, roadWidth, 0.6, true)
+  const end = advanceAt(rc, f.at, f.length)
+  const ramps: [P[], number][] = []
+  if (f.rampIn > 0) ramps.push([roadAlong(rc, f.at, -f.rampIn), f.rampIn])
+  if (f.rampOut > 0) ramps.push([roadAlong(rc, end, f.rampOut), f.rampOut])
+  // Every band first, then the labels on top: the reason and what to try by the pointer (clear of
+  // its icon), then each ramp's length and what is in the way.
+  const blocker = f.blocker ? roadAlong(rc, f.blocker.from, Math.max(8, metresBetween(rc, f.blocker.from, f.blocker.to))) : null
+  ctx.save()
+  ctx.lineCap = 'butt'
+  ctx.strokeStyle = colour
+  for (const [pts] of ramps) {
+    ctx.globalAlpha = 0.18
+    footprintBand(ctx, pts, 2 * half, 4)
+  }
+  if (!f.ok) {
+    // The covered part, amber: it can't go here.
+    ctx.globalAlpha = 0.4
+    footprintBand(ctx, roadAlong(rc, f.at, f.length), 2 * half, 4)
+  }
+  if (blocker) {
+    // What is in the way, where it sits on the road.
+    ctx.strokeStyle = PALETTE.chevron
+    ctx.lineCap = 'round'
+    ctx.globalAlpha = 0.85
+    footprintBand(ctx, blocker, roadWidth + 6, 8)
+  }
+  ctx.restore()
+  if (!f.ok && f.why && f.pill) {
+    const m = worldToScreen(f.pill.x, f.pill.z)
+    labelBoxes.push({ x0: m.sx - 22, y0: m.sy - 22, x1: m.sx + 22, y1: m.sy + 22 })
+    const r = placePill(ctx, `Can't fit: ${f.why}`, m.sx, m.sy, [38, -38, 64, -64, 90, -90], PALETTE.chevron)
+    if (f.hint) {
+      const off = r ? (r.y0 > m.sy ? [r.y1 + 14 - m.sy, r.y0 - 38 - m.sy] : [r.y0 - 14 - m.sy, 38]) : [38, -38]
+      placePill(ctx, f.hint, m.sx, m.sy, off, PALETTE.chevron)
+    }
+  }
+  for (const [pts, metres] of ramps) {
+    const mid = pts[Math.floor(pts.length / 2)]
+    const m = worldToScreen(mid.x, mid.z)
+    placePill(ctx, `ramp ${Math.round(metres)} m`, m.sx, m.sy, [0, 24, -24, 48], colour)
+  }
+  if (blocker) {
+    const mid = blocker[Math.floor(blocker.length / 2)]
+    const m = worldToScreen(mid.x, mid.z)
+    placePill(ctx, 'IN THE WAY', m.sx, m.sy, [-30, 30, -54, 54, -78, 78], PALETTE.chevron)
   }
 }
 

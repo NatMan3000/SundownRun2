@@ -88,7 +88,13 @@ const RAMP_MAX = 280
 const RAMP_K = 4730
 /** The deepest a tunnel may dig the road down, metres. */
 export const TUNNEL_DIG_MAX = 22
-/** Other road must keep this far (metres) beyond the walls of a tunnel's open approaches (over its roof it may cross). */
+/**
+ * Other road must keep this far (metres) beyond the walls of a tunnel's open approaches (over its
+ * roof it may cross). The walls' tops follow the ground that road shapes (terrain.ts hillGroundOf),
+ * so a road may run right beside them; this is the ground between the wall's edge and its shoulder.
+ * (Round C tried 3: a click every 20 m on 23 tracks refused just as often, because the roads that
+ * refuse a tunnel touch or cross its ramps, so it stays 8.)
+ */
 const OTHER_ROAD_GAP = 8
 /** So other road keeps this far (metres) past a tunnel road's edge, beside its open approaches, to its own edge (the editor sizes a tunnel at a crossing by it). */
 export const TUNNEL_CLEAR_BESIDE = TUNNEL_WALL + OTHER_ROAD_GAP
@@ -106,19 +112,50 @@ export interface TunnelKeepClear {
   s0: number
   s1: number
   what: string
+  /** What kind of thing it is (for the editor's own words). */
+  kind: TunnelThing
+}
+
+/** The things a tunnel's stretch (ramps included) must keep clear of. */
+export type TunnelThing = 'loop' | 'ramp' | 'wallride' | 'grid' | 'tunnel'
+
+/**
+ * Why a tunnel couldn't be built, as data (the editor turns it into Josh's words and a thing to
+ * try). `dig` and `ramp` are metres: how deep it would go and how long each ramp would be.
+ */
+export type TunnelRefusal =
+  | { kind: 'barriers' }
+  | { kind: 'tooHigh'; dig: number; over: boolean }
+  | { kind: 'tooShort'; needs: number; lap: number }
+  | { kind: 'inTheWay'; thing: TunnelThing; dig: number; ramp: number; where: TunnelWhere | null }
+  | { kind: 'roadNear'; over: boolean; dig: number; ramp: number; where: TunnelWhere | null }
+  | { kind: 'underTunnel' }
+
+/** Where on the road something in a tunnel's way is: control-point positions (`at`), from and to. */
+export interface TunnelWhere {
+  from: number
+  to: number
 }
 
 /**
  * How far a tunnel digs the road at base s: all of D over the covered stretch [sb0, sb1],
- * easing to nothing over R metres either side on an even S whose bend starts and ends at zero
- * (smootherstep: the road curves into the dip and out of it gently, never with a sudden change
- * of curve).
+ * easing to nothing over R0 metres before it and R1 after it on an even S whose bend starts and
+ * ends at zero (smootherstep: the road curves into the dip and out of it gently, never with a
+ * sudden change of curve).
  */
-function digAt(s: number, sb0: number, sb1: number, D: number, R: number): number {
-  const out = s < sb0 ? sb0 - s : s > sb1 ? s - sb1 : 0
-  const u = Math.min(1, out / R)
+function digAt(s: number, sb0: number, sb1: number, D: number, R0: number, R1: number): number {
+  const out = s < sb0 ? (sb0 - s) / R0 : s > sb1 ? (s - sb1) / R1 : 0
+  const u = Math.min(1, out)
   return D * (1 - u * u * u * (u * (u * 6 - 15) + 10))
 }
+
+/**
+ * A car's grip on a bend, as a share of gravity, used to judge how fast it can be at a ramp's lip
+ * there (the racing line plans up to about 1.2, and the line check stops it at 1.45).
+ */
+const BEND_GRIP = 1.45
+/** The dips check judges a lip at the racing line's speed plus this much. */
+const LIP_MARGIN = 1.15
 
 /** The fastest a car is judged at over a ramp's lip (m/s): the crest checks' own cap, 250 km/h. */
 const LIP_SPEED = 250 / 3.6
@@ -128,35 +165,50 @@ const LIP_SHARE = 0.68
 const LIP_LOOK = 20
 
 /**
- * How long a tunnel's ramps must be (metres). The ramp alone needs about sqrt(RAMP_K x D); but
- * the road it is dug into has its own hills, and where one crests near the top of a ramp the two
- * add up. So longer ramps are tried, a tenth longer each time, until no lip asks more than
- * LIP_SHARE of gravity at 250 km/h (or no more than the road already asked there without the
- * tunnel), up to RAMP_MAX.
+ * The fastest a car is likely to be over one end's ramp (m/s): on a straight, 250 km/h (the crest
+ * checks' cap); on a bend all the way along it, as fast as the bend lets a car go (BEND_GRIP), plus
+ * the dips check's margin. `from`..`to` is the stretch (base s) the ramp could cover at full length.
  */
-function rampLength(by: Float64Array, nb: number, dsb: number, sb0: number, sb1: number, D: number): number {
+function rampSpeed(curvature: Float32Array | undefined, nb: number, dsb: number, from: number, to: number): number {
+  if (!curvature) return LIP_SPEED
+  let v = 0
+  for (let k = Math.floor(from / dsb); k <= Math.ceil(to / dsb); k++) {
+    const kappa = Math.abs(curvature[wrapI(k, nb)])
+    v = Math.max(v, kappa > 1e-6 ? LIP_MARGIN * Math.sqrt((BEND_GRIP * 9.81) / kappa) : LIP_SPEED)
+    if (v >= LIP_SPEED) return LIP_SPEED
+  }
+  return Math.min(LIP_SPEED, v)
+}
+
+/**
+ * How long one end's ramp must be (metres; side -1 the way in, +1 the way out). A ramp needs about
+ * sqrt(RAMP_K x D) for a car at 250 km/h, less in proportion where a car can't be that fast (on a
+ * bend: rampSpeed). The road it is dug into has its own hills, and where one crests near the top of
+ * a ramp the two add up, so longer ramps are tried, a tenth longer each time, until no lip asks
+ * more than LIP_SHARE of gravity at that speed (or no more than the road already asked there
+ * without the tunnel), up to RAMP_MAX.
+ */
+function rampLength(by: Float64Array, nb: number, dsb: number, sb0: number, sb1: number, D: number, side: -1 | 1, curvature?: Float32Array): number {
   const W = Math.max(1, Math.round(LIP_LOOK / dsb))
   const at = (k: number) => by[wrapI(k, nb)]
-  // The share of gravity a car at LIP_SPEED needs at base sample k, on the road y(k).
+  const full = clamp(Math.sqrt(RAMP_K * Math.max(D, 0.5)), RAMP_MIN, RAMP_MAX)
+  const v = side < 0 ? rampSpeed(curvature, nb, dsb, sb0 - full * 1.3 - 30, sb0 + 30) : rampSpeed(curvature, nb, dsb, sb1 - 30, sb1 + full * 1.3 + 30)
+  // The share of gravity a car at v needs at base sample k, on the road y(k).
   const share = (y: (k: number) => number, k: number): number => {
     const ga = (y(k) - y(k - 2 * W)) / (2 * W * dsb)
     const gb = (y(k + 2 * W) - y(k)) / (2 * W * dsb)
     const crest = -(gb - ga) / (2 * W * dsb)
-    return crest > 0 ? (LIP_SPEED * LIP_SPEED * crest) / 9.81 : 0
+    return crest > 0 ? (v * v * crest) / 9.81 : 0
   }
-  let R = clamp(Math.sqrt(RAMP_K * Math.max(D, 0.5)), RAMP_MIN, RAMP_MAX)
+  let R = clamp(full * (v / LIP_SPEED), RAMP_MIN, RAMP_MAX)
   for (;;) {
-    const dug = (k: number) => at(k) - digAt(k * dsb, sb0, sb1, D, R)
+    const dug = (k: number) => at(k) - digAt(k * dsb, sb0, sb1, D, R, R)
     let worst = 0
     let base = 0
-    for (const [from, to] of [
-      [sb0 - R - 30, sb0 + 30],
-      [sb1 - 30, sb1 + R + 30],
-    ]) {
-      for (let k = Math.floor(from / dsb); k <= Math.ceil(to / dsb); k++) {
-        worst = Math.max(worst, share(dug, k))
-        base = Math.max(base, share(at, k))
-      }
+    const [from, to] = side < 0 ? [sb0 - R - 30, sb0 + 30] : [sb1 - 30, sb1 + R + 30]
+    for (let k = Math.floor(from / dsb); k <= Math.ceil(to / dsb); k++) {
+      worst = Math.max(worst, share(dug, k))
+      base = Math.max(base, share(at, k))
     }
     if (worst <= Math.max(LIP_SHARE, base + 0.03) || R >= RAMP_MAX) return R
     R = Math.min(RAMP_MAX, R * 1.1)
@@ -170,12 +222,16 @@ export interface TunnelPlan {
   /** Covered stretch, base s (sb1 may pass the lap: it wraps). */
   sb0: number
   sb1: number
-  /** Ramp length each side, metres. */
+  /** Ramp length, metres: the longer of the two (rampIn before the covered stretch, rampOut after it). */
   ramp: number
+  rampIn: number
+  rampOut: number
   /** Deepest dig, metres. */
   depth: number
   /** Why it can't be built (plain words), or null when it is built. */
   problem: string | null
+  /** The same, as data (null when it is built). */
+  refusal: TunnelRefusal | null
   /** How many times other road crosses over its roof. */
   crossings: number
 }
@@ -208,6 +264,10 @@ export interface TunnelPlanInput {
   keepClear: TunnelKeepClear[]
   /** A road with barriers (a stadium) can't take a tunnel. */
   walled: boolean
+  /** The road's horizontal curvature per base sample (1/m), for how fast a car can be at each ramp's end. */
+  curvature?: Float32Array
+  /** A base s as a control-point position `at` (for a refusal's `where`). */
+  atOfBase?: (sb: number) => number
   /** How far down (metres) a road crossing over a tunnel's roof reaches: its slab (road.ts SLAB_GROUNDED). */
   overSlab: number
 }
@@ -281,10 +341,11 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
     const length = p.length ?? TRACK_DEFAULTS.tunnelLength
     const sb0 = inp.baseSOfAt(p.at)
     const sb1 = sb0 + length
-    const plan: TunnelPlan = { index, sb0, sb1, ramp: 0, depth: 0, problem: null, crossings: 0 }
+    const plan: TunnelPlan = { index, sb0, sb1, ramp: 0, rampIn: 0, rampOut: 0, depth: 0, problem: null, refusal: null, crossings: 0 }
     plans.push(plan)
     if (inp.walled) {
       plan.problem = "a road with barriers can't have a tunnel (its walls would stand where the barriers are)"
+      plan.refusal = { kind: 'barriers' }
       continue
     }
     // How far the road must go down at each covered sample: the ceiling over its higher
@@ -337,6 +398,7 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
     }
     if (overTunnel) {
       plan.problem = `the road that crosses over it is in ${(overTunnel as TunnelKeepClear).what} already, and a tunnel can't go under another tunnel. Move one of them`
+      plan.refusal = { kind: 'underTunnel' }
       continue
     }
     plan.crossings = countRuns(over, nb)
@@ -345,15 +407,21 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
         over.size > 0
           ? `the road crossing over it is too high above the ground here: a tunnel under it would have to dig ${D.toFixed(0)} m down (at most ${TUNNEL_DIG_MAX} m). Bring that road down to the ground first, or put the tunnel where the road over it runs on the ground`
           : `the road is too high above the ground here: a tunnel would have to dig it ${D.toFixed(0)} m down (at most ${TUNNEL_DIG_MAX} m). Put it where the road runs on the ground, or through a hill`
+      plan.refusal = { kind: 'tooHigh', dig: D, over: over.size > 0 }
       continue
     }
-    const R = rampLength(by, nb, dsb, sb0, sb1, D)
+    const R0 = rampLength(by, nb, dsb, sb0, sb1, D, -1, inp.curvature)
+    const R1 = rampLength(by, nb, dsb, sb0, sb1, D, 1, inp.curvature)
+    const R = Math.max(R0, R1)
     plan.ramp = R
+    plan.rampIn = R0
+    plan.rampOut = R1
     plan.depth = D
-    const f0 = sb0 - R
-    const f1 = sb1 + R
+    const f0 = sb0 - R0
+    const f1 = sb1 + R1
     if (f1 - f0 > Lb - 150) {
       plan.problem = `the road is too short for a tunnel this long: with its ramps it needs ${(f1 - f0).toFixed(0)} m of road (the whole lap is ${Lb.toFixed(0)} m)`
+      plan.refusal = { kind: 'tooShort', needs: f1 - f0, lap: Lb }
       continue
     }
     // Clear road for the whole stretch, ramps included.
@@ -367,6 +435,7 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
     const clash = [...inp.keepClear, ...taken].find(overlaps)
     if (clash) {
       plan.problem = `there's ${clash.what} in the way. The road dips ${D.toFixed(1)} m into the ground for this tunnel, on ramps ${R.toFixed(0)} m long before and after the covered part, and all of that has to be clear road. Move the tunnel, or make it shorter`
+      plan.refusal = { kind: 'inTheWay', thing: clash.kind, dig: D, ramp: R, where: inp.atOfBase ? { from: inp.atOfBase(clash.s0), to: inp.atOfBase(clash.s1) } : null }
       continue
     }
     // No other road close beside the open approaches, or across them: there the road runs in a
@@ -374,11 +443,15 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
     const kf0 = Math.floor(f0 / dsb)
     const kf1 = Math.ceil(f1 / dsb)
     let open = false
+    let openAt = -1
     for (let kk = kf0; kk <= kf1 && !open; kk += 2) {
       if (kk >= k0 && kk <= k1) continue
       const k = wrapI(kk, nb)
       forOtherRoad(k, kf0 - own, kf1 + own, (j) => {
-        if (near(k, j)) open = true
+        if (!open && near(k, j)) {
+          open = true
+          openAt = j
+        }
       })
     }
     if (open) {
@@ -386,9 +459,10 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
         over.size > 0
           ? "the other road comes too close to this tunnel's open ends, where the road dips down between walls of ground. It can only cross over the covered part. Make the tunnel longer so the other road crosses over its roof, or move it"
           : "another part of the road runs too close beside the open ends of this tunnel, where the road dips down between walls of ground. Move the tunnel, or make it longer so the other road crosses over its roof"
+      plan.refusal = { kind: 'roadNear', over: over.size > 0, dig: D, ramp: R, where: inp.atOfBase && openAt >= 0 ? { from: inp.atOfBase(openAt * dsb - 15), to: inp.atOfBase(openAt * dsb + 15) } : null }
       continue
     }
-    taken.push({ s0: f0, s1: f1, what: `another tunnel (pieces[${index}])` })
+    taken.push({ s0: f0, s1: f1, what: `another tunnel (pieces[${index}])`, kind: 'tunnel' })
     for (const j of over) overRoof[j] = 1
 
     // The dig: the deepest any covered sample needs, all the way through (so the road under
@@ -399,7 +473,7 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
     for (let kk = kf0; kk <= kf1; kk++) {
       const k = wrapI(kk, nb)
       const s = kk * dsb
-      dig[k] = Math.max(dig[k], digAt(s, sb0, sb1, D, R))
+      dig[k] = Math.max(dig[k], digAt(s, sb0, sb1, D, R0, R1))
       slot[k] = list
       if (s >= sb0 && s <= sb1) covered[k] = 1
     }

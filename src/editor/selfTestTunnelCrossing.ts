@@ -26,6 +26,13 @@
 //                 every check passing, the stretch still picked) and
 //                 "Take the roof off" takes it away, one Undo step
 //                 each; a stretch whose ramps reach a loop is refused
+//    height pick  with the Height tool, the pointer over a tunnel says
+//                 TUNNEL 150 m and a click picks its covered stretch
+//                 (Bank still picks a bank stretch there); a click off
+//                 the tunnel picks an ordinary stretch
+//    height len   the Height panel's tunnel Length changes it from its
+//                 middle and keeps its new stretch picked; one too long
+//                 is refused and nothing changes
 // ============================================================
 
 import afterglowJson from '../../tracks/afterglow.json'
@@ -37,10 +44,23 @@ import { DEFAULT_BASE_WORLD, draftFromFile, pointGroundOf } from './draftFile'
 import { type GroundFn, BRIDGE_GAP, buildAndCheck, builtGapAt, crossingNear, crossingsWithTunnels, keepOverOf, matchHeading, roadCrossings, tryOneWay, tunnelDraft } from './bridges'
 import { checkVerdict } from './checks'
 import type { P } from './geom'
-import { advanceAt, roadCurve, sectionRedraw } from './road'
+import { advanceAt, metresBetween, roadCurve, sectionRedraw } from './road'
+import { fitTunnelAt, fitWords, quickTunnelCheck, tunnelBlocker, tunnelWhy } from './tunnelPlace'
+import { tunnelStartFor } from './pieces'
+import { judgeDraft } from './judge'
+import { trackInternals } from '../track/build'
 import { atOf, posOf, roadLine, sOfPoint } from './shape'
 
 type Check = (name: string, fn: () => string[] | string) => void
+
+/**
+ * The Height tool's actions (stretchTools.ts), handed in by selfTest.ts under Bun once the track
+ * list can load there (as selfTestTools.ts does); the Height rows skip without them.
+ */
+let tools: typeof import('./stretchTools') | null = null
+export function setTunnelStretchTools(m: typeof import('./stretchTools')): void {
+  tools = m
+}
 type EditorStore = typeof import('./draft')
 
 const TAU = Math.PI * 2
@@ -264,5 +284,159 @@ export function tunnelCrossingRows(check: Check, store: EditorStore | undefined,
     const text = store.useEditor.getState().message?.text ?? ''
     if (!/loop/.test(text)) bad.push(`refusing it said "${text}"`)
     return bad.length ? bad : `120 m tunnel made and taken off, one Undo step each; by the loop: "${text}"`
+  })
+
+  /** Afterglow with a 150 m tunnel whose middle is at CLEAR_AT, and the tunnel's covered stretch. */
+  const afterglowWithTunnel = (): { d: Draft; from: number; to: number } => {
+    const d = draftFromFile(afterglowJson as unknown as TrackFile, true)
+    const rc = roadCurve(d.points)
+    const from = advanceAt(rc, CLEAR_AT, -75)
+    d.pieces.push({ type: 'tunnel', at: Math.round(from * 1000) / 1000 })
+    return { d, from: Math.round(from * 1000) / 1000, to: advanceAt(rc, Math.round(from * 1000) / 1000, 150) }
+  }
+
+  check('Tunnel in the Height tool: hovering a tunnel says TUNNEL 150 m and a click picks its covered stretch (the real editor store); Bank picks a bank stretch there; off the tunnel Height picks an ordinary stretch', () => {
+    if (!store || !tools) return skip
+    const { stretchToPick, stretchHoverLabel, pickStretchAt } = tools
+    const { d, from, to } = afterglowWithTunnel()
+    store.replaceDraft(d, null)
+    const rc = roadCurve(d.points)
+    const bad: string[] = []
+    const inside = advanceAt(rc, from, 40)
+    const pick = stretchToPick('height', d, inside)
+    if (!pick.tunnel || Math.abs(metresBetween(rc, pick.from, from)) > 0.5 || Math.abs(metresBetween(rc, to, pick.to)) > 0.5) bad.push(`the Height pick inside the tunnel is ${JSON.stringify({ from: pick.from, to: pick.to, tunnel: !!pick.tunnel })}, not the tunnel's stretch ${from.toFixed(2)}..${to.toFixed(2)}`)
+    const label = stretchHoverLabel(d, pick)
+    if (label !== 'TUNNEL 150 m') bad.push(`the hover label is "${label}"`)
+    store.setTool('height')
+    store.useEditor.setState({ selection: null })
+    pickStretchAt('height', inside)
+    const sel = store.useEditor.getState().selection
+    if (sel?.kind !== 'section' || Math.abs(sel.from - from) > 1e-3 || Math.abs(sel.to - to) > 1e-3) bad.push(`a Height click picked ${JSON.stringify(sel)}`)
+    if (store.useEditor.getState().tool !== 'height') bad.push('the click left the Height tool')
+    const said = store.useEditor.getState().message?.text ?? ''
+    if (!/tunnel/i.test(said)) bad.push(`it said "${said}"`)
+    if (store.tunnelsOnStretch(store.useEditor.getState().draft, sel?.kind === 'section' ? sel.from : 0, sel?.kind === 'section' ? sel.to : 0).length !== 1) bad.push('the panel would not see the tunnel on the picked stretch')
+    if (stretchToPick('bank', d, inside).tunnel) bad.push('the Bank tool picks the tunnel too')
+    const outside = advanceAt(rc, to, 300)
+    if (stretchToPick('height', d, outside).tunnel) bad.push('a Height click 300 m past the tunnel picks the tunnel')
+    return bad.length ? bad : `picked ${Math.round(metresBetween(rc, from, to))} m (the tunnel's roof); "${said}"`
+  })
+
+  check('Tunnel fit: a click where it cannot go (by the start grid, by the loop) finds the nearest spot or length that fits, and the game builds it there with every check that passed still passing; the words say how far it moved', () => {
+    const d = { ...draftFromFile(afterglowJson as unknown as TrackFile, true), id: 'selftest-fit' }
+    const bad: string[] = []
+    const said: string[] = []
+    // By the start line on Afterglow (at 2.0): the ramps of a 150 m tunnel reach the grid from anywhere near.
+    const f = fitTunnelAt(d, 2.0, 150, d.id, {})
+    if (!f.ok) return [`by the start line nothing fits: ${f.message}`]
+    if (Math.abs(f.moved) < 1 && f.length === 150) bad.push('it did not move or shorten, yet a click there is refused')
+    const words = fitWords(f)
+    if (!/Moved it \d+ m|Made it \d+ m long/.test(words)) bad.push(`its words don't say what it did: "${words}"`)
+    said.push(words)
+    const next: Draft = { ...d, pieces: [...d.pieces, f.piece] }
+    const j = judgeDraft(next, d.id)
+    if (!j.runtime || j.runtime.tunnels.length !== 1) bad.push('the game did not build it')
+    const failedBefore = new Set(judgeDraft(d, d.id).gates.filter((g) => g.level === 'fail').map((g) => g.name))
+    const fresh = j.gates.filter((g) => g.level === 'fail' && !failedBefore.has(g.name))
+    if (fresh.length) bad.push(`checks fail with it: ${fresh.map((g) => g.name).join(', ')}`)
+    // The quick check refuses the very spot clicked (that is why it moved), naming the start line.
+    const rc = roadCurve(d.points)
+    const q = quickTunnelCheck(d, tunnelStartFor(rc, 2.0, 150), 150, d.id)
+    if (q.ok) bad.push('the quick check says a tunnel fits right on the start line')
+    else if (!/start line/.test(tunnelWhy(q, 150).why)) bad.push(`it gave the wrong reason: "${tunnelWhy(q, 150).why}"`)
+    return bad.length ? bad : `moved ${Math.round(f.moved)} m, ${f.length} m long: "${words}"`
+  })
+
+  check("Tunnel refusals read in Josh's words and say where the thing in the way is: by a loop, a wall ride and the start line on Afterglow, never a piece number, with what it needs and an amber spot on the road", () => {
+    const d = { ...draftFromFile(afterglowJson as unknown as TrackFile, true), id: 'selftest-why' }
+    const rc = roadCurve(d.points)
+    const bad: string[] = []
+    const said: string[] = []
+    for (const [at, word] of [
+      [LOOP_AT, 'the loop is in the way'],
+      [18, 'the wall ride is in the way'],
+      [2.0, 'the start line is in the way'],
+    ] as const) {
+      const q = quickTunnelCheck(d, tunnelStartFor(rc, at, 150), 150, d.id)
+      if (q.ok) {
+        bad.push(`at ${at} the quick check says it fits`)
+        continue
+      }
+      const w = tunnelWhy(q, 150)
+      const all = `${w.why}. ${w.tryThis} (${w.hint})`
+      if (!all.includes(word)) bad.push(`at ${at}: "${all}" (wanted "${word}")`)
+      if (/pieces\[|\bindex\b/.test(all)) bad.push(`at ${at} it names a piece number: "${all}"`)
+      if (!/needs \d+ m of plain road/.test(w.tryThis)) bad.push(`at ${at} it doesn't say how much road it needs: "${w.tryThis}"`)
+      const where = tunnelBlocker(q)
+      if (!where) bad.push(`at ${at} it doesn't say where the thing in the way is`)
+      said.push(w.why)
+    }
+    return bad.length ? bad : said.map((t) => `"${t}"`).join(' / ')
+  })
+
+  check("Tunnel footprint: the quick check (what the hover shows before a click) agrees with the real build: the same yes or no, and the same ramps as the built tunnel's dug stretch, on Afterglow and a figure-eight", () => {
+    const bad: string[] = []
+    const rows: string[] = []
+    const afterglowD = { ...draftFromFile(afterglowJson as unknown as TrackFile, true), id: 'selftest-quick' }
+    const { d: e8 } = eight()
+    for (const [label, d, spots] of [
+      ['Afterglow', afterglowD, [4.5, 9, 13, 24.4, 2.0]],
+      ['eight', e8, [6, 30, 55, 80]],
+    ] as const) {
+      const rc = roadCurve(d.points)
+      for (const mid of spots) {
+        const at = tunnelStartFor(rc, mid % d.points.length, 150)
+        const q = quickTunnelCheck(d, at, 150, d.id)
+        const j = judgeDraft({ ...d, pieces: [...d.pieces, { type: 'tunnel', at, length: 150 }] }, d.id)
+        const plan = j.runtime ? trackInternals(j.runtime)?.tunnels.plans.find((p) => p.index === d.pieces.length) : null
+        if (!plan) {
+          bad.push(`${label} ${mid}: the real build has no plan`)
+          continue
+        }
+        if (q.ok !== !plan.problem) bad.push(`${label} ${mid}: quick says ${q.ok ? 'fits' : 'no'}, the build says ${plan.problem ? 'no' : 'fits'}`)
+        if (q.ok && j.runtime) {
+          const tn = j.runtime.tunnels[0]
+          const rampIn = tn.s0 - tn.a0
+          const rampOut = tn.a1 - tn.s1
+          if (Math.abs(rampIn - q.rampIn) > 4 || Math.abs(rampOut - q.rampOut) > 4) bad.push(`${label} ${mid}: the footprint's ramps ${Math.round(q.rampIn)} / ${Math.round(q.rampOut)} m, built ${Math.round(rampIn)} / ${Math.round(rampOut)} m`)
+          rows.push(`${label} ${mid}: ramps ${Math.round(q.rampIn)}/${Math.round(q.rampOut)} m`)
+        } else rows.push(`${label} ${mid}: no (${tunnelWhy(q, 150).why})`)
+      }
+    }
+    return bad.length ? bad : rows.join('; ')
+  })
+
+  check("Tunnel in the Height tool: its Length changes it from its middle and keeps the new stretch picked; one too long is refused and nothing changes (the real editor store)", () => {
+    if (!store) return skip
+    const { d, from, to } = afterglowWithTunnel()
+    store.replaceDraft(d, null)
+    store.setTool('height')
+    store.useEditor.setState({ selection: { kind: 'section', from, to } })
+    const index = d.pieces.length - 1
+    const rc = roadCurve(d.points)
+    const mid0 = advanceAt(rc, from, 75)
+    const bad: string[] = []
+    store.setTunnelLengthOnStretch(index, 120)
+    const st = store.useEditor.getState()
+    const p = st.draft.pieces[index]
+    if (p?.type !== 'tunnel' || p.length !== 120) bad.push(`Length 120 didn't take: ${st.message?.text}`)
+    const sel = st.selection
+    if (sel?.kind !== 'section') bad.push(`the selection is ${sel?.kind}, not the tunnel's stretch`)
+    else {
+      const rc1 = roadCurve(st.draft.points)
+      if (Math.abs(metresBetween(rc1, sel.from, sel.to) - 120) > 1) bad.push(`the picked stretch is ${metresBetween(rc1, sel.from, sel.to).toFixed(1)} m, not 120`)
+      const mid1 = advanceAt(rc1, sel.from, 60)
+      const off = Math.min(metresBetween(rc1, mid0, mid1), metresBetween(rc1, mid1, mid0))
+      if (off > 1) bad.push(`its middle moved ${off.toFixed(1)} m`)
+    }
+    // 600 m reaches the start grid with its ramps: refused, and the draft and the selection stay.
+    const d1 = st.draft
+    const sel1 = st.selection
+    store.setTunnelLengthOnStretch(index, 600)
+    const st2 = store.useEditor.getState()
+    if (st2.draft !== d1) bad.push('a refused length still changed the draft')
+    if (JSON.stringify(st2.selection) !== JSON.stringify(sel1)) bad.push('a refused length lost the picked stretch')
+    if (!/Can't put a tunnel here/.test(st2.message?.text ?? '')) bad.push(`Length 600 said "${st2.message?.text}"`)
+    return bad.length ? bad : `120 m kept its middle and its stretch; 600 m: "${st2.message?.text}"`
   })
 }

@@ -89,6 +89,7 @@ import {
   placeAt,
   placeWallRideSpan,
   placeTunnelSpan,
+  tunnelFootprints,
   redo,
   roadBoundFor,
   draftCrossings,
@@ -1081,6 +1082,7 @@ export function Overlay() {
           pencil: drawing ? pencilPlan : null,
           marks: marksOf(useEditor.getState().draft),
           stretchHover: stretchShown,
+          tunnels: tunnelFootprints(ghost?.tunnel ?? null, ghost?.at ?? null),
         })
       }
       raf = requestAnimationFrame(loop)

@@ -85,6 +85,12 @@ import { buildTunnelMeshes, type TunnelSolids } from './tunnelMeshes'
  *      so its full-height part stays where it was.
  */
 export const BUILDER_VERSION = 10
+/**
+ * Bump when the way a tunnel is dug moves road geometry: it feeds only the keys of tracks with a
+ * Tunnel piece. 2 (tunnel3 round C): each ramp is as long as the car's speed into that end needs,
+ * so a ramp on a bend is shorter.
+ */
+export const TUNNEL_BUILDER_VERSION = 2
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
@@ -431,7 +437,10 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const minimap = makeMinimap(S)
 
   // ---- identity ----
-  const hashText = JSON.stringify({ builder: BUILDER_VERSION, road: file.road, pieces: file.pieces, start: file.start, params, env: [env.seed, env.size, env.terrain] })
+  // A track with a tunnel also carries TUNNEL_BUILDER_VERSION, so a change to how tunnels are dug
+  // retires only those tracks' ghosts and records (the rest keep their keys).
+  const tunnelKey = file.pieces.some((p) => p.type === 'tunnel') ? { tunnels: TUNNEL_BUILDER_VERSION } : {}
+  const hashText = JSON.stringify({ builder: BUILDER_VERSION, ...tunnelKey, road: file.road, pieces: file.pieces, start: file.start, params, env: [env.seed, env.size, env.terrain] })
   const geomHash = hashString(hashText).toString(16).padStart(8, '0')
 
   const basis = new THREE.Matrix4()

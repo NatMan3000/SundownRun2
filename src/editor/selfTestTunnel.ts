@@ -99,23 +99,38 @@ export function tunnelRows(check: Check, store: EditorStore | undefined): void {
     return bad.length ? bad : `middle ${mid ? flat(mid, q).toFixed(1) : '?'} m from the click; "${st.message?.text}"`
   })
 
-  check("Tunnel: one whose ramps would reach a loop, or the start grid, is refused in plain words and nothing changes", () => {
+  check("Tunnel: by the loop (no room within 500 m) a click is refused in Josh's words and nothing changes; by the start grid it moves to the nearest spot that fits and says so, one Undo step (the real editor store)", () => {
     if (!store) return skip
     const bad: string[] = []
     const said: string[] = []
-    for (const [at, word] of [
-      [LOOP_AT, 'loop'],
-      [START_AT, 'start grid'],
-    ] as const) {
+    {
       const d0 = afterglow()
       store.replaceDraft(d0, null)
       store.setTool('place', 'tunnel')
-      const ok = store.placeAt(frameAt(roadCurve(d0.points), at).p)
+      const ok = store.placeAt(frameAt(roadCurve(d0.points), LOOP_AT).p)
       const st = store.useEditor.getState()
-      if (ok) bad.push(`a tunnel at ${at} was placed`)
-      if (st.draft !== d0) bad.push(`refusing at ${at} still changed the draft`)
+      if (ok) bad.push('a tunnel by the loop was placed')
+      if (st.draft !== d0) bad.push('refusing by the loop still changed the draft')
       const text = st.message?.text ?? ''
-      if (!text.includes("Can't put a tunnel here") || !text.includes(word)) bad.push(`at ${at} it said "${text}" (wanted the reason, the ${word})`)
+      if (!text.includes("Can't put a tunnel here") || !text.includes('the loop is in the way')) bad.push(`by the loop it said "${text}" (wanted the reason: the loop is in the way)`)
+      if (/pieces\[/.test(text)) bad.push(`it named a piece number: "${text}"`)
+      said.push(text)
+    }
+    {
+      const d0 = afterglow()
+      store.replaceDraft(d0, null)
+      store.setTool('place', 'tunnel')
+      const ok = store.placeAt(frameAt(roadCurve(d0.points), START_AT).p)
+      const st = store.useEditor.getState()
+      const text = st.message?.text ?? ''
+      if (!ok) bad.push(`by the start grid nothing fits: "${text}"`)
+      else {
+        if (!/Moved it \d+ m/.test(text)) bad.push(`by the start grid it didn't say it moved: "${text}"`)
+        if (st.past[st.past.length - 1] !== d0) bad.push('it was not one Undo step')
+        const rt = built(store, st.draft)
+        if (!rt || rt.tunnels.length !== 1) bad.push('the game did not build the moved tunnel')
+        bad.push(...failing(store, st.draft))
+      }
       said.push(text)
     }
     return bad.length ? bad : said.map((t) => `"${t}"`).join(' / ')

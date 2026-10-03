@@ -57,7 +57,10 @@ import {
   tunnelOnStretch,
   roofOffStretch,
   tunnelsOnStretch,
+  setTunnelLengthOnStretch,
+  tunnelVerdictAt,
 } from './draft'
+import { tunnelWhy } from './tunnelPlace'
 import { type FixOffer, canWords, currentProblems, fixAll, fixOffer, fixProblem, fixSearchVersion, goToProblem, lastFixed, raiseSection, selectProblem, subscribeFixSearch } from './fixActions'
 import { NO_NOTES, type Problem, problemByKey, problemsOf } from './problems'
 import { type HeightLimits, RAISE_FLOOR, liftAt } from './raise'
@@ -69,12 +72,12 @@ import { BRIDGE_GAP, UNDER_DEPTH, bridgeCount, compassWord, crossingNear } from 
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
 import { issueLocation, roadGeometry } from './mapDraw'
 import { checkVerdict } from './checks'
-import { pieceLabel, TUNNEL_EDIT_MAX, TUNNEL_EDIT_MIN } from './pieces'
+import { pieceLabel, tunnelFromDrag, TUNNEL_EDIT_MAX, TUNNEL_EDIT_MIN } from './pieces'
 import { setPieceLength } from './draft'
 import { liveRuntime } from './fixActions'
 import { builtBankAngle } from './bankAngle'
 import { startDriveToDraw } from './driveToDraw'
-import { metresBetween, roadLength } from './road'
+import { metresBetween, roadCurve, roadLength } from './road'
 import { cornerAt, roadLine } from './shape'
 import { setView, view } from './view'
 import { SaveStateLine, TrackActions } from './TrackSave'
@@ -325,10 +328,10 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
         <p className="sre-help">
           {metres} m of road. {isStretchTool(tool) ? STRETCH_WHAT[tool] : 'Pick what to change on it.'}
         </p>
+        {tool === 'height' && <TunnelToggle from={sel.from} to={sel.to} draft={d} />}
         {tool === 'height' && <HeightField from={sel.from} to={sel.to} draft={d} />}
         {tool === 'bank' && <BankField from={sel.from} to={sel.to} draft={d} />}
         {tool === 'width' && <WidthField from={sel.from} to={sel.to} draft={d} />}
-        <TunnelToggle from={sel.from} to={sel.to} draft={d} />
         <Segmented
           label="Change this stretch's"
           value={isStretchTool(tool) ? tool : ''}
@@ -482,23 +485,64 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
 }
 
 /**
- * A picked stretch: "Make it a tunnel" covers it with a Tunnel piece (the same rules as the
- * Tunnel piece: refused in plain words if it can't go there), and on a stretch a tunnel already
- * covers, "Take the roof off" takes it away. Either is one Undo step.
+ * The Height panel's tunnel, first in the panel so it is seen without scrolling: "Make it a
+ * tunnel" covers the picked stretch with a Tunnel piece (the same rules as the Tunnel piece:
+ * refused in plain words if it can't go there). On a stretch a tunnel covers: its Length (from
+ * its middle) and "Take the roof off". Each is one Undo step.
  */
 function TunnelToggle(p: { from: number; to: number; draft: Draft }) {
-  const covered = tunnelsOnStretch(p.draft, p.from, p.to).length > 0
-  return covered ? (
-    <>
-      <p className="sre-help">A tunnel covers this stretch: the road dips into the ground and the hill goes back over it.</p>
-      <button type="button" className="sre-btn" onClick={() => roofOffStretch(p.from, p.to)} data-testid="editor-roof-off">
-        Take the roof off
+  const on = tunnelsOnStretch(p.draft, p.from, p.to)
+  const piece = on.length ? p.draft.pieces[on[0]] : null
+  if (piece?.type === 'tunnel') {
+    return (
+      <div className="sre-field" data-testid="editor-height-tunnel">
+        <p className="sre-help">A tunnel covers this stretch: the road dips into the ground and the hill goes back over it.</p>
+        <SliderField
+          label="Tunnel length"
+          value={piece.length ?? TRACK_DEFAULTS.tunnelLength}
+          min={TUNNEL_EDIT_MIN}
+          max={TUNNEL_EDIT_MAX}
+          step={10}
+          unit="m"
+          help="It grows or shrinks from its middle."
+          onCommit={(v) => setTunnelLengthOnStretch(on[0], v)}
+        />
+        <button type="button" className="sre-btn" onClick={() => roofOffStretch(p.from, p.to)} data-testid="editor-roof-off">
+          Take the roof off
+        </button>
+      </div>
+    )
+  }
+  // Before the click: would a tunnel fit on this stretch? (The planner only: quick, and kept.)
+  const rc = roadCurve(p.draft.points)
+  const span = tunnelFromDrag(rc, p.from, p.to)
+  const q = tunnelVerdictAt(span.at, span.length)
+  const w = q.ok ? null : tunnelWhy(q, span.length)
+  const preview = (on: boolean) => useEditor.setState({ tunnelPreview: on ? { from: p.from, to: p.to } : null })
+  return (
+    <div className="sre-field" data-testid="editor-height-tunnel">
+      <button
+        type="button"
+        className="sre-btn"
+        onClick={() => tunnelOnStretch(p.from, p.to)}
+        onMouseEnter={() => preview(true)}
+        onMouseLeave={() => preview(false)}
+        onFocus={() => preview(true)}
+        onBlur={() => preview(false)}
+        data-testid="editor-make-tunnel"
+      >
+        Make it a tunnel
       </button>
-    </>
-  ) : (
-    <button type="button" className="sre-btn" onClick={() => tunnelOnStretch(p.from, p.to)} data-testid="editor-make-tunnel">
-      Make it a tunnel
-    </button>
+      {w ? (
+        <p className="sre-help" data-testid="editor-tunnel-why">
+          It won't fit right here: {w.why}. Pressing it puts one at the nearest spot that fits, if there is one. {w.tryThis}
+        </p>
+      ) : (
+        <p className="sre-help">
+          Or put this stretch underground: the road dips {Math.round(q.depth * 10) / 10} m under a roof on a {Math.round(q.rampIn)} m ramp down and a {Math.round(q.rampOut)} m ramp up, and the hill goes back over it.
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -520,7 +564,7 @@ const STRETCH_TITLE: Record<StretchTool, string> = {
 
 /** What the tool does to the stretch, in one line. */
 const STRETCH_WHAT: Record<StretchTool, string> = {
-  height: 'Raise it into a hill or a bridge, or dig it down into the ground: the road rises (or dips) smoothly from each end of the stretch to its middle.',
+  height: 'Raise it into a hill or a bridge, dig it down into the ground, or put it in a tunnel: the road rises (or dips) smoothly from each end of the stretch to its middle.',
   bank: 'Tilt it into a corner. Auto lets the game bank it from how tight the corner is.',
   width: 'Make the road wider or narrower here.',
 }

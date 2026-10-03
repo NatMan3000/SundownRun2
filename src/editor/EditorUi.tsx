@@ -98,7 +98,7 @@ const RAIL = {
   curve: { name: 'Curve', tip: 'Click where a bend starts and where it ends, then pull: the road between becomes one even curve.', key: 'C' },
   bend: { name: 'Bend', tip: 'Grab one spot on the road and pull it: the road around it follows. Mouse wheel: how much.', key: 'G' },
   bank: { name: 'Bank', tip: 'Pick a stretch of road and tilt it, like a banked corner.', key: 'B' },
-  height: { name: 'Height', tip: 'Pick a stretch of road and raise it into a hill or a bridge, or bring it back down.', key: 'H' },
+  height: { name: 'Height', tip: 'Pick a stretch of road and raise it into a hill or a bridge, bring it down, or put it in a tunnel.', key: 'H' },
   width: { name: 'Width', tip: 'Pick a stretch of road and make it wider or narrower.', key: 'N' },
   place: { name: 'Place pieces', tip: 'Boost pads, ramps, loops, the start line and more: pick one, then click the road.', key: '1-0' },
   undo: { name: 'Undo', tip: 'Take back the last change.', key: 'Ctrl+Z' },
@@ -119,7 +119,7 @@ const TOOL_TIPS: Record<EditorTool, string> = {
   straight: 'Straight: click the road where the straight starts, then click where it ends.',
   curve: 'Curve: click the road where the curve starts, then where it ends, then pull the middle out and click. The road between becomes one even curve.',
   select: 'Select: click a piece or road point, drag to move it, Delete removes it. Double-click the road to add a point.',
-  height: 'Height: drag along the road to pick a stretch (or click the road), then set how high its middle goes in the panel.',
+  height: "Height: drag along the road to pick a stretch (or click the road), then set how high its middle goes in the panel, or press Make it a tunnel to put it underground. A tunnel needs a long stretch of plain road: a ramp down at each end as well as the covered part, with no loop, jump, wall ride, start line or other road on it.",
   bank: 'Bank: drag along the road to pick a stretch (or click a corner, or a BANK label), then set its tilt in the panel.',
   width: 'Width: drag along the road to pick a stretch (or click the road), then set how wide it is in the panel.',
   place: 'Place pieces: pick a piece, then click where it goes.',
@@ -437,8 +437,8 @@ function ToolOptions() {
 /** What to say beside the rail for Height, Bank and Width: where the setting is, and how to change one again. */
 const STRETCH_STEPS: Record<'height' | 'bank' | 'width', { set: string; again: string }> = {
   height: {
-    set: 'Set how high its middle goes, in the panel on the right.',
-    again: 'Violet dots on the road mean it is raised: click them to change that stretch again. Higher hills need longer stretches, and the panel says how much.',
+    set: 'Set how high its middle goes, or press Make it a tunnel, in the panel on the right.',
+    again: 'Violet dots on the road mean it is raised: click them to change that stretch again. Higher hills need longer stretches, and the panel says how much. A violet band is a tunnel: click it to change its length or take its roof off.',
   },
   bank: {
     set: 'Set its tilt, in the panel on the right.',

@@ -21,6 +21,11 @@
 //
 //  The Height tool's "Smooth the bumps here" (smoothStretch) lays the
 //  picked stretch on a smooth line through the ground (smooth.ts).
+//
+//  The Height tool builds tunnels too (its panel's "Make it a tunnel").
+//  With it, the pointer over a tunnel shows TUNNEL 150 m and a click
+//  picks the tunnel's covered stretch, so its roof can come off or its
+//  length change right there (tunnelAtSpot).
 // ============================================================
 
 import { audio } from '../core/api'
@@ -29,6 +34,8 @@ import { type Draft, commit, draftId, mapIsEmpty, pointGroundFor, say, setTool, 
 import { liveRuntime } from './fixActions'
 import { type HeightLimits, type RaiseOptions, groundDraft, heightLimitSteps } from './raise'
 import { smoothDraft } from './smooth'
+import { TRACK_DEFAULTS } from '../track/schema'
+import { advanceAt, metresBetween, roadCurve } from './road'
 import { type StretchMarks, type StretchRun, type StretchTool, bankStretchAround, heightStretchAround, resizeStretch, runAt, stretchMarks, stretchMetres, widthStretchAround } from './stretchRuns'
 
 /** Heights with no known world (only before the ground can be worked out): just the lifts. */
@@ -74,6 +81,14 @@ export function pickStretchAt(tool: StretchTool, at: number): void {
   }
   const d = useEditor.getState().draft
   const pick = stretchToPick(tool, d, at)
+  if (pick.tunnel) {
+    // A tunnel, with the Height tool: its covered stretch, ready to change its length or take its roof off.
+    if (useEditor.getState().tool !== tool) setTool(tool)
+    useEditor.setState({ selection: { kind: 'section', from: pick.from, to: pick.to } })
+    say(`Picked the tunnel: ${Math.round(pick.tunnel.length)} m of road under a roof. Change its length, or take the roof off, in the panel.`, 'info')
+    audio.ui('select')
+    return
+  }
   if (pick.run) {
     selectRun(pick.run)
     return
@@ -92,7 +107,10 @@ export function pickStretchAt(tool: StretchTool, at: number): void {
  * run), or a sensible new stretch around it. The map shows this while the
  * pointer is over the road, before any click (the hover preview).
  */
-export function stretchToPick(tool: StretchTool, d: Draft, at: number): { from: number; to: number; run: StretchRun | null } {
+export function stretchToPick(tool: StretchTool, d: Draft, at: number): { from: number; to: number; run: StretchRun | null; tunnel?: TunnelSpot } {
+  // With the Height tool, a tunnel under the pointer is what a click picks (its covered stretch).
+  const tunnel = tool === 'height' ? tunnelAtSpot(d, at) : null
+  if (tunnel) return { from: tunnel.from, to: tunnel.to, run: null, tunnel }
   const run = runAt(marksOf(d), tool, at, d.points.length)
   if (run) return { from: run.from, to: run.to, run }
   const sel =
@@ -101,12 +119,34 @@ export function stretchToPick(tool: StretchTool, d: Draft, at: number): { from: 
 }
 
 /** The hover preview's words: how long the stretch is, and what a click does with it. */
-export function stretchHoverLabel(d: Draft, pick: { from: number; to: number; run: StretchRun | null }): string {
+export function stretchHoverLabel(d: Draft, pick: { from: number; to: number; run: StretchRun | null; tunnel?: TunnelSpot }): string {
+  if (pick.tunnel) return `TUNNEL ${Math.round(pick.tunnel.length)} m`
   const metres = Math.round(stretchMetres(d.points, pick.from, pick.to))
   if (!pick.run) return `${metres} m`
   const r = pick.run
   const what = r.tool === 'bank' ? `BANK ${Math.round(r.value)}°` : r.tool === 'width' ? `WIDTH ${Math.round(r.value)} m` : r.value < 0 ? `DUG ${Math.round(-r.value * 2) / 2} m` : `RAISED ${Math.round(r.value * 2) / 2} m`
   return `${what}, ${metres} m`
+}
+
+/** A Tunnel piece on the road: its index in the draft's pieces, and the stretch its roof covers (`at` values). */
+export interface TunnelSpot {
+  index: number
+  from: number
+  to: number
+  length: number
+}
+
+/** The Tunnel piece whose roof covers spot `at` on the road, or null. */
+export function tunnelAtSpot(d: Draft, at: number): TunnelSpot | null {
+  if (!d.pieces.some((p) => p.type === 'tunnel')) return null
+  const rc = roadCurve(d.points)
+  for (let index = 0; index < d.pieces.length; index++) {
+    const p = d.pieces[index]
+    if (p.type !== 'tunnel') continue
+    const length = p.length ?? TRACK_DEFAULTS.tunnelLength
+    if (metresBetween(rc, p.at, at) <= length) return { index, from: p.at, to: advanceAt(rc, p.at, length), length }
+  }
+  return null
 }
 
 /** "Change the height here" on a road point: the Height tool, on that point's stretch. */

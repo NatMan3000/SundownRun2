@@ -71,6 +71,10 @@
 //                                          here" does); returns like swap (tunnel3)
 //    __dev.editor('stretchTunnel')         the picked stretch's "Make it a tunnel" (tunnel3)
 //    __dev.editor('roofOff')               the picked stretch's "Take the roof off" (tunnel3)
+//    __dev.editor('tunnelHere', [x, z])    what the Tunnel tool's hover shows at a map spot: whether a
+//                                          150 m tunnel fits with its middle there, its ramps, and if
+//                                          not, why and what to try; and what the Height tool's hover
+//                                          label says there (tunnel3 round C)
 //
 //  Height and problems (editor8):
 //    __dev.editor('stretch', [from, to, tool])  select a stretch of road with the Height, Bank or Width
@@ -103,6 +107,8 @@ import { useGame } from '../core/store'
 import { getTrackFile } from '../track/registry'
 import { getTrack } from '../track/current'
 import type { P } from './geom'
+import { tunnelBlocker, tunnelWhy } from './tunnelPlace'
+import { tunnelStartFor } from './pieces'
 import {
   type EditorTool,
   applyCornerRadius,
@@ -120,6 +126,7 @@ import {
   tunnelUnder,
   tunnelOnStretch,
   roofOffStretch,
+  tunnelVerdictAt,
   draftId,
   newTrack,
   saveAsNewTrack,
@@ -145,7 +152,7 @@ import { fitToDraft } from './Overlay'
 import { crossingScreens, markScreens, pinScreens } from './mapDraw'
 import { heightLimits } from './raise'
 import { type StretchTool, isStretchTool } from './stretchRuns'
-import { pickStretchAt, smoothStretch } from './stretchTools'
+import { pickStretchAt, smoothStretch, stretchHoverLabel, stretchToPick } from './stretchTools'
 import { builtBumpiness } from './smooth'
 import { currentProblems, findFixesNow, fixAll, fixOffer, fixProblem, liveRuntime, raisePoint, raiseSection, selectProblem } from './fixActions'
 import { runEditorSelfTest } from './selfTest'
@@ -156,7 +163,7 @@ import { listDrawnTracks } from '../track/registry'
 import { isEmptyDraft } from './draftFile'
 import { closeWorldMap, isMapOpen, openWorldMap } from './worldMap'
 import { setView, view, worldToScreen } from './view'
-import { frameAt, planRedraw, roadCurve } from './road'
+import { frameAt, nearestOnRoad, planRedraw, roadCurve } from './road'
 import { atOf, cornerAt, posOf, roadLine, roadRoughness, tightestOnRoad } from './shape'
 import { circumradius } from './geom'
 
@@ -252,7 +259,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | under [i,pass] | makeBridge [i,pass] | tunnel [i,pass] | stretchTunnel | roofOff | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | under [i,pass] | makeBridge [i,pass] | tunnel [i,pass] | stretchTunnel | roofOff | tunnelHere [x,z] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -371,6 +378,17 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       const which = pass === null || pass === undefined ? null : Number(pass) === 1 ? 1 : 0
       const ok = cmd === 'under' ? sendUnder(c.at, which) : cmd === 'tunnel' ? tunnelUnder(c.at, which) : makeBridge(c.at, which ?? (c.over ?? 0))
       return { ok, message: useEditor.getState().message?.text ?? '', crossings: crossingsSummary() }
+    }
+    case 'tunnelHere': {
+      const [x, z] = Array.isArray(arg) ? arg.map(Number) : []
+      if (![x, z].every(Number.isFinite)) return 'tunnelHere needs [x, z]'
+      const d = useEditor.getState().draft
+      const rc = roadCurve(d.points)
+      const hit = nearestOnRoad(rc, { x, z })
+      const at = tunnelStartFor(rc, hit.at, 150)
+      const q = tunnelVerdictAt(at, 150)
+      const heightHover = stretchHoverLabel(d, stretchToPick('height', d, hit.at))
+      return { at: Math.round(at * 1000) / 1000, heightHover, ok: q.ok, rampIn: Math.round(q.rampIn), rampOut: Math.round(q.rampOut), depth: Math.round(q.depth * 10) / 10, ...(q.ok ? {} : tunnelWhy(q, 150)), blocker: tunnelBlocker(q) }
     }
     case 'stretchTunnel':
     case 'roofOff': {
@@ -644,6 +662,7 @@ function summary() {
     undoSteps: s.past.length,
     redoSteps: s.future.length,
     preview: s.preview,
+    tunnelPreview: s.tunnelPreview,
     errors: s.errors.length,
     warnings: s.warnings.map((w) => w.message),
     empty: isEmptyDraft(s.draft),

@@ -70,7 +70,7 @@ import { setTrackModules, trackRows } from './selfTestTracks'
 import { pieceRows } from './selfTestPieces'
 import { underpassRows } from './selfTestUnder'
 import { tunnelRows } from './selfTestTunnel'
-import { tunnelCrossingRows } from './selfTestTunnelCrossing'
+import { setTunnelStretchTools, tunnelCrossingRows } from './selfTestTunnelCrossing'
 import { deckRows } from './selfTestDeck'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
@@ -1728,6 +1728,7 @@ async function loadStoreForBun(): Promise<EditorStore | undefined> {
   const toolsPath = './stretchTools.ts'
   setStretchTools((await import(/* @vite-ignore */ toolsPath)) as typeof import('./stretchTools'))
   setSmoothTools((await import(/* @vite-ignore */ toolsPath)) as typeof import('./stretchTools'))
+  setTunnelStretchTools((await import(/* @vite-ignore */ toolsPath)) as typeof import('./stretchTools'))
   // The Library and the "Save it first?" questions, for the saving rows (selfTestTracks.ts).
   const registryPath = '../track/registry.ts'
   const askPath = './askFirst.ts'

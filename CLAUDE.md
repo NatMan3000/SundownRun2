@@ -43,7 +43,7 @@ Checking a change: a production build (`bunx vite build`, then `bunx vite previe
 
 - `src/core/config.ts` is Josh's knob file: the defaults, commented for a 12-year-old. A value he edits there beats the same value saved from the Settings menu. Keep new knobs in his language.
 - The contracts (`CONSTITUTION.md` section 6) are frozen. Change one only by adding a dated amendment to section 7 in the same commit, and update every reader.
-- A track is one file. If a change to the track builder (`src/track/build.ts`) moves geometry, bump `BUILDER_VERSION`: it feeds every track's key, so old ghosts and local records stop matching instead of replaying through moved road.
+- A track is one file. If a change to the track builder (`src/track/build.ts`) moves geometry, bump `BUILDER_VERSION`: it feeds every track's key, so old ghosts and local records stop matching instead of replaying through moved road. A change that only moves tunnels (how they are dug, their ramps) bumps `TUNNEL_BUILDER_VERSION` instead, which only tracks with a Tunnel piece carry in their key, so the built-in tracks' ghosts and records survive it.
 - One driving brain: the Ai racers and the demo autopilot both use `createAiDriver` in `src/play/aiDriver.ts`. Fix driving there, never in a second copy.
 - Colours come from `src/core/palette.ts` and follow the colour semantics in `CONSTITUTION.md` section 1 (cyan player, magenta track, amber caution, mint boost, violet pickups). No pure primaries.
 - `~/Dev/SundownRun` is v1: read it for proven solutions, never modify it.

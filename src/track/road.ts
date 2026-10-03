@@ -443,18 +443,26 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   // (tunnels.ts: deep enough for a car, a ceiling and a roof under the natural ground, on
   // ramps gentle enough to drive flat out.) Its stretch, ramps included, must be clear road.
   const keepClear: TunnelKeepClear[] = []
-  for (const L of loopSpecs) keepClear.push({ s0: L.sb - LOOP_RUN_IN, s1: L.sb + L.shape.advance + LOOP_EXIT_EASE, what: `a loop (pieces[${L.pieceIndex}])` })
+  for (const L of loopSpecs) keepClear.push({ s0: L.sb - LOOP_RUN_IN, s1: L.sb + L.shape.advance + LOOP_EXIT_EASE, what: `a loop (pieces[${L.pieceIndex}])`, kind: 'loop' })
   pieces.forEach((p, idx) => {
     const sb = baseSOfAt(p.at)
     if (p.type === 'ramp') {
       const len = (p as { length?: number }).length ?? 12
-      keepClear.push({ s0: sb - len / 2 - RAMP_HOLD_BEFORE, s1: sb + len / 2 + RAMP_HOLD_AFTER, what: `a ramp (pieces[${idx}]) and the road it throws you onto` })
+      keepClear.push({ s0: sb - len / 2 - RAMP_HOLD_BEFORE, s1: sb + len / 2 + RAMP_HOLD_AFTER, what: `a ramp (pieces[${idx}]) and the road it throws you onto`, kind: 'ramp' })
     } else if (p.type === 'wallride') {
-      keepClear.push({ s0: sb - WALL_REACH, s1: sb + ((p as WallRidePiece).length ?? 120) + WALL_REACH, what: `a wall ride (pieces[${idx}])` })
+      keepClear.push({ s0: sb - WALL_REACH, s1: sb + ((p as WallRidePiece).length ?? 120) + WALL_REACH, what: `a wall ride (pieces[${idx}])`, kind: 'wallride' })
     }
   })
-  keepClear.push({ s0: -GRID_KEEP_BEHIND - 10, s1: GRID_KEEP_AHEAD + 10, what: 'the start grid' })
-  const tunnelDigs = planTunnelDigs({ pieces, baseSOfAt, nb, dsb, Lb, bx, by, bz, bHalf, bBank, nat, keepClear, walled: !pivotLow, overSlab: SLAB_THICKNESS })
+  keepClear.push({ s0: -GRID_KEEP_BEHIND - 10, s1: GRID_KEEP_AHEAD + 10, what: 'the start grid', kind: 'grid' })
+  // (A base s as an `at`, for where a refusal's obstacle is: the same mapping atOfS uses below.)
+  const atOfBase = (sb: number): number => {
+    const sd = (((sb + sStart) % Lb) + Lb) % Lb
+    const j = Math.min(nodeAtLength(dense, sd), dense.count - 2)
+    const seg = dense.cum[j + 1] - dense.cum[j]
+    const f = seg > 0 ? (sd - dense.cum[j]) / seg : 0
+    return (dense.at[j] + (dense.at[j + 1] - dense.at[j]) * f) % np
+  }
+  const tunnelDigs = planTunnelDigs({ pieces, baseSOfAt, nb, dsb, Lb, bx, by, bz, bHalf, bBank, nat, keepClear, walled: !pivotLow, overSlab: SLAB_THICKNESS, curvature: bCurv, atOfBase })
   for (let k = 0; k < nb; k++) by[k] -= tunnelDigs.dig[k]
 
   // ---- base tangents (3D) ----
