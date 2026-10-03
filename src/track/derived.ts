@@ -595,6 +595,9 @@ export function makePosts(inp: RoadsideInput): GroundPose[] {
   return out
 }
 
+/** Closest two billboard spots may be, metres (the widest kind, a big screen, is about 25 m across). */
+const BILLBOARD_MIN_APART = 36
+
 /**
  * Billboard spots: set back 14-30 m from the edge on the outside of bends, facing the
  * road, close enough to line the run. They're solid poles, so never where cars fly or
@@ -616,7 +619,9 @@ export function makeBillboards(inp: RoadsideInput): GroundPose[] {
   for (let i = 0; i < S.count; i += step) if (S.surface[i] === SURFACE_CODE.road) cand.push(i)
   cand.sort((a, b) => Math.abs(kWide[b]) - Math.abs(kWide[a]))
 
-  const minGapS = L / (want * 1.6)
+  // Even spacing along the road to start with; relaxed below if that leaves us short.
+  const evenGapS = L / (want * 1.6)
+  let minGapS = evenGapS
   const taken: number[] = []
   const tryAt = (i: number, side: number): boolean => {
     for (const t of taken) {
@@ -631,7 +636,7 @@ export function makeBillboards(inp: RoadsideInput): GroundPose[] {
     const z = S.pz[i] + rzh * back * side
     if (!inp.insideWorld(x, z, 30)) return false
     if (edgeClearance(S, inp.hash, x, z, 40) < 12) return false
-    for (const b of out) if (Math.hypot(b.x - x, b.z - z) < 45) return false
+    for (const b of out) if (Math.hypot(b.x - x, b.z - z) < BILLBOARD_MIN_APART) return false
     if (inp.keepOut(x, z) || nearRanges(S, inp.hash, x, z, 40, inp.noBillboards, L)) return false
     const y = inp.terrainHeight(x, z)
     const gx = inp.terrainHeight(x + 2, z) - inp.terrainHeight(x - 2, z)
@@ -649,11 +654,17 @@ export function makeBillboards(inp: RoadsideInput): GroundPose[] {
   }
   // Then anywhere left (straights, and the inside of bends whose outside is blocked by
   // the edge mountains on a small world), alternating sides, until we have enough.
+  // Stretches where nothing may stand (loops, ramps, crests) eat into the even spacing,
+  // so if we're still short, close the spacing along the road a little and look again;
+  // billboards always stay BILLBOARD_MIN_APART metres apart however tight it gets.
   let side = 1
-  for (let pass = 0; pass < 3 && out.length < want; pass++) {
-    for (let k = 0; k < cand.length && out.length < want; k += 1) {
-      const i = cand[(k * 7 + pass * 3) % cand.length]
-      if (tryAt(i, side) || tryAt(i, -side)) side = -side
+  for (const relax of [1, 0.75, 0.55]) {
+    minGapS = evenGapS * relax
+    for (let pass = 0; pass < 3 && out.length < want; pass++) {
+      for (let k = 0; k < cand.length && out.length < want; k += 1) {
+        const i = cand[(k * 7 + pass * 3) % cand.length]
+        if (tryAt(i, side) || tryAt(i, -side)) side = -side
+      }
     }
   }
   return out

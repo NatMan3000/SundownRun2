@@ -274,7 +274,7 @@
     },
     "roadside": {
       "posts": false,
-      "billboards": 20
+      "billboards": 30
     },
     "music": {
       "mood": "hyper"

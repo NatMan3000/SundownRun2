@@ -1,259 +1,164 @@
 // ============================================================
-//  BILLBOARD ART - the ads on the holographic billboards
+//  BILLBOARD ART - painting every ad into the billboard texture
 // ------------------------------------------------------------
-//  Eight made-up adverts for made-up neon-city brands, painted by
-//  code onto one 1024 x 1024 canvas (a texture "atlas": 2 columns
-//  x 4 rows of 512 x 256 cells). Each billboard shows one cell.
+//  The ads themselves live in ./ads (wide.ts, tall.ts, square.ts:
+//  one function per ad). This file paints them all, once, into a
+//  stack of 1024 x 1024 "pages" (a texture array: one texture with
+//  several layers), so every billboard in the world can show any ad
+//  from ONE texture in ONE draw call.
+//
+//  Each page is a 4 x 4 grid of 256 px squares ("units"). A wide ad
+//  takes 2 x 1 units (512 x 256), a tall one 1 x 2, a square 1 x 1.
+//  layoutAds() packs them in: the tall ones first, then the wide,
+//  then the squares fill the gaps, and it adds a page whenever one
+//  is full.
 //
 //  Everything is drawn with simple canvas shapes and the system
-//  font (no images, no web fonts: constitution section 5), and
-//  every colour comes from the palette. The art is drawn bright on
-//  black, because the hologram shader adds it as light: black is
-//  see-through, colour glows.
+//  font (constitution section 5), every colour from the palette,
+//  bright on black: the hologram adds the art as light, so black is
+//  see-through and colour glows.
 //
-//  Josh: want your own ad? Add a function to ADS that draws into
-//  a 512 x 256 box starting at (0, 0), and bump ATLAS_ROWS if you
-//  need more room.
+//  Josh: to add an ad, add one entry to wide.ts, tall.ts or
+//  square.ts. You never need to touch this file. If the ads no
+//  longer fit on the pages, a new page is added by itself (each
+//  page costs about 5 MB of graphics memory, so keep it sensible).
 // ============================================================
 
 import * as THREE from 'three'
-import { FONTS, PALETTE } from '../core/palette'
+import { PALETTE } from '../core/palette'
+import { ALL_ADS } from './ads'
+import type { AdDef, AdShape } from './ads/adKit'
 
-export const CELL_W = 512
-export const CELL_H = 256
-export const ATLAS_COLS = 2
-export const ATLAS_ROWS = 4
+/** One unit is a 256 px square; a page is 4 x 4 units. */
+export const UNIT = 256
+export const PAGE_UNITS = 4
+export const PAGE = UNIT * PAGE_UNITS
 
-type Ctx = CanvasRenderingContext2D
-/** Draws one ad into a CELL_W x CELL_H box at the origin. */
-type Ad = (c: Ctx) => void
+const SHAPE_UNITS: Record<AdShape, [number, number]> = { wide: [2, 1], tall: [1, 2], square: [1, 1] }
 
-function title(c: Ctx, text: string, x: number, y: number, size: number, color: string, align: CanvasTextAlign = 'left') {
-  c.font = `800 ${size}px ${FONTS.display}`
-  c.textAlign = align
-  c.textBaseline = 'alphabetic'
-  c.fillStyle = color
-  c.fillText(text, x, y, fitWidth(x, align))
+/** Where one ad sits: its page, and its box on that page in pixels. */
+export interface AdCell {
+  page: number
+  x: number
+  y: number
+  w: number
+  h: number
 }
 
-/** Room left in the cell from x (keeps every line inside its ad, squeezing it if needed). */
-function fitWidth(x: number, align: CanvasTextAlign): number {
-  const margin = 26
-  if (align === 'center') return 2 * Math.min(x - margin, CELL_W - margin - x)
-  return CELL_W - margin - x
-}
-
-function small(c: Ctx, text: string, x: number, y: number, color: string, align: CanvasTextAlign = 'left') {
-  c.font = `600 22px ${FONTS.body}`
-  c.textAlign = align
-  c.textBaseline = 'alphabetic'
-  c.fillStyle = color
-  c.fillText(text, x, y, fitWidth(x, align))
-}
-
-/** A little striped synthwave sun. */
-function stripedSun(c: Ctx, cx: number, cy: number, r: number) {
-  const g = c.createLinearGradient(0, cy - r, 0, cy + r)
-  g.addColorStop(0, PALETTE.sunTop)
-  g.addColorStop(0.5, PALETTE.sunMid)
-  g.addColorStop(1, PALETTE.sunBottom)
-  c.save()
-  c.beginPath()
-  c.arc(cx, cy, r, 0, Math.PI * 2)
-  c.clip()
-  c.fillStyle = g
-  c.fillRect(cx - r, cy - r, r * 2, r * 2)
-  // the cut bands, wider toward the bottom
-  c.globalCompositeOperation = 'destination-out'
-  for (let i = 0; i < 6; i++) {
-    const y = cy + r * (0.05 + i * 0.17)
-    c.fillRect(cx - r, y, r * 2, 2 + i * 2.2)
+/** Pack every ad onto pages, first fit. Same ads, same layout. */
+export function layoutAds(ads: readonly AdDef[]): { cells: AdCell[]; pages: number } {
+  const cells: AdCell[] = new Array(ads.length)
+  const used: boolean[][] = [] // used[page][row * PAGE_UNITS + col]
+  const order = ads.map((_, i) => i)
+  const rank: Record<AdShape, number> = { tall: 0, wide: 1, square: 2 }
+  order.sort((a, b) => rank[ads[a].shape] - rank[ads[b].shape] || a - b)
+  for (const i of order) {
+    const [uw, uh] = SHAPE_UNITS[ads[i].shape]
+    let placed = false
+    for (let p = 0; !placed; p++) {
+      if (!used[p]) used[p] = new Array(PAGE_UNITS * PAGE_UNITS).fill(false)
+      const grid = used[p]
+      for (let r = 0; r + uh <= PAGE_UNITS && !placed; r++) {
+        for (let k = 0; k + uw <= PAGE_UNITS && !placed; k++) {
+          let free = true
+          for (let dr = 0; dr < uh && free; dr++) for (let dk = 0; dk < uw && free; dk++) free = !grid[(r + dr) * PAGE_UNITS + k + dk]
+          if (!free) continue
+          for (let dr = 0; dr < uh; dr++) for (let dk = 0; dk < uw; dk++) grid[(r + dr) * PAGE_UNITS + k + dk] = true
+          cells[i] = { page: p, x: k * UNIT, y: r * UNIT, w: uw * UNIT, h: uh * UNIT }
+          placed = true
+        }
+      }
+    }
   }
-  c.restore()
+  return { cells, pages: used.length }
 }
 
-const ADS: Ad[] = [
-  // 1. A radio station
-  (c) => {
-    stripedSun(c, 120, 140, 84)
-    title(c, 'SUNDOWN FM', 230, 118, 64, PALETTE.roadEdge)
-    title(c, '88.4', 232, 196, 76, PALETTE.roadEdgeAlt)
-    small(c, 'SYNTHS ALL NIGHT', 380, 196, PALETTE.laneLine)
-  },
-  // 2. A fizzy drink
-  (c) => {
-    c.strokeStyle = PALETTE.chevron
-    c.fillStyle = PALETTE.chevron
-    c.beginPath() // lightning bolt
-    c.moveTo(96, 28)
-    c.lineTo(48, 140)
-    c.lineTo(92, 140)
-    c.lineTo(70, 232)
-    c.lineTo(150, 104)
-    c.lineTo(104, 104)
-    c.lineTo(132, 28)
-    c.closePath()
-    c.fill()
-    title(c, 'HYPER COLA', 180, 126, 70, PALETTE.roadEdge)
-    small(c, 'ZERO GRAVITY TASTE', 184, 170, PALETTE.laneLine)
-    title(c, 'NOW 30% MORE FIZZ', 184, 224, 34, PALETTE.boost)
-  },
-  // 3. A car maker
-  (c) => {
-    c.strokeStyle = PALETTE.roadEdgeAlt
-    c.lineWidth = 6
-    c.lineJoin = 'round'
-    c.beginPath() // low wedge car
-    c.moveTo(40, 150)
-    c.lineTo(70, 118)
-    c.lineTo(170, 96)
-    c.lineTo(250, 98)
-    c.lineTo(300, 124)
-    c.lineTo(330, 132)
-    c.lineTo(330, 150)
-    c.closePath()
-    c.stroke()
-    c.beginPath()
-    c.arc(100, 152, 20, 0, Math.PI * 2)
-    c.arc(270, 152, 20, 0, Math.PI * 2)
-    c.fillStyle = PALETTE.roadEdgeAlt
-    c.fill()
-    for (let i = 0; i < 4; i++) c.fillRect(352, 100 + i * 14, 120 - i * 26, 4) // speed lines
-    title(c, 'GRIDLINE MOTORS', 40, 220, 52, PALETTE.laneLine)
-  },
-  // 4. Space tourism
-  (c) => {
-    c.fillStyle = PALETTE.planet
-    c.beginPath()
-    c.arc(118, 128, 62, 0, Math.PI * 2)
-    c.fill()
-    c.strokeStyle = PALETTE.planetRing
-    c.lineWidth = 7
-    c.beginPath()
-    c.ellipse(118, 128, 112, 30, -0.35, 0, Math.PI * 2)
-    c.stroke()
-    title(c, 'VISIT ORBIT 9', 250, 118, 58, PALETTE.planetRing)
-    small(c, 'RINGSIDE ROOMS FROM 99 CREDITS', 252, 162, PALETTE.laneLine)
-    title(c, 'BOOK NOW', 252, 222, 40, PALETTE.roadEdge)
-  },
-  // 5. Fast food
-  (c) => {
-    c.fillStyle = PALETTE.chevron
-    c.beginPath() // a bowl
-    c.arc(116, 128, 76, 0, Math.PI)
-    c.closePath()
-    c.fill()
-    c.strokeStyle = PALETTE.laneLine
-    c.lineWidth = 5
-    for (let i = 0; i < 3; i++) {
-      c.beginPath() // steam
-      const x = 82 + i * 34
-      c.moveTo(x, 110)
-      c.bezierCurveTo(x - 16, 84, x + 16, 66, x, 36)
-      c.stroke()
-    }
-    title(c, 'TURBO', 230, 110, 72, PALETTE.boost)
-    title(c, 'NOODLES', 230, 180, 72, PALETTE.chevron)
-    small(c, 'READY BEFORE THE NEXT LAP', 232, 226, PALETTE.laneLine)
-  },
-  // 6. A holiday valley
-  (c) => {
-    c.strokeStyle = PALETTE.grid
-    c.lineWidth = 3
-    for (let i = 0; i < 7; i++) {
-      c.beginPath() // receding grid lines
-      c.moveTo(256, 140)
-      c.lineTo(-60 + i * 105, 256)
-      c.stroke()
-    }
-    for (let i = 0; i < 4; i++) {
-      const y = 150 + i * i * 9 + i * 8
-      c.beginPath()
-      c.moveTo(0, y)
-      c.lineTo(512, y)
-      c.stroke()
-    }
-    c.strokeStyle = PALETTE.roadEdge
-    c.lineWidth = 4
-    c.beginPath() // wireframe mountains
-    c.moveTo(0, 140)
-    c.lineTo(90, 70)
-    c.lineTo(160, 120)
-    c.lineTo(240, 40)
-    c.lineTo(330, 125)
-    c.lineTo(410, 76)
-    c.lineTo(512, 140)
-    c.stroke()
-    title(c, 'NEON VALLEY', 256, 236, 54, PALETTE.roadEdgeAlt, 'center')
-  },
-  // 7. An arcade
-  (c) => {
-    const px = 14
-    const ghost = ['..XXXX..', '.XXXXXX.', 'XX.XX.XX', 'XXXXXXXX', 'XXXXXXXX', 'X.X..X.X']
-    c.fillStyle = PALETTE.boost
-    for (let r = 0; r < ghost.length; r++) {
-      for (let k = 0; k < ghost[r].length; k++) if (ghost[r][k] === 'X') c.fillRect(48 + k * px, 72 + r * px, px - 2, px - 2)
-    }
-    title(c, 'ARCADE 3000', 210, 120, 64, PALETTE.boost)
-    small(c, 'HIGH SCORES  /  FREE PLAY FRIDAY', 212, 164, PALETTE.laneLine)
-    title(c, 'INSERT COIN', 212, 222, 38, PALETTE.roadEdge)
-  },
-  // 8. Pizza
-  (c) => {
-    c.fillStyle = PALETTE.chevron
-    c.beginPath() // a slice
-    c.moveTo(60, 50)
-    c.lineTo(200, 70)
-    c.lineTo(110, 220)
-    c.closePath()
-    c.fill()
-    c.fillStyle = PALETTE.roadEdge
-    for (const [x, y] of [
-      [110, 90],
-      [150, 92],
-      [120, 140],
-    ]) {
-      c.beginPath()
-      c.arc(x, y, 12, 0, Math.PI * 2)
-      c.fill()
-    }
-    title(c, 'PIZZA', 236, 108, 74, PALETTE.roadEdge)
-    title(c, 'HYPERLOOP', 236, 176, 62, PALETTE.chevron)
-    small(c, 'HOT IN 90 SECONDS OR IT FLIES FREE', 238, 222, PALETTE.laneLine)
-  },
-]
-
-export const AD_COUNT = ADS.length
-
-/** Paint every ad into one canvas texture (call once; the caller disposes it). */
-export function makeBillboardAtlas(): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas')
-  canvas.width = CELL_W * ATLAS_COLS
-  canvas.height = CELL_H * ATLAS_ROWS
-  const c = canvas.getContext('2d')!
-  // Left transparent black: the hologram adds the art as light, so black shows nothing.
-  c.clearRect(0, 0, canvas.width, canvas.height)
-  for (let i = 0; i < ADS.length; i++) {
-    const col = i % ATLAS_COLS
-    const row = Math.floor(i / ATLAS_COLS)
+/** Paint one page of ads onto a canvas (also used by the dev contact sheet). */
+export function paintPage(page: number, canvas?: HTMLCanvasElement): HTMLCanvasElement {
+  const { cells } = billboardLayout()
+  const cv = canvas ?? document.createElement('canvas')
+  cv.width = PAGE
+  cv.height = PAGE
+  const c = cv.getContext('2d', { willReadFrequently: true })!
+  // Opaque black underneath: black adds no light, and the colours at the edges of
+  // shapes and letters come out right (no bright fringes from see-through pixels).
+  c.fillStyle = '#000'
+  c.fillRect(0, 0, PAGE, PAGE)
+  for (let i = 0; i < ALL_ADS.length; i++) {
+    const cell = cells[i]
+    if (cell.page !== page) continue
     c.save()
-    c.translate(col * CELL_W, row * CELL_H)
+    c.translate(cell.x, cell.y)
     c.beginPath()
-    c.rect(0, 0, CELL_W, CELL_H)
+    c.rect(0, 0, cell.w, cell.h)
     c.clip()
-    // a thin frame around every ad
+    // A thin frame round every ad.
+    const inset = cell.w > UNIT || cell.h > UNIT ? 10 : 8
     c.strokeStyle = PALETTE.laneLine
     c.globalAlpha = 0.55
     c.lineWidth = 4
-    c.strokeRect(10, 10, CELL_W - 20, CELL_H - 20)
+    c.strokeRect(inset, inset, cell.w - inset * 2, cell.h - inset * 2)
     c.globalAlpha = 1
-    ADS[i](c)
+    try {
+      ALL_ADS[i].draw(c, cell.w, cell.h)
+    } catch (err) {
+      // One broken ad must not take the world down: it stays a blank frame, and says so.
+      console.error(`[world] the billboard ad "${ALL_ADS[i].name}" failed to draw:`, err)
+    }
     c.restore()
   }
-  const tex = new THREE.CanvasTexture(canvas)
+  return cv
+}
+
+let layoutCache: { cells: AdCell[]; pages: number } | null = null
+/** The packed layout of every ad (worked out once). */
+export function billboardLayout(): { cells: AdCell[]; pages: number } {
+  if (!layoutCache) layoutCache = layoutAds(ALL_ADS)
+  return layoutCache
+}
+
+/** How long the last paint of every ad took, milliseconds (the inspector shows it). */
+export const paintStats = { ms: 0 }
+
+/**
+ * The texture array with every ad (the caller disposes it). The pixels are painted
+ * fresh each time (a few tens of milliseconds) and let go once they are on the
+ * graphics card, so the ads never cost main memory as well.
+ */
+export function makeBillboardTexture(): THREE.DataArrayTexture {
+  const t0 = performance.now()
+  const { pages } = billboardLayout()
+  const data = new Uint8Array(PAGE * PAGE * 4 * pages)
+  const canvas = document.createElement('canvas')
+  for (let p = 0; p < pages; p++) {
+    const c = paintPage(p, canvas).getContext('2d', { willReadFrequently: true })!
+    data.set(c.getImageData(0, 0, PAGE, PAGE).data, p * PAGE * PAGE * 4)
+  }
+  paintStats.ms = Math.round(performance.now() - t0)
+  const tex = new THREE.DataArrayTexture(data, PAGE, PAGE, pages)
+  tex.format = THREE.RGBAFormat
+  tex.type = THREE.UnsignedByteType
   tex.colorSpace = THREE.SRGBColorSpace
-  tex.anisotropy = 4
   tex.generateMipmaps = true
   tex.minFilter = THREE.LinearMipmapLinearFilter
+  tex.magFilter = THREE.LinearFilter
+  tex.anisotropy = 4
+  tex.needsUpdate = true
+  // Once three.js has copied the pixels to the graphics card, drop our copy (24 MB).
+  tex.onUpdate = () => {
+    tex.image.data = null
+    tex.onUpdate = null
+  }
   return tex
+}
+
+/** Graphics memory the ad pages take, megabytes (with their smaller mipmap copies). */
+export function billboardTextureMB(): number {
+  return Math.round(((PAGE * PAGE * 4 * billboardLayout().pages * 4) / 3 / (1024 * 1024)) * 10) / 10
+}
+
+/** The atlas box of an ad as texture coordinates: [u0, v0, du, dv] (v counts down from the top of a page). */
+export function adRect(ad: number): [number, number, number, number] {
+  const cell = billboardLayout().cells[ad]
+  return [cell.x / PAGE, cell.y / PAGE, cell.w / PAGE, cell.h / PAGE]
 }
