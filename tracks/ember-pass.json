@@ -1,0 +1,472 @@
+{
+  "format": "sundown-run-track",
+  "version": 1,
+  "id": "ember-pass",
+  "name": "Ember Pass",
+  "author": "Sundown Run II",
+  "description": "A dusky double figure-eight through ember hills: squeeze through the narrow hairpin onto the start straight into the setting sun, sweep the banked south-west curve and the causeway, then straight through the hill in a tunnel while the other road climbs over it. Jump off the east crossing, ride the wall into the loop, cruise the half pipe, dive under the bridge, and climb back over the tunnel's hill home.",
+  "laps": 3,
+  "road": {
+    "points": [
+      {
+        "x": -502,
+        "z": -90,
+        "width": 18
+      },
+      {
+        "x": -502,
+        "z": -25,
+        "width": 18
+      },
+      {
+        "x": -502,
+        "z": 41,
+        "width": 18
+      },
+      {
+        "x": -502,
+        "z": 107
+      },
+      {
+        "x": -490,
+        "z": 189,
+        "bank": 18
+      },
+      {
+        "x": -450,
+        "z": 246,
+        "y": -1,
+        "bank": 18
+      },
+      {
+        "x": -393,
+        "z": 271,
+        "y": -0.7
+      },
+      {
+        "x": -335,
+        "z": 275,
+        "y": -0.4
+      },
+      {
+        "x": -287,
+        "z": 230,
+        "y": -0.1
+      },
+      {
+        "x": -262,
+        "z": 139,
+        "y": 0.3
+      },
+      {
+        "x": -230,
+        "z": 57,
+        "y": 0.8
+      },
+      {
+        "x": -189,
+        "z": 0,
+        "y": 1.1
+      },
+      {
+        "x": -139,
+        "z": -57,
+        "y": 1.5
+      },
+      {
+        "x": -82,
+        "z": -115,
+        "y": 1.9
+      },
+      {
+        "x": 0,
+        "z": -143,
+        "y": 2.3
+      },
+      {
+        "x": 82,
+        "z": -115
+      },
+      {
+        "x": 139,
+        "z": -57
+      },
+      {
+        "x": 189,
+        "z": 0
+      },
+      {
+        "x": 238,
+        "z": 57
+      },
+      {
+        "x": 290,
+        "z": 118
+      },
+      {
+        "x": 340,
+        "z": 178
+      },
+      {
+        "x": 388,
+        "z": 226
+      },
+      {
+        "x": 445,
+        "z": 248
+      },
+      {
+        "x": 500,
+        "z": 222
+      },
+      {
+        "x": 520,
+        "z": 160
+      },
+      {
+        "x": 520,
+        "z": 60
+      },
+      {
+        "x": 520,
+        "z": -40
+      },
+      {
+        "x": 520,
+        "z": -140
+      },
+      {
+        "x": 497,
+        "z": -212
+      },
+      {
+        "x": 445,
+        "z": -245
+      },
+      {
+        "x": 385,
+        "z": -254
+      },
+      {
+        "x": 325,
+        "z": -248
+      },
+      {
+        "x": 280,
+        "z": -160
+      },
+      {
+        "x": 238,
+        "z": -57,
+        "lift": -5
+      },
+      {
+        "x": 189,
+        "z": 0,
+        "lift": -8
+      },
+      {
+        "x": 139,
+        "z": 57,
+        "lift": -5
+      },
+      {
+        "x": 82,
+        "z": 115
+      },
+      {
+        "x": 0,
+        "z": 144
+      },
+      {
+        "x": -82,
+        "z": 115
+      },
+      {
+        "x": -139,
+        "z": 57
+      },
+      {
+        "x": -189,
+        "z": 0
+      },
+      {
+        "x": -242,
+        "z": -59
+      },
+      {
+        "x": -298,
+        "z": -123
+      },
+      {
+        "x": -347,
+        "z": -171,
+        "lift": -3
+      },
+      {
+        "x": -404,
+        "z": -176,
+        "lift": -3.5
+      },
+      {
+        "x": -444,
+        "z": -176,
+        "lift": -1.5,
+        "width": 12
+      },
+      {
+        "x": -473,
+        "z": -176,
+        "width": 11
+      },
+      {
+        "x": -493,
+        "z": -164,
+        "width": 11
+      },
+      {
+        "x": -502,
+        "z": -135,
+        "width": 11
+      }
+    ],
+    "width": 14,
+    "surfaceSmoothing": 30,
+    "banking": {
+      "auto": true,
+      "maxDeg": 14,
+      "designSpeedKmh": 150
+    }
+  },
+  "pieces": [
+    {
+      "type": "boost",
+      "at": 3.15
+    },
+    {
+      "type": "tunnel",
+      "at": 9.66,
+      "length": 200
+    },
+    {
+      "type": "boost",
+      "at": 14.5
+    },
+    {
+      "type": "ramp",
+      "at": 18.5
+    },
+    {
+      "type": "wallride",
+      "at": 21.3,
+      "side": "right",
+      "length": 140
+    },
+    {
+      "type": "boost",
+      "at": 24.1
+    },
+    {
+      "type": "loop",
+      "at": 25.3,
+      "radius": 13
+    },
+    {
+      "type": "wallride",
+      "at": 29.3,
+      "side": "both",
+      "length": 110
+    },
+    {
+      "type": "speedtrap",
+      "at": 32.2
+    },
+    {
+      "type": "boost",
+      "at": 37.2
+    }
+  ],
+  "props": [
+    {
+      "x": 95,
+      "z": -118,
+      "kind": "cubes",
+      "size": "small"
+    },
+    {
+      "x": 590,
+      "z": -218,
+      "kind": "crates",
+      "size": "medium"
+    },
+    {
+      "x": -60,
+      "z": 133,
+      "kind": "mixed",
+      "size": "small"
+    },
+    {
+      "x": -575,
+      "z": 190,
+      "kind": "crates",
+      "size": "small"
+    },
+    {
+      "x": -420,
+      "z": 40,
+      "kind": "tower",
+      "size": "medium"
+    },
+    {
+      "x": 440,
+      "z": -40,
+      "kind": "tower",
+      "size": "large"
+    },
+    {
+      "x": 0,
+      "z": -270,
+      "kind": "cubes",
+      "size": "large"
+    },
+    {
+      "x": -330,
+      "z": 340,
+      "kind": "mixed",
+      "size": "medium"
+    },
+    {
+      "x": 80,
+      "z": 660,
+      "kind": "crates",
+      "size": "large"
+    }
+  ],
+  "cores": [
+    {
+      "x": -410,
+      "z": 290
+    },
+    {
+      "x": -115,
+      "z": 0,
+      "y": 2
+    },
+    {
+      "x": 470,
+      "z": 238,
+      "y": 8
+    },
+    {
+      "x": 0,
+      "z": 358
+    },
+    {
+      "x": 0,
+      "z": 650,
+      "y": 12
+    },
+    {
+      "x": -450,
+      "z": -215
+    },
+    {
+      "x": 430,
+      "z": 30
+    },
+    {
+      "x": -420,
+      "z": -60
+    },
+    {
+      "x": 0,
+      "z": -300
+    },
+    {
+      "x": 520,
+      "z": 120
+    },
+    {
+      "x": -540,
+      "z": -120
+    },
+    {
+      "x": 150,
+      "z": 0
+    },
+    {
+      "x": 330,
+      "z": -330
+    },
+    {
+      "x": 650,
+      "z": -560
+    },
+    {
+      "x": -650,
+      "z": 600
+    },
+    {
+      "x": -700,
+      "z": -520
+    }
+  ],
+  "hunt": {
+    "count": 12
+  },
+  "start": {
+    "at": 2.2
+  },
+  "environment": {
+    "size": 2200,
+    "terrain": {
+      "kind": "hills",
+      "relief": 12,
+      "scale": 320,
+      "edge": "ridge",
+      "features": [
+        {
+          "type": "bowl",
+          "x": -376,
+          "z": 283,
+          "radius": 110,
+          "depth": 5
+        },
+        {
+          "type": "hill",
+          "x": -404,
+          "z": -176,
+          "radius": 110,
+          "height": 9
+        },
+        {
+          "type": "bigAir",
+          "x": 0,
+          "z": 430,
+          "headingDeg": 180,
+          "scale": 1
+        },
+        {
+          "type": "hill",
+          "x": -189,
+          "z": 0,
+          "radius": 300,
+          "height": 22
+        }
+      ]
+    },
+    "sky": {
+      "timeOfDay": 0.55,
+      "sunAzimuthDeg": 180
+    },
+    "palette": {
+      "edge": "#ff5d3d"
+    },
+    "roadside": {
+      "billboards": 28
+    },
+    "music": {
+      "mood": "cruise"
+    }
+  }
+}
