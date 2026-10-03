@@ -92,6 +92,13 @@ export type CleanupOptions = typeof CLEANUP & {
   bound: number
   /** Optional round limit too: the world's reachable radius (TrackRuntime.world.playRadius). */
   playRadius: number
+  /**
+   * Which road goes over at crossings the road had before (bridges.ts
+   * keepOverOf): a crossing found within 40 m of one, with a road heading the
+   * same way, keeps that road on top instead of the automatic choice. Redrawing
+   * a stretch passes these in, so a swapped bridge stays swapped.
+   */
+  keepOver?: readonly { at: P; heading: number }[]
 }
 
 export type IssueLevel = 'error' | 'warning' | 'note'
@@ -110,6 +117,7 @@ export interface StrokeIssue {
     | 'bridged'
     | 'shallow-crossing'
     | 'bridge-conflict'
+    | 'bridge-flipped'
   message: string
   at?: P
 }
@@ -570,8 +578,9 @@ interface BridgeSpan {
 /**
  * Decide which road goes over at each crossing. The straighter pass is
  * lifted (a bridge on a bend is harder to drive), unless that clashes with
- * another crossing nearby where the same stretch has to stay low. If
- * neither way fits, the crossing is flagged for Josh to fix.
+ * another crossing nearby where the same stretch has to stay low. A crossing
+ * the road already had keeps the road it had on top (o.keepOver), and says so
+ * if it can't. If neither way fits, the crossing is flagged for Josh to fix.
  */
 function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions, issues: StrokeIssue[]): BridgeSpan[] {
   const length = polylineLength(pts, true)
@@ -591,7 +600,9 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
     const reach = flat + o.bridgeRamp
     const bendA = maxCurvatureNear(pts, c.sA, reach, length)
     const bendB = maxCurvatureNear(pts, c.sB, reach, length)
-    const order: ('A' | 'B')[] = bendA <= bendB ? ['A', 'B'] : ['B', 'A']
+    let order: ('A' | 'B')[] = bendA <= bendB ? ['A', 'B'] : ['B', 'A']
+    const kept = keptSide(pts, c, o.keepOver ?? [], length)
+    if (kept) order = kept === 'A' ? ['A', 'B'] : ['B', 'A']
     let chosen: 'A' | 'B' | null = null
     for (const side of order) {
       const upS = side === 'A' ? c.sA : c.sB
@@ -607,7 +618,14 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
       }
     }
     c.over = chosen
-    if (chosen) {
+    if (chosen && kept && chosen !== kept) {
+      issues.push({
+        level: 'warning',
+        code: 'bridge-flipped',
+        message: 'The road you put on top here has no room for its ramps any more, so the other road goes over now. Select the bridge to swap it back once there is room.',
+        at: c.at,
+      })
+    } else if (chosen) {
       issues.push({ level: 'note', code: 'bridged', message: 'The road crosses itself here, so one side became a bridge.', at: c.at })
     } else {
       issues.push({
@@ -619,6 +637,26 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
     }
   }
   return ups
+}
+
+/**
+ * If this crossing was on the road before (a kept choice within 40 m), which
+ * pass goes over: the one heading the same way as the road that was on top.
+ */
+function keptSide(pts: readonly P[], c: Crossing, keep: readonly { at: P; heading: number }[], length: number): 'A' | 'B' | null {
+  let best: { at: P; heading: number } | null = null
+  for (const k of keep) if (dist(k.at, c.at) < 40 && (!best || dist(k.at, c.at) < dist(best.at, c.at))) best = k
+  if (!best) return null
+  const heading = (s: number) => {
+    const a = pointAt(pts, wrap(s - 3, length), true)
+    const b = pointAt(pts, wrap(s + 3, length), true)
+    return ((Math.atan2(b.x - a.x, -(b.z - a.z)) * 180) / Math.PI + 360) % 360
+  }
+  const off = (h: number) => Math.abs(((((h - best.heading) % 360) + 540) % 360) - 180)
+  const offA = off(heading(c.sA))
+  const offB = off(heading(c.sB))
+  if (Math.min(offA, offB) > 60) return null
+  return offA <= offB ? 'A' : 'B'
 }
 
 /** Height of the road above the ground at s: full height over the crossing, eased ramps either side. */

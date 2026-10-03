@@ -28,6 +28,7 @@ import { audio } from '../core/api'
 import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFromFile, fileOfDraft, isBlankDraft, pointGroundOf, roadBound, starterRoad, worldForCopy } from './draftFile'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import { checkBuiltTrack, gateItems } from './checks'
+import { crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
 import type { P } from './geom'
 import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
 import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, reanchor, roadCurve, sectionRedraw, wrapAt, LOOP_RUN_IN } from './road'
@@ -150,13 +151,19 @@ export interface Shaping {
   b: number | null
 }
 
-/** Something selected on the map. A section runs from `from` to `to` going forward (both are `at` values). */
+/**
+ * Something selected on the map. A section runs from `from` to `to` going
+ * forward (both are `at` values). A crossing (where the road goes over or
+ * under itself) is remembered by its spot on the map: swapping which road is
+ * on top changes heights, not where the roads cross, so the spot stays good.
+ */
 export type Selection =
   | { kind: 'piece'; index: number }
   | { kind: 'point'; index: number }
   | { kind: 'prop'; index: number }
   | { kind: 'core'; index: number }
   | { kind: 'section'; from: number; to: number }
+  | { kind: 'crossing'; x: number; z: number }
 
 const WORKING_KEY = 'sr2.editor.working.v1'
 const HISTORY_MAX = 120
@@ -552,7 +559,9 @@ export function onEditorOpen(mode: 'edit' | 'map'): void {
 
 function applySectionRedraw(loop: P[], metresPerPixel: number): CleanResult {
   const s = useEditor.getState()
-  const res = cleanStroke(loop, { ...strokeOptions(s.draft, metresPerPixel), fairing: 0 })
+  // Every crossing that is still there keeps the road it had on top (a swapped bridge stays swapped).
+  const keepOver = keepOverOf(s.draft.points, pointGroundFor(s.draft))
+  const res = cleanStroke(loop, { ...strokeOptions(s.draft, metresPerPixel), fairing: 0, keepOver })
   if (!res.ok) {
     say(res.issues.find((i) => i.level === 'error')?.message ?? 'That redraw did not work. Try again.', 'warn')
     audio.ui('error')
@@ -576,8 +585,9 @@ function applySectionRedraw(loop: P[], metresPerPixel: number): CleanResult {
     },
     { crossings: res.crossings, issues: res.issues },
   )
-  say('Redrew that stretch of road.', 'good')
-  audio.ui('select')
+  const flipped = res.issues.find((i) => i.code === 'bridge-flipped')
+  say(flipped ? `Redrew that stretch of road. ${flipped.message}` : 'Redrew that stretch of road.', flipped ? 'warn' : 'good')
+  audio.ui(flipped ? 'error' : 'select')
   return res
 }
 
@@ -687,7 +697,7 @@ export function deleteSelection(): void {
     deletePoint(sel.index)
     return
   }
-  if (sel.kind === 'section') return
+  if (sel.kind === 'section' || sel.kind === 'crossing') return
   commit((d) => {
     if (sel.kind === 'piece') d.pieces.splice(sel.index, 1)
     if (sel.kind === 'prop') d.props.splice(sel.index, 1)
@@ -828,8 +838,18 @@ export function shapeWorld(d: Draft): ShapeWorld {
  * pointGroundOf), under the id the live preview builds it with.
  */
 export function pointGroundFor(d: Draft): ((x: number, z: number) => number) | undefined {
-  return pointGroundOf(d.environment, useEditor.getState().savedId ?? draftId(d))
+  // The map asks every frame (for its bridge labels), so it is worked out once per environment object.
+  // Every commit copies the draft (a new environment object), and the id can only change by a
+  // commit (a new name) or by saving, which keeps the id the preview already used.
+  const memo = groundMemo.get(d.environment)
+  if (memo) return memo.ground
+  const ground = pointGroundOf(d.environment, useEditor.getState().savedId ?? draftId(d))
+  groundMemo.set(d.environment, { ground })
+  return ground
 }
+
+/** pointGroundFor's answers, kept per environment object. */
+const groundMemo = new WeakMap<EnvironmentSpec, { ground: ((x: number, z: number) => number) | undefined }>()
 
 function round3(v: number): number {
   return Math.round(v * 1000) / 1000
@@ -1175,6 +1195,61 @@ export function setSectionWidth(from: number, to: number, width: number | null):
       else d.points[i].width = Math.round(Math.min(24, Math.max(10, width)))
     }
   })
+}
+
+// ---------------------------------------------------------------- bridges: which road goes over
+
+/** Every place the draft's road crosses itself, with which road is on top (see bridges.ts). */
+export function draftCrossings(d: Draft = useEditor.getState().draft) {
+  return roadCrossings(d.points, pointGroundFor(d) ?? flatGround)
+}
+
+/** Heights with no known world: just the lifts (only before the world's ground can be worked out). */
+const flatGround = () => 0
+
+/** Select the crossing at (or nearest within 30 m of) a map spot. Returns false if there is none there. */
+export function selectCrossing(spot: P): boolean {
+  const hit = crossingNear(draftCrossings(), spot)
+  if (!hit) return false
+  useEditor.setState({ selection: { kind: 'crossing', x: hit.crossing.at.x, z: hit.crossing.at.z } })
+  audio.ui('select')
+  return true
+}
+
+/**
+ * Swap which road goes over at the crossing nearest `spot` (bridges.ts
+ * swapDraft): the road on top comes down to the ground there and the other
+ * rises over it on the clean-up's ramps. One commit, so one Undo puts it
+ * back. If it can't be done cleanly, nothing changes and Josh is told why.
+ */
+export function swapBridge(spot: P): boolean {
+  const s = useEditor.getState()
+  if (s.mode !== 'edit') return false
+  const d = s.draft
+  const id = s.savedId ?? draftId(d)
+  const t = getTrack()
+  const built = s.checkedDraft === d && s.preview === 'built' && !!s.gates && t?.id === id
+  const res = swapDraft(d, spot, {
+    id,
+    pointGround: pointGroundFor(d),
+    // The same live settings (a bank slider) the preview builds with.
+    params: t && t.id === id ? { ...t.params } : {},
+    gatesBefore: built ? s.gates ?? undefined : undefined,
+  })
+  if (!res.ok || !res.draft) {
+    say(res.reason ?? "Can't swap this bridge.", 'warn')
+    audio.ui('error')
+    return false
+  }
+  const next = res.draft
+  commit((x) => {
+    x.points = next.points
+    x.pieces = next.pieces
+    x.startAt = next.startAt
+  })
+  say(res.done ?? 'Swapped.', 'good')
+  audio.ui('select')
+  return true
 }
 
 // ---------------------------------------------------------------- environment

@@ -4,8 +4,9 @@
 //  Top to bottom:
 //    the name and a few numbers (length, pieces, bridges)
 //    SELECTED  settings for whatever you clicked on the map: a piece,
-//              a crash-prop pile, an energy core, a road point, or a
-//              stretch of road (its bank and width)
+//              a crash-prop pile, an energy core, a road point, a
+//              stretch of road (its bank and width), or a crossing
+//              (which road goes over: the Swap button)
 //    TRACK     width, world, time of day, edge lights, maker, blurb
 //    CHECKS    anything the game wants you to look at; click to go there
 //    MAP KEY   what the marks on the map mean
@@ -43,7 +44,10 @@ import {
   useEditor,
   commit,
   applyCornerRadius,
+  draftCrossings,
+  swapBridge,
 } from './draft'
+import { BRIDGE_GAP, bridgeCount, compassWord, crossingNear } from './bridges'
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
 import { issueLocation, roadGeometry } from './mapDraw'
 import { type CheckItem, checkVerdict, gateItems, plainWords } from './checks'
@@ -101,7 +105,7 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
         <div className="sre-stats">
           <Stat label="Length" value={`${(length / 1000).toFixed(2)} km`} />
           <Stat label="Pieces" value={String(draft.pieces.length + draft.props.length + draft.cores.length)} />
-          <Stat label="Bridges" value={String(countBridges(draft))} />
+          <Stat label="Bridges" value={String(bridgeCount(draft.points, draftCrossings(draft)))} />
         </div>
       </header>
 
@@ -155,16 +159,6 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
       </div>
     </aside>
   )
-}
-
-function countBridges(d: Draft): number {
-  let n = 0
-  for (let i = 0; i < d.points.length; i++) {
-    const lift = d.points[i].lift ?? 0
-    const prev = d.points[(i - 1 + d.points.length) % d.points.length].lift ?? 0
-    if (lift >= 6 && prev < 6) n++
-  }
-  return n
 }
 
 function Stat(p: { label: string; value: string }) {
@@ -293,6 +287,10 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
         />
       </>
     )
+  } else if (sel.kind === 'crossing') {
+    title = 'Where the road crosses itself'
+    canDelete = false
+    body = <CrossingFields spot={sel} draft={d} />
   } else {
     title = 'Stretch of road'
     canDelete = false
@@ -330,6 +328,10 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
   }
 
   const goTo = () => {
+    if (sel.kind === 'crossing') {
+      setView(sel.x, sel.z, Math.min(view.mpp, 0.6))
+      return
+    }
     const at =
       sel.kind === 'section'
         ? issueLocation(`road.points[${sectionPoints(d.points.length, sel.from, sel.to)[0]}]`, d, rc)
@@ -355,6 +357,50 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
         </button>
       )}
     </section>
+  )
+}
+
+/**
+ * A crossing: which road goes over, in plain words (the map lights the one
+ * that GOES OVER in violet and the one that GOES UNDER in cyan), and the
+ * button that swaps them (draft.ts swapBridge). If the swap can't be done,
+ * the status line says why and nothing changes.
+ */
+function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
+  const d = p.draft
+  const hit = crossingNear(draftCrossings(d), p.spot, 2)
+  if (!hit) return <p className="sre-help">The road doesn't cross itself here any more.</p>
+  const c = hit.crossing
+  const rc = roadGeometry(d.points, d.width).rc
+  /** "the road heading north-east (the 420 m mark)": which road, in words and by where it is after the start line. */
+  const road = (k: 0 | 1) => {
+    const metres = Math.round(metresBetween(rc, d.startAt, c.passes[k].at))
+    const mark = metres >= 1000 ? `${(metres / 1000).toFixed(2)} km` : `${metres} m`
+    return `the road heading ${compassWord(c.passes[k].heading)} (the ${mark} mark)`
+  }
+  const swap = () => swapBridge(p.spot)
+  if (c.over === null) {
+    return (
+      <>
+        <p className="sre-help">These two roads meet at the same height here, so cars would crash into each other. Make one of them a bridge over the other.</p>
+        <button type="button" className="sre-btn is-primary" onClick={swap}>
+          Make a bridge here
+        </button>
+      </>
+    )
+  }
+  const under = c.over === 0 ? 1 : 0
+  const low = c.gap < BRIDGE_GAP
+  return (
+    <>
+      <p className="sre-help">
+        Going over: {road(c.over)}. Going under: {road(under)}. {Math.round(c.gap * 10) / 10} m between them{low ? ', too low for a car to fit under' : ''}.
+      </p>
+      <button type="button" className="sre-btn is-primary" onClick={swap} data-testid="editor-swap-bridge">
+        Swap: put the other road on top
+      </button>
+      <p className="sre-help">The road on top comes down to the ground here, and the other one goes up over it on smooth ramps. Undo puts it back.</p>
+    </>
   )
 }
 
@@ -556,7 +602,7 @@ function Legend() {
           <i className="k-point" /> Road point
         </li>
         <li>
-          <i className="k-bridge" /> Bridge (raised road)
+          <i className="k-bridge" /> Bridge (click its label to pick which road goes over)
         </li>
         <li>
           <i className="k-boost" /> Boost pad

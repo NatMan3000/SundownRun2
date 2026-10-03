@@ -3,7 +3,9 @@
 // ------------------------------------------------------------
 //  The 3D view under the editor is the real track. On top of it this
 //  draws, in crisp screen pixels, what a map needs: the road outline
-//  when zoomed out, which way you drive, the start line, bridges,
+//  when zoomed out, which way you drive, the start line, bridges
+//  (a BRIDGE label at every crossing: click it to pick which road
+//  goes over),
 //  every piece as an icon, props and cores, the stunt park's zones
 //  (world map only), what is selected, and
 //  pins on anything the game wants you to check (its track checks
@@ -20,12 +22,13 @@ import { FONTS, PALETTE } from '../core/palette'
 import { play } from '../core/api'
 import { cars, telemetry } from '../core/telemetry'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
-import { FILL_MAX } from '../track/road'
 import type { BendView, EditorState } from './draft'
+import { BRIDGE_GAP, type RoadCrossing, bridgeShape, raisedTops } from './bridges'
 import { gateItems } from './checks'
 import { type P } from './geom'
 import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type PlaceKind } from './pieces'
 import { type RoadCurve, PER, advanceAt, frameAt, roadCurve, wrapAt } from './road'
+import { roadLine, stretchOf } from './shape'
 import { view, worldToScreen } from './view'
 
 /** What can be picked on the map. */
@@ -34,6 +37,7 @@ export type Pick =
   | { kind: 'prop'; index: number }
   | { kind: 'core'; index: number }
   | { kind: 'point'; index: number }
+  | { kind: 'crossing'; x: number; z: number }
 
 export interface MapExtras {
   /** The pencil line being drawn right now (world points). */
@@ -43,6 +47,8 @@ export interface MapExtras {
   ghost: { kind: PlaceKind; at: P; dir: P } | null
   /** Select tool: the thing under the pointer. */
   hoverPick: Pick | null
+  /** Where the road crosses itself, and which road is on top (bridges.ts roadCrossings). */
+  crossings: readonly RoadCrossing[]
   /** Bend tool: the stretch that would move (hovering) or is moving (dragging). */
   bend?: { view: BendView; dragging: boolean } | null
   /** Straight and Curve: the spots clicked, the stretch that will change and the new road there. */
@@ -108,8 +114,8 @@ export function pointsVisible(s: EditorState): boolean {
 /** Screen boxes of every label drawn this frame, so later labels can step around them. */
 let labelBoxes: { x0: number; y0: number; x1: number; y1: number }[] = []
 
-/** A label that steps out of the way of labels already drawn: tries each offset in turn. */
-function placePill(ctx: CanvasRenderingContext2D, text: string, sx: number, sy: number, offsets: readonly number[], colour: string): void {
+/** A label that steps out of the way of labels already drawn: tries each offset in turn. Returns its box (or null if it found no room). */
+function placePill(ctx: CanvasRenderingContext2D, text: string, sx: number, sy: number, offsets: readonly number[], colour: string): { x0: number; y0: number; x1: number; y1: number } | null {
   ctx.save()
   ctx.font = `600 12px ${FONTS.body}`
   const w = ctx.measureText(text).width + 14
@@ -119,8 +125,9 @@ function placePill(ctx: CanvasRenderingContext2D, text: string, sx: number, sy: 
     if (labelBoxes.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0)) continue
     labelBoxes.push(r)
     pill(ctx, text, sx, sy + off, colour)
-    return
+    return r
   }
+  return null
 }
 
 export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExtras): void {
@@ -138,7 +145,7 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
     if (x.bend) drawBend(ctx, x.bend.view, x.bend.dragging, d.width)
     if (x.shape) drawShape(ctx, x.shape, d.width)
     drawDirectionArrows(ctx, g.rc.curve)
-    drawBridges(ctx, d.points)
+    drawBridges(ctx, d.points, x.crossings, d.width, s.mode === 'edit' && s.selection?.kind === 'crossing' ? s.selection : null, x.hoverPick?.kind === 'crossing' ? x.hoverPick : null)
     drawPieces(ctx, g.rc, d.pieces, d.width, s.selection, x.hoverPick)
     drawStartLine(ctx, g.rc, d.startAt, d.width)
     if (pointsVisible(s)) drawControlPoints(ctx, d.points, s.selection, x.hoverPick)
@@ -513,38 +520,155 @@ function drawStartLine(ctx: CanvasRenderingContext2D, rc: RoadCurve, startAt: nu
 }
 
 /**
+ * Where on screen each crossing can be clicked (its marker and its BRIDGE
+ * label), filled in by drawBridges every frame. See crossingAtScreen.
+ */
+let crossingTargets: { spot: P; sx: number; sy: number; box: { x0: number; y0: number; x1: number; y1: number } | null }[] = []
+
+/**
+ * The crossing under screen point (sx, sy), as drawn last frame: on its
+ * BRIDGE label (distance 0), or within 12 px of its marker (that distance).
+ * `labelOnly` ignores the marker (the drawing tools, where a press on the road
+ * itself must still draw).
+ */
+export function crossingAtScreen(sx: number, sy: number, labelOnly = false): { spot: P; d: number } | null {
+  let best: { spot: P; d: number } | null = null
+  for (const t of crossingTargets) {
+    const inBox = !!t.box && sx >= t.box.x0 && sx <= t.box.x1 && sy >= t.box.y0 && sy <= t.box.y1
+    const d = inBox ? 0 : Math.hypot(sx - t.sx, sy - t.sy)
+    if (!inBox && (labelOnly || d > 12)) continue
+    if (!best || d < best.d) best = { spot: t.spot, d }
+  }
+  return best
+}
+
+/** Where each crossing's marker and BRIDGE label were drawn last frame, screen pixels (so a probe can click them). */
+export function crossingScreens(): { x: number; z: number; marker: { sx: number; sy: number }; label: { sx: number; sy: number } | null }[] {
+  return crossingTargets.map((t) => ({
+    x: t.spot.x,
+    z: t.spot.z,
+    marker: { sx: t.sx, sy: t.sy },
+    label: t.box ? { sx: (t.box.x0 + t.box.x1) / 2, sy: (t.box.y0 + t.box.y1) / 2 } : null,
+  }))
+}
+
+/** A unit direction on the map from a compass heading (0 = north, up the map). */
+function headingDir(heading: number): P {
+  const r = (heading * Math.PI) / 180
+  return { x: Math.sin(r), z: -Math.cos(r) }
+}
+
+/**
+ * Bridges. Every crossing gets a marker where the roads cross and a label in
+ * the gap between them: "BRIDGE 8 m" (violet) when one road goes over with
+ * room for a car, "LOW BRIDGE" or "ROADS MEET" (amber) when not. Click either
+ * to select it. The selected crossing lights up both roads: the one that
+ * GOES OVER in violet, the one that GOES UNDER in cyan. Road raised by hand
+ * away from any crossing keeps its own "BRIDGE" label beside its top.
+ */
+function drawBridges(
+  ctx: CanvasRenderingContext2D,
+  points: readonly RoadPoint[],
+  crossings: readonly RoadCrossing[],
+  width: number,
+  selected: { x: number; z: number } | null,
+  hover: { x: number; z: number } | null,
+): void {
+  crossingTargets = []
+  for (const top of raisedTops(points, crossings)) {
+    const p = points[top]
+    const q = points[(top + 1) % points.length]
+    const len = Math.hypot(q.x - p.x, q.z - p.z) || 1
+    const { sx, sy } = worldToScreen(p.x, p.z)
+    placePill(ctx, `BRIDGE ${Math.round(p.lift ?? 0)} m`, sx + (-(q.z - p.z) / len) * 30, sy + ((q.x - p.x) / len) * 30, [0, 24, -24], PALETTE.wallRide)
+  }
+  const near = (c: RoadCrossing, spot: { x: number; z: number } | null) => !!spot && Math.hypot(c.at.x - spot.x, c.at.z - spot.z) < 1
+  const sel = crossings.find((c) => near(c, selected)) ?? null
+  // The selected crossing's two roads first (under everything), their GOES OVER / GOES UNDER labels last,
+  // so the BRIDGE labels (the things to click) always get their spot.
+  const roadLabels = sel ? drawCrossingRoads(ctx, points, sel, width) : []
+  for (const c of crossings) {
+    const good = c.over !== null && c.gap >= BRIDGE_GAP
+    const colour = good ? PALETTE.wallRide : PALETTE.chevron
+    const isSel = c === sel
+    const { sx, sy } = worldToScreen(c.at.x, c.at.z)
+    ctx.save()
+    ctx.fillStyle = PALETTE.uiPanel
+    ctx.strokeStyle = isSel ? PALETTE.uiText : colour
+    ctx.lineWidth = isSel || near(c, hover) ? 3 : 2
+    ctx.beginPath()
+    ctx.arc(sx, sy, isSel ? 9 : 7, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+    ctx.fillStyle = colour
+    ctx.beginPath()
+    ctx.arc(sx, sy, 3, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+    // The label sits in the gap between the two roads (between their directions), clear of both.
+    const a = headingDir(c.passes[0].heading)
+    const b = headingDir(c.passes[1].heading)
+    let ux = a.x + b.x
+    let uz = a.z + b.z
+    const ul = Math.hypot(ux, uz) || 1
+    ux /= ul
+    uz /= ul
+    const text = good ? `BRIDGE ${Math.round(c.gap)} m` : c.over !== null ? `LOW BRIDGE ${c.gap.toFixed(1)} m` : 'ROADS MEET'
+    const box = placePill(ctx, text, sx + ux * 46, sy + uz * 46, [0, 24, -24, 48], isSel ? PALETTE.uiText : colour)
+    crossingTargets.push({ spot: c.at, sx, sy, box })
+  }
+  for (const l of roadLabels) placePill(ctx, l.text, l.sx, l.sy, [0, 24, -24, 48], l.colour)
+}
+
+/**
+ * The selected crossing: the road that goes over (violet) and the one that goes under (cyan), as far as
+ * the bridge reaches. Returns the labels to put along them (drawn after the BRIDGE labels).
+ */
+function drawCrossingRoads(
+  ctx: CanvasRenderingContext2D,
+  points: readonly RoadPoint[],
+  c: RoadCrossing,
+  width: number,
+): { text: string; sx: number; sy: number; colour: string }[] {
+  const labels: { text: string; sx: number; sy: number; colour: string }[] = []
+  const road = roadLine(points)
+  const { flat, ramp } = bridgeShape(c.angleDeg, width)
+  const reach = flat + ramp
+  const order: (0 | 1)[] = c.over === 1 ? [1, 0] : [0, 1]
+  // The road underneath first, so the bridge is drawn over it, like the real thing.
+  for (const k of [...order].reverse()) {
+    const pass = c.passes[k]
+    const isOver = c.over === k
+    const colour = c.over === null ? PALETTE.chevron : isOver ? PALETTE.wallRide : PALETTE.uiAccent
+    const pts = stretchOf(road, pass.s - reach, pass.s + reach, 4)
+    ctx.save()
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = colour
+    ctx.globalAlpha = 0.4
+    ctx.lineWidth = Math.max(10, (width * 1.1) / view.mpp)
+    line(ctx, pts, false)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+    ctx.lineWidth = 2
+    ctx.stroke()
+    ctx.restore()
+    if (c.over === null) continue
+    // A label along each road, out on its ramp in the driving direction (clear of the crossing's own marker and label).
+    const tip = pts[Math.round(0.85 * (pts.length - 1))]
+    const { sx, sy } = worldToScreen(tip.x, tip.z)
+    labels.push({ text: isOver ? 'GOES OVER' : 'GOES UNDER', sx, sy, colour })
+  }
+  return labels
+}
+
+/**
  * A road point raised a metre or more above the ground. (The shaping tools give
  * their new points small lifts, above or below zero, that only keep the road at
  * the height it had: those are not raised.)
  */
 function isRaised(p: RoadPoint): boolean {
   return (p.lift ?? 0) >= 1
-}
-
-/**
- * Each raised stretch that is a bridge gets one label beside its highest point:
- * 6 m (FILL_MAX) or more, the same as the panel's Bridges count. The game fills
- * the ground up to a road less high than that, so a lower raise is a crest or a
- * bank of earth, not a bridge with air under it.
- */
-function drawBridges(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[]): void {
-  const n = points.length
-  const raised = (i: number) => isRaised(points[((i % n) + n) % n])
-  for (let i = 0; i < n; i++) {
-    if (!raised(i) || raised(i - 1)) continue
-    let top = i
-    let count = 0
-    while (raised(i + count) && count < n) {
-      if ((points[(i + count) % n].lift ?? 0) > (points[top % n].lift ?? 0)) top = i + count
-      count++
-    }
-    const p = points[top % n]
-    if ((p.lift ?? 0) < FILL_MAX) continue
-    const q = points[(top + 1) % n]
-    const len = Math.hypot(q.x - p.x, q.z - p.z) || 1
-    const { sx, sy } = worldToScreen(p.x, p.z)
-    placePill(ctx, `BRIDGE ${Math.round(p.lift ?? 0)} m`, sx + (-(q.z - p.z) / len) * 30, sy + ((q.x - p.x) / len) * 30, [0, 24, -24], PALETTE.wallRide)
-  }
 }
 
 /** Stretches with a bank override: an amber line along the road and the angle, once per stretch. */

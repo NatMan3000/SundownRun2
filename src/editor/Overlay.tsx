@@ -19,6 +19,10 @@
 //    Select   click a piece, prop, core or road point to select it,
 //             drag to move it, double-click the road to add a point,
 //             Delete removes what is selected. Drag empty map to pan.
+//             Click where the road crosses itself to pick which road
+//             goes over (the panel's Swap button).
+//    Bridges  with any tool, a click on a BRIDGE label selects that
+//             crossing too.
 //    Place    click to drop the chosen piece (a see-through preview
 //             follows the mouse and snaps to the road).
 //    Section  drag along the road to pick a stretch, then set its bank
@@ -62,7 +66,9 @@ import {
   placeAt,
   redo,
   roadBoundFor,
+  draftCrossings,
   say,
+  selectCrossing,
   setBendReach,
   setTool,
   shapeWorld,
@@ -70,7 +76,7 @@ import {
   useEditor,
 } from './draft'
 import { type P } from './geom'
-import { type MapExtras, type Pick, type ShapeView, drawMap, pieceScreen, pointsVisible, roadGeometry } from './mapDraw'
+import { type MapExtras, type Pick, type ShapeView, crossingAtScreen, drawMap, pieceScreen, pointsVisible, roadGeometry } from './mapDraw'
 import { type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, wrapAt } from './road'
 import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
 import { view, panBy, screenToWorld, worldToScreen, zoomAt, fitBox } from './view'
@@ -144,6 +150,9 @@ export function pickAt(sx: number, sy: number): Pick | null {
       consider({ kind: 'point', index: i }, at.sx + 0.01, at.sy, 9)
     })
   }
+  // A crossing: its marker where the roads cross, or its BRIDGE label (which always wins: it sits off the road).
+  const crossing = crossingAtScreen(sx, sy)
+  if (crossing && crossing.d < bestD) best = { kind: 'crossing', x: crossing.spot.x, z: crossing.spot.z }
   return best
 }
 
@@ -217,7 +226,7 @@ export function Overlay() {
     /** Move whatever is being dragged so it sits under world point q. */
     const dragTo = (q: P) => {
       const pick = dragging
-      if (!pick) return
+      if (!pick || pick.kind === 'crossing') return
       const target = { x: q.x - dragOffset.x, z: q.z - dragOffset.z }
       const bound = roadBoundFor()
       const clamp = (v: number) => Math.round(Math.max(-bound, Math.min(bound, v)) * 10) / 10
@@ -348,6 +357,14 @@ export function Overlay() {
         return
       }
       if (e.button !== 0) return
+      // A BRIDGE label works with every tool: select that crossing (the panel shows its Swap button).
+      if (s.tool !== 'select') {
+        const label = crossingAtScreen(e.clientX, e.clientY, true)
+        if (label && selectCrossing(label.spot)) {
+          needsDraw = true
+          return
+        }
+      }
       if (s.tool === 'pencil') {
         drawing = true
         stroke = [q]
@@ -440,7 +457,10 @@ export function Overlay() {
         return
       }
       const pick = pickAt(e.clientX, e.clientY)
-      if (pick) {
+      if (pick?.kind === 'crossing') {
+        // A crossing can't be dragged: select it, and the panel offers the swap.
+        selectCrossing(pick)
+      } else if (pick) {
         useEditor.setState({ selection: pick })
         dragging = pick
         const d = s.draft
@@ -795,6 +815,7 @@ export function Overlay() {
           hover,
           ghost,
           hoverPick,
+          crossings: draftCrossings(),
           bend: bendShown ? { view: bendShown, dragging: bending } : null,
           shape: shapeShown,
           pen: drawing && pen && pen.stringPx > 0 && penTo ? { at: screenToWorld(pen.x, pen.y), to: penTo } : null,
@@ -843,6 +864,7 @@ function pickWorld(pick: Pick): P | null {
   if (pick.kind === 'point') return d.points[pick.index] ?? null
   if (pick.kind === 'prop') return d.props[pick.index] ?? null
   if (pick.kind === 'core') return d.cores[pick.index] ?? null
+  if (pick.kind === 'crossing') return { x: pick.x, z: pick.z }
   const p = d.pieces[pick.index]
   if (!p) return null
   return pieceScreen(roadGeometry(d.points, d.width).rc, p).centre

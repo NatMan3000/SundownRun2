@@ -55,6 +55,10 @@ import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, roadCurve, sectio
 import type { Piece, RoadPoint, TrackFile } from '../track/schema'
 import { checkBuiltTrack, checkVerdict, gateItems } from './checks'
 import type { Draft } from './draft'
+import { BRIDGE_GAP, type GroundFn, buildAndCheck, builtGapAt, crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
+
+/** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
+type EditorStore = typeof import('./draft')
 
 export interface CheckResult {
   name: string
@@ -206,7 +210,7 @@ function liftNear(res: CleanResult, s: number): number {
   return res.points[i].lift ?? 0
 }
 
-export function runEditorSelfTest(): CheckResult[] {
+export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   const results: CheckResult[] = []
   const opts: Partial<CleanupOptions> = { bound: BOUND, width: 14 }
   /** A check returns its problems (empty = pass), or a string to report a pass with a note. */
@@ -1064,6 +1068,229 @@ export function runEditorSelfTest(): CheckResult[] {
     return bad
   })
 
+  // ---------------------------------------------------------------- bridges: which road goes over (GitHub #9)
+
+  /**
+   * The figure-eight, as a draft in the default world (seed pinned, so its hills never depend on the id).
+   * Seed 1: on some hills (seed 909, for one) the game's builder leaves a bump in the ground under a
+   * bridge ramp (its 'under' check, a builder bug being fixed in src/track/terrain.ts), which would
+   * refuse a swap for a reason that has nothing to do with the editor.
+   */
+  const eight = (): { d: Draft; ground: GroundFn } => {
+    const stroke = shaky((t) => ({ x: 260 * Math.sin(t * TAU), z: 130 * Math.sin(2 * t * TAU) }), 600, 3, 2, 0.1, 1.1)
+    const res = cleanStroke(stroke, opts)
+    const environment = { ...JSON.parse(JSON.stringify(DEFAULT_BASE_WORLD.environment)), seed: 1 }
+    const d: Draft = { id: 'selftest-bridges', name: 'Self-test bridges', author: '', description: '', points: res.points, width: 14, baseWorld: DEFAULT_BASE_WORLD.id, environment, pieces: [], props: [], cores: [], startAt: 0 }
+    const ground = pointGroundOf(environment, d.id)
+    if (!ground) throw new Error("the eight's world didn't validate")
+    return { d, ground }
+  }
+  /** Which way the road on top is heading at the crossing nearest `at` (null: no bridge there). */
+  const topHeading = (points: readonly RoadPoint[], ground: GroundFn, at: P): number | null => {
+    const hit = crossingNear(roadCrossings(points, ground), at)
+    return hit && hit.crossing.over !== null ? hit.crossing.passes[hit.crossing.over].heading : null
+  }
+  const sameWay = (a: number | null, b: number | null) => a !== null && b !== null && Math.abs(((a - b + 540) % 360) - 180) < 30
+  let lastGap = 0
+  /** The built road at the crossing: the right road on top, a car-sized gap, and the game's checks. */
+  const builtVerdict = (d: Draft, at: P, heading: number): string[] => {
+    const b = buildAndCheck(d, d.id)
+    if (!b.runtime) return [`did not build: ${b.error}`]
+    const bad: string[] = []
+    const g = builtGapAt(b.runtime, at, heading)
+    if (!g) bad.push('the built road has no two levels at the crossing')
+    else {
+      if (!g.upperMatches) bad.push('the wrong road is on top on the built road')
+      if (g.gap < BRIDGE_GAP) bad.push(`built gap ${g.gap.toFixed(2)} m (needs ${BRIDGE_GAP})`)
+    }
+    const verdict = checkVerdict({ fresh: true, errors: [], gates: b.gates, cleanupErrors: 0 })
+    if (verdict !== 'pass') bad.push(`the editor's checks say ${verdict}: ${b.gates.filter((x) => x.level === 'fail').map((x) => `${x.name}: ${x.message}`).join(' / ')}`)
+    lastGap = g?.gap ?? 0
+    return bad
+  }
+
+  check('Bridges: a figure-eight swapped both ways keeps a car-sized gap on the built road and passes every check', () => {
+    const { d, ground } = eight()
+    const c = roadCrossings(d.points, ground)
+    if (c.length !== 1 || c[0].over === null) return [`the eight has ${c.length} crossing(s), over ${c[0]?.over}`]
+    const at = c[0].at
+    const autoTop = c[0].passes[c[0].over].heading
+    const otherTop = c[0].passes[c[0].over === 0 ? 1 : 0].heading
+    // A crest set by hand far from the crossing (the point furthest away and its neighbours) must never change.
+    const far = d.points.reduce((best, p, i) => (dist(p, at) > dist(d.points[best], at) ? i : best), 0)
+    d.points = d.points.map((p, i) => (Math.abs(i - far) <= 1 ? { ...p, lift: 3 } : p))
+    const bad: string[] = []
+    const gaps: string[] = []
+    const one = swapDraft(d, at, { id: d.id, pointGround: ground })
+    if (!one.ok || !one.draft) return [`the first swap was refused: ${one.reason}`]
+    if (!sameWay(topHeading(one.draft.points, ground, at), otherTop)) bad.push('after one swap the other road is not on top')
+    bad.push(...builtVerdict(one.draft, at, otherTop).map((b) => `swapped: ${b}`))
+    gaps.push(lastGap.toFixed(2))
+    const two = swapDraft(one.draft, at, { id: d.id, pointGround: ground })
+    if (!two.ok || !two.draft) return [...bad, `the swap back was refused: ${two.reason}`]
+    if (!sameWay(topHeading(two.draft.points, ground, at), autoTop)) bad.push('after swapping back the first road is not on top')
+    bad.push(...builtVerdict(two.draft, at, autoTop).map((b) => `swapped back: ${b}`))
+    gaps.push(lastGap.toFixed(2))
+    // Swapped back = the clean-up's own bridge again (the same ramps), and the hand-set crest untouched both times.
+    let worst = 0
+    if (two.draft.points.length !== d.points.length) bad.push(`swapped back has ${two.draft.points.length} points, not ${d.points.length}`)
+    else two.draft.points.forEach((p, i) => (worst = Math.max(worst, Math.abs((p.lift ?? 0) - (d.points[i].lift ?? 0)))))
+    if (worst > 0.06) bad.push(`swapped back, a lift differs from the clean-up's by ${worst.toFixed(2)} m`)
+    for (const r of [one.draft, two.draft]) {
+      for (const i of [far - 1, far, far + 1]) if (r.points[i]?.lift !== 3) bad.push(`the hand-set crest at point ${i} changed to ${r.points[i]?.lift}`)
+    }
+    info = `crossing at ${Math.round(c[0].angleDeg)} degrees; built gap ${gaps.join(' m, then ')} m (needs ${BRIDGE_GAP}); swapped back = the clean-up's lifts to ${(worst * 100).toFixed(0)} cm; hand-set crest untouched; "${one.done}"`
+    return bad
+  })
+
+  check("Bridges: Afterglow's underpass swaps on a copy (points 200 m apart, set heights) and nothing else moves", () => {
+    const copy = draftFromFile(afterglow, true)
+    copy.id = 'afterglow-copy'
+    const ground = pointGroundOf(copy.environment, copy.id)
+    if (!ground) return ["the copy's world didn't validate"]
+    const c = roadCrossings(copy.points, ground)
+    if (c.length !== 1 || c[0].over === null) return [`Afterglow has ${c.length} crossing(s)`]
+    const otherTop = c[0].passes[c[0].over === 0 ? 1 : 0].heading
+    const res = swapDraft(copy, c[0].at, { id: copy.id, pointGround: ground })
+    if (!res.ok || !res.draft) return [`refused: ${res.reason}`]
+    const after = res.draft
+    const bad = builtVerdict(after, c[0].at, otherTop)
+    // Every original point keeps its place, and every one more than 200 m from the crossing keeps its height setting exactly.
+    let kept = 0
+    for (const p of copy.points) {
+      const q = after.points.find((r) => r.x === p.x && r.z === p.z)
+      if (!q) {
+        bad.push(`original point (${p.x}, ${p.z}) is gone`)
+        continue
+      }
+      if (dist(p, c[0].at) > 200) {
+        if (q.y !== p.y || q.lift !== p.lift || q.bank !== p.bank || q.width !== p.width) bad.push(`point (${p.x}, ${p.z}) far from the crossing changed`)
+        else kept++
+      }
+    }
+    const setHeights = copy.points.filter((p) => p.y !== undefined).length
+    const keptSet = copy.points.filter((p) => p.y !== undefined && after.points.some((q) => q.x === p.x && q.z === p.z && q.y === p.y)).length
+    if (keptSet !== setHeights) bad.push(`only ${keptSet} of ${setHeights} hand-set heights kept`)
+    // The pieces stay on the same spots of road.
+    const was = roadCurve(copy.points)
+    const now = roadCurve(after.points)
+    copy.pieces.forEach((p, i) => {
+      const moved = dist(frameAt(was, p.at).p, frameAt(now, after.pieces[i].at).p)
+      if (moved > 0.5) bad.push(`the ${p.type} at ${p.at} moved ${moved.toFixed(2)} m`)
+    })
+    info = `built gap ${lastGap.toFixed(2)} m; ${copy.points.length} -> ${after.points.length} points; ${kept} far points and all ${setHeights} hand-set heights exactly kept; pieces in place; every check passes`
+    return bad
+  })
+
+  check("Bridges: a swap that can't fit is refused in plain words, and nothing changes", () => {
+    const { d, ground } = eight()
+    const c = roadCrossings(d.points, ground)[0]
+    if (!c || c.over === null) return ['the eight has no bridge']
+    const lower = c.passes[c.over === 0 ? 1 : 0]
+    const bad: string[] = []
+    const said: string[] = []
+    const refused = (label: string, dd: Draft, want: RegExp) => {
+      const before = JSON.stringify(dd)
+      const r = swapDraft(dd, c.at, { id: dd.id, pointGround: ground })
+      if (r.ok) bad.push(`${label}: the swap went ahead`)
+      else if (!want.test(r.reason ?? '')) bad.push(`${label}: wrong reason "${r.reason}"`)
+      else said.push(`${label}: "${r.reason}"`)
+      if (JSON.stringify(dd) !== before) bad.push(`${label}: the draft was changed`)
+    }
+    // A loop on the road that would have to rise.
+    const line = roadLine(d.points)
+    refused('loop', { ...d, pieces: [{ type: 'loop', at: atOf(line, lower.s + 60) }] }, /loop is too close/)
+    // The start line just after the crossing on that road.
+    refused('start line', { ...d, startAt: atOf(line, lower.s + 40) }, /start line is too close/)
+    // Two roads crossing at a flat angle (points set by hand, no clean-up): neither can be a bridge.
+    const flat: RoadPoint[] = []
+    for (let i = 0; i < 80; i++) {
+      const t = (i / 80) * TAU
+      flat.push({ x: Math.round(420 * Math.sin(t) * 10) / 10, z: Math.round(40 * Math.sin(2 * t) * 10) / 10, ...(i > 15 && i < 25 ? { lift: 8 } : {}) })
+    }
+    const fc = roadCrossings(flat, ground)[0]
+    if (!fc || fc.angleDeg >= 28) bad.push(`the flat test road crosses at ${fc?.angleDeg.toFixed(0)} degrees, not under 28`)
+    else refused(`flat crossing (${Math.round(fc.angleDeg)} degrees)`, { ...d, points: flat }, /flat angle/)
+    info = said.join('; ')
+    return bad
+  })
+
+  check('Bridges: a swap is remembered through later edits elsewhere (a Bend, moving a point, a pencil redraw of another stretch)', () => {
+    const { d, ground } = eight()
+    const c0 = roadCrossings(d.points, ground)[0]
+    if (!c0 || c0.over === null) return ['the eight has no bridge']
+    const at = c0.at
+    const swapped = swapDraft(d, at, { id: d.id, pointGround: ground })
+    if (!swapped.ok || !swapped.draft) return [`the swap was refused: ${swapped.reason}`]
+    const sd = swapped.draft
+    const pts = sd.points
+    const want = topHeading(pts, ground, at)
+    const bad: string[] = []
+    const world = { width: 14, bound: BOUND, playRadius: Infinity, pointGround: ground }
+    // The far lobe of the eight: the point furthest from the crossing.
+    const line = roadLine(pts)
+    const far = pts.reduce((best, p, i) => (dist(p, at) > dist(pts[best], at) ? i : best), 0)
+    const sFar = sOfPoint(line, far)
+    // 1. Bend the far lobe out 30 m (what the Bend tool does: even points, then pull).
+    const dense = densify(line, 0, line.length, 20, undefined, world)
+    const dl = roadLine(dense.points)
+    const bent = bendRoad(dl, sOf(dl, dense.mapAt(far)), 120, { x: Math.sign(pts[far].x) * 30, z: 0 }, world)
+    if (!sameWay(topHeading(bent, ground, at), want)) bad.push('a Bend on the far lobe flipped the bridge')
+    // 2. Drag a far point 10 m (Select and move).
+    const moved = pts.map((p, i) => (i === far ? { ...p, x: p.x + Math.sign(p.x) * 10 } : p))
+    if (!sameWay(topHeading(moved, ground, at), want)) bad.push('moving a far point flipped the bridge')
+    // 3. Redraw the far lobe's tip with the pencil: the clean-up runs on the whole road again.
+    const rc = roadCurve(pts)
+    const stroke: P[] = []
+    for (let i = 0; i <= 60; i++) {
+      const p = posOf(line, sFar - 150 + (300 * i) / 60)
+      const out = Math.sin((i / 60) * Math.PI) * 25
+      stroke.push({ x: p.x + Math.sign(p.x) * out, z: p.z })
+    }
+    const loop = sectionRedraw(stroke, pts, 14)
+    if (!loop) return [...bad, 'the far-lobe stroke was not taken as a stretch redraw']
+    const keepOver = keepOverOf(pts, ground)
+    const redrawn = cleanStroke(loop, { ...opts, fairing: 0, keepOver })
+    const forgot = cleanStroke(loop, { ...opts, fairing: 0 })
+    if (!redrawn.ok || !forgot.ok) return [...bad, 'the redraw failed to clean up']
+    const kept = sameWay(topHeading(redrawn.points, ground, at), want)
+    const flippedWithout = !sameWay(topHeading(forgot.points, ground, at), want)
+    if (!kept) bad.push('a pencil redraw of the far lobe flipped the bridge back')
+    if (!flippedWithout) bad.push('without remembering, the redraw keeps the swap anyway, so this proves nothing: pick a crossing the clean-up decides the other way')
+    if (redrawn.issues.some((i) => i.code === 'bridge-flipped')) bad.push('the redraw says it had to flip the bridge')
+    const farMoved = nearestOnRoad(roadCurve(redrawn.points), frameAt(rc, far).p).distance
+    if (farMoved < 15) bad.push(`the redraw only moved the far lobe ${farMoved.toFixed(0)} m`)
+    for (const [label, p] of [['bent', bent], ['redrawn', redrawn.points]] as const) {
+      const v = builtVerdict({ ...sd, points: [...p], pieces: [], startAt: 0 }, at, want ?? 0)
+      if (v.length) bad.push(`${label}: ${v.join('; ')}`)
+    }
+    info = `kept through a Bend, a moved point and a redraw (the far lobe moved ${farMoved.toFixed(0)} m); without remembering, the redraw ${flippedWithout ? 'flips it back' : 'keeps it'}`
+    return bad
+  })
+
+  check('Bridges: Undo after a swap puts the bridge back, Redo swaps it again (the real editor store)', () => {
+    if (!store) return 'skipped: needs the editor store (run `bun src/editor/selfTest.ts`); in the game it would change your draft'
+    const { d, ground } = eight()
+    const c = roadCrossings(d.points, ground)[0]
+    if (!c || c.over === null) return ['the eight has no bridge']
+    const autoTop = c.passes[c.over].heading
+    store.replaceDraft(d, null)
+    const before = store.useEditor.getState().draft
+    const bad: string[] = []
+    if (!store.swapBridge(c.at)) return [`swapBridge refused: ${store.useEditor.getState().message?.text}`]
+    const after = store.useEditor.getState()
+    if (sameWay(topHeading(after.draft.points, ground, c.at), autoTop)) bad.push('the swap did not swap')
+    if (after.past[after.past.length - 1] !== before) bad.push('the swap is not one Undo step back to the draft before it')
+    store.undo()
+    const undone = store.useEditor.getState().draft
+    if (JSON.stringify(undone) !== JSON.stringify(before)) bad.push('Undo did not bring back the draft exactly')
+    if (!sameWay(topHeading(undone.points, ground, c.at), autoTop)) bad.push('after Undo the first road is not on top')
+    store.redo()
+    if (sameWay(topHeading(store.useEditor.getState().draft.points, ground, c.at), autoTop)) bad.push('Redo did not swap it again')
+    info = `swap, Undo (the draft comes back exactly), Redo; status line: "${after.message?.text}"`
+    return bad
+  })
+
   return results
 }
 
@@ -1085,6 +1312,52 @@ function resampleOpen(pts: readonly P[], step: number): P[] {
   return out
 }
 
+/**
+ * The editor's store (draft.ts) outside the browser, for the Undo row. The
+ * track list (src/track/registry.ts) finds the built-in tracks with Vite's
+ * import.meta.glob, which Bun doesn't have, so a small Bun plugin hands it the
+ * same files; the browser's storage becomes an in-memory one.
+ */
+async function loadStoreForBun(): Promise<EditorStore | undefined> {
+  /** The bits of Bun this needs (the game's own types are for the browser). */
+  type BunApi = {
+    plugin(p: { name: string; setup(build: { onLoad(o: { filter: RegExp }, f: (a: { path: string }) => Promise<{ contents: string; loader: 'ts' }>): void }): void }): void
+    file(path: string): { text(): Promise<string> }
+    Glob: new (pattern: string) => { scanSync(o: { cwd: string }): Iterable<string> }
+  }
+  const bun = (globalThis as unknown as { Bun?: BunApi }).Bun
+  if (!bun) return undefined
+  bun.plugin({
+    name: 'sr2-track-glob',
+    setup(build) {
+      build.onLoad({ filter: /src[\\/]track[\\/]registry\.ts$/ }, async (args) => {
+        const dir = args.path.replace(/src[\\/]track[\\/]registry\.ts$/, 'tracks/')
+        const entries: string[] = []
+        for (const f of new bun.Glob('*.json').scanSync({ cwd: dir })) entries.push(`${JSON.stringify(`../../tracks/${f}`)}: ${await bun.file(dir + f).text()}`)
+        const source = await bun.file(args.path).text()
+        return { contents: source.replace(/import\.meta\.glob\([^)]*\)/, `({${entries.join(',')}})`), loader: 'ts' }
+      })
+    },
+  })
+  const g = globalThis as unknown as { localStorage?: unknown }
+  if (!g.localStorage) {
+    const mem = new Map<string, string>()
+    g.localStorage = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, String(v)),
+      removeItem: (k: string) => void mem.delete(k),
+      key: (i: number) => [...mem.keys()][i] ?? null,
+      get length() {
+        return mem.size
+      },
+      clear: () => mem.clear(),
+    }
+  }
+  // A path in a variable, so the game's bundler leaves this Bun-only import alone (the game has the store already).
+  const storePath = './draft.ts'
+  return (await import(/* @vite-ignore */ storePath)) as EditorStore
+}
+
 function printTable(results: CheckResult[]): void {
   const width = Math.max(...results.map((r) => r.name.length))
   for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name.padEnd(width)}  ${r.detail}`)
@@ -1095,7 +1368,7 @@ function printTable(results: CheckResult[]): void {
 // Run directly with Bun: print the table and exit non-zero on failure.
 if ((import.meta as ImportMeta & { main?: boolean }).main) {
   const t0 = performance.now()
-  const results = runEditorSelfTest()
+  const results = runEditorSelfTest(await loadStoreForBun())
   printTable(results)
   console.log(`(${(performance.now() - t0).toFixed(0)} ms)`)
   if (results.some((r) => !r.pass)) (globalThis as unknown as { process: { exit(code: number): void } }).process.exit(1)

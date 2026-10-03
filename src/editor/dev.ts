@@ -39,6 +39,14 @@
 //    __dev.editor('tool', name)            pick a tool: pencil bend straight curve select place section pan
 //    __dev.editor('steady', 0..3)          the pencil's steady hand (0 = off)
 //
+//  Bridges (which road goes over where the road crosses itself):
+//    __dev.editor('crossings')             every crossing: where, which pass is on top, the
+//                                          height between them, each pass's heading and `at`,
+//                                          and where its marker and BRIDGE label are on screen
+//    __dev.editor('selectCrossing', i)     select crossing i (as a click on its BRIDGE label does)
+//    __dev.editor('swap', i | [x, z])      press Swap on crossing i (or the one at a map spot);
+//                                          returns ok, the status line and the crossings after
+//
 //  Inspector: __game.get('editor') - a summary of the draft.
 //  URL switch: ?editor=1 opens the editor straight away.
 // ============================================================
@@ -57,7 +65,10 @@ import {
   applyStroke,
   beginBend,
   clearAll,
+  draftCrossings,
   draftFromFile,
+  selectCrossing,
+  swapBridge,
   draftId,
   endBend,
   fileFromDraft,
@@ -76,6 +87,7 @@ import {
   useEditor,
 } from './draft'
 import { fitToDraft } from './Overlay'
+import { crossingScreens } from './mapDraw'
 import { runEditorSelfTest } from './selfTest'
 import { checkVerdict } from './checks'
 import { cancelDriveToDraw, clearLaidRoad, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
@@ -160,10 +172,24 @@ function strokeResult(raw: P[]) {
   }
 }
 
+/** Every crossing of the draft's road, rounded for reading, with where its marker and BRIDGE label are on screen. */
+function crossingsSummary() {
+  const screens = crossingScreens()
+  return draftCrossings().map((c) => ({
+    screen: screens.find((t) => Math.hypot(t.x - c.at.x, t.z - c.at.z) < 1) ?? null,
+    x: Math.round(c.at.x * 10) / 10,
+    z: Math.round(c.at.z * 10) / 10,
+    over: c.over,
+    gap: Math.round(c.gap * 100) / 100,
+    angle: Math.round(c.angleDeg),
+    passes: c.passes.map((p) => ({ at: Math.round(p.at * 100) / 100, heading: Math.round(p.heading), height: Math.round(p.height * 100) / 100 })),
+  }))
+}
+
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z]'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -237,6 +263,18 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       return isMapOpen()
     case 'selftest':
       return runEditorSelfTest()
+    case 'crossings':
+      return crossingsSummary()
+    case 'selectCrossing': {
+      const c = draftCrossings()[Number(arg)]
+      return c ? selectCrossing(c.at) : `no crossing ${String(arg)}`
+    }
+    case 'swap': {
+      const spot = Array.isArray(arg) ? { x: Number(arg[0]), z: Number(arg[1]) } : draftCrossings()[Number(arg ?? 0)]?.at
+      if (!spot) return `no crossing ${String(arg)}`
+      const ok = swapBridge(spot)
+      return { ok, message: useEditor.getState().message?.text ?? '', crossings: crossingsSummary() }
+    }
     case 'checks':
       return checksSummary()
     case 'smooth':
@@ -388,6 +426,7 @@ function summary() {
     bendReach: s.bendReach,
     steady: s.steady,
     shaping: s.shaping,
+    selection: s.selection,
     clearAsk: useClearAsk.getState().open,
     pieces: s.draft.pieces.length,
     props: s.draft.props.length,

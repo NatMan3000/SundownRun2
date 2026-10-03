@@ -63,6 +63,13 @@ const GATE_WORDS: Record<string, { title: string; label: string; how?: string }>
   loops: { title: 'Cars will crash into this loop.', label: 'LOOP BLOCKED', how: 'Drag it to another straight with Select and move, or select it and press Delete.' },
   tracking: { title: 'The game loses track of where cars are on this road.', label: 'GAME BUG' },
   ground: { title: 'The ground pokes up into the road.', label: 'GROUND IN THE WAY' },
+  under: { title: 'The ground pokes up just under the road here, where a car could catch on it.', label: 'GAME BUG' },
+  surface: { title: "The road's surface doesn't match its shape here.", label: 'GAME BUG' },
+  crest: {
+    title: 'A car goes light where the road tips here.',
+    label: 'CAR GOES LIGHT',
+    how: 'Spread the points out beside the banked corner with Select and move, or set less bank there with Bank and width.',
+  },
   'start.at': { title: 'The start grid sits on a bend.', label: 'START ON A BEND', how: 'Pick Start line in Place pieces, then click a straight bit of road.' },
   'environment.roadside.billboards': { title: 'Fewer billboards fit beside this road than the world asks for.', label: 'BILLBOARDS' },
   checks: { title: "The game couldn't finish checking this track.", label: 'NOT CHECKED' },
