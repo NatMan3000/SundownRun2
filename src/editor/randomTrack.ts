@@ -33,7 +33,7 @@ import { buildTrack, trackInternals } from '../track/build'
 import { runTrackGates, type TrackGate } from '../track/gates'
 import type { TrackRuntime } from '../track/types'
 import { cleanStroke, type CleanResult } from './cleanup'
-import { fileOfDraft, roadBound } from './draftFile'
+import { fileOfDraft, pointGroundOf, roadBound } from './draftFile'
 import type { Draft } from './draft'
 import type { P } from './geom'
 import { roadLine, sOf, atOf, tightestBetween, type RoadLine } from './shape'
@@ -124,13 +124,15 @@ export function randomTrack(d: Draft, o: RandomOptions): RandomResult {
   const budget = o.budgetMs ?? 2500
   const rejects: string[] = []
   const limit = fitRadius(d.environment, d.width, o.playRadius)
+  // The ground the road will ride on (the world under this id), so each bridge's top runs straight over its hills.
+  const pointGround = pointGroundOf(d.environment, o.id, d.roadSettings?.surfaceSmoothing)
   let tries = 0
   while (tries < maxTries && (tries === 0 || performance.now() - t0 < budget)) {
     const roll = seededRandom(mixSeed(o.seed, tries))
     tries++
     const shape = pickShape(roll)
     const raw = drawShape(shape, roll, limit)
-    const res = cleanStroke(raw, { width: d.width, bound: roadBound(d.environment), playRadius: o.playRadius ?? Infinity, smoothing: 8, fairing: 12 })
+    const res = cleanStroke(raw, { width: d.width, bound: roadBound(d.environment), playRadius: o.playRadius ?? Infinity, smoothing: 8, fairing: 12, pointGround })
     const cleanProblem = cleanupProblem(res)
     if (cleanProblem) {
       rejects.push(`${shape}: ${cleanProblem}`)

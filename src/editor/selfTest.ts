@@ -69,6 +69,7 @@ import { builderRows } from './selfTestBuilder'
 import { setTrackModules, trackRows } from './selfTestTracks'
 import { pieceRows } from './selfTestPieces'
 import { underpassRows } from './selfTestUnder'
+import { deckRows } from './selfTestDeck'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
 type EditorStore = typeof import('./draft')
@@ -1153,11 +1154,13 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
    */
   const eight = (): { d: Draft; ground: GroundFn } => {
     const stroke = shaky((t) => ({ x: 260 * Math.sin(t * TAU), z: 130 * Math.sin(2 * t * TAU) }), 600, 3, 2, 0.1, 1.1)
-    const res = cleanStroke(stroke, opts)
     const environment = { ...JSON.parse(JSON.stringify(DEFAULT_BASE_WORLD.environment)), seed: 1 }
-    const d: Draft = { id: 'selftest-bridges', name: 'Self-test bridges', author: '', description: '', points: res.points, width: 14, baseWorld: DEFAULT_BASE_WORLD.id, environment, pieces: [], props: [], cores: [], startAt: 0 }
-    const ground = pointGroundOf(environment, d.id)
+    const id = 'selftest-bridges'
+    const ground = pointGroundOf(environment, id)
     if (!ground) throw new Error("the eight's world didn't validate")
+    // Cleaned the way the editor's pencil cleans it: knowing the ground, so the bridge's top runs straight.
+    const res = cleanStroke(stroke, { ...opts, pointGround: ground })
+    const d: Draft = { id, name: 'Self-test bridges', author: '', description: '', points: res.points, width: 14, baseWorld: DEFAULT_BASE_WORLD.id, environment, pieces: [], props: [], cores: [], startAt: 0 }
     return { d, ground }
   }
   /** Which way the road on top is heading at the crossing nearest `at` (null: no bridge there). */
@@ -1638,6 +1641,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- underpasses and digging down (selfTestUnder.ts)
 
   underpassRows(check, store, { shaky, opts })
+
+  // ---------------------------------------------------------------- straight-topped bridges (selfTestDeck.ts)
+
+  deckRows(check, { shaky, opts })
 
   return results
 }

@@ -6,9 +6,10 @@
 //  ground is dug into a cutting for it) to RAISE_MAX (16 m up), so
 //  nobody digs through the map or drives into the sky (Nathan). The
 //  road then rises (or dips) smoothly
-//  from each end of the stretch to the middle and back down, in the
-//  same smooth shape as the clean-up's bridge ramps (half a cosine
-//  wave each side), so there is no kink where it leaves the ground.
+//  from each end of the stretch to the middle and back down (half a
+//  cosine wave each side), so there is no kink where it leaves the
+//  ground. (Bridges at crossings have their own shape, a straight top
+//  on two-curve ramps, judged by the same rule: deck.ts.)
 //
 //  Drivable means two things:
 //    1. The game's own checks still pass (crest, smooth, banking,
@@ -48,6 +49,7 @@ import { BRIDGE_GAP, type GroundFn, roadCrossings } from './bridges'
 import { LOOP_RUN_IN, wrapAt } from './road'
 import { atOf, densify, pointHeight, posOf, roadHeightAt, roadLine, sOf, sOfPoint, wrapS, type RoadLine } from './shape'
 import { gateTitle, isGameBug, judgeDraft, newFailures } from './judge'
+import { PLAN_SHARE } from './deck'
 
 /** The highest a stretch's middle can go above the ground, metres (the same as the point slider: no road into the sky). */
 export const RAISE_MAX = 16
@@ -55,8 +57,8 @@ export const RAISE_MAX = 16
 export const RAISE_FLOOR = -10
 /** The shortest stretch that can be raised, metres. */
 export const RAISE_MIN_METRES = 30
-/** The planned bump asks at most this share of gravity's pull at its top; the built road is judged at CREST_LIMIT (80%). */
-const PLAN_SHARE = 0.65
+// The planned bump asks at most PLAN_SHARE of gravity's pull at its top (deck.ts, shared with the bridges);
+// the built road is judged at CREST_LIMIT (80%).
 const G = 9.81
 const FLAT: GroundFn = () => 0
 

@@ -715,6 +715,8 @@ export function strokeOptions(d: Draft, metresPerPixel: number) {
     // Zoomed in close, small wiggles are deliberate, so both passes smooth less.
     smoothing: Math.min(18, Math.max(5, 10 * metresPerPixel)),
     fairing: Math.min(18, Math.max(5, 10 * metresPerPixel)),
+    // The ground the road will ride on, so each bridge's top runs straight over the hills under it.
+    pointGround: pointGroundFor(d),
   }
 }
 

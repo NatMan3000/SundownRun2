@@ -39,7 +39,7 @@ import { deleteDrawnTrack, saveDrawnTrack } from '../track/registry'
 import type { RoadPoint } from '../track/schema'
 import { cleanStroke, CLEANUP } from './cleanup'
 import { draftFile, isEmptyDraft, roadBound, smallLoop } from './draftFile'
-import { type Draft, commit, say, useEditor } from './draft'
+import { type Draft, commit, pointGroundFor, say, useEditor } from './draft'
 import { create } from 'zustand'
 
 /** The temporary track's id (hidden from the track library). */
@@ -120,7 +120,7 @@ export function finishDriveToDraw(): boolean {
   const raw = []
   for (let i = 0; i < rec.count; i++) raw.push({ x: rec.xyz[i * 3], z: rec.xyz[i * 3 + 2] })
   const base = rec.draft
-  const res = cleanStroke(raw, { width: base.width, bound: roadBound(base.environment), smoothing: 10, fairing: 8 })
+  const res = cleanStroke(raw, { width: base.width, bound: roadBound(base.environment), smoothing: 10, fairing: 8, pointGround: pointGroundFor(base) })
   if (!res.ok) {
     const why = res.issues.find((i) => i.level === 'error')?.message ?? 'That road could not be cleaned up.'
     useDrive.setState({ note: `${why} Keep driving!` })

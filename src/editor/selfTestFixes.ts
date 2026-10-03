@@ -352,10 +352,14 @@ export function fixAndRaiseRows(check: Check, store: EditorStore | undefined, h:
   const issue = (re: RegExp) => (p: Problem) => p.source === 'validator' && re.test(p.issue?.message ?? '')
 
   check('Fix it: a kink (a point dragged sideways, or one lifted 6 m) is smoothed away and nothing else fails', () => {
+    // A point on the ground (no lift on it or its neighbours: clear of the bridge's ramps), near point 30.
+    const onGround = (k: number) => [-3, -2, -1, 0, 1, 2, 3].every((j) => !eight.d.points[(k + j + eight.d.points.length) % eight.d.points.length].lift)
+    let kink = 30
+    while (!onGround(kink) && kink < eight.d.points.length - 4) kink++
     const side = clone(eight)
-    side.d.points[30].x += 12
+    side.d.points[kink].x += 12
     const spike = clone(eight)
-    spike.d.points[30].lift = 6
+    spike.d.points[kink].lift = 6
     const a = fixVerdict('dragged', side, side.d, gate('smooth'))
     const b = fixVerdict('lifted', spike, spike.d, gate('smooth'))
     const pin = clone(eight)

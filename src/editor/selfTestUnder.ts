@@ -53,11 +53,13 @@ export function underpassRows(check: Check, store: EditorStore | undefined, h: {
   /** The bridges rows' figure-eight (selfTest.ts eight()): the default world, seed pinned. */
   const eight = (): { d: Draft; ground: GroundFn } => {
     const stroke = h.shaky((t) => ({ x: 260 * Math.sin(t * TAU), z: 130 * Math.sin(2 * t * TAU) }), 600, 3, 2, 0.1, 1.1)
-    const res = cleanStroke(stroke, h.opts)
     const environment = { ...JSON.parse(JSON.stringify(DEFAULT_BASE_WORLD.environment)), seed: 1 }
-    const d: Draft = { id: 'selftest-underpass', name: 'Self-test underpass', author: '', description: '', points: res.points, width: 14, baseWorld: DEFAULT_BASE_WORLD.id, environment, pieces: [], props: [], cores: [], startAt: 0 }
-    const ground = pointGroundOf(environment, d.id)
+    const id = 'selftest-underpass'
+    const ground = pointGroundOf(environment, id)
     if (!ground) throw new Error("the eight's world didn't validate")
+    // Cleaned the way the editor's pencil cleans it: knowing the ground, so the bridge's top runs straight.
+    const res = cleanStroke(stroke, { ...h.opts, pointGround: ground })
+    const d: Draft = { id, name: 'Self-test underpass', author: '', description: '', points: res.points, width: 14, baseWorld: DEFAULT_BASE_WORLD.id, environment, pieces: [], props: [], cores: [], startAt: 0 }
     return { d, ground }
   }
   const o = (d: Draft, ground: GroundFn) => ({ id: d.id, pointGround: ground })

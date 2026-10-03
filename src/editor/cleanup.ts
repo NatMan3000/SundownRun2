@@ -15,7 +15,9 @@
 //                  push apart bits of road that run too close together,
 //                  and keep everything inside the world
 //    5. cross    - find where the road crosses itself; lift one branch
-//                  into a bridge, or flag it if a bridge can't fit
+//                  into a bridge (a straight top on smooth ramps, over
+//                  the ground it is given: deck.ts), or flag it if a
+//                  bridge can't fit
 //    6. start    - put the start line on a straight
 //    7. points   - pick evenly spaced control points for the file
 //
@@ -38,6 +40,7 @@ import {
   segmentIntersection,
   turnAngle,
 } from './geom'
+import { type Deck, deckCrest, deckHeight, planDeck, tabulate } from './deck'
 
 /** The clean-up's knobs. The defaults make roads a car can actually drive. */
 export const CLEANUP = {
@@ -74,20 +77,21 @@ export const CLEANUP = {
    */
   fairing: 12,
   /**
-   * Bridges: how high the upper road goes, and how long each ramp up to it is, metres
-   * (an underpass's dip goes as far down, on ramps as long). 200 m ramps are gentle enough
-   * that a car at 250 km/h, the fastest the game expects anywhere, stays on the road over
-   * the top of the ramp (the crest asks under 80% of gravity's pull, CREST_LIMIT: the same
-   * rule as the Height tool's and the dips check's), with room to spare for the hills the
-   * road rides on. The 80 m ramps they used to have threw cars into the air above about
-   * 130 km/h; 160 m was still too sharp on hilly worlds.
+   * Bridges: how high the upper road goes over the road under it, and how long each ramp
+   * up to it is, metres (an underpass's dip goes as far down, on ramps as long). The top
+   * of a bridge runs straight (deck.ts), so the hills under it don't show through, and its
+   * ramps are shaped so a car at 250 km/h, the fastest the game expects anywhere, stays on
+   * the road over the top (the Height tool's rule, PLAN_SHARE). The 80 m ramps bridges
+   * used to have threw cars into the air above about 130 km/h.
    */
   bridgeLift: 8,
   bridgeRamp: 200,
   /**
-   * Where 200 m ramps don't fit (another crossing too close, or no straight left for the
-   * start grid clear of them, as on a small figure-eight), the bridges get ramps this long
-   * instead, and say so: gentler than the old 80 m, but a car flat out may go light.
+   * Where 200 m ramps don't fit (another crossing too close, or they take the only straight
+   * the start grid could have), the bridges get ramps this long instead, as long as a car
+   * flat out still stays on over them; where it wouldn't, the 200 m ramps win and the start
+   * grid goes on the gentlest bend (pickRamps). A bridge too sharp either way says so (the
+   * 'steep-bridge' note).
    */
   bridgeRampShort: 160,
   /** Crossings flatter than this angle can't be bridged (the roads would overlap for too long). */
@@ -114,6 +118,13 @@ export type CleanupOptions = typeof CLEANUP & {
    * an underpass: the other road dips under this one, which stays on the ground.
    */
   keepOver?: readonly { at: P; heading: number; under?: boolean }[]
+  /**
+   * The ground a road point with no height of its own sits on (the draft's world: see
+   * pointGroundFor in draft.ts). With it, each bridge's top runs straight between its
+   * ramps whatever the hills under it do, and the steeper way round is avoided. Without
+   * it the ground counts as flat (the lifts are then the bridge's height above it).
+   */
+  pointGround?: (x: number, z: number) => number
 }
 
 export type IssueLevel = 'error' | 'warning' | 'note'
@@ -134,6 +145,7 @@ export interface StrokeIssue {
     | 'bridge-conflict'
     | 'bridge-flipped'
     | 'steep-bridge'
+    | 'bent-start'
     | 'too-tangled'
   message: string
   at?: P
@@ -256,31 +268,49 @@ function shapeRoad(smoothed: P[], drawnStart: P, o: CleanupOptions, limit: World
 
   // 5. crossings and bridges, on the gentlest ramps that fit, and
   // 6. the start line on a straight clear of them (then it becomes point 0).
-  let crossings: Crossing[] = []
-  let spans: BridgeSpan[] = []
-  let startIndex = 0
-  let used = o
+  // Each ramp length is planned in full, then the best is kept (see pickRamps).
   const ramps = [...new Set([o.bridgeRamp, Math.min(o.bridgeRamp, o.bridgeRampShort)])]
-  for (const ramp of ramps) {
-    used = { ...o, bridgeRamp: ramp }
+  const tries: RampTry[] = ramps.map((ramp) => {
+    const used = { ...o, bridgeRamp: ramp }
     const tryIssues: StrokeIssue[] = []
-    crossings = findCrossings(loop)
-    spans = planBridges(loop, crossings, used, tryIssues)
-    const start = pickStart(loop, crossings, drawnStart, used)
-    startIndex = start.index
-    const fits = start.straight && crossings.every((c) => c.over !== null || c.angleDeg < used.minCrossDeg)
-    if (fits || ramp === ramps[ramps.length - 1]) {
-      issues.push(...tryIssues)
-      if (ramp < o.bridgeRamp && spans.length) {
-        issues.push({
-          level: 'note',
-          code: 'steep-bridge',
-          message: `There's no room here for the gentlest bridge ramps, so they are ${ramp} m long instead of ${o.bridgeRamp} m: a car going flat out may go light over the top. Draw the road with more room either side of the crossing to make them gentler.`,
-          at: crossings.find((c) => c.over !== null)?.at,
-        })
-      }
-      break
+    const found = findCrossings(loop)
+    const planned = planBridges(loop, found, used, tryIssues)
+    const start = pickStart(loop, found, drawnStart, used)
+    return {
+      ramp,
+      crossings: found,
+      spans: planned,
+      start,
+      issues: tryIssues,
+      bridged: found.every((c) => c.over !== null || c.angleDeg < used.minCrossDeg),
+      steep: planned.some((span) => span.steep),
     }
+  })
+  const chosen = pickRamps(tries)
+  const { crossings, spans } = chosen
+  const startIndex = chosen.start.index
+  issues.push(...chosen.issues)
+  // A bridge (or dip) whose ramps are too sharp for a car flat out, even with its straight top, says so.
+  for (const span of spans) {
+    if (!span.steep) continue
+    issues.push({
+      level: 'note',
+      code: 'steep-bridge',
+      message:
+        chosen.ramp < o.bridgeRamp
+          ? `There's no room here for the gentlest bridge ramps, so they are ${chosen.ramp} m long instead of ${o.bridgeRamp} m, and the ground makes them too sharp: a car going flat out may go light ${span.dip ? 'over the lip of the dip' : 'over the top'}. Draw the road with more room either side of the crossing to make them gentler.`
+          : `The ground here makes this ${span.dip ? "underpass's dip" : "bridge's ramps"} too sharp: a car going flat out may go light ${span.dip ? 'over its lip' : 'over the top'}. Draw the crossing somewhere flatter to make them gentler.`,
+      at: span.at,
+    })
+  }
+  // Long ramps kept a car on the bridge, but took the only straight: the start grid is on the gentlest bend left.
+  if (!chosen.start.straight && !chosen.steep && tries.some((t) => t !== chosen && t.start.straight)) {
+    issues.push({
+      level: 'note',
+      code: 'bent-start',
+      message: `The start line is on a gentle bend: the only straight here is part of the bridge's ${chosen.ramp} m ramps, and shorter ramps would throw a car going flat out off the top. Draw the road with a longer straight away from the crossing to start on.`,
+      at: loop[startIndex],
+    })
   }
   loop = [...loop.slice(startIndex), ...loop.slice(0, startIndex)]
   const length = polylineLength(loop, true)
@@ -302,8 +332,9 @@ function shapeRoad(smoothed: P[], drawnStart: P, o: CleanupOptions, limit: World
     const s = (k * length) / count
     const p = pointAt(loop, s, true)
     const point: RoadPoint = { x: round1(p.x), z: round1(p.z) }
-    const lift = liftAt(s, spans, length, used)
-    if (Math.abs(lift) > 0.05) point.lift = round1(lift)
+    const lift = liftAt(s, point, spans, length, o.pointGround)
+    // To the centimetre (like the shaping tools): a straight bridge top stays straight.
+    if (Math.abs(lift) >= 0.01) point.lift = roundCm(lift)
     points.push(point)
   }
 
@@ -312,6 +343,37 @@ function shapeRoad(smoothed: P[], drawnStart: P, o: CleanupOptions, limit: World
   const m = minRadius(built, 12)
   const tight = { radius: m.radius, at: built[Math.max(0, m.index)] }
   return { loop, points, crossings, length, tight, issues }
+}
+
+/** One ramp length planned in full: its bridges and where the start line goes. */
+interface RampTry {
+  ramp: number
+  crossings: Crossing[]
+  spans: BridgeSpan[]
+  start: { index: number; straight: boolean }
+  issues: StrokeIssue[]
+  /** Every crossing steep enough to bridge got a bridge. */
+  bridged: boolean
+  /** Some bridge's ramps are still too sharp for a car flat out (deck.ts deckCrest). */
+  steep: boolean
+}
+
+/**
+ * Which ramp length to build (`tries` longest first). Best: every crossing
+ * bridged, the start line on a straight, and no bridge that throws a car off.
+ * Where no length gives all three, a bridge a car stays on matters more than a
+ * straight start: the grid goes on the gentlest bend instead (the game's start
+ * check warns about it, and the clean-up says why). Where every length is too
+ * sharp somewhere, the longest that still bridges every crossing (the gentlest),
+ * else the shortest.
+ */
+function pickRamps(tries: readonly RampTry[]): RampTry {
+  return (
+    tries.find((t) => t.bridged && t.start.straight && !t.steep) ??
+    tries.find((t) => t.bridged && !t.steep) ??
+    tries.find((t) => t.bridged) ??
+    tries[tries.length - 1]
+  )
 }
 
 // ---------------------------------------------------------------- 1. tidy
@@ -668,19 +730,32 @@ interface BridgeSpan {
   flat: number
   /** True when this stretch dips bridgeLift metres down under the other road instead of rising over it. */
   dip?: boolean
+  /** Where the roads cross. */
+  at?: P
+  /** Its straight top (or bottom) and ramps (deck.ts); none for the road held on the ground. */
+  deck?: Deck
+  /** True when even so a car flat out would go light over it (its ramps are too sharp for the ground there). */
+  steep?: boolean
 }
 
 /**
  * Decide which road goes over at each crossing. The straighter pass is
  * lifted (a bridge on a bend is harder to drive), unless that clashes with
- * another crossing nearby where the same stretch has to stay low. A crossing
- * the road already had keeps the road it had on top (o.keepOver), and says so
- * if it can't; one that was an underpass stays one (the lower road dips down
- * instead of the upper one rising). If neither way fits, the crossing is
- * flagged for Josh to fix.
+ * another crossing nearby where the same stretch has to stay low, or its
+ * ramps would be too sharp for a car flat out over the ground there and the
+ * other pass's wouldn't. A crossing the road already had keeps the road it
+ * had on top (o.keepOver), and says so if it can't; one that was an underpass
+ * stays one (the lower road dips down instead of the upper one rising). If
+ * neither way fits, the crossing is flagged for Josh to fix.
  */
 function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions, issues: StrokeIssue[]): BridgeSpan[] {
   const length = polylineLength(pts, true)
+  const ground = o.pointGround ?? (() => 0)
+  /** The ground under the road, d metres from s along it (the clean-up's road rides the ground). */
+  const groundAlong = (s: number, reach: number) => tabulate((d) => {
+    const p = pointAt(pts, wrap(s + d, length), true)
+    return ground(p.x, p.z)
+  }, -reach - 40, reach + 40)
   const ups: BridgeSpan[] = []
   const downs: BridgeSpan[] = []
   for (const c of crossings) {
@@ -703,7 +778,8 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
     if (kept) order = kept === 'A' ? ['A', 'B'] : ['B', 'A']
     // An underpass stays an underpass: the road under it dips down, the one on top stays on the ground.
     const dip = !!keptChoice?.under
-    let chosen: 'A' | 'B' | null = null
+    // Every way round that fits, in order of preference, with its straight-topped deck.
+    const fitting: { side: 'A' | 'B'; moveS: number; holdS: number; deck: Deck; steep: boolean }[] = []
     for (const side of order) {
       const upS = side === 'A' ? c.sA : c.sB
       const downS = side === 'A' ? c.sB : c.sA
@@ -715,12 +791,21 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
       const selfClash = Math.abs(deltaS(moveS, holdS, length)) < reach + flat
       // A dip and a bridge can't share road.
       const kindClash = ups.some((u) => !!u.dip !== dip && Math.abs(deltaS(moveS, u.s, length)) < reach + u.flat + o.bridgeRamp)
-      if (!upClash && !downClash && !selfClash && !kindClash) {
-        chosen = side
-        ups.push({ s: moveS, flat, dip })
-        downs.push({ s: holdS, flat })
-        break
-      }
+      if (upClash || downClash || selfClash || kindClash) continue
+      // The deck: straight through the crossing, bridgeLift over (or under) the road held on the ground there.
+      const was = groundAlong(moveS, reach)
+      const deck = planDeck(was, ground(c.at.x, c.at.z), dip ? -o.bridgeLift : o.bridgeLift, flat, o.bridgeRamp)
+      fitting.push({ side, moveS, holdS, deck, steep: deckCrest(deck, was).over > 0 })
+    }
+    // The first that fits, unless its ramps would throw a car off and the other way's wouldn't (a road
+    // Josh put on top stays on top, steep or not: the note below says so).
+    const gentle = kept ? undefined : fitting.find((f) => !f.steep)
+    const pick = gentle ?? fitting[0]
+    let chosen: 'A' | 'B' | null = null
+    if (pick) {
+      chosen = pick.side
+      ups.push({ s: pick.moveS, flat, dip, at: c.at, deck: pick.deck, steep: pick.steep })
+      downs.push({ s: pick.holdS, flat })
     }
     c.over = chosen
     if (chosen && kept && chosen !== kept) {
@@ -770,24 +855,24 @@ function keptSide(pts: readonly P[], c: Crossing, keep: readonly { at: P; headin
 }
 
 /**
- * Height of the road above the ground at s: full height over the crossing, eased
- * ramps either side (or as deep under it, for an underpass's dip: negative).
+ * Height of the road above the ground at s (standing on `p`): on a bridge, its
+ * straight top over the crossing and the ramps easing up to it from the ground
+ * either side (deck.ts); in an underpass's dip, as far under (negative).
  */
-function liftAt(s: number, spans: readonly BridgeSpan[], length: number, o: CleanupOptions): number {
-  let lift = 0
-  let dip = 0
+function liftAt(s: number, p: P, spans: readonly BridgeSpan[], length: number, pointGround?: (x: number, z: number) => number): number {
+  const g = pointGround ? pointGround(p.x, p.z) : 0
+  let lift: number | null = null
+  let dip: number | null = null
   for (const span of spans) {
-    const d = Math.abs(deltaS(s, span.s, length))
-    let w = 0
-    if (d <= span.flat) w = 1
-    else if (d < span.flat + o.bridgeRamp) {
-      const t = 1 - (d - span.flat) / o.bridgeRamp
-      w = 0.5 - 0.5 * Math.cos(Math.PI * t)
-    }
-    if (span.dip) dip = Math.min(dip, -o.bridgeLift * w)
-    else lift = Math.max(lift, o.bridgeLift * w)
+    const deck = span.deck
+    if (!deck) continue
+    const d = deltaS(span.s, s, length)
+    if (Math.abs(d) >= deck.flat + deck.ramp) continue
+    const here = deckHeight(deck, d, g) - g
+    if (deck.dip) dip = dip === null ? here : Math.min(dip, here)
+    else lift = lift === null ? here : Math.max(lift, here)
   }
-  return lift + dip
+  return (lift ?? 0) + (dip ?? 0)
 }
 
 /** Sharpest bend (1 / radius) within `reach` metres either side of s. */
@@ -903,6 +988,10 @@ function deltaS(a: number, b: number, length: number): number {
   let d = wrap(b - a, length)
   if (d > length / 2) d -= length
   return d
+}
+
+function roundCm(v: number): number {
+  return Math.round(v * 100) / 100
 }
 
 function round1(v: number): number {

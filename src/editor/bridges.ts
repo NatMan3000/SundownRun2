@@ -16,10 +16,11 @@
 //       whose points can be 200 m apart and carry `y` heights.
 //    2. Give both stretches close, even points (shape.ts densify:
 //       the road does not move), so there are points to shape.
-//    3. The road going up gets the clean-up's own bridge: 8 m above
-//       the ground over the crossing and smooth 200 m ramps either
-//       side. The road coming down is lowered to the ground over the
-//       same stretch and blends back into its old heights over 60 m after it.
+//    3. The road going up gets the clean-up's own bridge (deck.ts): a
+//       straight top 8 m above the road under it at the crossing, and
+//       smooth 200 m ramps either side. The road coming down is lowered
+//       to the ground over the same stretch and blends back into its old
+//       heights over 60 m after it.
 //       Points further away are never touched, so heights set by
 //       hand elsewhere stay exactly as they were.
 //    4. Refuse (and say why, in plain words) rather than do half a
@@ -57,13 +58,14 @@ import { SURFACE_CODE, type NearestHit, type TrackRuntime } from '../track/types
 import { CREST_CHECK_KMH, CREST_LIMIT } from '../track/bankRolls'
 import { crestHalf, crestShareAt } from '../track/cuttings'
 import { CLEANUP, findCrossings } from './cleanup'
+import { deckHeight, planDeck, rampWeight, tabulate } from './deck'
 import { type P, dist } from './geom'
 import type { Draft } from './draft'
 import { fileOfDraft } from './draftFile'
 import { gateItems } from './checks'
 import { FILL_MAX, WALL_REACH } from '../track/road'
 import { roadCurve, LOOP_RUN_IN } from './road'
-import { type RoadLine, alongRoad, atOf, densify, dirOf, pointHeight, posOf, roadHeightAt, roadLine, sOf, sOfPoint } from './shape'
+import { type RoadLine, alongRoad, atOf, densify, dirOf, pointHeight, posOf, roadHeightAt, roadLine, sOf, sOfPoint, wrapS } from './shape'
 
 /** The ground under a road point with no `y` (see ShapeWorld.pointGround). */
 export type GroundFn = (x: number, z: number) => number
@@ -223,11 +225,11 @@ export function bridgeShape(angleDeg: number, width: number): { flat: number; ra
   return { flat, ramp: CLEANUP.bridgeRamp, lift: CLEANUP.bridgeLift }
 }
 
-/** 1 over the flat middle of a bridge, easing smoothly to 0 at the foot of each ramp (the clean-up's liftAt). */
-function rampWeight(d: number, flat: number, ramp: number): number {
-  if (d <= flat) return 1
-  if (d >= flat + ramp) return 0
-  const t = 1 - (d - flat) / ramp
+/** 1 within `d0` metres, easing smoothly to 0 over the next `blend` metres (how the road held on the ground blends back into its old heights). */
+function holdWeight(d: number, d0: number, blend: number): number {
+  if (d <= d0) return 1
+  if (d >= d0 + blend) return 0
+  const t = 1 - (d - d0) / blend
   return 0.5 - 0.5 * Math.cos(Math.PI * t)
 }
 
@@ -333,6 +335,26 @@ function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: numb
   // The moving road (up onto the bridge, or down into the cutting) and the one held on the ground.
   const moveS = c.passes[chosen].s
   const holdS = c.passes[1 - chosen].s
+  /** Signed metres from the crossing along the moving road (negative: before it, in driving order). */
+  const along = (s: number) => {
+    const d = wrapS(s - moveS, L)
+    return d > L / 2 ? d - L : d
+  }
+  // An underpass's road also comes down off any old bridge of its own first (the same reach and blend as the held road).
+  const selfWeight = (dMove: number) => (kind === 'underpass' ? holdWeight(dMove, downFull, HOLD_BLEND) : 0)
+  /** The moving road's height before its new shape: as it is, or for an underpass, with any old bridge of its own eased down. */
+  const startHeight = (height: number, g: number, dMove: number) => {
+    const oldLift = height - g
+    return kind === 'underpass' && oldLift > 0 ? g + oldLift * (1 - selfWeight(dMove)) : height
+  }
+  // The moving road's straight-topped deck (deck.ts, the clean-up's own): through the crossing a bridge's
+  // height over (or an underpass's depth under) the road held on the ground there, on these ramps.
+  const wasAt = tabulate((d) => {
+    const s = moveS + d
+    const p = posOf(line, s)
+    return startHeight(roadHeightAt(points, atOf(line, s), ground), ground(p.x, p.z), Math.abs(d))
+  }, -downFull - 40, downFull + 40)
+  const deck = planDeck(wasAt, ground(c.at.x, c.at.z), kind === 'bridge' ? lift : -depth, flat, ramp)
 
   // New heights, point by point.
   let clash = false
@@ -341,9 +363,8 @@ function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: numb
     const dMove = alongRoad(s, moveS, L)
     const wMove = rampWeight(dMove, flat, ramp)
     const dHold = alongRoad(s, holdS, L)
-    const wHold = dHold <= downFull ? 1 : rampWeight(dHold - downFull, 0, HOLD_BLEND)
-    // An underpass's road also comes down off any old bridge of its own first (the same reach and blend as the held road).
-    const wSelf = kind === 'underpass' ? (dMove <= downFull ? 1 : rampWeight(dMove - downFull, 0, HOLD_BLEND)) : 0
+    const wHold = holdWeight(dHold, downFull, HOLD_BLEND)
+    const wSelf = selfWeight(dMove)
     if (wMove <= 0 && wHold <= 0 && wSelf <= 0) return p
     const g = ground(p.x, p.z)
     const oldLift = pointHeight(p, ground) - g
@@ -351,8 +372,7 @@ function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: numb
     if (wMove > 0) {
       // This point has to move for the crossing; if it also has to stay on the ground for the other road, it can't be done.
       if (wHold >= 1 || (wHold > 0 && Math.abs(oldLift) > 0.05)) clash = true
-      if (kind === 'bridge') newLift = Math.max(oldLift, lift * wMove)
-      else newLift = Math.min(oldLift > 0 ? oldLift * (1 - wSelf) : oldLift, -depth * wMove)
+      newLift = deckHeight(deck, along(s), startHeight(g + oldLift, g, dMove)) - g
     } else {
       // Held on the ground (the other road), or the moving road's old raised heights eased down beside its dip.
       const w = Math.max(wHold, oldLift > 0 ? wSelf : 0)
