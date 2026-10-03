@@ -14,6 +14,10 @@
 //  later holds a different default for that key, the old menu choice
 //  is dropped, because the newer edit in config.ts is what Josh meant.
 //
+//  When a setting's scale changes (Brakes, 2026-10-03), the save
+//  records which scale it is in (SAVE_VERSION) and an older save is
+//  rescaled once as it loads, so nobody's car changes under them.
+//
 //  Per-frame code reads `getSettings()` (a plain object, no allocation).
 //  React code uses `useSettings(selector)`.
 // ============================================================
@@ -72,7 +76,9 @@ export const SETTING_RANGES: Partial<Record<keyof Settings, { min: number; max: 
   steering: { min: 0.5, max: 1.6, step: 0.05 },
   stability: { min: 0.5, max: 1.7, step: 0.05 },
   power: { min: 0.5, max: 1.7, step: 0.05 },
-  brakes: { min: 0.5, max: 1.7, step: 0.05 },
+  // Brakes since the version 2 rescale (SAVE_VERSION): 100% is the old 150%. 0.3 keeps every old save
+  // (old 50% -> 33%); past 1.15 the tyres can't grip any harder, so a higher top would do nothing.
+  brakes: { min: 0.3, max: 1.15, step: 0.05 },
   topSpeedKmh: { min: 120, max: 400, step: 10 },
   cameraDistance: { min: 4, max: 12, step: 0.5 },
   cameraHeight: { min: 1.2, max: 5, step: 0.1 },
@@ -93,9 +99,25 @@ export const SETTING_RANGES: Partial<Record<keyof Settings, { min: number; max: 
 
 const STORAGE_KEY = 'sr2.settings.v1'
 
+/**
+ *  Which scale the saved numbers are written in. A save with an older `version` (or none)
+ *  is brought up to date once, as it loads (migrate, below), and saved back.
+ *
+ *  2 (2026-10-03): the Brakes setting was rescaled. Nathan: "whatever 150% is currently,
+ *  make that the new 100%", so the new 100% brakes as hard as the old 150% did. A saved
+ *  Brakes choice from before is divided by BRAKES_RESCALE_V2 so the car brakes exactly as it
+ *  did (150% -> 100%, 100% -> 67%). A player with no saved Brakes choice was on the default,
+ *  so they get the new, stronger default.
+ */
+const SAVE_VERSION = 2
+/** The old-to-new Brakes scale of version 2. Fixed for good: it describes old saves, whatever the brakes become later. */
+const BRAKES_RESCALE_V2 = 1.5
+
 type SettingKey = Exclude<keyof Settings, 'trackParams'>
 type Saved = Partial<Record<SettingKey, { v: unknown; d: unknown }>> & {
   trackParams?: Settings['trackParams']
+  /** The scale the numbers are written in (SAVE_VERSION). Missing = version 1. */
+  version?: number
 }
 
 function defaultsFrom(cfg: typeof CONFIG): Settings {
@@ -149,12 +171,33 @@ function clampKey<K extends keyof Settings>(key: K, value: Settings[K]): Setting
 function readSaved(): Saved {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return {}
+    if (!raw) return { version: SAVE_VERSION }
     const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' ? (parsed as Saved) : {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { version: SAVE_VERSION }
+    const s = parsed as Saved
+    if (migrate(s)) writeSaved(s)
+    return s
   } catch {
-    return {}
+    return { version: SAVE_VERSION }
   }
+}
+
+/**
+ *  Bring an older save up to SAVE_VERSION in place. Returns true if it changed, so the
+ *  caller saves it straight back (and it is never rescaled twice). Only a number is
+ *  rescaled; anything else is left for resolve() to throw away as junk.
+ */
+function migrate(s: Saved): boolean {
+  const from = typeof s.version === 'number' && Number.isFinite(s.version) ? s.version : 1
+  if (from >= SAVE_VERSION) return false
+  if (from < 2) {
+    // Brakes: old 150% is the new 100%. `d` (what config.ts said when it was picked) is
+    // left alone: config.ts still says 1.0, so the choice is kept, not thrown away as stale.
+    const b = s.brakes
+    if (b && typeof b === 'object' && typeof b.v === 'number' && Number.isFinite(b.v)) b.v = b.v / BRAKES_RESCALE_V2
+  }
+  s.version = SAVE_VERSION
+  return true
 }
 
 function writeSaved(saved: Saved): void {
@@ -216,7 +259,7 @@ export const useSettings = create<SettingsStore>((set) => ({
     set({ trackParams: tp })
   },
   resetAll: () => {
-    saved = {}
+    saved = { version: SAVE_VERSION }
     writeSaved(saved)
     set({ ...defaults, trackParams: {} })
   },

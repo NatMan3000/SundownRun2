@@ -27,7 +27,7 @@ export const CONFIG = {
   steering: 1.0, //    steering sensitivity. 0.6 = calm and easy ... 1.5 = twitchy go-kart
   stability: 1.0, //   how hard the car catches its own slides. 0.6 = loose ... 1.6 = very hard to spin
   power: 1.0, //       engine power. 0.6 = grandma mode ... 1.6 = rocket mode
-  brakes: 1.0, //      0.6 = soft brakes ... 1.6 = stops on a coin
+  brakes: 1.0, //      0.5 = soft brakes ... 1.15 = stops on a coin. Past about 1.15 the tyres can't grip any harder
   topSpeedKmh: 260, // the fastest the engine will push you (boost pads go past it!)
 
   // ---------- CAMERA ----------

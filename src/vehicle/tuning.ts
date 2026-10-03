@@ -195,11 +195,17 @@ export const DRIVE = {
   reverseForce: 3800,
   reverseTopKmh: 45,
   /**
-   *  BRAKES. Total brake force, N, times the brakes setting. Full brake from 200 km/h:
-   *  0.6 -> ~0.85 g, 1.0 -> ~1.4 g (about 110 m to stop), 1.5 -> ~2 g (about 80 m), where
-   *  the tyres' braking grip (TYRE.brakeGrip) runs out; past that the setting adds nothing.
+   *  BRAKES. Total brake force, N, for an Ai racer (their speed plans and lap times are set
+   *  to it). Full brake from 200 km/h: about 110 m to stop (~1.4 g).
    */
   brakeForce: 16000,
+  /**
+   *  YOUR BRAKES, as a multiple of brakeForce: the Brakes setting's 100% is this much, and
+   *  the setting multiplies it. Nathan: "whatever 150% is currently, make that the new 100%",
+   *  so your 100% is what 150% used to be. Full brake from 200 km/h at 100%: about 80 m
+   *  (~2 g), where the tyres' braking grip (TYRE.brakeGrip) is nearly all used.
+   */
+  playerBrakes: 1.5,
   /**
    *  BRAKE BALANCE (like a real car's EBD). Braking moves weight onto the front wheels, so
    *  the brake force is split between the axles by how much grip each one has right now

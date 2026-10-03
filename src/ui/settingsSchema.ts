@@ -94,7 +94,7 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
     { kind: 'slider', key: 'steering', label: 'Steering', help: 'How quickly the car turns. Low is calm and easy, high is a twitchy go-kart.', format: formatMult },
     { kind: 'slider', key: 'stability', label: 'Stability', help: 'How hard the car catches its own slides. High is very hard to spin.', format: formatMult },
     { kind: 'slider', key: 'power', label: 'Power', help: 'Engine power. Low is grandma mode, high is rocket mode.', format: formatMult },
-    { kind: 'slider', key: 'brakes', label: 'Brakes', help: 'Low is soft brakes, high stops on a coin.', format: formatMult },
+    { kind: 'slider', key: 'brakes', label: 'Brakes', help: 'Low is soft brakes. At 100% the tyres already grip about as hard as they can.', format: formatMult },
     { kind: 'slider', key: 'topSpeedKmh', label: 'Top speed', help: 'The fastest the engine will push you. Boost pads still go past it.', format: kmh },
   ],
   camera: [

@@ -767,7 +767,7 @@ const html = `<!doctype html>
   <p>Everything above ran inside this page. These run in <b>your real game</b>. Start the game, keep it open next to VS Code, and click a pill to jump to the line. Save, and watch it change.</p>
 
   <div class="mission"><div class="lvl">Mission 1 &middot; Warm-up</div><h4>Rocket mode</h4>
-  <p>At ${link(A.power)} set <code>power</code> to <code>1.6</code>, and at ${link(A.topSpeed)} set <code>topSpeedKmh</code> to <code>330</code>. Drive. Is it still drivable? Can't stop in time for the corners any more? ${link(A.brakes, 'brakes')} at <code>1.6</code> "stops on a coin". Find your favourite mix.</p></div>
+  <p>At ${link(A.power)} set <code>power</code> to <code>1.6</code>, and at ${link(A.topSpeed)} set <code>topSpeedKmh</code> to <code>330</code>. Drive. Is it still drivable? Can't stop in time for the corners any more? ${link(A.brakes, 'brakes')} at <code>1.15</code> "stops on a coin". Find your favourite mix.</p></div>
 
   <div class="mission"><div class="lvl">Mission 2 &middot; Chapter 2 skills</div><h4>A paint job nobody else has</h4>
   <p>Build three colours by hand (pick red, green and blue numbers from 0 to 255 and turn each into two hex digits) and put them in ${link(A.paint, 'paint')}, ${link(A.glow, 'glow')} and ${link(A.trail, 'trail')}. Rule from the art book: no pure primaries like <code>#ff0000</code>.</p></div>

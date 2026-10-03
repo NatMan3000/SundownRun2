@@ -45,7 +45,7 @@ import { SimulatedCar } from './SimulatedCar'
 import { TrickDetector } from './tricks'
 import type { TrickInput } from './tricks'
 import { startPose } from './trackNav'
-import { DT } from './tuning'
+import { DRIVE, DT } from './tuning'
 
 const _pos = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
@@ -231,7 +231,10 @@ export function PlayerCar() {
     h.steerGain = steeringGain()
     h.stability = set.stability
     h.power = set.power
-    h.brakes = set.brakes
+    // Your brakes are stronger than the Ai racers' (DRIVE.playerBrakes): the setting's 100% is that much.
+    // The autopilot (?demo=1, test harnesses) keeps the Ai's brakes: its speed plan is set to them, and
+    // with yours it brakes too hard into the end of a straight and loses time getting back up to speed.
+    h.brakes = set.brakes * (driveOverride.active ? 1 : DRIVE.playerBrakes)
     h.topSpeedKmh = set.topSpeedKmh
     h.magGripKmh = set.magGripKmh
     h.boostStrength = set.boostStrength
