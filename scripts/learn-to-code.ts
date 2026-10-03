@@ -400,7 +400,7 @@ const A = {
   voicings: anchor('src/audio/engineVoicings.ts', 'ENGINE VOICINGS - what kind of motor your car has'),
   report: anchor('src/ui/screens/Report.tsx', 'REPORT A PROBLEM - tell Dad'),
   issues: fileStart('server/issues.ts'),
-  clearAll: anchor('src/editor/ClearAll.tsx', 'CLEAR ALL - wipe the map'),
+  newTrack: anchor('src/editor/askFirst.ts', 'ASK FIRST - nothing is lost'),
   driveMood: anchor('src/audio/music/score.ts', /^\s*drive: \{/),
   lookahead: anchor('src/audio/music/index.ts', 'export const LOOKAHEAD_S'),
   hudSmooth: anchor('src/ui/hud/Hud.tsx', 'shownSpeed += (telemetry.speedKmh - shownSpeed)'),
@@ -734,7 +734,7 @@ const html = `<!doctype html>
   <p>The editor lets you draw a track with a pencil instead of typing points. Your hand wobbles, so the editor runs your line through a clean-up pipeline, seven small functions in a row, each doing one job:</p>
   ${realCode('src/editor/cleanup.ts', '//    1. tidy', 10, 0, 'REAL GAME CODE (the plan, in the file header)')}
   <p>Splitting a big job into small named steps is one of the most useful habits in programming. Each step is easy to read and easy to test on its own.</p>
-  <div class="hint try"><b>In the real game:</b> on the title screen pick <b>Road Editor</b> (or open <a href="${GAME}/?editor=1">${GAME}/?editor=1</a>). Draw a track, drop a loop, test drive it. Want a blank page? The eraser on the tool rail ${link(A.clearAll, 'clears the whole track')}, after asking first, and <b>Ctrl+Z</b> brings it back. The editor saves real track files, the same format as Chapter 3. The clean-up starts at ${link(A.cleanStroke, 'cleanStroke()')}.</div>
+  <div class="hint try"><b>In the real game:</b> on the title screen pick <b>Road Editor</b> (or open <a href="${GAME}/?editor=1">${GAME}/?editor=1</a>). Draw a track, drop a loop, test drive it. Want a blank page? <b>New track</b> on the tool rail starts a fresh one, and the track you were on stays in your Library (it ${link(A.newTrack, 'asks first')} if you have changes that aren't saved). <b>Ctrl+Z</b> brings the old one back. The editor saves real track files, the same format as Chapter 3. The clean-up starts at ${link(A.cleanStroke, 'cleanStroke()')}.</div>
 </section>
 
 <section id="quiz" data-title="Quick quiz">
