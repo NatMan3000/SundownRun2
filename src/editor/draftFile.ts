@@ -10,8 +10,9 @@
 //  A base world is just an `environment` block: the ground, the sky,
 //  the city, the music. Pick one and the draft gets a copy of it.
 //
-//  It also knows what a blank track looks like (the starter oval) and
-//  what "Clear all" leaves behind.
+//  It also knows what "Clear all" leaves behind (an empty map: the
+//  world with no road yet), and the hidden stand-in road the game
+//  builds that world with while the map is empty.
 // ============================================================
 
 import { roadBound as trackRoadBound, validateTrack } from '../track/validate'
@@ -241,41 +242,82 @@ export function pointGroundOf(environment: EnvironmentSpec, id: string): ((x: nu
   return groundMemo.ground
 }
 
-// ---------------------------------------------------------------- a blank track
+// ---------------------------------------------------------------- the empty map
 
-/** The starter oval's size, metres from the centre: across (x) and up and down (z). */
-const STARTER_HALF_X = 220
-const STARTER_HALF_Z = 140
+/** The world-check oval's size, metres from the centre: across (x) and up and down (z). */
+const CHECK_HALF_X = 220
+const CHECK_HALF_Z = 140
 
 /**
- * The gentle starter oval every new or cleared track begins with. The game
- * can't build a world with no road at all (there would be nothing to stand
- * on), so "blank" means this plain oval: draw a loop with the pencil and it
- * is replaced. In a small world the oval shrinks to stay off the edge.
+ * A plain oval that fits in this world, used only to ask the track validator
+ * whether a world is valid (pointGroundOf): the validator checks a world
+ * together with a road. It is never drawn or saved. In a small world the
+ * oval shrinks to stay off the edge.
  */
 export function starterRoad(environment?: EnvironmentSpec): RoadPoint[] {
   const limit = environment ? roadBound(environment) : Infinity
-  const scale = Math.min(1, Math.max(0.3, (limit - 20) / STARTER_HALF_X))
+  const scale = Math.min(1, Math.max(0.3, (limit - 20) / CHECK_HALF_X))
   const pts: RoadPoint[] = []
   const count = 40
   for (let i = 0; i < count; i++) {
     const t = (i / count) * Math.PI * 2
-    pts.push({ x: Math.round(STARTER_HALF_X * scale * Math.sin(t) * 10) / 10, z: Math.round(-STARTER_HALF_Z * scale * Math.cos(t) * 10) / 10 })
+    pts.push({ x: Math.round(CHECK_HALF_X * scale * Math.sin(t) * 10) / 10, z: Math.round(-CHECK_HALF_Z * scale * Math.cos(t) * 10) / 10 })
   }
   return pts
 }
 
 /**
- * "Clear all": the same track with nothing on the map. The road goes back to
- * the starter oval, and every piece, crash-prop pile, energy core and the
- * start line go too (per-stretch bank and width live on the road points, so
- * they go with the road). What the track IS stays: its name, maker, blurb,
- * world, time of day, edge lights, road width, banking, walls, laps and hunt.
+ * A small round loop in the middle of the world, `radius` metres across from
+ * the centre (16 points). Drive to draw starts the car on one; the empty map
+ * builds its world around a hidden one (emptyWorldFile).
+ */
+export function smallLoop(radius = 48): RoadPoint[] {
+  const pts: RoadPoint[] = []
+  const n = 16
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * Math.PI * 2
+    pts.push({ x: Math.round(radius * Math.sin(t) * 10) / 10, z: Math.round(-radius * Math.cos(t) * 10) / 10 })
+  }
+  return pts
+}
+
+/** True when the draft has no road at all (a cleared map, or a new track before the first loop). */
+export function isEmptyDraft(d: Pick<Draft, 'points'>): boolean {
+  return d.points.length === 0
+}
+
+/**
+ * What the game builds while the map is empty. The game can't build a world
+ * with no road at all (the terrain, the car's spawn and the checks all hang
+ * off the road), so the empty map's world is built around a small hidden
+ * loop in the middle, held up in the air: no roadside posts or billboards,
+ * and the editor hides the loop itself (emptyMap.tsx). The terrain, sky, city and music are the
+ * draft's own, under the draft's own id, so the hills are the ones a road
+ * drawn on this map will sit on. Never saved, never driven.
+ */
+/** How high the empty map's hidden stand-in loop floats, metres (see emptyWorldFile). */
+const EMPTY_LOOP_LIFT = 14
+
+export function emptyWorldFile(d: Draft, id: string): TrackFile {
+  const environment = cloneJson(d.environment)
+  environment.roadside = { ...(environment.roadside ?? {}), posts: false, billboards: 0 }
+  // Held up in the air, so the ground under it isn't tucked down to make room for it (from above,
+  // a tucked ring of ground would show where the hidden loop is).
+  const points = smallLoop().map((p) => ({ ...p, lift: EMPTY_LOOP_LIFT }))
+  return draftFile({ id, name: d.name.trim() || 'My Track', points, width: d.width, environment })
+}
+
+/**
+ * "Clear all": the same track with nothing on the map. The road goes (so
+ * every per-stretch bank, width and height goes with it), and so do every
+ * piece, crash-prop pile, energy core and the start line. What the track IS
+ * stays: its name, maker, blurb, world, time of day, edge lights, road width,
+ * banking, walls, laps and hunt.
  */
 export function clearedDraft(d: Draft): Draft {
   return {
     ...cloneJson(d),
-    points: starterRoad(d.environment),
+    points: [],
     pieces: [],
     props: [],
     cores: [],
@@ -283,7 +325,7 @@ export function clearedDraft(d: Draft): Draft {
   }
 }
 
-/** True when "Clear all" would change nothing (the map is already blank). */
+/** True when "Clear all" would change nothing (the map is already empty). */
 export function isBlankDraft(d: Draft): boolean {
   return JSON.stringify(clearedDraft(d)) === JSON.stringify(d)
 }

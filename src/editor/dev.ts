@@ -17,7 +17,13 @@
 //    __dev.editor('undo') / ('redo')
 //    __dev.editor('clear')                 ask "Clear the whole track?" (the rail's
 //                                          eraser); answer with ('clearYes') / ('clearNo')
-//    __dev.editor('clearNow')              clear all without asking (one undo step)
+//    __dev.editor('clearNow')              clear all without asking (one undo step): an empty map
+//    __dev.editor('random', seed?)         Random track without asking (one undo step); the same
+//                                          seed makes the same track. Returns tries, ms and the shape
+//    __dev.editor('askRandom')             press the rail's dice (asks first if there is a road;
+//                                          answer with ('clearYes') / ('clearNo'))
+//    __dev.editor('pencilPlan', [[x,z]...]) what letting go of that pencil line would do (road.ts
+//                                          planRedraw): redraw (and how much road goes) or nothing (why)
 //    __dev.editor('fit')                   frame the track
 //    __dev.editor('view', [cx, cz, mpp])   look somewhere (or pass a road point index)
 //    __dev.editor('selftest')              run the clean-up self-test
@@ -36,7 +42,7 @@
 //    __dev.editor('corner', [i, radius])   the corner road point i sits in: read it, or set its radius
 //    __dev.editor('screen', at | [x, z])   where a road spot (or a world point) is on screen,
 //                                          so a probe can click it with the real mouse
-//    __dev.editor('tool', name)            pick a tool: pencil bend straight curve select place section pan
+//    __dev.editor('tool', name)            pick a tool: select pencil straight curve bend section place
 //    __dev.editor('steady', 0..3)          the pencil's steady hand (0 = off)
 //
 //  Bridges (which road goes over where the road crosses itself):
@@ -66,6 +72,7 @@ import {
   beginBend,
   clearAll,
   draftCrossings,
+  randomRoad,
   draftFromFile,
   selectCrossing,
   swapBridge,
@@ -91,10 +98,11 @@ import { crossingScreens } from './mapDraw'
 import { runEditorSelfTest } from './selfTest'
 import { checkVerdict } from './checks'
 import { cancelDriveToDraw, clearLaidRoad, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
-import { answerClearAll, askClearAll, useClearAsk } from './ClearAll'
+import { answerClearAll, askClearAll, askRandomTrack, useClearAsk } from './ClearAll'
+import { isEmptyDraft } from './draftFile'
 import { closeWorldMap, isMapOpen, openWorldMap } from './worldMap'
 import { setView, view, worldToScreen } from './view'
-import { frameAt, roadCurve } from './road'
+import { frameAt, planRedraw, roadCurve } from './road'
 import { atOf, cornerAt, posOf, roadLine, roadRoughness, tightestOnRoad } from './shape'
 import { circumradius } from './geom'
 
@@ -189,7 +197,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z]'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z]'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -225,6 +233,19 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       return { undoSteps: useEditor.getState().past.length, points: useEditor.getState().draft.points.length }
     case 'clearNow':
       return clearAll()
+    case 'random': {
+      const seed = Number(arg)
+      const r = Number.isFinite(seed) && arg !== undefined ? randomRoad(seed >>> 0) : randomRoad()
+      if (r) fitToDraft()
+      return r ? { ...r, ms: Math.round(r.ms), message: useEditor.getState().message?.text ?? '', points: useEditor.getState().draft.points.length, undoSteps: useEditor.getState().past.length } : null
+    }
+    case 'askRandom':
+      return askRandomTrack()
+    case 'pencilPlan': {
+      const d = useEditor.getState().draft
+      const plan = planRedraw(toPoints(arg), d.points, d.width)
+      return plan.kind === 'redraw' ? { kind: 'redraw', replacedPoints: plan.replaced.length } : plan
+    }
     case 'view': {
       // [cx, cz, metresPerPixel], or a road point index to look at closely.
       if (Array.isArray(arg)) setView(Number(arg[0]), Number(arg[1]), Number(arg[2] ?? view.mpp))
@@ -316,12 +337,13 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     }
     case 'screen': {
       const d = useEditor.getState().draft
+      if (!Array.isArray(arg) && isEmptyDraft(d)) return 'the map is empty: pass [x, z] for a world point'
       const w = Array.isArray(arg) ? { x: Number(arg[0]), z: Number(arg[1]) } : frameAt(roadCurve(d.points), Number(arg)).p
       const s = worldToScreen(w.x, w.z)
       return { sx: Math.round(s.sx * 10) / 10, sy: Math.round(s.sy * 10) / 10, x: Math.round(w.x * 10) / 10, z: Math.round(w.z * 10) / 10 }
     }
     case 'tool': {
-      const tools = ['pencil', 'bend', 'straight', 'curve', 'select', 'place', 'section', 'pan']
+      const tools = ['select', 'pencil', 'straight', 'curve', 'bend', 'section', 'place']
       if (!tools.includes(String(arg))) return `tool must be one of ${tools.join(' ')}`
       setTool(String(arg) as EditorTool)
       return useEditor.getState().tool
@@ -400,7 +422,7 @@ function checksSummary() {
   const cleanupErrors = (s.notes?.issues ?? []).filter((i) => i.level === 'error').length
   const t = getTrack()
   return {
-    verdict: checkVerdict({ fresh, errors: s.errors, gates: s.gates, cleanupErrors }),
+    verdict: isEmptyDraft(s.draft) ? 'empty' : checkVerdict({ fresh, errors: s.errors, gates: s.gates, cleanupErrors }),
     panel: document.querySelector('.sre-verdict')?.textContent ?? null,
     trackKey: t?.key ?? null,
     gatesMs: Math.round(s.gatesMs),
@@ -440,7 +462,8 @@ function summary() {
     preview: s.preview,
     errors: s.errors.length,
     warnings: s.warnings.map((w) => w.message),
-    verdict: checkVerdict({ fresh: s.checkedDraft === s.draft && s.preview !== 'pending', errors: s.errors, gates: s.gates, cleanupErrors: (s.notes?.issues ?? []).filter((i) => i.level === 'error').length }),
+    empty: isEmptyDraft(s.draft),
+    verdict: isEmptyDraft(s.draft) ? 'empty' : checkVerdict({ fresh: s.checkedDraft === s.draft && s.preview !== 'pending', errors: s.errors, gates: s.gates, cleanupErrors: (s.notes?.issues ?? []).filter((i) => i.level === 'error').length }),
     gatesFailing: (s.gates ?? []).filter((g) => g.level === 'fail').map((g) => g.name),
     gatesWarning: (s.gates ?? []).filter((g) => g.level === 'warn').map((g) => g.name),
     view: { cx: Math.round(view.cx), cz: Math.round(view.cz), mpp: Math.round(view.mpp * 100) / 100 },

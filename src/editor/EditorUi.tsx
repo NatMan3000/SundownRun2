@@ -4,12 +4,21 @@
 //  The 3D half is the top-down camera; this is everything on top,
 //  laid out like a drawing app:
 //
-//    the map     Overlay.tsx (pencil, selecting, dragging, placing)
+//    the map     Overlay.tsx (pencil, selecting, dragging, placing);
+//                on an empty map, a note at the top says what to do
 //    left        the tool rail, and the piece palette when placing
 //    right       Panel.tsx (this track, the selected thing, checks)
 //    bottom      one status line in plain words
 //    dialog      Library.tsx (open, new, copy, import, export), and
-//                ClearAll.tsx ("Clear the whole track?")
+//                ClearAll.tsx ("Clear the whole track?" and "Make a
+//                random track?")
+//
+//  The rail, top to bottom: the tools in the order Josh reaches for
+//  them (Select, Pencil, Straight, Curve, Bend, Stretch, Place
+//  pieces), then the whole-road buttons (Undo, Redo, Clear all, Random
+//  track), then the view (Zoom in, Zoom out, Fit track, Whole world),
+//  then the Library. There is no hand tool: the right mouse button
+//  drags the map with every tool (so do the middle button and Space).
 //
 //  Esc (or the pad's Menu button): first closes a dialog, then stops a
 //  bend or a half-made Straight or Curve, then clears a selection, then
@@ -24,15 +33,20 @@ import { FONTS, PALETTE } from '../core/palette'
 import { controlSignals } from '../core/controls'
 import { endSession } from '../core/session'
 import { audio } from '../core/api'
-import { type EditorTool, cancelBend, cancelShaping, redo, say, setBendReach, setSteady, setTool, undo, useEditor } from './draft'
+import { type EditorTool, EMPTY_MAP_HINT, cancelBend, cancelPendingPreview, cancelShaping, redo, say, setBendReach, setSteady, setTool, undo, useEditor } from './draft'
 import { Overlay, fitToDraft, pencilHint } from './Overlay'
 import { Panel } from './Panel'
 import { Library } from './Library'
 import { closeWorldMap } from './worldMap'
 import { PLACE_TOOLS, type PlaceKind } from './pieces'
 import { setView, view, zoomAt } from './view'
-import { ClearAllDialog, askClearAll, clearAllTakesPause, setClearAllBlocked } from './ClearAll'
-import { BendIcon, ClearIcon, CurveIcon, FitIcon, GlobeIcon, HandIcon, LibraryIcon, MinusIcon, PencilIcon, PlaceIcon, PlusIcon, SectionIcon, SelectIcon, StraightIcon, UndoIcon } from './icons'
+import { ClearAllDialog, askClearAll, askRandomTrack, clearAllTakesPause, setClearAllBlocked } from './ClearAll'
+import { BendIcon, ClearIcon, CurveIcon, DiceIcon, FitIcon, GlobeIcon, LibraryIcon, MinusIcon, PencilIcon, PiecesIcon, PlusIcon, SectionIcon, SelectIcon, StraightIcon, UndoIcon } from './icons'
+import { getTrackFile } from '../track/registry'
+import { loadTrackById } from '../track/current'
+import { lastPlayedTrackId } from '../core/session'
+import { isEmptyDraft } from './draftFile'
+import { startDriveToDraw } from './driveToDraw'
 import { SliderField } from './fields'
 import { BEND_REACH, STEADY_NAMES, STEADY_STRING } from './shape'
 import './editor.css'
@@ -63,14 +77,18 @@ const cssVars = {
 
 /** What each tool does, said once when you pick it. */
 const TOOL_TIPS: Record<EditorTool, string> = {
-  pencil: 'Pencil: draw a loop for a new road, or draw from the road back to the road to redraw that stretch.',
+  pencil: 'Pencil: start on the road and end back on the road to redraw the bit in between. On an empty map, draw a loop.',
   bend: 'Bend: grab the road and pull it. The mouse wheel (or [ and ]) changes how much road comes with it.',
   straight: 'Straight: click the road where the straight starts, then click where it ends.',
   curve: 'Curve: click the road where the curve starts, then where it ends, then pull the middle out and click.',
   select: 'Select: click a piece or road point, drag to move it, Delete removes it. Double-click the road to add a point.',
-  section: 'Bank and width: drag along the road to pick a stretch, then set it in the panel.',
-  place: 'Place: pick a piece, then click where it goes.',
-  pan: 'Pan: drag to move the map.',
+  section: 'Stretch: drag along the road to pick a stretch, then set its height, bank or width in the panel.',
+  place: 'Place pieces: pick a piece, then click where it goes.',
+}
+
+/** The tools that only work on a road (all but the pencil): on an empty map they say so instead. */
+function needsRoad(tool: EditorTool): boolean {
+  return tool !== 'pencil'
 }
 
 export function EditorUi() {
@@ -107,6 +125,7 @@ export function EditorUi() {
   return (
     <div className="sre" style={cssVars} data-testid="editor-ui">
       <Overlay />
+      <EmptyMapNote />
       <Toolbar onLibrary={() => setLibrary(true)} />
       <Palette />
       <ToolOptions />
@@ -125,13 +144,53 @@ export function leaveEditor(): void {
     return
   }
   audio.ui('back')
+  // A rebuild still waiting from the last edit would land behind the title screen: drop it.
+  cancelPendingPreview()
+  restoreRealTrack()
   endSession()
+}
+
+/**
+ * On an empty map the game is showing the empty world's hidden stand-in road
+ * (draftFile.ts emptyWorldFile). Before the title screen, put back a real
+ * track to sit behind it: the last one played, or Afterglow.
+ */
+function restoreRealTrack(): void {
+  if (!isEmptyDraft(useEditor.getState().draft)) return
+  const id = [lastPlayedTrackId(), 'afterglow'].find((t): t is string => !!t && !!getTrackFile(t))
+  if (id) loadTrackById(id)
 }
 
 function pickTool(tool: EditorTool, kind?: PlaceKind): void {
   const before = useEditor.getState().tool
   setTool(tool, kind)
-  if (before !== tool) say(TOOL_TIPS[tool], 'info')
+  if (before === tool) return
+  say(needsRoad(tool) && isEmptyDraft(useEditor.getState().draft) ? `${TOOL_TIPS[tool]} ${EMPTY_MAP_HINT}` : TOOL_TIPS[tool], 'info')
+}
+
+/**
+ * The empty map's note, across the top of the map: there is no road yet,
+ * and the two ways to get one (or three: Drive to draw lays one with the car).
+ * Drive to draw lives here, on the empty map only, because it always makes
+ * a whole new road: on a map with a road it would replace it, the very
+ * surprise the pencil no longer springs.
+ */
+function EmptyMapNote() {
+  const empty = useEditor((s) => s.mode === 'edit' && isEmptyDraft(s.draft))
+  if (!empty) return null
+  return (
+    <div className="sre-empty" role="note" data-testid="editor-empty-note">
+      <span className="sre-empty-kicker">Empty map</span>
+      <span className="sre-empty-text">Draw a loop with the pencil, or press Random track.</span>
+      <button type="button" className="sre-btn is-primary" onClick={() => askRandomTrack()} data-testid="editor-empty-random">
+        <DiceIcon />
+        Random track
+      </button>
+      <button type="button" className="sre-btn" onClick={() => startDriveToDraw()} title="Drive anywhere in this world: the car lays a road behind it.">
+        Drive to draw
+      </button>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------- tool rail
@@ -146,24 +205,24 @@ function Toolbar(props: { onLibrary: () => void }) {
     <nav className="sre-tools" aria-label="Editor tools">
       {editing && (
         <>
+          <ToolButton label="Select and move" keyHint="V" active={tool === 'select'} onClick={() => pickTool('select')} icon={<SelectIcon />} />
           <ToolButton label="Pencil" keyHint="P" active={tool === 'pencil'} onClick={() => pickTool('pencil')} icon={<PencilIcon />} />
-          <ToolButton label="Bend: grab the road and pull" keyHint="G" active={tool === 'bend'} onClick={() => pickTool('bend')} icon={<BendIcon />} />
           <ToolButton label="Straight: make a stretch dead straight" keyHint="L" active={tool === 'straight'} onClick={() => pickTool('straight')} icon={<StraightIcon />} />
           <ToolButton label="Curve: make a stretch one smooth curve" keyHint="C" active={tool === 'curve'} onClick={() => pickTool('curve')} icon={<CurveIcon />} />
-          <ToolButton label="Select and move" keyHint="V" active={tool === 'select'} onClick={() => pickTool('select')} icon={<SelectIcon />} />
-          <ToolButton label="Place pieces" keyHint="1-0" active={tool === 'place'} onClick={() => pickTool('place')} icon={<PlaceIcon />} />
-          <ToolButton label="Bank and width" keyHint="B" active={tool === 'section'} onClick={() => pickTool('section')} icon={<SectionIcon />} />
-          <ToolButton label="Pan" keyHint="H or Space" active={tool === 'pan'} onClick={() => pickTool('pan')} icon={<HandIcon />} />
+          <ToolButton label="Bend: grab the road and pull" keyHint="G" active={tool === 'bend'} onClick={() => pickTool('bend')} icon={<BendIcon />} />
+          <ToolButton label="Stretch" keyHint="B" active={tool === 'section'} onClick={() => pickTool('section')} icon={<SectionIcon />} />
+          <ToolButton label="Place pieces: boosts, ramps, loops and more" keyHint="1-0" active={tool === 'place'} onClick={() => pickTool('place')} icon={<PiecesIcon />} />
           <div className="sre-tools-gap" />
           <ToolButton label="Undo" keyHint="Ctrl+Z" disabled={!canUndo} onClick={undo} icon={<UndoIcon />} />
           <ToolButton label="Redo" keyHint="Ctrl+Shift+Z" disabled={!canRedo} onClick={redo} icon={<UndoIcon flip />} />
           <ToolButton label="Clear all" keyHint="controller B" onClick={askClearAll} icon={<ClearIcon />} />
+          <ToolButton label="Random track" onClick={() => askRandomTrack()} icon={<DiceIcon />} />
           <div className="sre-tools-gap" />
         </>
       )}
-      <ToolButton label="Fit track" keyHint="F" onClick={fitToDraft} icon={<FitIcon />} />
       <ToolButton label="Zoom in" keyHint="+" onClick={() => zoomAt(view.width / 2, view.height / 2, 1 / 1.4)} icon={<PlusIcon />} />
       <ToolButton label="Zoom out" keyHint="-" onClick={() => zoomAt(view.width / 2, view.height / 2, 1.4)} icon={<MinusIcon />} />
+      <ToolButton label="Fit track" keyHint="F" onClick={fitToDraft} icon={<FitIcon />} />
       <ToolButton label="Whole world" onClick={() => setView(0, 0, 1700 / Math.max(300, view.height - 120))} icon={<GlobeIcon />} />
       {editing && (
         <>
@@ -262,6 +321,7 @@ function ToolOptions() {
           help="The line trails a little behind the mouse on a string, so wobbles never reach it."
         />
         <p className="sre-help">Your line trails a little behind the mouse, so a shaky hand still draws a smooth road. Turn it up for smoother, down for more control.</p>
+        <p className="sre-help">To change the road: start on the road, draw the new bit, and end back on the road. The bit that goes lights up amber before you let go.</p>
       </div>
     )
   }

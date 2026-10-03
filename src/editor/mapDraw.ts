@@ -12,7 +12,10 @@
 //  come from checks.ts; a failing one gets a red tag by its pin).
 //  The shaping tools draw their previews here too: the stretch Bend
 //  will move (brightest at your hand), and Straight or Curve's new road
-//  before the last click (cyan when it works, red when too tight).
+//  before the last click (cyan when it works, red when too tight). So
+//  does the pencil, while you draw: the stretch a redraw replaces lit
+//  amber with your new line bright cyan, or, when letting go would not
+//  change anything, a grey dashed line and a tag saying what to do.
 //
 //  Overlay.tsx calls drawMap() whenever something changed. Nothing
 //  here changes any state.
@@ -27,7 +30,7 @@ import { BRIDGE_GAP, type RoadCrossing, bridgeShape, raisedTops } from './bridge
 import { gateItems } from './checks'
 import { type P } from './geom'
 import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type PlaceKind } from './pieces'
-import { type RoadCurve, PER, advanceAt, frameAt, roadCurve, wrapAt } from './road'
+import { type RedrawPlan, type RoadCurve, PER, advanceAt, frameAt, roadCurve, wrapAt } from './road'
 import { roadLine, stretchOf } from './shape'
 import { view, worldToScreen } from './view'
 
@@ -55,6 +58,8 @@ export interface MapExtras {
   shape?: ShapeView | null
   /** Pencil with a steady hand: the pen (where the line is) and the pointer it trails behind. */
   pen?: { at: P; to: P } | null
+  /** Pencil: what letting go now would do ('new': the line becomes the road on an empty map). */
+  pencil?: RedrawPlan | 'new' | null
 }
 
 /** What the map shows for a Straight or Curve in progress. */
@@ -159,7 +164,7 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
     drawCars(ctx)
   }
   drawPins(ctx, s, g.rc)
-  if (x.stroke.length > 1) drawStroke(ctx, x.stroke)
+  if (x.stroke.length > 1) drawStroke(ctx, x.stroke, x.pencil ?? null, d.width, x.pen?.to ?? x.stroke[x.stroke.length - 1])
   if (x.pen) drawPen(ctx, x.pen.at, x.pen.to)
   drawScaleBar(ctx)
   drawCompass(ctx)
@@ -198,21 +203,70 @@ export function pill(ctx: CanvasRenderingContext2D, text: string, sx: number, sy
   ctx.restore()
 }
 
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: readonly P[]): void {
+/** What the pencil's tag says when letting go would change nothing (road.ts planRedraw's reasons). */
+const PENCIL_TAGS: Record<'start' | 'end' | 'together', string> = {
+  start: 'START ON THE ROAD',
+  end: 'END ON THE ROAD',
+  together: 'END FURTHER ALONG',
+}
+
+/**
+ * The pencil line being drawn, styled by what letting go would do:
+ *   a new road or a redraw  bright cyan (and for a redraw, the stretch that
+ *                           goes is lit amber underneath, tagged THIS BIT GOES)
+ *   still heading back      cyan dashed, tagged END ON THE ROAD
+ *   won't do anything       grey dashed, tagged with what to do instead
+ */
+function drawStroke(ctx: CanvasRenderingContext2D, stroke: readonly P[], plan: RedrawPlan | 'new' | null, roadWidth: number, tip: P): void {
+  const live = plan === 'new' || plan === null || plan.kind === 'redraw'
+  const waiting = plan !== null && plan !== 'new' && plan.kind === 'nothing' && plan.why === 'end'
+  if (plan && plan !== 'new' && plan.kind === 'redraw' && plan.replaced.length > 1) {
+    // The road that goes: a wide amber band over it, with a crisp amber centreline.
+    ctx.save()
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.strokeStyle = PALETTE.uiWarn
+    ctx.globalAlpha = 0.28
+    ctx.lineWidth = Math.max(8, (roadWidth + 6) / view.mpp)
+    line(ctx, plan.replaced, false)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+    ctx.lineWidth = 2
+    ctx.setLineDash([6, 5])
+    ctx.stroke()
+    ctx.restore()
+    const mid = plan.replaced[Math.floor(plan.replaced.length / 2)]
+    const m = worldToScreen(mid.x, mid.z)
+    placePill(ctx, 'THIS BIT GOES', m.sx, m.sy, [-24, 24, -48, 48], PALETTE.uiWarn)
+  }
   ctx.save()
   ctx.lineJoin = 'round'
   ctx.lineCap = 'round'
-  ctx.shadowColor = PALETTE.uiAccent
-  ctx.shadowBlur = 14
-  ctx.strokeStyle = PALETTE.uiAccent
-  ctx.lineWidth = 4
-  line(ctx, stroke, false)
-  ctx.stroke()
-  ctx.shadowBlur = 0
-  ctx.strokeStyle = PALETTE.coreHot
-  ctx.lineWidth = 1.5
-  ctx.stroke()
+  if (live) {
+    ctx.shadowColor = PALETTE.uiAccent
+    ctx.shadowBlur = 14
+    ctx.strokeStyle = PALETTE.uiAccent
+    ctx.lineWidth = 4
+    line(ctx, stroke, false)
+    ctx.stroke()
+    ctx.shadowBlur = 0
+    ctx.strokeStyle = PALETTE.coreHot
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  } else {
+    ctx.strokeStyle = waiting ? PALETTE.uiAccent : PALETTE.uiDim
+    ctx.globalAlpha = waiting ? 0.85 : 0.7
+    ctx.lineWidth = 3
+    ctx.setLineDash([8, 7])
+    line(ctx, stroke, false)
+    ctx.stroke()
+  }
   ctx.restore()
+  if (plan && plan !== 'new' && plan.kind === 'nothing' && plan.why !== 'short') {
+    const at = plan.why === 'start' ? stroke[0] : tip
+    const p = worldToScreen(at.x, at.z)
+    placePill(ctx, PENCIL_TAGS[plan.why], p.sx, p.sy, [-26, 26, -50], plan.why === 'end' ? PALETTE.uiAccent : PALETTE.uiWarn)
+  }
 }
 
 /** The steady pencil's string: a thin line from the pen (where the road is drawn) to the pointer. */

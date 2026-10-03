@@ -6,10 +6,17 @@
 //  near where he started (or presses Finish), the line goes through
 //  the same clean-up as a pencil stroke and opens in the editor.
 //
+//  It makes a whole new road, so like the pencil's first loop it is
+//  for an empty map only (Clear all first): every tool edits the road
+//  that is there, and nothing replaces a road by surprise. The road
+//  it makes lands in the same track (name, world, settings) as one
+//  Undo step, so Undo gives the empty map back.
+//
 //  How it works:
-//    startDriveToDraw()  saves a temporary track: the draft's world
-//                        with a small starter loop, so the game has a
-//                        road to stand on, and starts a free drive on it
+//    startDriveToDraw()  on an empty map: saves a temporary track, the
+//                        draft's world with a small starter loop, so the
+//                        game has a road to stand on, and starts a free
+//                        drive on it
 //    <EditorDrive />     inside the 3D scene: records the car every few
 //                        metres and draws the glowing line (one mesh,
 //                        allocated once, no garbage per frame)
@@ -31,8 +38,8 @@ import { audio } from '../core/api'
 import { deleteDrawnTrack, saveDrawnTrack } from '../track/registry'
 import type { RoadPoint } from '../track/schema'
 import { cleanStroke, CLEANUP } from './cleanup'
-import { draftFile, roadBound } from './draftFile'
-import { type Draft, replaceDraft, say, useEditor } from './draft'
+import { draftFile, isEmptyDraft, roadBound, smallLoop } from './draftFile'
+import { type Draft, commit, say, useEditor } from './draft'
 import { create } from 'zustand'
 
 /** The temporary track's id (hidden from the track library). */
@@ -65,23 +72,19 @@ const rec = {
 /** What the bar shows (changes a few times a second at most). `asking`: the bar is asking "Clear the road you laid?". */
 const useDrive = create<{ active: boolean; metres: number; note: string | null; asking: boolean }>(() => ({ active: false, metres: 0, note: null, asking: false }))
 
-function starterLoop(): RoadPoint[] {
-  const pts: RoadPoint[] = []
-  const n = 16
-  for (let i = 0; i < n; i++) {
-    const t = (i / n) * Math.PI * 2
-    pts.push({ x: Math.round(48 * Math.sin(t) * 10) / 10, z: Math.round(-48 * Math.cos(t) * 10) / 10 })
-  }
-  return pts
-}
-
-/** Start driving to draw, in the current draft's world. */
+/** Start driving to draw, in the current draft's world. Only on an empty map: it makes a whole new road. */
 export function startDriveToDraw(): boolean {
   const draft = useEditor.getState().draft
+  if (!isEmptyDraft(draft)) {
+    say('Drive to draw makes a whole new road. Press Clear all first, then Drive to draw.', 'warn')
+    audio.ui('error')
+    return false
+  }
+  const starterLoop: RoadPoint[] = smallLoop()
   const file = draftFile({
     id: DRIVE_TRACK_ID,
     name: 'Drive to draw',
-    points: starterLoop(),
+    points: starterLoop,
     width: draft.width,
     environment: draft.environment,
   })
@@ -124,10 +127,20 @@ export function finishDriveToDraw(): boolean {
     audio.ui('error')
     return false
   }
-  const draft: Draft = { ...structuredClone(base), id: '', name: 'Driven Road', points: res.points, pieces: [], props: [], cores: [], startAt: 0 }
   stop()
-  replaceDraft(draft, null)
-  useEditor.setState({ dirty: true, notes: { crossings: res.crossings, issues: res.issues }, tool: 'select' })
+  // Back to the empty track that was being edited, then the driven road goes on it as one Undo step.
+  useEditor.setState({ draft: base, mode: 'edit' })
+  commit(
+    (d) => {
+      d.points = res.points
+      d.pieces = []
+      d.props = []
+      d.cores = []
+      d.startAt = 0
+    },
+    { crossings: res.crossings, issues: res.issues },
+  )
+  useEditor.setState({ tool: 'select' })
   openEditor()
   say(`Your drive became a ${(res.length / 1000).toFixed(2)} km road. Save it to keep it.`, 'good')
   audio.ui('select')

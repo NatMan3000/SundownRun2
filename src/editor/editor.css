@@ -17,6 +17,10 @@
   -webkit-font-smoothing: antialiased;
   --glass: color-mix(in srgb, var(--panel-solid) 82%, transparent);
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* The right-hand panel's width: about 34 letters of the panel's text wide, so help text and
+     check messages read as lines, not tall columns; never under 380 px, and never more than
+     30% of the window, so a small laptop keeps most of its screen for the map. */
+  --panel-w: clamp(380px, 34em, 30vw);
   user-select: none;
 }
 
@@ -103,7 +107,7 @@
   top: 16px;
   right: 16px;
   bottom: 16px;
-  width: 360px;
+  width: var(--panel-w);
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -423,6 +427,22 @@
   border-color: color-mix(in srgb, var(--bad) 40%, transparent);
   background: none;
 }
+.sre-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}
+.sre-btn:disabled:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.sre-btn.is-primary:disabled:hover {
+  background: var(--accent);
+}
+/* Why Save and Test drive are off (the empty map): one line across the top of the buttons. */
+.sre-actions-why {
+  grid-column: 1 / -1;
+  margin: 0;
+}
 .sre-actions .sre-btn.is-quiet {
   grid-column: 1 / -1;
 }
@@ -431,10 +451,14 @@
 
 .sre-status {
   position: absolute;
-  left: 50%;
+  /* Centred over the map (the window less the panel), never under the panel, and never so wide
+     that it covers the scale bar in the map's bottom-left corner (a long line wraps instead). */
+  left: calc((100% - var(--panel-w) - 32px) / 2 + 40px);
   bottom: 24px;
   transform: translate(-50%, 12px);
-  max-width: calc(100vw - 560px);
+  max-width: calc(100% - var(--panel-w) - 532px);
+  box-sizing: border-box;
+  text-align: center;
   padding: 10px 18px;
   border-radius: 999px;
   background: var(--glass);
@@ -839,6 +863,53 @@ textarea.sre-input {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
+/* ---------------------------------------------------------------- the empty map's note (top of the map) */
+
+.sre-empty {
+  position: absolute;
+  top: 18px;
+  left: calc((100% - var(--panel-w) - 32px) / 2 + 40px);
+  transform: translateX(-50%);
+  max-width: calc(100vw - var(--panel-w) - 200px);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 14px;
+  padding: 10px 12px 10px 20px;
+  border-radius: 999px;
+  background: var(--glass);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 40px color-mix(in srgb, var(--panel-solid) 70%, transparent);
+}
+.sre-empty-kicker {
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: 0.8em;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.sre-empty-text {
+  color: var(--text);
+}
+.sre-empty .sre-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+}
+.sre-empty .sre-btn.is-primary {
+  font-size: 1em;
+}
+.sre-empty .sre-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* A short window: the rail's buttons shrink so all of them still fit. */
 @media (max-height: 940px) {
   .sre-tool {
@@ -854,5 +925,28 @@ textarea.sre-input {
   .sre-options,
   .sre-palette {
     left: 76px;
+  }
+}
+
+/* A shorter window still (a small laptop's browser): smaller again, so the whole rail fits. */
+@media (max-height: 720px) {
+  .sre-tool {
+    width: 34px;
+    height: 34px;
+  }
+  .sre-tool svg {
+    width: 20px;
+    height: 20px;
+  }
+  .sre-tools {
+    gap: 2px;
+    padding: 6px;
+  }
+  .sre-tools-gap {
+    margin: 2px 4px;
+  }
+  .sre-options,
+  .sre-palette {
+    left: 64px;
   }
 }

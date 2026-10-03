@@ -4,8 +4,12 @@
 //  A see-through 2D canvas laid over the 3D top-down view. It turns
 //  what your hands do into editor actions, depending on the tool:
 //
-//    Pencil   drag to draw. A whole loop makes a new road; a line that
-//             starts and ends on the road redraws just that stretch.
+//    Pencil   drag to draw. It always edits the road that is there: a
+//             line that starts and ends on the road redraws the stretch
+//             between its ends. While you draw, the map shows what letting
+//             go will do (the stretch that goes lit amber, the new line
+//             cyan), or that it won't do anything and why. On an empty map
+//             a loop becomes the road.
 //             The steady hand (shape.ts SteadyPen) makes the line trail
 //             the pointer on a short string, so wobbles never reach it.
 //    Bend     grab the road and pull: the stretch near your hand comes
@@ -27,13 +31,15 @@
 //             follows the mouse and snaps to the road).
 //    Section  drag along the road to pick a stretch, then set its bank
 //             or width in the panel.
-//    Pan      drag to move the map.
 //
-//  Everywhere: right or middle drag (or Space + drag) pans, the wheel
-//  zooms where you point, WASD / arrows pan, F fits the track, + and -
-//  zoom, Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes. Number keys pick
-//  a piece to place; P pencil, G bend, L straight, C curve, V select,
-//  B section, H pan.
+//  Everywhere, with every tool: right or middle drag (or Space + drag)
+//  pans, the wheel zooms where you point, WASD / arrows pan, F fits the
+//  track, + and - zoom, Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes.
+//  Number keys pick a piece to place; P pencil, G bend, L straight,
+//  C curve, V select, B section.
+//
+//  On an empty map every tool but the pencil just pans, and a click says
+//  how to get a road (draw a loop, or press Random track).
 //
 //  The drawing itself is in mapDraw.ts.
 // ============================================================
@@ -47,6 +53,8 @@ import { PLACE_TOOLS, toolFor } from './pieces'
 import {
   type BendView,
   type EditorTool,
+  EMPTY_MAP_HINT,
+  mapIsEmpty,
   testDrive,
   applyCurve,
   applyStraight,
@@ -77,9 +85,9 @@ import {
 } from './draft'
 import { type P } from './geom'
 import { type MapExtras, type Pick, type ShapeView, crossingAtScreen, drawMap, pieceScreen, pointsVisible, roadGeometry } from './mapDraw'
-import { type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, wrapAt } from './road'
+import { type RedrawPlan, type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, planRedraw, wrapAt } from './road'
 import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
-import { view, panBy, screenToWorld, worldToScreen, zoomAt, fitBox } from './view'
+import { view, panBy, screenToWorld, setView, worldToScreen, zoomAt, fitBox } from './view'
 
 /** Pixels the pointer must move before the pencil adds another point. */
 const PENCIL_STEP_PX = 3
@@ -88,7 +96,11 @@ const KEY_PAN_PX = 700
 
 export function fitToDraft(): void {
   const pts = useEditor.getState().draft.points
-  if (!pts.length) return
+  if (!pts.length) {
+    // An empty map: show the whole world, ready to draw in.
+    setView(0, 0, 1700 / Math.max(300, view.height - 120))
+    return
+  }
   let minX = Infinity
   let minZ = Infinity
   let maxX = -Infinity
@@ -100,7 +112,12 @@ export function fitToDraft(): void {
     maxZ = Math.max(maxZ, p.z)
   }
   const pad = 80
-  fitBox(minX - pad, minZ - pad, maxX + pad, maxZ + pad)
+  // Leave room for the panel on the right, however wide the window made it, and on the left for
+  // the rail and the chosen tool's settings box beside it.
+  const box = (sel: string) => (typeof document !== 'undefined' ? document.querySelector(sel)?.getBoundingClientRect() : undefined)
+  const panel = box('.sre-panel')
+  const left = Math.max(90, (box('.sre-options') ?? box('.sre-palette'))?.right ?? 0)
+  fitBox(minX - pad, minZ - pad, maxX + pad, maxZ + pad, left, panel ? panel.width + 24 : 380)
 }
 
 /**
@@ -183,6 +200,9 @@ export function Overlay() {
     // Pencil: the steady pen (the line trails it) and where the pointer really is.
     let pen: SteadyPen | null = null
     let penTo: P | null = null
+    // What letting go of the pencil would do (road.ts planRedraw), worked out at most once a frame.
+    let pencilPlan: RedrawPlan | 'new' | null = null
+    let pencilDirty = false
     // Bend: the highlighted stretch (hovering or dragging).
     let bending = false
     let bendShown: BendView | null = null
@@ -216,7 +236,7 @@ export function Overlay() {
     const setCursor = () => {
       const s = useEditor.getState()
       if (panning) canvas.style.cursor = 'grabbing'
-      else if (spaceHeld || s.tool === 'pan' || s.mode === 'map') canvas.style.cursor = 'grab'
+      else if (spaceHeld || s.mode === 'map' || (s.tool !== 'pencil' && mapIsEmpty())) canvas.style.cursor = 'grab'
       else if (s.tool === 'select') canvas.style.cursor = dragging ? 'grabbing' : hoverPick ? 'pointer' : 'default'
       else if (s.tool === 'bend') canvas.style.cursor = bending ? 'grabbing' : bendShown ? 'grab' : 'default'
       else if (s.tool === 'place' || s.tool === 'section') canvas.style.cursor = 'copy'
@@ -350,13 +370,21 @@ export function Overlay() {
       lastY = e.clientY
       const s = useEditor.getState()
       const q = screenToWorld(e.clientX, e.clientY)
-      const wantsPan = e.button === 1 || e.button === 2 || spaceHeld || s.tool === 'pan' || s.mode === 'map'
+      // The right (or middle) button, or Space, drags the map whatever the tool.
+      const wantsPan = e.button === 1 || e.button === 2 || spaceHeld || s.mode === 'map'
       if (wantsPan) {
         panning = true
         setCursor()
         return
       }
       if (e.button !== 0) return
+      if (s.tool !== 'pencil' && mapIsEmpty()) {
+        // No road for this tool to work on: drag the map, and a click says how to get a road.
+        panning = true
+        hintOnClick = { x: e.clientX, y: e.clientY }
+        setCursor()
+        return
+      }
       // A BRIDGE label works with every tool: select that crossing (the panel shows its Swap button).
       if (s.tool !== 'select') {
         const label = crossingAtScreen(e.clientX, e.clientY, true)
@@ -372,6 +400,8 @@ export function Overlay() {
         pen = new SteadyPen(STEADY_STRING[s.steady] ?? 0)
         pen.start(e.clientX, e.clientY)
         penTo = q
+        pencilPlan = null
+        pencilDirty = true
         needsDraw = true
         return
       }
@@ -495,6 +525,7 @@ export function Overlay() {
           lastX = px
           lastY = py
         }
+        pencilDirty = true
       } else if (bending) {
         if (isBending()) {
           bendShown = moveBend(q)
@@ -537,7 +568,8 @@ export function Overlay() {
         // Straight or Curve: a click off the road (not a drag) gets a hint.
         if (hintOnClick && Math.hypot(e.clientX - hintOnClick.x, e.clientY - hintOnClick.y) < 5) {
           const tool = useEditor.getState().tool
-          say(tool === 'curve' ? 'Click on the road where the curve should start.' : 'Click on the road where the straight should start.', 'info')
+          if (mapIsEmpty()) say(EMPTY_MAP_HINT, 'info')
+          else say(tool === 'curve' ? 'Click on the road where the curve should start.' : 'Click on the road where the straight should start.', 'info')
         }
         hintOnClick = null
         setCursor()
@@ -602,9 +634,14 @@ export function Overlay() {
       }
       pen = null
       penTo = null
+      pencilPlan = null
       stroke = []
       needsDraw = true
-      if (done.length < 4) return
+      if (done.length < 4) {
+        // A click, not a line: say how the pencil works on this map.
+        if (!mapIsEmpty()) say('Hold the mouse button down and draw: start on the road and end back on the road to redraw the bit in between.', 'info')
+        return
+      }
       applyStroke(done, view.mpp)
     }
     function onDouble(e: PointerEvent) {
@@ -641,7 +678,7 @@ export function Overlay() {
     }
 
     // ---- keyboard ----
-    const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyG: 'bend', KeyL: 'straight', KeyC: 'curve', KeyV: 'select', KeyB: 'section', KeyH: 'pan' }
+    const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyG: 'bend', KeyL: 'straight', KeyC: 'curve', KeyV: 'select', KeyB: 'section' }
     const onKeyDown = (e: KeyboardEvent) => {
       if (typing(e)) return
       const mod = e.ctrlKey || e.metaKey
@@ -678,7 +715,11 @@ export function Overlay() {
         deleteSelection()
         return
       }
-      if (toolKeys[e.code] && !bending && !drawing) setTool(toolKeys[e.code])
+      if (toolKeys[e.code] && !bending && !drawing) {
+        const before = useEditor.getState().tool
+        setTool(toolKeys[e.code])
+        if (toolKeys[e.code] !== 'pencil' && before !== toolKeys[e.code] && mapIsEmpty()) say(EMPTY_MAP_HINT, 'info')
+      }
       // [ and ] change how much road Bend moves (also while dragging).
       if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && useEditor.getState().tool === 'bend') {
         const s = useEditor.getState()
@@ -800,6 +841,12 @@ export function Overlay() {
       if (held.has('KeyW') || held.has('ArrowUp')) py += 1
       if (held.has('KeyS') || held.has('ArrowDown')) py -= 1
       if (px || py) panBy(px * KEY_PAN_PX * dt, py * KEY_PAN_PX * dt)
+      // The pencil's "what will letting go do?": once a frame at most, on the line so far plus where the pointer is.
+      if (drawing && pencilDirty) {
+        pencilDirty = false
+        pencilPlan = pencilPreview(stroke, penTo)
+        needsDraw = true
+      }
       // Straight and Curve previews: once a frame at most, however fast the mouse moves.
       if (shapeDirty || (drawnVersion !== view.version && shapeShown)) {
         shapeDirty = false
@@ -819,6 +866,7 @@ export function Overlay() {
           bend: bendShown ? { view: bendShown, dragging: bending } : null,
           shape: shapeShown,
           pen: drawing && pen && pen.stringPx > 0 && penTo ? { at: screenToWorld(pen.x, pen.y), to: penTo } : null,
+          pencil: drawing ? pencilPlan : null,
         })
       }
       raf = requestAnimationFrame(loop)
@@ -876,9 +924,23 @@ function wallrideHalfAt(rc: ReturnType<typeof roadGeometry>['rc'], at: number, l
   return wrapAt(mid - at, rc.points.length)
 }
 
+/**
+ * What letting go of the pencil now would do: 'new' on an empty map (the line
+ * becomes the road), otherwise road.ts planRedraw on the line so far, ending
+ * where the pointer is (that is where a let-go line ends, see onUp).
+ */
+function pencilPreview(stroke: readonly P[], pointerAt: P | null): RedrawPlan | 'new' | null {
+  const d = useEditor.getState().draft
+  if (!d.points.length) return 'new'
+  if (stroke.length < 2) return null
+  const line = pointerAt ? [...stroke, pointerAt] : [...stroke]
+  return planRedraw(line, d.points, d.width)
+}
+
 /** Tell the player how the pencil works the first time they open a fresh editor. */
 export function pencilHint(): void {
-  say('Hold the left mouse button and draw a loop. Let go and it becomes a road.', 'info')
+  if (mapIsEmpty()) say('Hold the left mouse button and draw a loop. Let go and it becomes a road. Or press Random track.', 'info')
+  else say('Pencil: start on the road, draw the new bit, and end back on the road. The bit in between is redrawn.', 'info')
 }
 
 export { issueLocation } from './mapDraw'

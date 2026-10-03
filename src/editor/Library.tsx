@@ -5,14 +5,15 @@
 //  built-in tracks can be copied and edited; a .json track file from
 //  a friend can be imported (and it then shows up in the game's
 //  track list too). Export saves the exact file that can go straight
-//  into the game's tracks/ folder.
+//  into the game's tracks/ folder. A new track starts as an empty map
+//  in the world you pick: draw a loop, or press Random track.
 // ============================================================
 
 import { useMemo, useRef, useState } from 'react'
 import { audio } from '../core/api'
 import { deleteDrawnTrack, downloadTrack, importTrackJson, listTracks } from '../track/registry'
 import type { TrackFile } from '../track/schema'
-import { BASE_WORLDS } from './draftFile'
+import { BASE_WORLDS, isEmptyDraft } from './draftFile'
 import { draftFromFile, fileFromDraft, newDraft, replaceDraft, say, useEditor } from './draft'
 import { fitToDraft, pencilHint } from './Overlay'
 import { DRIVE_TRACK_ID } from './driveToDraw'
@@ -23,6 +24,7 @@ export function Library(props: { onClose: () => void }) {
   const fileInput = useRef<HTMLInputElement>(null)
   const [newWorld, setNewWorld] = useState(BASE_WORLDS[0].id)
   const dirty = useEditor((s) => s.dirty)
+  const empty = useEditor((s) => isEmptyDraft(s.draft))
 
   const open = (file: TrackFile, asCopy: boolean) => {
     if (dirty && !window.confirm('Your changes to this track are not saved. Open another one anyway?')) return
@@ -133,8 +135,14 @@ export function Library(props: { onClose: () => void }) {
           <button type="button" className="sre-btn" onClick={() => fileInput.current?.click()}>
             Import a track file
           </button>
-          <button type="button" className="sre-btn is-quiet" onClick={() => downloadTrack(fileFromDraft(useEditor.getState().draft, useEditor.getState().savedId ?? undefined))}>
-            Export this track
+          <button
+            type="button"
+            className="sre-btn is-quiet"
+            disabled={empty}
+            title={empty ? 'There is no road to export yet.' : undefined}
+            onClick={() => downloadTrack(fileFromDraft(useEditor.getState().draft, useEditor.getState().savedId ?? undefined))}
+          >
+            {empty ? 'Export this track (no road yet)' : 'Export this track'}
           </button>
           <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={(e) => void onImport(e.target.files?.[0])} />
         </footer>

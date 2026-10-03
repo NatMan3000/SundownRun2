@@ -15,6 +15,10 @@
 //  The draft becomes a real track file with fileFromDraft() and is saved
 //  with the track registry (src/track/registry.ts), exactly like a
 //  built-in track, so a test drive plays it the normal way.
+//
+//  A draft with no road points is the empty map (a new track, or after
+//  Clear all): the pencil's first loop, Random track or Drive to draw
+//  give it a road, and until then every road tool says so instead.
 // ============================================================
 
 import { create } from 'zustand'
@@ -25,13 +29,14 @@ import { freeTrackId, getTrackSource, listDrawnTracks, saveDrawnTrack } from '..
 import { validateTrack } from '../track/validate'
 import { startSession } from '../core/session'
 import { audio } from '../core/api'
-import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFromFile, fileOfDraft, isBlankDraft, pointGroundOf, roadBound, starterRoad, worldForCopy } from './draftFile'
+import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFromFile, emptyWorldFile, fileOfDraft, isBlankDraft, isEmptyDraft, pointGroundOf, roadBound, worldForCopy } from './draftFile'
+import { randomTrack } from './randomTrack'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import { checkBuiltTrack, gateItems } from './checks'
 import { crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
 import type { P } from './geom'
 import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
-import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, reanchor, roadCurve, sectionRedraw, wrapAt, LOOP_RUN_IN } from './road'
+import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
 import {
   type ShapeResult,
   type ShapeWorld,
@@ -142,7 +147,7 @@ export interface EditorState {
   shaping: Shaping | null
 }
 
-export type EditorTool = 'pencil' | 'bend' | 'straight' | 'curve' | 'pan' | 'select' | 'place' | 'section'
+export type EditorTool = 'pencil' | 'bend' | 'straight' | 'curve' | 'select' | 'place' | 'section'
 
 /** Straight or Curve, part way through: `a` is the first click, `b` the second (Curve only, then you pull). */
 export interface Shaping {
@@ -168,7 +173,7 @@ export type Selection =
 const WORKING_KEY = 'sr2.editor.working.v1'
 const HISTORY_MAX = 120
 
-/** A brand new track: the starter oval (so there is always a road to look at; draw over it to replace it). */
+/** A brand new track: an empty map in the chosen world (draw a loop with the pencil, or press Random track). */
 export function newDraft(baseWorldId = DEFAULT_BASE_WORLD.id): Draft {
   const base = BASE_WORLDS.find((b) => b.id === baseWorldId) ?? DEFAULT_BASE_WORLD
   return {
@@ -176,7 +181,7 @@ export function newDraft(baseWorldId = DEFAULT_BASE_WORLD.id): Draft {
     name: 'My Track',
     author: '',
     description: '',
-    points: starterRoad(base.environment),
+    points: [],
     width: 14,
     baseWorld: base.id,
     environment: cloneJson(base.environment),
@@ -211,7 +216,8 @@ function readWorking(): { draft: Draft; savedId: string | null; dirty: boolean }
     const raw = localStorage.getItem(WORKING_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw)
-    if (!parsed?.draft?.points?.length) return null
+    // An empty map (no road yet) is a real draft too: keep its name and world.
+    if (!Array.isArray(parsed?.draft?.points)) return null
     return parsed
   } catch {
     return null
@@ -334,6 +340,12 @@ export function replaceDraft(draft: Draft, savedId: string | null): void {
 
 let previewTimer: ReturnType<typeof setTimeout> | null = null
 
+/** Forget a rebuild that is still waiting (leaving the editor: the game's track must not change behind the title screen). */
+export function cancelPendingPreview(): void {
+  if (previewTimer) clearTimeout(previewTimer)
+  previewTimer = null
+}
+
 /** Rebuild the 3D world from the draft after the edits pause for a moment. */
 export function schedulePreview(delayMs = 350): void {
   useEditor.setState({ preview: 'pending' })
@@ -349,6 +361,7 @@ export function previewNow() {
   if (previewTimer) clearTimeout(previewTimer)
   previewTimer = null
   const s = useEditor.getState()
+  if (isEmptyDraft(s.draft)) return previewEmptyMap(s.draft)
   const file = fileFromDraft(s.draft, s.savedId ?? draftId(s.draft))
   let result
   try {
@@ -369,6 +382,36 @@ export function previewNow() {
   tellIfShapeBrokeChecks(s.draft, run.gates)
   return result
 }
+
+/**
+ * The empty map: build its world around the hidden stand-in loop
+ * (draftFile.ts emptyWorldFile), so the hills, sky and city show under the
+ * map while there is no road. There is nothing to check yet: no errors, no
+ * gate rows, and the Checks panel says there is no road.
+ */
+function previewEmptyMap(draft: Draft) {
+  let result
+  try {
+    result = setTrackFromFile(emptyWorldFile(draft, useEditor.getState().savedId ?? draftId(draft)))
+  } catch (err) {
+    console.error('[editor] the track builder threw on the empty world', err)
+    result = null
+  }
+  if (!result?.ok) {
+    useEditor.setState({ preview: 'failed', errors: [{ path: '', message: "The game couldn't build this world. Pick another world in the panel." }], warnings: [], gates: [], checkedDraft: draft })
+    return result
+  }
+  useEditor.setState({ preview: 'built', errors: [], warnings: [], gates: [], gatesMs: 0, checkedDraft: draft })
+  return result
+}
+
+/** True when the draft has no road yet (a cleared map, or a new track). */
+export function mapIsEmpty(): boolean {
+  return isEmptyDraft(useEditor.getState().draft)
+}
+
+/** What the map, the tools and the status line say while there is no road. */
+export const EMPTY_MAP_HINT = 'There is no road yet. Draw a loop with the pencil, or press Random track.'
 
 /**
  * A shaping tool's change, waiting for the game's checks: `failingBefore` are
@@ -417,15 +460,32 @@ export function strokeOptions(d: Draft, metresPerPixel: number) {
   }
 }
 
+/** The one short line the pencil says when you let go of a line that changes nothing (road.ts planRedraw). */
+export const PENCIL_NOTHING: Record<'start' | 'end' | 'together' | 'short', string> = {
+  start: 'Nothing changed: start your line on the road, then end it back on the road.',
+  end: 'Nothing changed: end your line back on the road to redraw the bit in between.',
+  together: 'Nothing changed: end your line further along the road (a whole new road starts from Clear all).',
+  short: 'Nothing changed: draw a longer line, from the road back to the road.',
+}
+
 /**
- * A finished pencil stroke (world points). It becomes the new road: the
- * clean-up smooths it, opens tight corners, closes the loop and bridges
- * crossings. Pieces are kept, re-anchored by distance along the road.
+ * A finished pencil stroke (world points). The pencil always edits the road
+ * that is there:
+ *   - on an empty map it draws the road: the clean-up smooths it, opens
+ *     tight corners, closes the loop and bridges crossings
+ *   - on a map with a road, a line from the road back to the road redraws
+ *     the stretch between its ends (road.ts planRedraw)
+ *   - any other line changes nothing, and the status line says how to use it
  */
 export function applyStroke(raw: readonly P[], metresPerPixel: number): CleanResult {
   const s = useEditor.getState()
-  const section = sectionRedraw(raw, s.draft.points, s.draft.width)
-  if (section) return applySectionRedraw(section, metresPerPixel)
+  if (!isEmptyDraft(s.draft)) {
+    const plan = planRedraw(raw, s.draft.points, s.draft.width)
+    if (plan.kind === 'redraw') return applySectionRedraw(plan.loop, metresPerPixel)
+    say(PENCIL_NOTHING[plan.why], 'warn')
+    audio.ui('error')
+    return { ok: false, points: [], dense: [], length: 0, tightestRadius: 0, crossings: [], issues: [{ level: 'error', code: 'too-few-points', message: PENCIL_NOTHING[plan.why] }] }
+  }
   const res = cleanStroke(raw, strokeOptions(s.draft, metresPerPixel))
   if (!res.ok) {
     const first = res.issues.find((i) => i.level === 'error')
@@ -435,13 +495,9 @@ export function applyStroke(raw: readonly P[], metresPerPixel: number): CleanRes
   }
   commit(
     (d) => {
-      const oldCount = d.points.length
+      // The map was empty, so there are no pieces to keep (Clear all took them with the road).
       d.points = res.points
       d.startAt = 0
-      // Keep pieces at the same fraction of the way round the lap.
-      if (oldCount > 0) {
-        for (const p of d.pieces) p.at = Math.round(((p.at / oldCount) * res.points.length) * 100) / 100
-      }
     },
     { crossings: res.crossings, issues: res.issues },
   )
@@ -500,6 +556,11 @@ export function setEdgeColour(hex: string): void {
 /** Save the draft as a drawn track in this browser. Returns the id, or null if it can't be saved. */
 export function saveDraft(): string | null {
   const s = useEditor.getState()
+  if (isEmptyDraft(s.draft)) {
+    say("There's no road to save yet. Draw a loop with the pencil, or press Random track.", 'warn')
+    audio.ui('error')
+    return null
+  }
   const id = s.savedId ?? draftId(s.draft)
   const file = fileFromDraft(s.draft, id)
   const v = validateTrack(file)
@@ -524,6 +585,11 @@ export function saveDraft(): string | null {
 
 /** Validate, save, build and drive it. The pause menu's Road Editor button comes back here. */
 export function testDrive(): boolean {
+  if (isEmptyDraft(useEditor.getState().draft)) {
+    say("There's no road to drive yet. Draw a loop with the pencil, or press Random track.", 'warn')
+    audio.ui('error')
+    return false
+  }
   const id = saveDraft()
   if (!id) return false
   const s = useEditor.getState()
@@ -633,6 +699,10 @@ export function placeAt(q: P): boolean {
   const d = s.draft
   const kind = s.placeKind
   const tool = toolFor(kind)
+  if (isEmptyDraft(d)) {
+    say(EMPTY_MAP_HINT, 'info')
+    return false
+  }
   if (tool.onRoad) {
     const rc = roadCurve(d.points)
     const hit = nearestOnRoad(rc, q)
@@ -730,6 +800,7 @@ export function updateCore(index: number, change: (p: CoreSpot) => void): void {
 
 /** Add a road point at `at` (on the curve, and at the road's own height there, so the road does not move). */
 export function insertPointAt(at: number): void {
+  if (noRoadYet()) return
   const s = useEditor.getState()
   const d = s.draft
   const count = d.points.length
@@ -790,6 +861,10 @@ export function deletePoint(index: number): void {
  */
 export function smoothRoad(): { before: number; after: number } {
   const s = useEditor.getState()
+  if (isEmptyDraft(s.draft)) {
+    say(EMPTY_MAP_HINT, 'info')
+    return { before: 0, after: 0 }
+  }
   const before = roadRoughness(s.draft.points)
   // Loops need their straight run-in and the start grid needs straight road: Smooth leaves those alone.
   const keep = [
@@ -922,8 +997,16 @@ export function commitShape(res: ShapeResult, done: string, what = 'That change'
   return true
 }
 
+/** On an empty map the road tools have nothing to work on: say how to get a road. True if the map is empty. */
+function noRoadYet(): boolean {
+  if (!isEmptyDraft(useEditor.getState().draft)) return false
+  say(EMPTY_MAP_HINT, 'info')
+  return true
+}
+
 /** Straight: the road between two spots (`at` values) becomes a straight line. */
 export function applyStraight(fromAt: number, toAt: number): boolean {
+  if (noRoadYet()) return false
   const d = useEditor.getState().draft
   const res = straightStretch(d.points, fromAt, toAt, shapeWorld(d))
   return commitShape(res, 'Straightened that stretch of road.', 'That straight')
@@ -931,6 +1014,7 @@ export function applyStraight(fromAt: number, toAt: number): boolean {
 
 /** Curve: the road between two spots becomes one smooth curve through `pull`. */
 export function applyCurve(fromAt: number, toAt: number, pull: P): boolean {
+  if (noRoadYet()) return false
   const d = useEditor.getState().draft
   const res = curveStretch(d.points, fromAt, toAt, pull, shapeWorld(d))
   return commitShape(res, 'Made that stretch one smooth curve.', 'That curve')
@@ -942,6 +1026,7 @@ export function applyCurve(fromAt: number, toAt: number, pull: P): boolean {
  * selected (the road has new points there now).
  */
 export function applyCornerRadius(index: number, radius: number): boolean {
+  if (noRoadYet()) return false
   const d = useEditor.getState().draft
   const res = cornerRadius(d.points, index, radius, shapeWorld(d))
   const at = res.ok ? res.mapAt(index) : index
@@ -1001,6 +1086,7 @@ export function isBending(): boolean {
 
 /** Start bending: the road was grabbed at `at` (the spot under the pointer is `grab`). */
 export function beginBend(at: number, grab: P): void {
+  if (noRoadYet()) return
   beginGesture()
   const start = useEditor.getState().draft
   bendDrag = { grabAt: at, grabNow: at, grab, start, pull: { x: 0, z: 0 }, world: shapeWorld(start), failingBefore: failingNow() }
@@ -1140,9 +1226,9 @@ export function endBend(): void {
 }
 
 /**
- * Clear all: wipe the map back to a blank track (the starter oval, no
- * pieces, props, cores or start line; see clearedDraft) so Josh can start
- * again. It is ONE commit, so one Undo brings the whole track back exactly.
+ * Clear all: wipe the map back to empty (no road, pieces, props, cores or
+ * start line; see clearedDraft) so Josh can start again with the pencil or
+ * Random track. It is ONE commit, so one Undo brings the whole track back exactly.
  *
  * Only the open draft changes. Tracks saved in the library and the built-in
  * tracks are never touched; a saved track only changes if he presses Save
@@ -1154,16 +1240,63 @@ export function clearAll(): boolean {
   const s = useEditor.getState()
   if (s.mode !== 'edit') return false
   if (isBlankDraft(s.draft)) {
-    say('Already clear. Draw a loop with the pencil to make a road.', 'info')
+    say(`Already clear. ${EMPTY_MAP_HINT}`, 'info')
     return false
   }
   commit((d) => {
     Object.assign(d, clearedDraft(d))
   })
   useEditor.setState({ selection: null, tool: 'pencil' })
-  say('Cleared. Draw a loop with the pencil to make your new road, or Undo to bring the old one back.', 'good')
+  say('Cleared. Draw a loop with the pencil or press Random track for your new road, or Undo to bring the old one back.', 'good')
   audio.ui('back')
   return true
+}
+
+/**
+ * Random track: a whole new road in this world (randomTrack.ts), that has
+ * already passed every check the game has. It replaces the road, pieces,
+ * start line, props and cores (the world, name and settings stay), as ONE
+ * commit, so one Undo brings back what was there. `seed` picks the track
+ * (the same seed, the same track); without one the dice are rolled.
+ * Returns how many shapes it tried and how long it took, or null if none
+ * passed (then nothing changes).
+ */
+export function randomRoad(seed = Math.floor(Math.random() * 2 ** 32)): { tries: number; ms: number; shape: string } | null {
+  const s = useEditor.getState()
+  if (s.mode !== 'edit') return null
+  const d = s.draft
+  const id = s.savedId ?? draftId(d)
+  const t = getTrack()
+  const res = randomTrack(d, {
+    seed,
+    id,
+    // The live preview's world (the empty map's world too) is built under the same id: its edge is known.
+    playRadius: t && t.id === id ? t.world.playRadius : undefined,
+    params: t && t.id === id ? { ...t.params } : {},
+  })
+  if (!res.ok || !res.pick) {
+    say("The dice didn't find a good road this time. Press Random track again.", 'warn')
+    audio.ui('error')
+    return null
+  }
+  const pick = res.pick
+  commit((x) => {
+    x.points = pick.points
+    x.pieces = pick.pieces
+    x.startAt = pick.startAt
+    x.props = []
+    x.cores = []
+  })
+  useEditor.setState({ selection: null })
+  // Build it straight away (the button should feel instant): it already passed the checks.
+  previewNow()
+  const km = (pick.length / 1000).toFixed(2)
+  const what = { blob: 'a swoopy loop', eight: 'a figure eight', bowtie: 'a bow tie', circuit: 'a circuit', peanut: 'a peanut-shaped loop' }[pick.shape]
+  const extras = [pick.bridges ? `${pick.bridges === 1 ? 'a bridge' : `${pick.bridges} bridges`}` : '', pick.pieces.some((p) => p.type === 'speedtrap') ? 'a speed trap' : '', pick.pieces.some((p) => p.type === 'boost') ? 'a boost pad' : ''].filter(Boolean)
+  const list = extras.length > 1 ? `${extras.slice(0, -1).join(', ')} and ${extras[extras.length - 1]}` : extras[0]
+  say(`Random track: ${what}, ${km} km${list ? ` with ${list}` : ''}. Press it again for another, or Undo.`, 'good')
+  audio.ui('select')
+  return { tries: res.tries, ms: res.ms, shape: pick.shape }
 }
 
 // ---------------------------------------------------------------- sections: bank and width
@@ -1179,6 +1312,7 @@ export function sectionPoints(count: number, from: number, to: number): number[]
 
 /** Set (or with null, clear back to automatic) the bank in degrees on a stretch of road. */
 export function setSectionBank(from: number, to: number, deg: number | null): void {
+  if (noRoadYet()) return
   commit((d) => {
     for (const i of sectionPoints(d.points.length, from, to)) {
       if (deg === null) delete d.points[i].bank
@@ -1189,6 +1323,7 @@ export function setSectionBank(from: number, to: number, deg: number | null): vo
 
 /** Set (or with null, clear back to the track's width) the road width on a stretch. */
 export function setSectionWidth(from: number, to: number, width: number | null): void {
+  if (noRoadYet()) return
   commit((d) => {
     for (const i of sectionPoints(d.points.length, from, to)) {
       if (width === null) delete d.points[i].width

@@ -7,8 +7,11 @@
 //  of the world, a line that never comes back - and checks that
 //  every result is a road a car can drive. It also checks the
 //  editing maths, that the Checks panel's verdict (checks.ts)
-//  agrees with the game's own track gates, and that Clear all
-//  leaves a blank track that builds in every kind of world.
+//  agrees with the game's own track gates, that Clear all leaves an
+//  empty map whose world still builds in every kind of world (and
+//  that every tool copes with it), that the pencil only ever edits
+//  the road that is there, and that Random track only ever hands
+//  over roads that pass every check.
 //
 //  Run it two ways:
 //    bun src/editor/selfTest.ts          (prints a pass/fail table)
@@ -50,8 +53,9 @@ import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
 import afterglowJson from '../../tracks/afterglow.json'
 import neonPocketJson from '../../tracks/neon-pocket.json'
 import hyperdromeJson from '../../tracks/hyperdrome.json'
-import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, draftFile, draftFromFile, fileOfDraft, isBlankDraft, pointGroundOf, roadBound, worldForCopy } from './draftFile'
-import { atAfterDelete, atAfterInsert, frameAt, nearestOnRoad, roadCurve, sectionRedraw } from './road'
+import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, draftFile, draftFromFile, emptyWorldFile, fileOfDraft, isBlankDraft, isEmptyDraft, pointGroundOf, roadBound, worldForCopy } from './draftFile'
+import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestOnRoad, planRedraw, roadCurve, sectionRedraw } from './road'
+import { randomTrack } from './randomTrack'
 import type { Piece, RoadPoint, TrackFile } from '../track/schema'
 import { checkBuiltTrack, checkVerdict, gateItems } from './checks'
 import type { Draft } from './draft'
@@ -516,18 +520,17 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
 
   // ---------------------------------------------------------------- clear all
 
-  check('clear all leaves a blank, valid track in the same world', () => {
+  check('clear all leaves an empty map in the same world, and that world still builds', () => {
     // A busy track (pieces, props, cores, a moved start line, a banked stretch) in
     // every base world plus a small hilly world and a walled stadium: clearing must
-    // empty the map, keep what the track IS, and give a road that builds and stays
-    // inside that world.
+    // empty the map (no road at all), keep what the track IS, and the empty map's
+    // world (built around its hidden stand-in road) must build and pass the checks.
     const stroke = shaky((t) => ({ x: 260 * Math.sin(t * TAU), z: 130 * Math.sin(2 * t * TAU) }), 600, 3, 2, 0.1, 1.1)
     const res = cleanStroke(stroke, opts)
     if (!res.ok) return ['clean-up failed']
     const worlds = [
       ...BASE_WORLDS.map((b) => ({ id: b.id, env: b.environment })),
       { id: 'small-hills', env: { size: 1000, terrain: { kind: 'hills' as const, relief: 10, edge: 'ridge' as const } } },
-      // Too small for the full-size oval: it has to shrink to stay off the mountains.
       { id: 'tiny-hills', env: { size: 800, terrain: { kind: 'hills' as const, relief: 10, edge: 'ridge' as const } } },
       { id: 'stadium', env: { size: 1300, terrain: { kind: 'flat' as const, edge: 'wall' as const } } },
     ]
@@ -551,24 +554,31 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
       const c = clearedDraft(busy)
       const tag = (m: string) => bad.push(`${w.id}: ${m}`)
       if (JSON.stringify(busy) !== before) tag('clearing changed the track it was given')
+      if (c.points.length) tag(`the road was left behind (${c.points.length} points)`)
+      if (!isEmptyDraft(c)) tag('isEmptyDraft says the cleared map has a road')
       if (c.pieces.length || c.props.length || c.cores.length || c.startAt !== 0) tag('pieces, props, cores or the start line were left behind')
-      if (c.points.some((p) => p.bank !== undefined || p.width !== undefined || p.lift !== undefined)) tag('per-stretch bank, width or lift were left behind')
       for (const k of ['id', 'name', 'author', 'description', 'width', 'baseWorld'] as const) if (c[k] !== busy[k]) tag(`${k} changed`)
       if (JSON.stringify(c.environment) !== JSON.stringify(busy.environment)) tag('the world changed')
       if (!isBlankDraft(c) || isBlankDraft(busy)) tag('isBlankDraft is wrong')
       if (JSON.stringify(clearedDraft(c)) !== JSON.stringify(c)) tag('clearing twice is not the same as once')
-      const limit = roadBound(w.env)
-      const reach = Math.max(...c.points.map((p) => Math.max(Math.abs(p.x), Math.abs(p.z))))
-      if (reach > limit) tag(`the starter road reaches ${reach.toFixed(0)} m, past the ${limit.toFixed(0)} m edge limit`)
-      const v = validateTrack(draftFile({ id: 'selftest-cleared', name: c.name, points: c.points, width: c.width, environment: c.environment }))
+      // The empty map's world: built around a hidden stand-in road, with nothing along it.
+      const file = emptyWorldFile(c, 'selftest-cleared')
+      const env = file.environment.roadside
+      if (!env || env.posts !== false || env.billboards !== 0) tag('the empty world still puts posts or billboards along its hidden road')
+      const v = validateTrack(file)
       if (!v.ok || !v.track) {
-        tag(`does not validate: ${v.errors.map((e) => `${e.path}: ${e.message}`).join(' / ')}`)
+        tag(`the empty world does not validate: ${v.errors.map((e) => `${e.path}: ${e.message}`).join(' / ')}`)
         continue
       }
-      const gates = checkBuiltTrack(buildTrack(v.track, {})).gates.filter((g) => g.level === 'fail')
-      if (gates.length) tag(`gates fail: ${gates.map((g) => `${g.name}: ${g.message}`).join(' / ')}`)
+      // It is only ever looked at from above, never driven or checked, so it only has to build.
+      try {
+        const t = buildTrack(v.track, {})
+        if (!(t.terrain.maxHeight >= t.terrain.minHeight)) tag('the empty world built with no ground')
+      } catch (err) {
+        tag(`the empty world did not build: ${(err as Error).message}`)
+      }
     }
-    info = `${worlds.length} worlds cleared to a valid starter road`
+    info = `${worlds.length} worlds cleared to an empty map whose world builds`
     return bad
   })
 
@@ -932,9 +942,11 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
       const r = file.road
       kept.push(`${file.id} (bank ${r.banking?.maxDeg ?? 10} deg for ${r.banking?.designSpeedKmh ?? 120} km/h${r.banking?.adjustable ? ', bank slider' : ''}${r.barriers === 'walls' ? `, ${r.barrierHeight ?? 2.2} m walls` : ''}${file.laps ? `, ${file.laps} laps` : ''}${file.hunt ? `, hunt ${file.hunt.count}` : ''})`)
     }
-    // 3. Clear all on a copy keeps the track's hunt, but the file never asks for more cores than it has.
-    const cleared = clearedDraft(draftFromFile(neonPocketJson as unknown as TrackFile, true))
-    const cv = validateTrack(fileOfDraft(cleared, 'neon-pocket-cleared'))
+    // 3. Clear all on a copy keeps the track's hunt, but the file never asks for more cores than it has
+    //    (here: a new road drawn on the cleared map, with no cores yet).
+    const copy = draftFromFile(neonPocketJson as unknown as TrackFile, true)
+    const cleared = clearedDraft(copy)
+    const cv = validateTrack(fileOfDraft({ ...cleared, points: copy.points }, 'neon-pocket-cleared'))
     if (!cleared.hunt) bad.push('Clear all dropped the hunt from the draft')
     for (const w of cv.warnings) if (w.path.startsWith('hunt')) bad.push(`a cleared copy warns: ${w.message}`)
     info = `all of every built-in comes back (only id and name change): ${kept.join('; ')}`
@@ -1288,6 +1300,225 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     store.redo()
     if (sameWay(topHeading(store.useEditor.getState().draft.points, ground, c.at), autoTop)) bad.push('Redo did not swap it again')
     info = `swap, Undo (the draft comes back exactly), Redo; status line: "${after.message?.text}"`
+    return bad
+  })
+
+  // ---------------------------------------------------------------- the empty map, the pencil, Random track (editor7)
+
+  /** A road (with a piece, a prop and a core on it) in the default world, as a draft. */
+  const roadDraft = (): Draft => {
+    const { d } = eight()
+    return { ...d, id: 'selftest-empty', name: 'Self-test empty', pieces: [{ type: 'boost', at: 5 }], props: [{ x: 30, z: 200 }], cores: [{ x: -40, z: 210 }], startAt: 2 }
+  }
+
+  check('Empty map: Clear all, then every tool, Save and Test drive cope with no road, and one Undo brings it all back (the real editor store)', () => {
+    if (!store) return 'skipped: needs the editor store (run `bun src/editor/selfTest.ts`); in the game it would change your draft'
+    const bad: string[] = []
+    store.replaceDraft(roadDraft(), null)
+    const before = store.useEditor.getState().draft
+    if (!store.clearAll()) return ['Clear all refused a map with a road on it']
+    const empty = store.useEditor.getState().draft
+    const steps = store.useEditor.getState().past.length
+    if (empty.points.length || empty.pieces.length || empty.props.length || empty.cores.length) bad.push('Clear all left something on the map')
+    if (store.useEditor.getState().past[steps - 1] !== before) bad.push('Clear all is not one Undo step')
+    // The empty world builds (hidden stand-in road), with nothing to check.
+    const built = store.previewNow()
+    const st = store.useEditor.getState()
+    if (!built?.ok || st.preview !== 'built') bad.push(`the empty world did not build (${st.errors[0]?.message ?? 'no reason'})`)
+    if (st.errors.length || (st.gates ?? []).length) bad.push('the empty map reports errors or check rows')
+    // Every tool, and everything a click or a panel button can ask for: nothing throws, nothing changes.
+    const tries: [string, () => unknown][] = [
+      ['place a boost', () => (store.setTool('place', 'boost'), store.placeAt({ x: 0, z: 0 }))],
+      ['place crash props', () => (store.setTool('place', 'props'), store.placeAt({ x: 10, z: 10 }))],
+      ['place a core', () => (store.setTool('place', 'cores'), store.placeAt({ x: 20, z: 10 }))],
+      ['Straight', () => (store.setTool('straight'), store.applyStraight(0, 2))],
+      ['Curve', () => (store.setTool('curve'), store.applyCurve(0, 2, { x: 5, z: 5 }))],
+      ['Bend', () => (store.setTool('bend'), store.beginBend(0, { x: 0, z: 0 }), store.moveBend({ x: 30, z: 0 }), store.endBend())],
+      ['Corner', () => (store.setTool('select'), store.applyCornerRadius(0, 80))],
+      ['add a point', () => store.insertPointAt(0.5)],
+      ['Stretch (bank and width)', () => (store.setTool('section'), store.setSectionBank(0, 1, 10), store.setSectionWidth(0, 1, 16))],
+      ['Smooth', () => store.smoothRoad()],
+      ['Swap a bridge', () => store.swapBridge({ x: 0, z: 0 })],
+      ['delete', () => store.deleteSelection()],
+      ['Save', () => store.saveDraft()],
+      ['Test drive', () => store.testDrive()],
+      ['crossings', () => store.draftCrossings()],
+    ]
+    for (const [name, run] of tries) {
+      try {
+        const out = run()
+        const now = store.useEditor.getState()
+        if (now.draft !== empty) bad.push(`${name} changed the empty map`)
+        if (now.past.length !== steps) bad.push(`${name} made an Undo step`)
+        if ((name === 'Save' && out !== null) || (name === 'Test drive' && out !== false)) bad.push(`${name} did not refuse`)
+      } catch (err) {
+        bad.push(`${name} threw: ${(err as Error).message}`)
+      }
+    }
+    const saidSave = store.useEditor.getState().message?.text ?? ''
+    if (!/no road/i.test(saidSave)) bad.push(`Test drive's refusal does not say why: "${saidSave}"`)
+    store.undo()
+    if (JSON.stringify(store.useEditor.getState().draft) !== JSON.stringify(before)) bad.push('Undo did not bring the road, pieces, prop and core back exactly')
+    info = `${tries.length} tools and buttons on the empty map: nothing threw or changed; Test drive says "${saidSave}"; Undo brings the track back`
+    return bad
+  })
+
+  check('Pencil on a road: a line that does not come back to the road changes nothing and says how (the real editor store too)', () => {
+    const pts = ring(60, 250)
+    const rc = roadCurve(pts)
+    const on = (at: number) => frameAt(rc, at).p
+    const out = (p: P, m: number) => ({ x: p.x * (1 + m / 250), z: p.z * (1 + m / 250) })
+    /** A line from a to b bulging `bulge` m outward, 60 steps. */
+    const line = (a: P, b: P, bulge: number): P[] =>
+      Array.from({ length: 61 }, (_, i) => {
+        const t = i / 60
+        return out({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t }, Math.sin(t * Math.PI) * bulge)
+      })
+    const cases: { name: string; stroke: P[]; want: string }[] = [
+      { name: 'ends off the road', stroke: line(on(5), out(on(14), 120), 60), want: 'end' },
+      { name: 'starts off the road', stroke: line(out(on(5), 120), on(14), 60), want: 'start' },
+      { name: 'ends back where it started', stroke: line(on(5), on(5.4), 90), want: 'together' },
+      { name: 'a whole new loop elsewhere', stroke: Array.from({ length: 200 }, (_, i) => ({ x: 600 + 100 * Math.cos((i / 190) * TAU), z: 100 * Math.sin((i / 190) * TAU) })), want: 'start' },
+      { name: 'from the road back to the road', stroke: line(on(5), on(14), 60), want: 'redraw' },
+    ]
+    const bad: string[] = []
+    for (const c of cases) {
+      const plan = planRedraw(c.stroke, pts, 14)
+      const got = plan.kind === 'redraw' ? 'redraw' : plan.why
+      if (got !== c.want) bad.push(`${c.name}: planned "${got}", wanted "${c.want}"`)
+      if (plan.kind === 'redraw') {
+        // The stretch it lights up is the stretch that goes: the shorter way round between the ends.
+        let len = 0
+        for (let i = 1; i < plan.replaced.length; i++) len += dist(plan.replaced[i - 1], plan.replaced[i])
+        const want = Math.min(metresBetween(rc, 5, 14), metresBetween(rc, 14, 5))
+        if (Math.abs(len - want) > 12) bad.push(`${c.name}: lit ${len.toFixed(0)} m of road, but ${want.toFixed(0)} m goes`)
+      }
+    }
+    if (!store) {
+      info = `${cases.length} lines planned right (the store half is skipped in the game: it would change your draft)`
+      return bad
+    }
+    const { d } = eight()
+    store.replaceDraft({ ...d, points: pts, id: 'selftest-pencil' }, null)
+    for (const c of cases) {
+      const before = store.useEditor.getState()
+      const res = store.applyStroke(c.stroke, 1)
+      const after = store.useEditor.getState()
+      if (c.want === 'redraw') {
+        if (!res.ok || after.draft === before.draft || after.past.length !== before.past.length + 1) bad.push(`${c.name}: the stretch was not redrawn as one Undo step`)
+        continue
+      }
+      if (res.ok || after.draft !== before.draft || after.past.length !== before.past.length) bad.push(`${c.name}: the road changed`)
+      const want = store.PENCIL_NOTHING[c.want as keyof typeof store.PENCIL_NOTHING]
+      if (after.message?.text !== want) bad.push(`${c.name}: said "${after.message?.text}", not "${want}"`)
+    }
+    info = `${cases.length} lines: the ${cases.length - 1} that miss change nothing and say how; the one from the road to the road redraws its stretch`
+    return bad
+  })
+
+  check('Pencil on the empty map draws the whole road, which builds and passes the checks; one Undo empties it again (the real editor store)', () => {
+    if (!store) return 'skipped: needs the editor store (run `bun src/editor/selfTest.ts`); in the game it would change your draft'
+    store.replaceDraft(roadDraft(), null)
+    store.clearAll()
+    const empty = store.useEditor.getState().draft
+    const stroke = shaky((t) => ({ x: 30 + 230 * Math.cos(t * TAU), z: -20 + 170 * Math.sin(t * TAU) }), 500, 4, 7, 0, 1.04)
+    const res = store.applyStroke(stroke, 1.5)
+    const bad: string[] = []
+    const s1 = store.useEditor.getState()
+    if (!res.ok || !s1.draft.points.length) return [`the pencil did not make a road: ${res.issues.map((i) => i.message).join(' / ')}`]
+    if (s1.past[s1.past.length - 1] !== empty) bad.push('the new road is not one Undo step')
+    store.previewNow()
+    const s2 = store.useEditor.getState()
+    const verdict = checkVerdict({ fresh: s2.checkedDraft === s2.draft, errors: s2.errors, gates: s2.gates, cleanupErrors: 0 })
+    if (verdict !== 'pass') bad.push(`the drawn road does not pass the checks: ${(s2.gates ?? []).filter((g) => g.level === 'fail').map((g) => g.name).join(', ') || s2.errors[0]?.message}`)
+    store.undo()
+    if (store.useEditor.getState().draft.points.length) bad.push('Undo did not empty the map again')
+    info = `${res.points.length} points, ${Math.round(res.length)} m, checks ${verdict}; Undo empties the map`
+    return bad
+  })
+
+  check('Random track: 30 dice rolls in six worlds all pass every check, start on a straight and fit the world (and the same seed makes the same track)', () => {
+    const worlds = [
+      ...BASE_WORLDS.map((b) => ({ id: b.id, env: b.environment })),
+      { id: 'small-hills', env: { size: 1000, terrain: { kind: 'hills' as const, relief: 10, edge: 'ridge' as const } } },
+      { id: 'stadium', env: { size: 1300, terrain: { kind: 'flat' as const, edge: 'wall' as const } } },
+    ]
+    const bad: string[] = []
+    const ms: number[] = []
+    const shapes: Record<string, number> = {}
+    let bridges = 0
+    let withPieces = 0
+    let tries = 0
+    const lengths: number[] = []
+    for (let k = 0; k < 30; k++) {
+      const w = worlds[k % worlds.length]
+      const seed = 1000 + k * 7919
+      const d: Draft = { id: '', name: 'Random', author: '', description: '', points: [], width: 14, baseWorld: w.id, environment: JSON.parse(JSON.stringify(w.env)), pieces: [], props: [], cores: [], startAt: 0 }
+      const id = `selftest-random-${k}`
+      const r = randomTrack(d, { seed, id })
+      ms.push(r.ms)
+      tries += r.tries
+      if (!r.ok || !r.pick) {
+        bad.push(`${w.id} seed ${seed}: none of ${r.tries} shapes passed (${r.rejects.slice(-2).join(' / ')})`)
+        continue
+      }
+      const pick = r.pick
+      shapes[pick.shape] = (shapes[pick.shape] ?? 0) + 1
+      bridges += pick.bridges ? 1 : 0
+      withPieces += pick.pieces.length ? 1 : 0
+      lengths.push(pick.length)
+      // Judge it again from scratch, the way the editor's Checks panel does.
+      const file = fileOfDraft({ ...d, points: pick.points, pieces: pick.pieces, startAt: pick.startAt }, id)
+      const v = validateTrack(file)
+      if (!v.ok || !v.track) {
+        bad.push(`${w.id} seed ${seed}: does not validate: ${v.errors[0]?.message}`)
+        continue
+      }
+      const run = checkBuiltTrack(buildTrack(v.track, {}))
+      const verdict = checkVerdict({ fresh: true, errors: v.errors, gates: run.gates, cleanupErrors: 0 })
+      const warns = run.gates.filter((g) => g.level === 'warn' && g.name !== 'environment.roadside.billboards')
+      if (verdict !== 'pass') bad.push(`${w.id} seed ${seed}: the checks say ${verdict}: ${run.gates.filter((g) => g.level === 'fail').map((g) => g.name).join(', ')}`)
+      if (warns.length) bad.push(`${w.id} seed ${seed}: warns ${warns.map((g) => g.name).join(', ')}`)
+      const limit = roadBound(w.env)
+      const reach = Math.max(...pick.points.map((p) => Math.max(Math.abs(p.x), Math.abs(p.z))))
+      if (reach > limit) bad.push(`${w.id} seed ${seed}: reaches ${reach.toFixed(0)} m, past the ${limit.toFixed(0)} m edge`)
+      if (k < 3) {
+        const again = randomTrack(d, { seed, id })
+        if (JSON.stringify(again.pick) !== JSON.stringify(pick)) bad.push(`${w.id} seed ${seed}: the same seed made a different track`)
+      }
+    }
+    if (Object.keys(shapes).length < 3) bad.push(`little variety: only ${Object.keys(shapes).join(', ')}`)
+    if (!bridges) bad.push('not one of them had a bridge')
+    ms.sort((a, b) => a - b)
+    lengths.sort((a, b) => a - b)
+    info = `30/30 pass; ${(tries / 30).toFixed(2)} shapes tried each on average; time per track median ${ms[15].toFixed(0)} ms, slowest ${ms[29].toFixed(0)} ms; ${Object.entries(shapes).map(([k, n]) => `${n} ${k}`).join(', ')}; ${bridges} with a bridge, ${withPieces} with pieces; ${(lengths[0] / 1000).toFixed(2)}-${(lengths[lengths.length - 1] / 1000).toFixed(2)} km`
+    return bad
+  })
+
+  check('Random track replaces the whole road as one Undo step, on a road or on the empty map (the real editor store)', () => {
+    if (!store) return 'skipped: needs the editor store (run `bun src/editor/selfTest.ts`); in the game it would change your draft'
+    const bad: string[] = []
+    store.replaceDraft(roadDraft(), null)
+    const before = store.useEditor.getState().draft
+    const r = store.randomRoad(4242)
+    const s1 = store.useEditor.getState()
+    if (!r) return [`Random track refused: ${s1.message?.text}`]
+    if (s1.past.length !== 1 || s1.past[0] !== before) bad.push('it is not one Undo step')
+    if (s1.draft.props.length || s1.draft.cores.length) bad.push('the old props or cores stayed on the new road')
+    for (const k of ['name', 'width', 'baseWorld'] as const) if (s1.draft[k] !== before[k]) bad.push(`${k} changed`)
+    if (JSON.stringify(s1.draft.environment) !== JSON.stringify(before.environment)) bad.push('the world changed')
+    const verdict = checkVerdict({ fresh: s1.checkedDraft === s1.draft, errors: s1.errors, gates: s1.gates, cleanupErrors: 0 })
+    if (verdict !== 'pass') bad.push(`the live preview's checks say ${verdict}`)
+    store.undo()
+    if (JSON.stringify(store.useEditor.getState().draft) !== JSON.stringify(before)) bad.push('Undo did not bring the old track back exactly')
+    store.clearAll()
+    const empty = store.useEditor.getState().draft
+    if (!store.randomRoad(77)) bad.push('Random track refused the empty map')
+    else {
+      store.undo()
+      if (store.useEditor.getState().draft !== empty) bad.push('Undo after Random track on the empty map did not empty it again')
+    }
+    info = `"${s1.message?.text}" (${r.tries} shape${r.tries === 1 ? '' : 's'}, ${r.ms.toFixed(0)} ms); Undo brings the old track back; works on the empty map too`
     return bad
   })
 

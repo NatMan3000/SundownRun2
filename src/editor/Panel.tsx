@@ -18,7 +18,7 @@ import { PALETTE } from '../core/palette'
 import { audio } from '../core/api'
 import { listTracks } from '../track/registry'
 import { TRACK_DEFAULTS, type Piece } from '../track/schema'
-import { BASE_WORLDS } from './draftFile'
+import { BASE_WORLDS, isEmptyDraft } from './draftFile'
 import {
   type Draft,
   type Selection,
@@ -130,12 +130,16 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
           <TextField label="Made by" value={draft.author} onCommit={setAuthor} placeholder="Your name" />
           <TextField label="About this track" value={draft.description} onCommit={setDescription} placeholder="One line for the track list" multiline max={200} />
           <div className="sre-row">
-            <button type="button" className="sre-btn" onClick={() => smoothRoad()} title="Irons the wobbles and kinks out of the whole road. Press again for smoother still; Undo if you don't like it.">
-              Smooth the road
-            </button>
-            <button type="button" className="sre-btn" onClick={() => startDriveToDraw()} title="Drive anywhere in this world: the car lays a road behind it, and it opens here when you finish.">
-              Drive to draw
-            </button>
+            {/* Drive to draw makes a whole new road, so it is offered on the empty map only (driveToDraw.tsx). */}
+            {isEmptyDraft(draft) ? (
+              <button type="button" className="sre-btn" onClick={() => startDriveToDraw()} title="Drive anywhere in this world: the car lays a road behind it, and it opens here when you finish.">
+                Drive to draw
+              </button>
+            ) : (
+              <button type="button" className="sre-btn" onClick={() => smoothRoad()} title="Irons the wobbles and kinks out of the whole road. Press again for smoother still; Undo if you don't like it.">
+                Smooth the road
+              </button>
+            )}
           </div>
         </section>
 
@@ -144,13 +148,14 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
       </div>
 
       <div className="sre-actions">
-        <button type="button" className="sre-btn" onClick={() => saveDraft() && audio.ui('select')}>
+        {isEmptyDraft(draft) && <p className="sre-help sre-actions-why">Draw a road first, then you can save it and test drive it.</p>}
+        <button type="button" className="sre-btn" onClick={() => saveDraft() && audio.ui('select')} disabled={isEmptyDraft(draft)}>
           Save
         </button>
         <button type="button" className="sre-btn" onClick={props.onLibrary}>
           Library
         </button>
-        <button type="button" className="sre-btn is-primary" onClick={testDrive} data-testid="editor-test-drive">
+        <button type="button" className="sre-btn is-primary" onClick={testDrive} disabled={isEmptyDraft(draft)} data-testid="editor-test-drive">
           Test drive
         </button>
         <button type="button" className="sre-btn is-quiet" onClick={props.onExit}>
@@ -527,6 +532,17 @@ function Problems() {
   const fresh = checkedDraft === draft && preview !== 'pending'
   const cleanup = notes?.issues ?? []
   const verdict = checkVerdict({ fresh, errors, gates, cleanupErrors: cleanup.filter((i) => i.level === 'error').length })
+  if (isEmptyDraft(draft)) {
+    // Nothing to check until there is a road.
+    return (
+      <section className="sre-section sre-problems" aria-label="Checks" data-verdict="empty">
+        <span className="sre-section-title">Checks</span>
+        <p className="sre-verdict is-checking" role="status">
+          No road yet, so nothing to check. Draw a loop with the pencil, or press Random track.
+        </p>
+      </section>
+    )
+  }
   const fromGates = fresh && gates ? gateItems(gates, draft, rc) : []
   const fromValidator = (list: typeof errors, tone: 'bad' | 'warn'): CheckItem[] => list.map((e) => ({ tone, ...plainIssue(e.path, e.message), at: issueLocation(e.path, draft, rc) }))
   const fromCleanup = (level: 'error' | 'warning' | 'info', tone: CheckItem['tone']): CheckItem[] => cleanup.filter((i) => i.level === level).map((i) => ({ tone, title: i.message, at: i.at ?? null }))

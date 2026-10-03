@@ -58,16 +58,29 @@ export const SectionIcon = () => (
     <path d="M7 10.5l-1.5-3M17 10.5l1.5-3" />
   </Svg>
 )
-export const PlaceIcon = () => (
+/**
+ * Place pieces: a road running away from you (like a road sign), with a
+ * boost pad's chevrons on it and a plus beside it, so it reads "put things
+ * on the road".
+ */
+export const PiecesIcon = () => (
   <Svg>
-    <rect x="4" y="9" width="12" height="6" rx="1.5" />
-    <path d="M7 10.5l2.5 1.5L7 13.5M11 10.5l2.5 1.5L11 13.5" />
-    <path d="M19 4v6M16 7h6" />
+    <path d="M3 21.5L8.8 4.5M18 21.5L12.2 4.5" />
+    <path d="M7.6 16.6l2.9-2.6 2.9 2.6M7.9 20.3l2.6-2.4 2.6 2.4" />
+    <path d="M19.5 2.5v6M16.5 5.5h6" />
   </Svg>
 )
-export const HandIcon = () => (
+/** A dice showing five: Random track. */
+export const DiceIcon = () => (
   <Svg>
-    <path d="M8 12V6a1.5 1.5 0 013 0v5M11 11V4.5a1.5 1.5 0 013 0V11M14 11V6a1.5 1.5 0 013 0v7c0 4-2.5 7-6 7-2.5 0-4-1.3-5.5-3.5L3.8 13a1.5 1.5 0 012.4-1.8L8 13.5" />
+    <rect x="3.5" y="3.5" width="17" height="17" rx="4" />
+    <g fill="currentColor" stroke="none">
+      <circle cx="8.4" cy="8.4" r="1.5" />
+      <circle cx="15.6" cy="8.4" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="8.4" cy="15.6" r="1.5" />
+      <circle cx="15.6" cy="15.6" r="1.5" />
+    </g>
   </Svg>
 )
 export const UndoIcon = (p: { flip?: boolean }) => (

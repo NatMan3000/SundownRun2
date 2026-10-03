@@ -177,28 +177,63 @@ function round3(v: number): number {
 // ---------------------------------------------------------------- redrawing part of the road
 
 /**
- * A pencil line that starts AND ends on the existing road (and is not a
- * whole loop) redraws just that stretch: the road between the two ends is
- * swapped for the new line. Returns the full new loop to clean up, or
- * null if this stroke is a whole new road.
+ * What a pencil line would do to the road that is there, worked out live
+ * while it is drawn (so the map can show it before you let go) and again
+ * when you let go:
+ *
+ *   redraw    it starts and ends on the road, apart from each other: the
+ *             road between the two ends (the shorter way round) is swapped
+ *             for the new line. `loop` is the whole new road to clean up,
+ *             `replaced` the stretch of old road that goes (to light it up)
+ *   nothing   it won't change anything, and `why` says what to do:
+ *               'start'    it didn't start on the road
+ *               'end'      it doesn't end on the road (yet)
+ *               'together' it ends back where it started (a loop, or a
+ *                          wiggle off the road and back to the same spot)
+ *               'short'    it is too short to be a line yet
+ *
+ * A pencil line never replaces the whole road: a brand new road starts from
+ * an empty map (Clear all, then draw a loop).
  */
-export function sectionRedraw(raw: readonly P[], points: readonly RoadPoint[], width: number): P[] | null {
-  if (raw.length < 4 || points.length < 4) return null
+export type RedrawPlan =
+  | { kind: 'redraw'; loop: P[]; replaced: P[] }
+  | { kind: 'nothing'; why: 'start' | 'end' | 'together' | 'short' }
+
+/** How close to the road (metres) a line's end must be to join it, for a road this wide. */
+export function attachDistance(width: number): number {
+  return Math.max(25, width * 1.8)
+}
+
+/** Ends closer together than this (metres) make a loop, not a redraw of the stretch between them. */
+const ENDS_TOGETHER = 60
+
+export function planRedraw(raw: readonly P[], points: readonly RoadPoint[], width: number): RedrawPlan {
+  if (raw.length < 4 || points.length < 4) return { kind: 'nothing', why: 'short' }
   const rc = roadCurve(points)
   const first = raw[0]
   const last = raw[raw.length - 1]
-  const attach = Math.max(25, width * 1.8)
+  const attach = attachDistance(width)
   const a = nearestOnRoad(rc, first)
+  if (a.distance > attach) return { kind: 'nothing', why: 'start' }
   const b = nearestOnRoad(rc, last)
-  if (a.distance > attach || b.distance > attach) return null
-  if (dist(first, last) < 60) return null // ends together: a whole new loop
+  if (b.distance > attach) return { kind: 'nothing', why: 'end' }
+  if (dist(first, last) < ENDS_TOGETHER) return { kind: 'nothing', why: 'together' }
   const forward = metresBetween(rc, a.at, b.at)
   const backward = metresBetween(rc, b.at, a.at)
   // Replace the shorter way round between the two ends.
   const keep = forward <= backward ? { from: b.at, to: a.at } : { from: a.at, to: b.at }
   const kept = sampleBetween(rc, keep.from, keep.to)
   const line = forward <= backward ? [...raw] : [...raw].reverse()
-  return [...kept, ...line]
+  return { kind: 'redraw', loop: [...kept, ...line], replaced: sampleBetween(rc, keep.to, keep.from) }
+}
+
+/**
+ * The whole new road for a pencil line that redraws a stretch (see
+ * planRedraw), or null if the line would not change anything.
+ */
+export function sectionRedraw(raw: readonly P[], points: readonly RoadPoint[], width: number): P[] | null {
+  const plan = planRedraw(raw, points, width)
+  return plan.kind === 'redraw' ? plan.loop : null
 }
 
 /** Curve samples from at `from` forward to at `to`. */
