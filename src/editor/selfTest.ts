@@ -67,6 +67,7 @@ import { setStretchTools, toolRows } from './selfTestTools'
 import { setSmoothTools, smoothRows } from './selfTestSmooth'
 import { builderRows } from './selfTestBuilder'
 import { setTrackModules, trackRows } from './selfTestTracks'
+import { pieceRows } from './selfTestPieces'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
 type EditorStore = typeof import('./draft')
@@ -1606,6 +1607,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- which track this is: New track, Save, Save as new (selfTestTracks.ts)
 
   trackRows(check, store)
+
+  // ---------------------------------------------------------------- placing pieces by their middle, and Auto bank's angle (selfTestPieces.ts)
+
+  pieceRows(check, store)
 
   return results
 }

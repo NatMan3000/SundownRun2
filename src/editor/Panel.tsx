@@ -64,6 +64,9 @@ import { ColourField, Segmented, SelectField, SliderField, TextField } from './f
 import { issueLocation, roadGeometry } from './mapDraw'
 import { checkVerdict } from './checks'
 import { pieceLabel } from './pieces'
+import { setPieceLength } from './draft'
+import { liveRuntime } from './fixActions'
+import { builtBankAngle } from './bankAngle'
 import { startDriveToDraw } from './driveToDraw'
 import { metresBetween, roadLength } from './road'
 import { cornerAt, roadLine } from './shape'
@@ -554,22 +557,39 @@ function HeightField(p: { from: number; to: number; draft: Draft }) {
   )
 }
 
-/** The Bank tool's one control: the tilt in degrees, or Auto (the game banks it from the corner). */
+/**
+ * The Bank tool's one control: the tilt in degrees, or Auto (the game banks it
+ * from the corner). On Auto it says the tilt the game gives this stretch now,
+ * "Auto (8°)", read from the built road once the live preview has caught up
+ * with the last change (bankAngle.ts), and the slider's thumb sits there, so
+ * dragging it starts from the tilt the road already has.
+ */
 function BankField(p: { from: number; to: number; draft: Draft }) {
   const idx = sectionPoints(p.draft.points.length, p.from, p.to)
   const mid = p.draft.points[idx[Math.floor((idx.length - 1) / 2)]]
   const set = mid?.bank !== undefined
+  const checkedDraft = useEditor((s) => s.checkedDraft)
+  const preview = useEditor((s) => s.preview)
+  const auto = useMemo(() => {
+    if (set) return null
+    const live = liveRuntime()
+    return live ? builtBankAngle(live, p.from, p.to) : null
+    // checkedDraft and preview are here so this runs again when the live preview is rebuilt (liveRuntime reads them from the store).
+  }, [set, p.draft, p.from, p.to, checkedDraft, preview])
+  const autoValue = auto ? Math.max(-10, Math.min(45, auto.into)) : 0
   return (
     <SliderField
+      // A fresh slider when it switches between a set bank and Auto, so it never shows the old number for a frame.
+      key={set ? 'set' : 'auto'}
       label="Bank (tilt)"
-      value={mid?.bank ?? 0}
+      value={set ? (mid?.bank ?? 0) : autoValue}
       min={-10}
       max={45}
       step={1}
-      format={(v) => (set ? `${v}°` : 'Auto')}
+      format={(v) => (set || v !== autoValue ? `${v}°` : auto ? `Auto (${auto.into}°)` : 'Auto')}
       reset={set ? { label: 'Auto', onClick: () => setSectionBank(p.from, p.to, null) } : undefined}
       onCommit={(v) => setSectionBank(p.from, p.to, v)}
-      help="Degrees into the corner. Negative tilts it the wrong way (off-camber)."
+      help="Degrees into the corner. Negative tilts it the wrong way (off-camber). Auto: the game tilts it to suit the corner, and shows how much."
     />
   )
 }
@@ -657,7 +677,7 @@ function PieceFields(p: { piece: Piece; index: number; roadWidth: number }) {
             format={(v) => `${v.toFixed(1)}x`}
             onCommit={(v) => updatePiece(index, (x) => x.type === 'boost' && (x.strength = v))}
           />
-          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.boost.length} min={6} max={24} step={1} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'boost' && (x.length = v))} />
+          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.boost.length} min={6} max={24} step={1} unit="m" onCommit={(v) => setPieceLength(index, v)} />
           {sideField(piece.width ?? TRACK_DEFAULTS.boost.width)}
         </>
       )
@@ -665,7 +685,7 @@ function PieceFields(p: { piece: Piece; index: number; roadWidth: number }) {
       return (
         <>
           <SliderField label="Height" value={piece.height ?? TRACK_DEFAULTS.ramp.height} min={1} max={5} step={0.2} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'ramp' && (x.height = v))} help="Taller = more air." />
-          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.ramp.length} min={8} max={24} step={1} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'ramp' && (x.length = v))} help="Longer = gentler." />
+          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.ramp.length} min={8} max={24} step={1} unit="m" onCommit={(v) => setPieceLength(index, v)} help="Longer = gentler." />
           {sideField(piece.width ?? TRACK_DEFAULTS.ramp.width)}
         </>
       )
@@ -686,7 +706,7 @@ function PieceFields(p: { piece: Piece; index: number; roadWidth: number }) {
             ]}
             onChange={(v) => updatePiece(index, (x) => x.type === 'wallride' && (x.side = v))}
           />
-          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.wallride.length} min={40} max={300} step={10} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'wallride' && (x.length = v))} />
+          <SliderField label="Length" value={piece.length ?? TRACK_DEFAULTS.wallride.length} min={40} max={300} step={10} unit="m" onCommit={(v) => setPieceLength(index, v)} help="Grows or shrinks from the middle: both ends move, the middle stays put." />
           <SliderField label="Wall height" value={piece.height ?? TRACK_DEFAULTS.wallride.height} min={5} max={14} step={1} unit="m" onCommit={(v) => updatePiece(index, (x) => x.type === 'wallride' && (x.height = v))} />
         </>
       )

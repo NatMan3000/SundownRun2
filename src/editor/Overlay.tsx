@@ -36,7 +36,10 @@
 //             tag) selects it: the panel says what's wrong and offers
 //             Fix it, or takes you to the right tool.
 //    Place    click to drop the chosen piece (a see-through preview
-//             follows the mouse and snaps to the road).
+//             follows the mouse and snaps to the road). A wall ride
+//             shows the whole wall it would place, its middle under
+//             the mouse; a click puts it there, or drag along the
+//             road to draw how long it is.
 //    Height   drag along the road to pick a stretch (or click: the raised
 //    Bank     stretch, bank or width already there, or a sensible stretch
 //    Width    around the click), then set it in the panel. With Select, a
@@ -60,7 +63,8 @@ import { inputState } from '../core/controls'
 import { closeMap } from '../core/session'
 import { audio } from '../core/api'
 import { askNewTrack, askVersion } from './askFirst'
-import { PLACE_TOOLS, toolFor } from './pieces'
+import { PLACE_TOOLS, toolFor, wallRideFromDrag, wallRideSide, wallRideStartFor } from './pieces'
+import { TRACK_DEFAULTS } from '../track/schema'
 import {
   type BendView,
   type EditorTool,
@@ -83,6 +87,7 @@ import {
   gestureStartAt,
   moveBend,
   placeAt,
+  placeWallRideSpan,
   redo,
   roadBoundFor,
   draftCrossings,
@@ -99,13 +104,15 @@ import { type MapExtras, type Pick, type ShapeView, crossingAtScreen, drawMap, m
 import { selectProblem } from './fixActions'
 import { isStretchTool, runAt } from './stretchRuns'
 import { marksOf, pickStretchAt, selectRun, stretchHoverLabel, stretchToPick } from './stretchTools'
-import { type RedrawPlan, type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, planRedraw, straightPencilLine, wrapAt } from './road'
+import { type RedrawPlan, type RoadHit, frameAt, metresBetween, nearestOnRoad, planRedraw, straightPencilLine, wrapAt } from './road'
 import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
 import { view, panBy, screenToWorld, setView, worldToScreen, zoomAt, fitBox } from './view'
 import { look3dOn } from './look3d'
 
 /** Pixels the pointer must move before the pencil adds another point. */
 const PENCIL_STEP_PX = 3
+/** Place tool, a wall ride picked: pixels the pointer must move with the button down before it is a drag (draw its length), not a click. */
+const PLACE_DRAG_PX = 6
 /** Held-key pan speed, screen pixels per second. */
 const KEY_PAN_PX = 700
 
@@ -212,6 +219,8 @@ export function Overlay() {
     let hover: P | null = null
     let hoverPick: Pick | null = null
     let ghost: MapExtras['ghost'] = null
+    // Place tool, a wall ride picked, button down on the road: where it went down, and whether it has moved (a drag draws the wall ride's length).
+    let placeDrag: { at: number; q: P; x: number; y: number; moved: boolean } | null = null
     // Pencil: the steady pen (the line trails it) and where the pointer really is.
     let pen: SteadyPen | null = null
     let penTo: P | null = null
@@ -293,9 +302,9 @@ export function Overlay() {
           if (!piece) return
           const rc = roadGeometry(d.points, d.width).rc
           const hit = nearestOnRoad(rc, target)
-          // Wall rides are grabbed by their middle but stored by where they start.
-          const at = piece.type === 'wallride' ? hit.at - wallrideHalfAt(rc, piece.at, piece.length) : hit.at
-          piece.at = Math.round(wrapAt(at, d.points.length) * 100) / 100
+          // Wall rides are grabbed by their middle but stored by where they start (their length stays the same).
+          if (piece.type === 'wallride') piece.at = wallRideStartFor(rc, hit.at, piece.length ?? TRACK_DEFAULTS.wallride.length)
+          else piece.at = Math.round(wrapAt(hit.at, d.points.length) * 100) / 100
           if (piece.type === 'boost' || piece.type === 'ramp') {
             const pieceW = piece.width ?? (piece.type === 'boost' ? 5 : 8)
             const room = Math.max(0, d.width / 2 - pieceW / 2 - 0.3)
@@ -570,6 +579,14 @@ export function Overlay() {
         return
       }
       if (s.tool === 'place') {
+        // A wall ride: a click puts its middle here, a drag along the road draws how long it is (decided when the button comes up).
+        if (wallRideSide(s.placeKind)) {
+          const hit = nearestOnRoad(roadGeometry(s.draft.points, s.draft.width).rc, q)
+          if (hit.distance <= s.draft.width / 2 + 12) {
+            placeDrag = { at: hit.at, q, x: e.clientX, y: e.clientY, moved: false }
+            return
+          }
+        }
         placeAt(q)
         needsDraw = true
         return
@@ -665,13 +682,27 @@ export function Overlay() {
       } else if (s.tool === 'select') {
         hoverPick = pickAt(e.clientX, e.clientY)
         setCursor()
+      } else if (placeDrag) {
+        // Drawing a wall ride: once the pointer has moved, the wall covers the stretch dragged.
+        if (!placeDrag.moved && Math.hypot(e.clientX - placeDrag.x, e.clientY - placeDrag.y) >= PLACE_DRAG_PX) placeDrag.moved = true
+        const side = wallRideSide(s.placeKind)
+        if (placeDrag.moved && side) {
+          const rc = roadGeometry(s.draft.points, s.draft.width).rc
+          const span = wallRideFromDrag(rc, placeDrag.at, nearestOnRoad(rc, q).at)
+          const f = frameAt(rc, span.at)
+          ghost = { kind: s.placeKind, at: f.p, dir: f.dir, wall: { at: span.at, length: span.length, side, dragged: { from: span.from, to: span.to }, cut: span.cut } }
+        }
       } else if (s.tool === 'place') {
         const tool = toolFor(s.placeKind)
         if (tool.onRoad) {
           const g = roadGeometry(s.draft.points, s.draft.width)
           const hit = nearestOnRoad(g.rc, q)
           if (hit.distance < s.draft.width / 2 + 12) {
-            ghost = { kind: s.placeKind, at: hit.p, dir: frameAt(g.rc, hit.at).dir }
+            // A wall ride shows the whole wall a click would place, its middle under the pointer.
+            const side = wallRideSide(s.placeKind)
+            const length = TRACK_DEFAULTS.wallride.length
+            const wall = side ? { at: wallRideStartFor(g.rc, hit.at, length), length, side, dragged: null, cut: null } : undefined
+            ghost = { kind: s.placeKind, at: hit.p, dir: frameAt(g.rc, hit.at).dir, wall }
           } else ghost = null
         } else ghost = { kind: s.placeKind, at: q, dir: { x: 1, z: 0 } }
       }
@@ -700,6 +731,19 @@ export function Overlay() {
         endBend()
         bendHover()
         setCursor()
+        needsDraw = true
+        return
+      }
+      if (placeDrag) {
+        // A wall ride: a drag places one covering the stretch dragged, a click one with its middle where you clicked.
+        const pd = placeDrag
+        placeDrag = null
+        if (pd.moved) {
+          const d = useEditor.getState().draft
+          placeWallRideSpan(pd.at, nearestOnRoad(roadGeometry(d.points, d.width).rc, screenToWorld(e.clientX, e.clientY)).at)
+        } else placeAt(pd.q)
+        // The hover preview comes back when the pointer next moves (not on top of the one just placed).
+        ghost = null
         needsDraw = true
         return
       }
@@ -1074,12 +1118,6 @@ function pickWorld(pick: Pick): P | null {
   const p = d.pieces[pick.index]
   if (!p) return null
   return pieceScreen(roadGeometry(d.points, d.width).rc, p).centre
-}
-
-/** How far (in `at` units) a wall ride's middle sits after its start. */
-function wallrideHalfAt(rc: ReturnType<typeof roadGeometry>['rc'], at: number, length: number | undefined): number {
-  const mid = advanceAt(rc, at, (length ?? 120) / 2)
-  return wrapAt(mid - at, rc.points.length)
 }
 
 /**

@@ -45,7 +45,7 @@ import { crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
 import { keepBridgesClear } from './bankBridges'
 import { type StretchTool, isStretchTool } from './stretchRuns'
 import type { P } from './geom'
-import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
+import { type PlaceKind, WALLRIDE_MAX, WALLRIDE_MIN, makeCore, makeProp, makeRoadPiece, toolFor, wallRideFromDrag, wallRideResized, wallRideSide } from './pieces'
 import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
 import {
   type ShapeResult,
@@ -1013,9 +1013,9 @@ export function placeAt(q: P): boolean {
       audio.ui('select')
       return true
     }
-    const piece = makeRoadPiece(kind, hit, d.width / 2)
+    const piece = makeRoadPiece(kind, hit, d.width / 2, rc)
     if (!piece) return false
-    let note = `${tool.label} placed.`
+    let note = piece.type === 'wallride' ? `${tool.label} placed, its middle where you clicked. Drag along the road instead to draw how long it is.` : `${tool.label} placed.`
     if (piece.type === 'loop') {
       // A loop needs a straight, level run-in either side or cars hit it instead of riding it.
       const spot = loopSpot(hit.at)
@@ -1050,6 +1050,52 @@ export function placeAt(q: P): boolean {
   say(`${tool.label} placed.`, 'good')
   audio.ui('select')
   return true
+}
+
+/**
+ * Place tool, a wall ride picked, and a drag along the road from `a` to `b`
+ * (both `at` values): a wall ride that covers the stretch dragged (pieces.ts
+ * wallRideFromDrag). One Undo step, and it ends up selected.
+ */
+export function placeWallRideSpan(a: number, b: number): boolean {
+  const s = useEditor.getState()
+  const d = s.draft
+  const side = wallRideSide(s.placeKind)
+  if (!side || isEmptyDraft(d)) return false
+  const span = wallRideFromDrag(roadCurve(d.points), a, b)
+  const piece: Piece = { type: 'wallride', at: span.at, side }
+  if (span.length !== TRACK_DEFAULTS.wallride.length) piece.length = span.length
+  commit((x) => {
+    x.pieces.push(piece)
+  })
+  useEditor.setState({ selection: { kind: 'piece', index: useEditor.getState().draft.pieces.length - 1 } })
+  const label = toolFor(s.placeKind).label
+  say(
+    span.cut === 'short'
+      ? `${label} placed. That was shorter than a wall ride can be, so it's ${WALLRIDE_MIN} m long, in the middle of what you dragged.`
+      : span.cut === 'long'
+        ? `${label} placed. That was longer than a wall ride can be, so it's ${WALLRIDE_MAX} m long, in the middle of what you dragged.`
+        : `${label} placed: ${span.length} m long, just where you dragged.`,
+    'good',
+  )
+  audio.ui('select')
+  return true
+}
+
+/**
+ * A new Length for piece `index`. A wall ride grows or shrinks from its
+ * middle (both ends move the same amount), so its middle stays put. Boost
+ * pads and ramps are stored by their middle already, so they just change.
+ */
+export function setPieceLength(index: number, length: number): void {
+  commit((d) => {
+    const p = d.pieces[index]
+    if (!p) return
+    if (p.type === 'wallride') {
+      p.at = wallRideResized(roadCurve(d.points), p.at, p.length, length)
+      p.length = length
+    } else if (p.type === 'boost' || p.type === 'ramp') p.length = length
+  })
 }
 
 /** Delete whatever is selected (a piece, prop, core or road point). */

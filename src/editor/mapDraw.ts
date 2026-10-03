@@ -50,8 +50,8 @@ export interface MapExtras {
   /** The pencil line being drawn right now (world points). */
   stroke: readonly P[]
   hover: P | null
-  /** Place tool: where the thing would go if you clicked now. */
-  ghost: { kind: PlaceKind; at: P; dir: P } | null
+  /** Place tool: where the thing would go if you clicked now (a wall ride: the whole wall, see GhostWall). */
+  ghost: { kind: PlaceKind; at: P; dir: P; wall?: GhostWall } | null
   /** Select tool: the thing under the pointer. */
   hoverPick: Pick | null
   /** Where the road crosses itself, and which road is on top (bridges.ts roadCrossings). */
@@ -68,6 +68,18 @@ export interface MapExtras {
   marks?: StretchMarks | null
   /** Height, Bank or Width, pointer over the road: the stretch a click there would pick, and its words. */
   stretchHover?: { from: number; to: number; label: string } | null
+}
+
+/** Place tool, a wall ride picked: the wall ride a click (or the drag so far) would place. */
+export interface GhostWall {
+  /** Where it starts and how long it is, as it would be stored. */
+  at: number
+  length: number
+  side: 'left' | 'right' | 'both'
+  /** While dragging: the stretch dragged so far (drawn like the Bank tool's pick). Null while just hovering. */
+  dragged: { from: number; to: number } | null
+  /** The drag was too short or too long, so the wall ride sits on its middle at the nearest allowed length. */
+  cut: 'short' | 'long' | null
 }
 
 /** What the map shows for a Straight or Curve in progress. */
@@ -171,7 +183,7 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
   }
   drawProps(ctx, d.props, s.selection, x.hoverPick)
   drawCores(ctx, d.cores, s.selection, x.hoverPick)
-  if (x.ghost) drawGhost(ctx, x.ghost, d.width)
+  if (x.ghost) drawGhost(ctx, x.ghost, d.width, g.rc)
   if (s.mode === 'map') {
     drawParkZones(ctx)
     drawLabels(ctx, s, g.rc)
@@ -910,7 +922,7 @@ function nearestAtOn(rc: RoadCurve, p: P): number {
 }
 
 /** The selected section: a bright band along the road with an end cap at each end, and how long it is. */
-function drawSection(ctx: CanvasRenderingContext2D, rc: RoadCurve, from: number, to: number): void {
+function drawSection(ctx: CanvasRenderingContext2D, rc: RoadCurve, from: number, to: number, label = true): void {
   const pts = stretchPoints(rc, from, to)
   ctx.save()
   ctx.lineCap = 'round'
@@ -936,7 +948,7 @@ function drawSection(ctx: CanvasRenderingContext2D, rc: RoadCurve, from: number,
   ctx.restore()
   // How long it is (while it is being dragged out too).
   const metres = metresBetween(rc, from, to)
-  if (metres >= 1) {
+  if (label && metres >= 1) {
     const mid = pts[Math.floor(pts.length / 2)]
     const f = frameAt(rc, nearestAtOn(rc, mid))
     const m = worldToScreen(mid.x, mid.z)
@@ -989,7 +1001,7 @@ export function wallRideReach(rc: RoadCurve, at: number, length: number): { from
  * wall stands full height, thinning and fading where it grows in and fades out,
  * so the map shows the whole wall the game builds, not just the piece's length.
  */
-function drawWallRide(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, length: number, side: 'left' | 'right' | 'both', roadWidth: number): void {
+function drawWallRide(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, length: number, side: 'left' | 'right' | 'both', roadWidth: number, alpha = 1): void {
   const reach = wallRideReach(rc, at, length)
   const steps = Math.max(24, Math.ceil((reach.endM - reach.startM) / 4))
   ctx.save()
@@ -1010,7 +1022,7 @@ function drawWallRide(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, 
       const b = spot(m)
       const h = reach.height(m - (reach.endM - reach.startM) / steps / 2)
       if (h > 0.01) {
-        ctx.globalAlpha = 0.3 + 0.7 * h
+        ctx.globalAlpha = (0.3 + 0.7 * h) * alpha
         ctx.lineWidth = 1.5 + 3.5 * h
         line(ctx, [a, b], false)
         ctx.stroke()
@@ -1174,7 +1186,8 @@ export function drawCoreIcon(ctx: CanvasRenderingContext2D, sx: number, sy: numb
 }
 
 /** Place tool: a see-through preview of what a click would drop. */
-function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['ghost']>, roadWidth: number): void {
+function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['ghost']>, roadWidth: number, rc: RoadCurve): void {
+  if (ghost.wall && rc.curve.length) return drawWallGhost(ctx, rc, ghost.wall, roadWidth)
   const { sx, sy } = worldToScreen(ghost.at.x, ghost.at.z)
   if (ghost.kind === 'props') return drawPropIcon(ctx, sx, sy, 'medium', 0.55)
   if (ghost.kind === 'cores') return drawCoreIcon(ctx, sx, sy, 0.55)
@@ -1186,6 +1199,25 @@ function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['
     start: { length: 2, width: roadWidth + 3 },
   }
   drawPieceIcon(ctx, ghost.kind, sx, sy, ghost.dir, sizes[ghost.kind] ?? { length: 16, width: roadWidth }, toolFor(ghost.kind).colour, 0.55)
+}
+
+/**
+ * Place tool, a wall ride picked: the wall ride it would place, drawn the way a
+ * selected one is (its whole wall along the edge, growing in and fading out,
+ * and its badge in the middle with the selection ring), a little see-through
+ * because it isn't there yet. While dragging, the stretch dragged is lit like
+ * the Bank tool's pick, and a pill says how long the wall ride will be.
+ */
+function drawWallGhost(ctx: CanvasRenderingContext2D, rc: RoadCurve, w: GhostWall, roadWidth: number): void {
+  if (w.dragged) drawSection(ctx, rc, w.dragged.from, w.dragged.to, false)
+  drawWallRide(ctx, rc, w.at, w.length, w.side, roadWidth, 0.8)
+  const mid = frameAt(rc, advanceAt(rc, w.at, w.length / 2))
+  const { sx, sy } = worldToScreen(mid.p.x, mid.p.z)
+  const kind: PlaceKind = w.side === 'both' ? 'wallride-both' : w.side === 'left' ? 'wallride-left' : 'wallride-right'
+  drawPieceIcon(ctx, kind, sx, sy, mid.dir, { length: w.length, width: roadWidth }, PALETTE.wallRide, 0.8)
+  ring(ctx, sx, sy, 20, PALETTE.uiText, 2)
+  const words = w.cut === 'short' ? `${w.length} m (the shortest)` : w.cut === 'long' ? `${w.length} m (the longest)` : `${w.length} m`
+  placePill(ctx, w.side === 'both' ? `HALF-PIPE ${words}` : `WALL RIDE ${words}`, sx + mid.right.x * 46, sy + mid.right.z * 46, [0, 24, -24, 48], PALETTE.wallRide)
 }
 
 // ---------------------------------------------------------------- pins and scale (the compass is beside the 3D button, Look3dUi.tsx)
