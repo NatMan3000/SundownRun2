@@ -47,7 +47,7 @@ import {
   tightestOnRoad,
 } from './shape'
 import { validateTrack } from '../track/validate'
-import { buildTrack } from '../track/build'
+import { buildTrack, trackInternals } from '../track/build'
 import { sampleClosedSpline } from '../track/spline'
 import type { NearestHit, TrackFrame, TrackRuntime } from '../track/types'
 import afterglowJson from '../../tracks/afterglow.json'
@@ -1016,10 +1016,24 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     if (!before) return [...bad, 'the copy did not build']
     const hit = {} as NearestHit
     const frame = { position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3() } as TrackFrame
-    /** The road's centre on `t` nearest (x, y, z): the exact spot between samples, not the nearest sample. */
+    /**
+     * The road's centre on `t` nearest (x, y, z): the exact spot between samples, not the nearest
+     * sample. Its height is where the road would sit unbanked (the height the points give): an
+     * open road banks about its low edge, so the bank's lift comes off the built middle.
+     */
     const roadAt = (t: TrackRuntime, x: number, y: number, z: number, hint?: number) => {
       t.nearest(x, y, z, hit, hint)
-      return t.frameAt(hit.s, frame).position
+      const lift = trackInternals(t)?.pivotLift
+      // Looked for again from the built road's own height: from below a banked (lifted) road
+      // on a steep grade, the nearest point in 3D is a little along the road from (x, z).
+      if (lift) t.nearest(x, t.frameAt(hit.s, frame).position.y, z, hit, hit.s)
+      const p = t.frameAt(hit.s, frame).position
+      if (lift) {
+        const f = hit.s / t.samples.ds
+        const i = Math.floor(f) % t.samples.count
+        p.y -= lift[i] + (lift[(i + 1) % t.samples.count] - lift[i]) * (f - Math.floor(f))
+      }
+      return p
     }
     /** Worst height change at the original points, and every 2 m of road that stayed put on the map. */
     const drift = (after: TrackRuntime) => {
@@ -1035,11 +1049,12 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
       let hint: number | undefined
       for (let i = 0; i < B.count; i += 2) {
         if (B.surface[i] === 1) continue // a loop
+        const yB = B.py[i] - (trackInternals(before)?.pivotLift[i] ?? 0)
         const q = roadAt(after, B.px[i], B.py[i], B.pz[i], hint)
         hint = hit.s
         if (Math.hypot(q.x - B.px[i], q.z - B.pz[i]) > 0.3) continue
         spots++
-        road = Math.max(road, Math.abs(q.y - B.py[i]))
+        road = Math.max(road, Math.abs(q.y - yB))
       }
       return { points, road, spots }
     }

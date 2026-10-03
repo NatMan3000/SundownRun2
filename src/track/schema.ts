@@ -62,15 +62,21 @@ export interface RoadSpec {
 export interface RoadPoint {
   x: number
   z: number
-  /** Absolute surface height in metres. Omit to sit on the ground. */
+  /**
+   * Height in metres where the road sits here before it banks. On a bank an open road's
+   * LOW edge stays at this height and the rest of the road tilts up from it (a road with
+   * barriers tilts about its middle instead). Omit to sit on the ground.
+   */
   y?: number
-  /** Metres above the ground here (bridges, crests). Ignored when y is given. Default 0. */
+  /** Metres above the ground here (bridges, crests), measured the same way as y. Ignored when y is given. Default 0. */
   lift?: number
   /** Road width here in metres. */
   width?: number
   /**
    * Bank in degrees INTO the corner here, overriding auto-banking.
    * 0 = flat, negative = off-camber. On a straight, positive lifts the left edge.
+   * An open road tilts up from its low edge (which stays at the point's height); a road with
+   * barriers tilts about its middle.
    */
   bank?: number
 }

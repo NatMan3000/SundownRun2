@@ -857,6 +857,94 @@ export function barrierStance(t: TrackRuntime): { face: number; faceAt: number; 
   return { face, faceAt, vAngle, vAt, ditch, ditchAt }
 }
 
+/** Banks from this many degrees count for the low-edge ditch check (gentler ones barely tilt). */
+const LOW_DITCH_BANK_DEG = 2
+/**
+ * How far out past an open road's low edge (flat metres) the ground is looked at for a ditch:
+ * where a car on the low lane, or just off it, can put a wheel. Further out the ground is the
+ * world's own (a hollow in the hills, or the cut under a bridge passing over).
+ */
+const LOW_DITCH_REACH = 6
+/** The deepest a ditch beside an open road's low edge may be (metres below the edge). */
+export const LOW_DITCH_MAX = 0.2
+/** How far an open road's low edge may sit below where the road would be unbanked (metres). */
+export const LOW_SINK_MAX = 0.05
+
+/**
+ * An open road's LOW edge on a bank (GitHub #9). The low edge must stay where the road would
+ * sit unbanked (on the ground, for a road on the ground) and the ground beside it level with
+ * it, so a car on the low lane, or just off it, has nothing to drop into.
+ *  - sink: how far the low edge sits below where the road would be unbanked: the middle less
+ *    the lift the bank's pivot put there (road.ts). Banked about its middle, it sank by half
+ *    the width x sin(bank). The deepest anywhere on road banked LOW_DITCH_BANK_DEG or more.
+ *  - ditch: ground that dips below the edge and rises again further out (ground that simply
+ *    falls away from a road on a bank of fill is not one): at each spot out to
+ *    LOW_DITCH_REACH, the lower of the edge and the highest ground further out, less the
+ *    ground there. The deepest, on road on the ground banked LOW_DITCH_BANK_DEG or more.
+ * null when no road is banked that much.
+ */
+export function lowEdgeDitch(t: TrackRuntime): { depth: number; at: number; out: number; bankDeg: number; banked: number; sink: number; sinkAt: number; sinkBankDeg: number } | null {
+  const S = t.samples
+  const minBank = (LOW_DITCH_BANK_DEG * Math.PI) / 180
+  const g = new Float64Array(Math.round(LOW_DITCH_REACH * 2))
+  const lift = trackInternals(t)?.pivotLift
+  let depth = 0
+  let at = 0
+  let out = 0
+  let bankDeg = 0
+  let banked = 0
+  let sink = 0
+  let sinkAt = 0
+  let sinkBankDeg = 0
+  let any = false
+  for (let i = 0; i < S.count; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road || Math.abs(S.bank[i]) < minBank) continue
+    any = true
+    const low = S.ry[i] > 0 ? -1 : 1
+    // Unbanked: the middle less its lift. The low edge: the middle plus the right vector's drop.
+    const below = S.py[i] - (lift ? lift[i] : 0) - (S.py[i] + S.ry[i] * low * S.halfWidth[i])
+    if (below > sink) {
+      sink = below
+      sinkAt = i * S.ds
+      sinkBankDeg = (Math.abs(S.bank[i]) * 180) / Math.PI
+    }
+  }
+  // Only road on the ground for LOW_DITCH_REACH metres either way: where a road on its bank of
+  // fill lifts off into a bridge, the fill ends in a slope beside it on purpose.
+  const reach = Math.ceil(LOW_DITCH_REACH / S.ds)
+  const onGround = (i: number) => S.surface[i] === SURFACE_CODE.road && S.grounded[i] === 1
+  let off = 0
+  for (let k = -reach; k <= reach; k++) if (!onGround((k + S.count) % S.count)) off++
+  for (let i = 0; i < S.count; i++) {
+    const clear = off === 0
+    off += (onGround((i - reach + S.count) % S.count) ? 0 : -1) + (onGround((i + reach + 1) % S.count) ? 0 : 1)
+    if (!clear || Math.abs(S.bank[i]) < minBank) continue
+    banked++
+    const hw = S.halfWidth[i]
+    const low = S.ry[i] > 0 ? -1 : 1
+    const rl = Math.hypot(S.rx[i], S.rz[i]) || 1
+    const ex = S.px[i] + S.rx[i] * low * hw
+    const ey = S.py[i] + S.ry[i] * low * hw
+    const ez = S.pz[i] + S.rz[i] * low * hw
+    for (let k = 0; k < g.length; k++) {
+      const dist = (k + 1) * 0.5
+      g[k] = t.terrainHeight(ex + (S.rx[i] / rl) * low * dist, ez + (S.rz[i] / rl) * low * dist)
+    }
+    let beyond = -Infinity
+    for (let k = g.length - 1; k >= 0; k--) {
+      beyond = Math.max(beyond, g[k])
+      const dip = Math.min(ey, beyond) - g[k]
+      if (dip > depth) {
+        depth = dip
+        at = i * S.ds
+        out = (k + 1) * 0.5
+        bankDeg = (Math.abs(S.bank[i]) * 180) / Math.PI
+      }
+    }
+  }
+  return any ? { depth, at, out, bankDeg, banked: Math.round(banked * S.ds), sink, sinkAt, sinkBankDeg } : null
+}
+
 /** A car can be going this much faster than the racing line plans (a later brake, a boost). */
 const CREST_LINE_MARGIN = 1.15
 
@@ -868,7 +956,8 @@ const CREST_LINE_MARGIN = 1.15
  * so does the middle's bend under the bank: a corner pressing the car into its bank
  * helps, a wobble the other way under a steep bank lifts it. The middle's own hilltops
  * (crests that unload the car on purpose) are the track's design and are not judged;
- * a dip that presses the car on still helps.
+ * a dip that presses the car on still helps. The rise and fall an open road's bank puts
+ * in its middle (it banks about its low edge) is the roll, not the design: it is judged.
  *
  * Judged at the speed a car can be doing there: the racing line's plan plus 15%, up to
  * CREST_CHECK_KMH. `flat` is the worst at CREST_CHECK_KMH everywhere (reported only).
@@ -889,6 +978,7 @@ export function bankCrests(t: TrackRuntime): {
   const h = Math.max(1, Math.round(CREST_SPAN / S.ds))
   const d = h * S.ds
   const vTop = CREST_CHECK_KMH / 3.6
+  const pivotLift = trackInternals(t)?.pivotLift
   let worst = -Infinity
   let wi = 0
   let lateral = 0
@@ -920,6 +1010,10 @@ export function bankCrests(t: TrackRuntime): {
     vy /= vl
     vz /= vl
     const hill = (c2x * vx + c2y * vy + c2z * vz) * (nx * vx + ny * vy + nz * vz)
+    // The part of that hill the bank's pivot made (an open road banks about its low edge,
+    // lifting the middle by half the width x sin bank): it is the roll, not the track's
+    // design, so it is judged like the lanes swinging, crests and all.
+    const pivot = pivotLift ? ((pivotLift[a] + pivotLift[b] - 2 * pivotLift[i]) / (d * d)) * vy * (nx * vx + ny * vy + nz * vz) : 0
     const hx = ty * vz - tz * vy
     const hy = tz * vx - tx * vz
     const hz = tx * vy - ty * vx
@@ -939,7 +1033,7 @@ export function bankCrests(t: TrackRuntime): {
       // The lane's path is C + l R; at speed v it needs v^2 x (its curvature along up) of pull.
       const p2 = (c1x + l * r1x) ** 2 + (c1y + l * r1y) ** 2 + (c1z + l * r1z) ** 2
       // + = curving away from the car (a crest), - = pressing it in.
-      const crest = (-l * r2 - side + Math.min(0, -hill)) / p2
+      const crest = (-l * r2 - side - pivot + Math.min(0, -(hill - pivot))) / p2
       const r = (crest * v * v) / g
       if (r > worst) {
         worst = r
@@ -1155,6 +1249,23 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
         bad.length
           ? bank + bad.join('; ')
           : `${bank}the low-edge barriers are walls (faces rise at least ${Math.min(90, st.face).toFixed(0)} deg from flat, limit ${BARRIER_FACE_MIN_DEG}; they meet the road at ${Math.min(180, st.vAngle).toFixed(0)} deg or more, limit ${BARRIER_V_MIN_DEG}) and the ground behind them dips at most ${st.ditch.toFixed(2)} m below the edge (limit ${DITCH_MAX})`,
+        'this is a builder bug, not your file: report it.',
+      )
+    }
+  }
+  // An open road's bank keeps its low edge on the ground: no ditch beside it.
+  if (file.road.barriers !== 'walls') {
+    const dd = lowEdgeDitch(t)
+    if (dd) {
+      const bad: string[] = []
+      if (dd.sink > LOW_SINK_MAX) bad.push(`the low edge of the bank at ${at(dd.sinkAt)} (${dd.sinkBankDeg.toFixed(0)} deg) sits ${dd.sink.toFixed(2)} m below where the road would be unbanked (limit ${LOW_SINK_MAX} m): the bank digs the road into the ground`)
+      if (dd.depth > LOW_DITCH_MAX) bad.push(`the ground beside the low edge of the bank at ${at(dd.at)} (${dd.bankDeg.toFixed(0)} deg) dips ${dd.depth.toFixed(2)} m below the edge ${dd.out.toFixed(1)} m out and rises again (limit ${LOW_DITCH_MAX} m): a ditch a car on the low lane drops into`)
+      gate(
+        'lowedge',
+        bad.length === 0,
+        bad.length
+          ? bad.join('; ')
+          : `every bank keeps its low edge where the road would sit unbanked (at most ${(dd.sink * 100).toFixed(0)} cm below, limit ${(LOW_SINK_MAX * 100).toFixed(0)}), and beside it (${dd.banked} m of banked road on the ground) the ground stays level with the edge or falls away: no ditch deeper than ${(dd.depth * 100).toFixed(0)} cm (limit ${(LOW_DITCH_MAX * 100).toFixed(0)})`,
         'this is a builder bug, not your file: report it.',
       )
     }

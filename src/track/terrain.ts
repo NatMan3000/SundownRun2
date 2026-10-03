@@ -14,6 +14,8 @@
 //     then cut and filled to meet the road. Under a grounded road the
 //     ground hides 0.3-0.6 m below the surface; past the road edge it
 //     blends back to natural over a shoulder with a smooth S-curve.
+//     Beside the LOW edge of a bank it stays level with that edge
+//     first (no ditch), and under the high side it fills up the bank.
 //     Under a lifted road (a bridge) the ground stays natural, but is
 //     cut down if it would come within 5 m of the road's underside, so
 //     a car can drive underneath.
@@ -569,19 +571,33 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
       const rh2 = rxh * rxh + rzh * rzh
       const dx = x - S.px[ig]
       const dz = z - S.pz[ig]
-      const lat = rh2 > 1e-4 ? (dx * rxh + dz * rzh) / rh2 : 0
+      // Seen from above, the road's right and its direction are square to each other only
+      // while it is level one way or the other: on a climbing, banked road they lean together
+      // (on a 24% grade at 29 degrees of bank, by about 7 degrees). On an open road the vertex
+      // is split into "along" and "across" properly (it sits up to half a sample ahead of or
+      // behind this cross-section), and the road's grade is carried over the "along" part:
+      // splitting it as if they were square put the ground beside a steep banked road up to
+      // 0.3 m off, and on a 12% grade the half-sample alone was 6 cm, more than the edge's
+      // 5 cm of room (the safety pass then dug a ditch at the edge).
+      const det = S.tx[ig] * rzh - S.tz[ig] * rxh
+      const oblique = !walls && Math.abs(det) > 1e-3
+      const lat = oblique ? (S.tx[ig] * dz - S.tz[ig] * dx) / det : rh2 > 1e-4 ? (dx * rxh + dz * rzh) / rh2 : 0
+      const gradeY = oblique ? ((dx * rzh - dz * rxh) / det) * S.ty[ig] : 0
       const hw = S.halfWidth[ig]
-      // The bank plane carries on a little past each edge before the shoulder blends
-      // back to natural, so on the LOW side of a steep bank the ground beside the
-      // edge is lower than the edge too (a flat shoulder there would rise above the
-      // road once a grid triangle straddles the edge).
-      // (BANK_RUNOUT is a horizontal distance; on a steep bank that is more metres along the slope.)
-      // A road with barriers doesn't: there the runout dug a ditch behind the low
-      // barrier (1-2 m deep at 60 degrees, hyper-1 D3). Instead the ground near the low
-      // edge, under the road and beyond it, stays level with that edge (below).
+      // On an open road the bank plane carries on a little past the HIGH edge before the
+      // shoulder blends back to natural (BANK_RUNOUT is a horizontal distance; on a steep
+      // bank that is more metres along the slope). Past the LOW edge it doesn't: that edge
+      // sits where the road would be unbanked (road.ts, "the bank's pivot"), and the plane
+      // carried on down there dug a ditch beside it (GitHub #9). The ground there stays
+      // level with the low edge, and so does the ground under the deck near it (below), so
+      // no grid triangle reaching from under the deck to past the edge pokes up through the
+      // road. A road with barriers has no runout at all: there it dug a ditch behind the low
+      // barrier (1-2 m deep at 60 degrees, hyper-1 D3); its ground near the low edge, under
+      // the road and beyond it, stays level with that edge too (below).
       const runout = walls ? 0 : BANK_RUNOUT / Math.sqrt(Math.max(0.09, rh2))
-      const latC = clamp(lat, -hw - runout, hw + runout)
-      const surfY = S.py[ig] + S.ry[ig] * latC
+      const lowSide = S.ry[ig] > 0 ? -1 : 1
+      const latC = clamp(lat, lowSide < 0 ? -hw : -hw - runout, lowSide > 0 ? hw : hw + runout)
+      const surfY = S.py[ig] + S.ry[ig] * latC + gradeY
       const beyond = Math.abs(lat) - hw
       if (beyond <= 0) {
         underDeck = Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds
@@ -603,10 +619,21 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
           }
         } else {
           // Under the road: hidden, rising to just under the lip over the last metre
-          // (so driving back on from the grass is smooth).
+          // (so driving back on from the grass is smooth)...
           // (Not by a bridge's end: see BRIDGE_JOIN_FLAT.)
           const lipRise = smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond) * smoothstep(BRIDGE_JOIN_FLAT, BRIDGE_JOIN_FLAT + BRIDGE_JOIN_EASE, toRaised[ig])
           h = surfY - EDGE_DEPTH - (HIDE_DEPTH - EDGE_DEPTH) * (1 - lipRise)
+          // ...but never above a level floor at the LOW edge's height within EDGE_REACH of
+          // it (on a bank the deck rises away from that edge): a car's wheels just off the low
+          // edge meet level ground at the edge's height. Further in, the floor climbs twice as
+          // steeply as the deck, so it soon meets the usual hidden ground again and the high
+          // side is untouched (where the ground still rises to just under the high edge's lip:
+          // a floor that only kept pace with the deck left the ground a metre under the high
+          // edge, and the cells reaching out past it dipped half a metre right beside the road).
+          const fromLow = (hw - lowSide * lat) * Math.sqrt(rh2)
+          const lowEdgeY = S.py[ig] + S.ry[ig] * lowSide * hw + gradeY
+          const rise = Math.abs(S.ry[ig]) / Math.sqrt(Math.max(1e-4, rh2))
+          h = Math.min(h, lowEdgeY - EDGE_DEPTH + Math.max(0, fromLow - EDGE_REACH) * rise * 2)
         }
         // Under the deck. (Right to the edge on a road with barriers: their boxes cover beyond it.)
         if (Math.abs(lat) <= hw - (walls ? 0 : COVER_MARGIN) && Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds) cover[v] = 1
@@ -616,8 +643,13 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
         // (On a road with barriers it is measured flat, so a steep bank's cut slope is no
         // steeper than a flat road's, and starts EDGE_REACH metres out: the ground stays level
         // with the edge under the barrier's foot, inside its box.)
+        // Past an open road's LOW edge on a bank, the ground stays level with the edge for the
+        // runout's width before the shoulder starts (where the bank plane used to carry on down):
+        // a cut's wall rising straight from the edge made a valley right at the edge, which the
+        // 3 m ground triangles bridged above the road, and the safety pass then dug it out.
+        const lowFlat = !walls && Math.sign(lat) === lowSide ? runout * smoothstep(0.02, 0.05, Math.abs(S.ry[ig])) : 0
         const shoulder = clamp(SHOULDER_MIN + 0.6 * Math.abs(h - target), SHOULDER_MIN, SHOULDER_MAX)
-        const w = smoothstep(0, shoulder, walls ? Math.max(0, beyond * Math.sqrt(rh2) - EDGE_REACH) : beyond)
+        const w = smoothstep(0, shoulder, walls ? Math.max(0, beyond * Math.sqrt(rh2) - EDGE_REACH) : Math.max(0, beyond - lowFlat))
         h = target + (h - target) * w
       }
       if (walls && beyond > 0 && cover[v] === 0) {

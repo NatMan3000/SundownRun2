@@ -4,7 +4,8 @@
 //  This is where a list of dots in the track file becomes a road:
 //
 //   1. Each control point gets a height: its own y, or the natural
-//      ground averaged over ~12 m plus its lift.
+//      ground averaged over ~12 m plus its lift. That is where the
+//      road sits unbanked.
 //   2. A smooth closed spline runs through the points (spline.ts).
 //   3. It is re-sampled every ~1 m, starting at the start line, so
 //      s = 0 is the line by construction.
@@ -12,7 +13,10 @@
 //      speed and the tighter the corner, the steeper, up to a cap),
 //      with per-point overrides, smoothed so corners roll in and out.
 //      A roll too quick for a car on the outer lanes at 250 km/h is
-//      made longer (bankRolls.ts).
+//      made longer (bankRolls.ts). An open road banks about its LOW
+//      edge, which stays at the height step 1 gave (on the ground for
+//      a road on the ground) while the high side rises; a road with
+//      barriers banks about its middle.
 //   5. Loops are spliced in: the road runs dead straight into the loop's
 //      mouth, goes up and over a teardrop-shaped loop while drifting
 //      across (a corkscrew, so the way in and the way out run side by
@@ -132,6 +136,12 @@ export interface Centerline {
   atOfS: (s: number) => number
   /** 0..1 per sample: how much of the bank comes from a `bank` override in the file. */
   overrideWeight: Float32Array
+  /**
+   * Metres the bank's pivot lifted the middle of the road per sample (half the width x
+   * sin bank on an open road, so its low edge stays put; 0 with barriers and on loops).
+   * The middle minus this is where the road would sit unbanked.
+   */
+  pivotLift: Float32Array
 }
 
 /** Shortest signed distance from a to b on a loop of length L. */
@@ -193,6 +203,8 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const road = file.road
   const pts = road.points
   const np = pts.length
+  /** Open roads bank about their low edge, roads with barriers about their middle (see "the bank's pivot"). */
+  const pivotLow = road.barriers !== 'walls'
 
   // ---- 1. control point heights ----
   const ctrl = pts.map((p) => ({
@@ -354,6 +366,36 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     shapeBankRolls(bBank, bHalf, bCurv, bCurvRaw, keepLevel, dsb, road.banking.designSpeedKmh)
   }
 
+  // ---- the bank's pivot: an open road keeps its LOW edge where it would sit unbanked ----
+  // The bank tilts the road about its middle (below), so lift the middle by half the width
+  // x sin(bank): the low edge stays at the height the points give (on the ground for a road
+  // on the ground) and the high side rises, the ground filling up under it. (Tilted about
+  // its middle, the low edge sank into the ground and the ground beside it with it: a ditch
+  // a car on the low lane dropped into, GitHub #9.) A road with barriers keeps tilting about
+  // its middle: its barrier stands on the low edge with level ground behind it, so it has no
+  // ditch, and the Hyperdrome's live bank slider would otherwise raise and lower its road.
+  // The lift is rounded off where it starts and stops growing (PIVOT_CREST_RADIUS,
+  // PIVOT_DIP_RADIUS), so the lanes ride the rolls as gently as tilting about the middle.
+  const bLift = new Float64Array(nb)
+  if (pivotLow) {
+    for (let k = 0; k < nb; k++) bLift[k] = bHalf[k] * Math.abs(Math.sin(bBank[k]))
+    // Over a ramp and the road it throws you onto, and round a loop, the lift is held level
+    // (at the most it reaches there), so the jump and the loop sit exactly as they would on
+    // a road banked about its middle, just a little higher: a lift growing under a ramp's
+    // lip tipped the launch, and one growing where you land moved the landing (Afterglow's
+    // demo car landed off line and slid off the high edge).
+    const held: [number, number][] = []
+    for (const p of file.pieces) {
+      if (p.type !== 'ramp') continue
+      const sb = baseSOfAt(p.at)
+      const len = (p as { length?: number }).length ?? 12
+      held.push([Math.floor((sb - len / 2 - RAMP_HOLD_BEFORE) / dsb), Math.ceil((sb + len / 2 + RAMP_HOLD_AFTER) / dsb)])
+    }
+    for (const L of loopSpecs) held.push([Math.floor((L.sb - LOOP_RUN_IN) / dsb), Math.ceil((L.sb + L.shape.advance + LOOP_BANK_EASE) / dsb)])
+    shapePivotLift(bLift, dsb, held)
+    for (let k = 0; k < nb; k++) by[k] += bLift[k]
+  }
+
   // ---- base tangents (3D) ----
   const btx = new Float64Array(nb)
   const bty = new Float64Array(nb)
@@ -394,6 +436,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const nz: number[] = []
   const nhw: number[] = []
   const nbank: number[] = []
+  const nlift: number[] = []
   const nover: number[] = []
   const nux: number[] = []
   const nuy: number[] = []
@@ -410,6 +453,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     nz.push(bz[k] + rzh * shift[k])
     nhw.push(bHalf[k])
     nbank.push(bBank[k])
+    nlift.push(bLift[k])
     nover.push(bOverW[k])
     // up0 = world up made perpendicular to the tangent; roll it by the bank.
     const T0 = btx[k]
@@ -485,6 +529,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
         nz.push(Pz + Rz * lat + Tz * sh.fwd[q] + Mz * w)
         nhw.push(hw)
         nbank.push(0)
+        nlift.push(0)
         nover.push(0)
         // Up is the surface normal: perpendicular to the direction of travel, toward the inside.
         nux.push(-Tx * Math.sin(ph))
@@ -531,6 +576,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   }
   const baseS = new Float64Array(count)
   const overrideWeight = new Float32Array(count)
+  const pivotLift = new Float32Array(count)
   let j = 0
   // Positions are kept in float64 until the end so long tracks don't wobble.
   const fx = new Float64Array(count)
@@ -552,6 +598,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     S.halfWidth[i] = nhw[a] + (nhw[b] - nhw[a]) * f
     S.bank[i] = nbank[a] + (nbank[b] - nbank[a]) * f
     overrideWeight[i] = nover[a] + (nover[b] - nover[a]) * f
+    pivotLift[i] = nlift[a] + (nlift[b] - nlift[a]) * f
     hux[i] = nux[a] + (nux[b] - nux[a]) * f
     huy[i] = nuy[a] + (nuy[b] - nuy[a]) * f
     huz[i] = nuz[a] + (nuz[b] - nuz[a]) * f
@@ -604,9 +651,11 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   for (let i = 0; i < count; i++) if (S.surface[i] === SURFACE_CODE.loop) S.curvature[i] = 0
 
   // ---- grounded: is the road close enough to the ground to fill up to it? ----
+  // (Measured from where the road would sit unbanked, its low edge's height: a bank's
+  // pivot lift raises the high side, it doesn't turn the road into a bridge.)
   for (let i = 0; i < count; i++) {
     if (S.surface[i] !== SURFACE_CODE.road) continue
-    const gap = S.py[i] - nat.height(S.px[i], S.pz[i])
+    const gap = S.py[i] - pivotLift[i] - nat.height(S.px[i], S.pz[i])
     S.grounded[i] = gap <= FILL_MAX ? 1 : 0
   }
   denoiseRuns(S.grounded, S.surface, Math.round(10 / ds))
@@ -703,7 +752,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     }
   })
 
-  return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt, atOfS, overrideWeight }
+  return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt, atOfS, overrideWeight, pivotLift }
 }
 
 /**
@@ -899,6 +948,141 @@ function spreadLoopRoll(S: TrackSamples, fx: Float64Array, fy: Float64Array, fz:
     S.rx[i] = ty * nz - tz * ny
     S.ry[i] = tz * nx - tx * nz
     S.rz[i] = tx * ny - ty * nx
+  }
+}
+
+/**
+ * The tightest dip (vertical radius, metres) the pivot lift may put in the middle of the road.
+ * Where an S-bend's lean changes side, the low edge swaps sides too, so the middle's lift
+ * (half the width x sin bank) comes down to nothing and straight back up: a sharp V the car
+ * would thump through. 300 m adds about 1.6 g of press at 250 km/h, and fills the V by a
+ * few tens of centimetres (both edges sit a little above where the road would be unbanked).
+ */
+export const PIVOT_DIP_RADIUS = 300
+
+/**
+ * The tightest hilltop (vertical radius, metres) the pivot lift may put in the middle of the
+ * road. Tilting about the low edge swings the far lane twice as far as tilting about the
+ * middle, so where a roll eases into its full bank (the lift stops growing) the outer lane
+ * crests twice as hard: a car run wide onto it went light and slid off the high edge
+ * (Afterglow's demo laps). Rounding the lift off this gently instead (the road rises over
+ * the last 100-200 m into a banked corner, its low edge a little above where it would sit)
+ * leaves every lane cresting no harder than tilting about the middle did, plus a car's
+ * weight x 0.1 at 250 km/h. Where the bank holds steady, the low edge sits exactly where the
+ * road would be unbanked.
+ */
+export const PIVOT_CREST_RADIUS = 5000
+
+/** The pivot lift is held level from this many metres before a ramp to this many after it (where its jump lands). */
+const RAMP_HOLD_BEFORE = 25
+const RAMP_HOLD_AFTER = 150
+
+/**
+ * Shape the pivot lift (metres per sample, `ds` apart round a closed lap): never below what
+ * it was (so the low edge never sinks below where the road would sit unbanked), level over
+ * each `held` stretch (sample ranges, may run past the lap's end), with no hilltop tighter
+ * than PIVOT_CREST_RADIUS and no dip tighter than PIVOT_DIP_RADIUS.
+ */
+export function shapePivotLift(lift: Float64Array, ds: number, held: [number, number][] = []): void {
+  const n = lift.length
+  // Round the lift's hilltops off, then raise each held stretch to the most the rounded lift
+  // reaches in it, and round off again from the raised lift: holding a stretch can only
+  // raise it, so this settles (the rounding always starts from the unrounded lift: rounding
+  // a rounded lift again would round it more each time).
+  const base = Float64Array.from(lift)
+  const out = new Float64Array(n)
+  for (let round = 0; round < 12; round++) {
+    out.set(base)
+    limitPivotCrest(out, ds)
+    let moved = false
+    for (const [k0, k1] of held) {
+      let top = 0
+      for (let k = k0; k <= k1; k++) top = Math.max(top, out[((k % n) + n) % n])
+      for (let k = k0; k <= k1; k++) {
+        const i = ((k % n) + n) % n
+        if (base[i] < top - 1e-6) {
+          base[i] = top
+          moved = true
+        }
+      }
+    }
+    if (!moved) break
+  }
+  lift.set(out)
+  limitPivotDip(lift, ds)
+}
+
+/**
+ * Raise the pivot lift round any hilltop tighter than PIVOT_CREST_RADIUS: every spot gets at
+ * least the height of a parabola of that radius hung from each spot nearby (the hilltop's
+ * flanks are filled out until it is that round). Only the flanks of tighter hilltops change.
+ */
+export function limitPivotCrest(lift: Float64Array, ds: number): void {
+  const n = lift.length
+  if (n < 3) return
+  const c = 1 / PIVOT_CREST_RADIUS
+  let top = 0
+  for (let k = 0; k < n; k++) top = Math.max(top, lift[k])
+  if (top <= 0) return
+  // A parabola from the highest lift falls to nothing this many samples away.
+  const reach = Math.min(Math.floor((n - 1) / 2), Math.ceil(Math.sqrt((2 * top) / c) / ds))
+  const src = Float64Array.from(lift)
+  for (let k = 0; k < n; k++) {
+    let best = src[k]
+    for (let j = 1; j <= reach; j++) {
+      const drop = (c * (j * ds) * (j * ds)) / 2
+      if (drop >= top) break
+      const a = src[(k - j + n) % n] - drop
+      const b = src[(k + j) % n] - drop
+      if (a > best) best = a
+      if (b > best) best = b
+    }
+    lift[k] = best
+  }
+}
+
+/**
+ * Raise the pivot lift (per sample, `ds` metres apart round a closed lap) as little as
+ * possible so it never dips tighter than PIVOT_DIP_RADIUS: the smallest curve at or above
+ * it whose upward bend is at most 1 / radius anywhere. That is an exact construction:
+ * take away a parabola that bends up by that much, wrap what is left in its upper concave
+ * hull (a taut string laid over the top), and add the parabola back. Only spots that bent
+ * up faster change; everything else stays exactly as it was.
+ */
+export function limitPivotDip(lift: Float64Array, ds: number): void {
+  const n = lift.length
+  if (n < 3) return
+  const c = 1 / PIVOT_DIP_RADIUS
+  // Start the lap at its highest lift: a banked corner's plateau, never inside a dip.
+  let k0 = 0
+  for (let k = 1; k < n; k++) if (lift[k] > lift[k0]) k0 = k
+  if (lift[k0] <= 0) return
+  // Points (s, lift - c s^2 / 2) over one lap from k0 (and back to it), then their upper hull.
+  const m = n + 1
+  const g = new Float64Array(m)
+  for (let j = 0; j < m; j++) {
+    const s = j * ds
+    g[j] = lift[(k0 + j) % n] - (c * s * s) / 2
+  }
+  const hull: number[] = []
+  for (let j = 0; j < m; j++) {
+    // Drop the last hull point while it sits on or under the line from the one before it to j.
+    while (hull.length >= 2) {
+      const a = hull[hull.length - 2]
+      const b = hull[hull.length - 1]
+      if ((g[b] - g[a]) * (j - a) <= (g[j] - g[a]) * (b - a)) hull.pop()
+      else break
+    }
+    hull.push(j)
+  }
+  for (let h = 0; h + 1 < hull.length; h++) {
+    const a = hull[h]
+    const b = hull[h + 1]
+    for (let j = a + 1; j < b; j++) {
+      const s = j * ds
+      const on = g[a] + ((g[b] - g[a]) * (j - a)) / (b - a)
+      lift[(k0 + j) % n] = on + (c * s * s) / 2
+    }
   }
 }
 

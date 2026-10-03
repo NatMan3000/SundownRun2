@@ -65,8 +65,14 @@ import { hashString } from './noise'
  *      a barrier's back stops at the floor behind it, closed off underneath, with the slab's
  *      side ending there too (on a steep bank's high edge the back used to meet the ground
  *      along a stair-stepped line).
+ *   9: an open road banks about its LOW edge, which stays where the road would sit unbanked
+ *      (on the ground), and the high side rises with the ground filled up under it; the ground
+ *      beside the low edge stays level with it (it was a ditch, GitHub #9). The lift is rounded
+ *      off over the 100-200 m into and out of a banked corner, so the bank rolls themselves are
+ *      unchanged. The ground beside an open road follows its grade between samples. Roads with
+ *      barriers (the Hyperdrome) still bank about their middle and keep their geometry.
  */
-export const BUILDER_VERSION = 8
+export const BUILDER_VERSION = 9
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
@@ -91,6 +97,8 @@ export interface TrackInternals {
   atOfS: (s: number) => number
   /** 0..1 per sample: how much of the bank comes from a file override. */
   overrideWeight: Float32Array
+  /** Metres the bank's pivot lifted the middle of the road per sample (see Centerline.pivotLift). */
+  pivotLift: Float32Array
   /** Each loop as built (where it sits, which way it drifts, how far it was bent to land). */
   loops: LoopInfo[]
   /**
@@ -423,6 +431,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     world,
     atOfS: c.atOfS,
     overrideWeight: c.overrideWeight,
+    pivotLift: c.pivotLift,
     loops: c.loops,
     groundCovered: flat.covered,
   })
