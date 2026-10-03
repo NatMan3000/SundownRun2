@@ -31,6 +31,12 @@
 //  REAL ground under each corner ("draping"), so you drive onto it
 //  without a bump; its block reaches below the ground everywhere,
 //  so nothing floats.
+//
+//  A piece can also TAPER at its two side ends (the half pipe's
+//  walls do): over its last few metres sideways the whole side view
+//  shrinks down onto the real ground, so a wall grows out of the
+//  ground and eases up to its full height. A car coming at a wall's
+//  end rides up onto it instead of meeting a cliff of its profile.
 // ============================================================
 
 import { gridHeight } from '../../track/terrain'
@@ -87,6 +93,12 @@ export interface ExtrudeSpec {
   catches: number[]
   /** A launch's speed sign (km/h to leave its lip at; 0 or missing = none), painted on its face before the first lip. */
   signKmh?: number
+  /**
+   * Metres at each side end (inside halfWidth) over which the top grows out of the real ground to
+   * its full height (0 or missing = full height right to the side faces). A half pipe's walls use
+   * it, so a car coming at a wall's end rides up onto it instead of meeting an edge.
+   */
+  taper?: number
 }
 
 export interface PadSpec {
@@ -117,6 +129,8 @@ const MAX_STEP = 2.0
 const MAX_ACROSS = 2.5
 /** Segments meeting at a sharper angle than this keep their own normals (a crease, like a lip). */
 const CREASE_COS = Math.cos((28 * Math.PI) / 180)
+/** A tapered end's top starts this far under the real ground, so no edge of it stands proud. */
+const TAPER_BURY = 0.05
 
 // ---------------------------------------------------------------- the shared render mesh
 
@@ -363,20 +377,49 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
     if (spec.drapeBack > 0) d += offB[k] * (1 - smooth01((a1 - a) / spec.drapeBack))
     return d
   }
-  const topY = (a: number, l: number, h: number, k: number): number => baseY(f, a, l) + h + drape(a, k)
-  const botY = (a: number, l: number): number => baseY(f, a, l) - spec.sink
+  // The taper (a half pipe's wall ends): how much of the full height stands at l, from 0 at a side
+  // end to 1 once `taper` metres in, on a half cosine so the top eases out of the ground and eases
+  // into its full height with no corner either way. growSlope is how fast that changes per metre of l.
+  const taper = Math.max(0, Math.min(spec.taper ?? 0, hw))
+  if (taper > 0 && spec.sideRun > 0) throw new Error('[stunts] a tapered piece must have straight sides')
+  const grow = (l: number): number => {
+    const u = hw - Math.abs(l)
+    return taper <= 0 || u >= taper ? 1 : 0.5 - 0.5 * Math.cos((Math.PI * Math.max(0, u)) / taper)
+  }
+  const growSlope = (l: number): number => {
+    const u = hw - Math.abs(l)
+    if (taper <= 0 || u >= taper || u <= 0) return 0
+    // Growing inward: + while l climbs on the left end, - on the right end.
+    return -Math.sign(l) * ((0.5 * Math.PI) / taper) * Math.sin((Math.PI * u) / taper)
+  }
+  /** Where a tapered end meets the real ground: just under it, so the top grows out of it with no step. */
+  const groundUnder = (a: number, l: number): number => ground(wx(f, a, l), wz(f, a, l)) - TAPER_BURY
+  const fullY = (a: number, l: number, h: number, k: number): number => baseY(f, a, l) + h + drape(a, k)
+  const topY = (a: number, l: number, h: number, k: number): number => {
+    const y = fullY(a, l, h, k)
+    const s = grow(l)
+    if (s >= 1) return y
+    const g = groundUnder(a, l)
+    return g + (y - g) * s
+  }
+  // The bottom: under the base plane, and under the real ground too where a taper follows it.
+  const botY = (a: number, l: number): number => {
+    const b = baseY(f, a, l) - spec.sink
+    return grow(l) >= 1 ? b : Math.min(b, groundUnder(a, l) - spec.sink)
+  }
   // The side's outward reach at the bottom (sloped sides lean out with height).
   const reach = (h: number): number => hw + spec.sideRun * Math.max(0, h)
   // 3D normal from the side view's 2D normal (along and up), tilted with the base plane.
-  const n3 = (na: number, nh: number, out: number[]): number[] => {
+  const n3 = (na: number, nh: number, out: number[], nl = 0): number[] => {
     // along-axis world vector (dx, sa, dz); across-axis world vector (rx, sl, rz); up = (0,1,0).
     // A side-view normal (na, nh) means: na of "along" plus nh of "up", then the plane tilt:
-    // the plane's own up is (-sa*dx - sl*rx, 1, -sa*dz - sl*rz) normalised.
+    // the plane's own up is (-sa*dx - sl*rx, 1, -sa*dz - sl*rz) normalised. nl leans it across
+    // (a taper, where the top climbs sideways).
     const ux = -f.sa * f.dx - f.sl * rx
     const uz = -f.sa * f.dz - f.sl * rz
-    const x = f.dx * na + ux * nh
-    const y = f.sa * na + nh
-    const z = f.dz * na + uz * nh
+    const x = f.dx * na + ux * nh + rx * nl
+    const y = f.sa * na + nh + f.sl * nl
+    const z = f.dz * na + uz * nh + rz * nl
     const L = Math.hypot(x, y, z) || 1
     out[0] = x / L
     out[1] = y / L
@@ -402,6 +445,14 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
       for (let k = 0; k <= nAcross; k++) {
         const l = -hw + (2 * hw * k) / nAcross
         const edge = hw - Math.abs(l)
+        const s = grow(l)
+        if (s < 1) {
+          // In a taper the side view is squashed by s (its slope too) and the top climbs across:
+          // a surface y(a, l) has the normal (-dy/da, 1, -dy/dl), which in side-view terms is
+          // (s na, nh, -nh dy/dl).
+          const rise = (fullY(r.a, l, r.h, k) - groundUnder(r.a, l)) * growSlope(l)
+          n3(r.na * s, r.nh, nv, -r.nh * rise)
+        } else if (taper > 0) n3(r.na, r.nh, nv)
         mesh.vertex(wx(f, r.a, l), topY(r.a, l, r.h, k), wz(f, r.a, l), nv[0], nv[1], nv[2], ROLE.top, edge, r.arc, lip, zone, katch, l, sign, signH, signGap)
       }
     }

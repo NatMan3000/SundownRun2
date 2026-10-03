@@ -24,8 +24,10 @@
 //      (ringFx.ts), and runs their clock once per physics step
 //      (ringComeback.ts: Josh's ringComebackSeconds knob)
 //    - works out the HUD's speed cue for the launch ahead (parkCue.ts)
-//    - dev handles: __dev.park(), __dev.parkGo(item, kmh) and the
-//      'stunts' section of window.__game.get('play')
+//    - dev handles: __dev.park(), __dev.parkGo(item, kmh),
+//      __dev.laneGo(zone, a, l) (anywhere in a zone's lane, e.g.
+//      beside a half pipe wall's end) and the 'stunts' section of
+//      window.__game.get('play')
 //
 //  Scoring (rings, named gaps, bullseye landings) lives in
 //  parkScoring.ts; it hooks into the trick detector so a stunt
@@ -241,6 +243,36 @@ function ParkField({ track }: { track: TrackRuntime }) {
           return { item: it.id, kind: it.kind, label: it.label, runIn: Math.round(it.runIn + b), x: Math.round(x), z: Math.round(z), kmh: k }
         }) as never,
         'parkGo(item, kmh = 0, back = 0, turnDeg = 0): put the player at the start of a run at a stunt-park item (see park()), facing it (turned turnDeg right), moving at kmh; a negative back starts further in',
+      ),
+      registerDev(
+        'laneGo',
+        ((zone: number, a = 0, l = 0, turnDeg = 0, kmh = 0) => {
+          const z = layout.zones[Number(zone)]
+          const car = getCar('player')
+          if (!z || !car?.api) return `no zone ${zone} (0..${layout.zones.length - 1})`
+          // A point in the zone's lane: `a` metres along it from its start, `l` metres right of its centre line.
+          const x = z.x + z.dx * (Number(a) || 0) - z.dz * (Number(l) || 0)
+          const zz = z.z + z.dz * (Number(a) || 0) + z.dx * (Number(l) || 0)
+          _p.set(x, track.terrainHeight(x, zz) + SPAWN_LIFT, zz)
+          // Facing along the lane, turned turnDeg right (180 = back up the lane).
+          const turn = ((Number(turnDeg) || 0) * Math.PI) / 180
+          const fx = z.dx * Math.cos(turn) - z.dz * Math.sin(turn)
+          const fz = z.dz * Math.cos(turn) + z.dx * Math.sin(turn)
+          _fwd.set(fx, 0, fz).normalize()
+          _left.crossVectors(_up, _fwd).normalize()
+          _basis.makeBasis(_left, _up, _fwd)
+          _q.setFromRotationMatrix(_basis)
+          car.api.teleport(_p, _q)
+          const k = Number(kmh) || 0
+          const dev = (window as unknown as { __dev?: Record<string, (v: number) => unknown> }).__dev
+          if (k > 0) dev?.setSpeed?.(k)
+          // The zone's solids, so a test can tell where each piece (a half pipe's wall) starts and ends.
+          const solids = layout.solids
+            .filter((s) => s.item >= 0 && layout.items[s.item]?.zone === z.id)
+            .map((s) => ({ frame: s.frame, halfWidth: s.halfWidth, taper: s.taper ?? 0, a1: s.top[s.top.length - 1].a, height: Math.max(...s.top.map((p) => p.h)) }))
+          return { zone: z.id, name: z.name, lane: [z.x, z.z, z.dx, z.dz], length: z.length, start: [_p.x, _p.y, _p.z], fwd: [fx, fz], kmh: k, solids }
+        }) as never,
+        'laneGo(zone, a = 0, l = 0, turnDeg = 0, kmh = 0): put the player in stunt-park zone `zone`\'s lane, `a` m along it and `l` m right of its centre line, facing along it turned turnDeg right, moving at kmh; returns the lane and its solids (where a half pipe\'s walls start and end)',
       ),
       registerDev(
         'parkShot',

@@ -18,7 +18,8 @@
 //    CANYON RUN    two named gap jumps (launch, empty gap, landing)
 //    KICKER ALLEY  three kickers with bullseyes and a ring, ending in
 //                  a quarter pipe
-//    HALF PIPE     two curved walls facing each other
+//    HALF PIPE     two curved walls facing each other, each easing
+//                  up out of the ground at both ends
 //
 //  Every lane is designed with flight.ts (the speed a car carries,
 //  where it lands), then placed: we try seeded spots and headings
@@ -173,6 +174,8 @@ interface PlanSolid {
   top: ProfilePoint[]
   zones: number[]
   halfWidth: number
+  /** Metres at each side end (inside halfWidth) where it grows out of the ground to full height (parkGeometry.ts). */
+  taper: number
   sideRun: number
   drapeFront: number
   drapeBack: number
@@ -329,6 +332,7 @@ function solid(p: Partial<PlanSolid> & Pick<PlanSolid, 'kind' | 'label' | 'a0' |
   return {
     l0: 0,
     turn: 0,
+    taper: 0,
     sideRun: 0,
     drapeFront: 0,
     drapeBack: 0,
@@ -532,10 +536,27 @@ function quarterPlan(): LanePlan {
   return { kind: 'pipes', name: 'QUARTER PIPE', length: runIn + qp.length + 45, halfWidth: 10, runIn, solids, pads: [], rings: [], jumps: [], count: 1 }
 }
 
+/**
+ * How far (metres) each end of a half pipe wall stretches out as it grows from the ground to its
+ * full height. Nathan: "the ends of them are too abrupt ... you end up hitting the edge of them
+ * rather than slowly going into the full height of the wall". With a cliff of the wall's profile
+ * at each end, a car coming in beside a wall, or across onto it near an end, hit that cliff; now
+ * the whole wall eases down onto the ground over this stretch, so it rides up instead.
+ * Why 15 and not more: the near end's taper reaches back into the lane's run-in, which must then
+ * keep the full 24 m from the road too. At 15 m every park we tried still lands in exactly the
+ * same spot (the half pipe and everything placed after it); at 20 m some Hyperdrome-sized
+ * infields had to put the half pipe somewhere else, which moves the rest of the park with it.
+ */
+const PIPE_TAPER = 15
+
 function pipesPlan(): LanePlan {
-  const runIn = 40
+  // The channel's full-height walls run from 40 m to 90 m along the lane (as they always have);
+  // each wall's ends then taper down over PIPE_TAPER metres beyond that, so the built part starts
+  // PIPE_TAPER metres sooner: the run-in (the stretch allowed nearer the road) ends there.
+  const start = 40
   const channel = 50
   const floor = 13
+  const runIn = start - PIPE_TAPER
   const wall = pipeWall(6.5, 64, 1.0, 3.5, 30)
   const solids: PlanSolid[] = []
   for (const side of [-1, 1] as const) {
@@ -543,22 +564,23 @@ function pipesPlan(): LanePlan {
       solid({
         kind: 'halfpipe',
         label: 'HALF PIPE',
-        a0: runIn + channel / 2,
+        a0: start + channel / 2,
         l0: (side * floor) / 2,
         turn: side,
         top: wall.top,
         zones: wall.zones,
-        halfWidth: channel / 2,
+        halfWidth: channel / 2 + PIPE_TAPER,
+        taper: PIPE_TAPER,
         drapeFront: 3,
         drapeBack: 3,
         lips: [wall.coping],
         item: side < 0,
-        refA: runIn + channel / 2,
+        refA: start + channel / 2,
         refH: wall.height,
       }),
     )
   }
-  return { kind: 'pipes', name: 'HALF PIPE', length: runIn + channel + 30, halfWidth: floor / 2 + wall.length + 4, runIn, solids, pads: [], rings: [], jumps: [], count: 1 }
+  return { kind: 'pipes', name: 'HALF PIPE', length: start + channel + 30, halfWidth: floor / 2 + wall.length + 4, runIn, solids, pads: [], rings: [], jumps: [], count: 1 }
 }
 
 // ---------------------------------------------------------------- placing a lane
@@ -731,7 +753,9 @@ function tryLane(c: PlaceContext, plan: LanePlan, x: number, z: number, dx: numb
     const len = s.top[s.top.length - 1].a
     let maxH = 0
     for (const p of s.top) maxH = Math.max(maxH, p.h)
-    const reach = s.halfWidth + s.sideRun * maxH
+    // A tapered end follows the real ground (parkGeometry.ts), so only the full-height part needs
+    // flat ground under it.
+    const reach = s.halfWidth - s.taper + s.sideRun * maxH
     const samples: number[] = []
     for (let a = 0; a <= len + 1e-6; a += Math.max(1.5, len / 24)) {
       for (let l = -reach; l <= reach + 1e-6; l += Math.max(1.5, reach / 4)) {
@@ -753,6 +777,7 @@ function tryLane(c: PlaceContext, plan: LanePlan, x: number, z: number, dx: numb
         top: s.top,
         zones: s.zones,
         halfWidth: s.halfWidth,
+        taper: s.taper,
         sideRun: s.sideRun,
         sink: Math.max(0.8, FLAT_SOLID + 0.5),
         drapeFront: s.drapeFront,
