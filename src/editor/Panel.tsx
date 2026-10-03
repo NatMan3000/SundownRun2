@@ -134,7 +134,7 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
             min={ROAD_SMOOTHING_MIN}
             max={ROAD_SMOOTHING_MAX}
             step={5}
-            format={(v) => (v <= 10 ? 'Follows every bump' : v < 30 ? 'A bit bumpy' : v < 40 ? 'Smooth' : 'Extra smooth')}
+            format={(v) => (v <= 10 ? 'Follows every bump' : v < 30 ? 'A bit bumpy' : v < 40 ? 'Smooth' : v < ROAD_SMOOTHING_MAX ? 'Extra smooth' : 'Super smooth')}
             onCommit={setSurfaceSmoothing}
             help="How the road sits on the ground. Slide left and it follows every little bump; slide right and it irons the bumps out, so it only goes up and down with the hills."
           />
