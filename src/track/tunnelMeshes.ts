@@ -24,16 +24,21 @@
 //                     the short faces round the edges: the hill a car
 //                     drives over. Tagged 'terrain'.
 //
+//  The roof follows the hill the tunnel is dug through: the natural
+//  ground, or where another road crosses over the tunnel, the ground
+//  as that road shaped it. Under that road the roof tucks just under
+//  its surface (its own closed slab is what a car drives on there).
+//
 //  Every row of every part sits on a road sample, every ROW samples,
 //  so the pieces meet exactly; physics vertices that land on the same
 //  spot are welded, so the walls are one surface a car slides along.
 // ============================================================
 
 import { MeshBuilder } from './ribbon'
-import type { MeshBuffers, TrackSamples, TunnelMeshes } from './types'
+import { SURFACE_CODE, type MeshBuffers, type TrackSamples, type TunnelMeshes } from './types'
 import { gridHeight, openShoulderY, tunnelWallAt, TUNNEL_HOLLOW_FROM, TUNNEL_WALL_MIN, type NaturalGrid } from './terrain'
 import { smoothstep } from './noise'
-import { TUNNEL_HOLLOW, TUNNEL_LIP, type TunnelSamples } from './tunnels'
+import { TUNNEL_LIP, TUNNEL_WALL, type TunnelSamples } from './tunnels'
 
 /** One row of the tube every this many road samples (about 2 m). */
 const ROW = 2
@@ -45,6 +50,19 @@ const WALL_FOOT = 0.3
 const SKIRT_DOWN = 1
 /** Columns across the roof over the road: no wider apart than this, metres. */
 const ROOF_STEP = 2
+/**
+ * Under a road crossing over the roof, the roof's top tucks this far (metres) under its surface
+ * across the middle, rising to OVER_EDGE_TUCK under its edges over the last OVER_EDGE_BAND metres
+ * (as the ground under a road does, terrain.ts): just past the edge the roof meets the road nearly
+ * flush, with no groove where a triangle reaches from under the road out to the roof beside it...
+ */
+const OVER_TUCK = 0.3
+const OVER_EDGE_TUCK = 0.05
+const OVER_EDGE_BAND = 2.5
+/** ...and for this far (metres) past its edges the roof stands no higher than OVER_EDGE_TUCK under the edge. */
+const OVER_EDGE_CAP = 1.5
+/** ...and roof triangles whose corners are all this far (metres) in from its edges are left out of physics: the road's closed slab holds a car there (like the ground under a road, terrain.ts). */
+const OVER_COVER_MARGIN = 0.25
 
 /** A plain triangle mesh (for a physics collider). */
 export interface SolidMesh {
@@ -75,18 +93,22 @@ export interface TunnelBuild {
  * neighbouring rows share whole edges.
  */
 function faceCorners(H: number, out: number[]): number[] {
+  // (Where a wall is just starting to grow its top can sit a hair under the road's edge: never
+  // fold the face down below the edge. A wall of no height collapses to nothing, which the weld drops.)
+  const h = Math.max(0, H)
   out.length = 0
   out.push(-WALL_FOOT, 0)
-  for (let k = 1; k <= 4; k++) out.push(Math.min(1.2 * k, (H * k) / 5))
-  out.push(H)
+  for (let k = 1; k <= 4; k++) out.push(Math.min(1.2 * k, (h * k) / 5))
+  out.push(h)
   return out
 }
 
 /**
- * Build every built tunnel's meshes. `natGrid` is the natural ground on the terrain grid and
- * `ground` the final, cut-and-filled ground (terrain.ts flattenToRoad).
+ * Build every built tunnel's meshes. `hillGrid` is the hill the tunnels are dug through, on the
+ * terrain grid (terrain.ts hillGroundOf: the natural ground, shaped by any road crossing over a
+ * tunnel), and `ground` the final, cut-and-filled ground (terrain.ts flattenToRoad).
  */
-export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, natGrid: NaturalGrid, ground: NaturalGrid): TunnelBuild | null {
+export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, hillGrid: NaturalGrid, ground: NaturalGrid): TunnelBuild | null {
   if (!ts.list.length) return null
   const inside = new MeshBuilder(['aCover', 'aPart'])
   const hill = new MeshBuilder([])
@@ -126,6 +148,18 @@ export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, natGrid: N
     }
     const rows = [...rowSet].sort((p, q) => p - q)
     const isCov = (i: number) => i >= c0 && i <= c1
+    // Road crossing over this tunnel's roof (other road, not its own stretch): the roof tucks under it.
+    const overAt = makeOverRoad(S, ts, id, a, b)
+    /** A top vertex at (x, z) with height y, kept under any road crossing over it. */
+    const underOver = (x: number, z: number, y: number): number => {
+      const o = overAt(x, z)
+      if (!o || o.beyond > OVER_EDGE_CAP) return y
+      // Just past the edge, no higher than just under it, as the ground beside a road sits (so no
+      // triangle reaching from here in under the road comes up near its surface).
+      if (o.beyond > 0) return Math.min(y, o.surface - OVER_EDGE_TUCK)
+      const tuck = OVER_EDGE_TUCK + (OVER_TUCK - OVER_EDGE_TUCK) * (1 - smoothstep(-OVER_EDGE_BAND - 2, -OVER_EDGE_BAND, o.beyond))
+      return Math.min(y, o.surface - tuck)
+    }
 
     // ---- per row: the cross-section ----
     // Horizontal outward unit vector, edge points, natural ground and the walls' tops.
@@ -148,18 +182,23 @@ export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, natGrid: N
           const lat = side * (hw + BAND[c])
           const x = S.px[i] + S.rx[i] * lat
           const z = S.pz[i] + S.rz[i] * lat
-          const natural = gridHeight(natGrid, x, z)
-          // The wall's top: the usual shoulder blended into the natural ground by how much of
-          // a wall stands here. Past the hollow next to the road the ground under it follows the
-          // same blend (terrain.ts), so there the top is simply that ground plus the lip: the
-          // ground beside the tube meets its edge exactly a lip below it.
+          const natural = gridHeight(hillGrid, x, z)
+          // The wall's top: the usual shoulder blended into the hill by how much of a wall stands
+          // here, plus the lip. The ground's own vertices past the hollow follow the same blend
+          // (terrain.ts), so the ground beside the tube meets its edge exactly a lip below it.
+          // (Not the ground grid read between its vertices: a 3 m cell reaching in to the hollow
+          // next to the road sags metres below the blend, and the top took that sag as a groove
+          // along both sides of every roof, 6 m out from the road's edges. At the outer edge it is
+          // the grid, which no cell reaching the hollow touches, so the edge meets the ground
+          // beside it exactly as it lies between its vertices.)
           const hn = openShoulderY(S, i, lat, 0, natural)
           const k = (r * 2 + sd) * nb + c
           // Next to the road the ground only sinks under a wall that is more than a kerb (eased
-          // in as it grows), and until it does the top is that ground plus the lip as well.
+          // in as it grows), and until it does the top there is that ground plus the lip.
           const onGround = gridHeight(ground, x, z) + TUNNEL_LIP
-          const sunk = BAND[c] >= TUNNEL_HOLLOW + 1 ? 0 : smoothstep(TUNNEL_WALL_MIN, TUNNEL_HOLLOW_FROM, w)
-          topY[k] = onGround + (hn + Math.max(0, natural - hn) * w + TUNNEL_LIP - onGround) * sunk
+          // (Further out, the same: no hollow next to the road, no sag in the grid.)
+          const sunk = c === nb - 1 ? 0 : smoothstep(TUNNEL_WALL_MIN, TUNNEL_HOLLOW_FROM, w)
+          topY[k] = underOver(x, z, onGround + (hn + Math.max(0, natural - hn) * w + TUNNEL_LIP - onGround) * sunk)
           posX[k] = x
           posZ[k] = z
         }
@@ -214,7 +253,8 @@ export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, natGrid: N
                 const i = rows[q]
                 const ol = Math.hypot(S.rx[i], S.rz[i]) || 1
                 const k = (q * 2 + sd) * nb + nb - 1
-                rim.push(posX[k], topY[k], posZ[k], (S.rx[i] * side) / ol, (S.rz[i] * side) / ol)
+                // (Not under a road crossing over the tube, where the road meets the ground instead.)
+                if (!nearOver(overAt, posX[k], posZ[k])) rim.push(posX[k], topY[k], posZ[k], (S.rx[i] * side) / ol, (S.rz[i] * side) / ol)
               }
             }
             // End caps where the wall stops (fading out at the ends of the approaches).
@@ -236,7 +276,7 @@ export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, natGrid: N
               if (mb === topP) {
                 for (let c = 1; c < nb; c++) {
                   const k = (q * 2 + sd) * nb + c
-                  rim.push(posX[k], topY[k], posZ[k], nx / nl, nz / nl)
+                  if (!nearOver(overAt, posX[k], posZ[k])) rim.push(posX[k], topY[k], posZ[k], nx / nl, nz / nl)
                 }
               }
             }
@@ -261,8 +301,10 @@ export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, natGrid: N
         for (let c = 0; c <= m; c++) {
           const lat = -hw + (2 * hw * c) / m
           // The two end columns are the walls' tops' first columns (the same point).
-          const y = c === 0 ? topAt(r, 0, 0) : c === m ? topAt(r, 1, 0) : gridHeight(natGrid, S.px[i] + S.rx[i] * lat, S.pz[i] + S.rz[i] * lat) + TUNNEL_LIP
-          mb.vertex(S.px[i] + S.rx[i] * lat, y, S.pz[i] + S.rz[i] * lat, 0, 1, 0, lat, i * S.ds)
+          const vx = S.px[i] + S.rx[i] * lat
+          const vz = S.pz[i] + S.rz[i] * lat
+          const y = c === 0 ? topAt(r, 0, 0) : c === m ? topAt(r, 1, 0) : underOver(vx, vz, gridHeight(hillGrid, vx, vz) + TUNNEL_LIP)
+          mb.vertex(vx, y, vz, 0, 1, 0, lat, i * S.ds)
         }
       }
       for (let q = 0; q < covRows.length - 1; q++) {
@@ -401,10 +443,128 @@ export function buildTunnelMeshes(S: TrackSamples, ts: TunnelSamples, natGrid: N
       for (let q = 0; q < dRow.length - 1; q++) for (let k = 0; k < 2; k++) inside.quad(dRow[q] + k, dRow[q] + k + 1, dRow[q + 1] + k + 1, dRow[q + 1] + k)
     }
 
-    solids.push({ walls: weld(wallP.build()), top: weld(topP.build()), rim: Float32Array.from(rim) })
+    solids.push({ walls: weld(wallP.build()), top: weld(withoutUnderOver(topP.build(), overAt)), rim: Float32Array.from(rim) })
   }
 
   return { meshes: { inside: inside.build(), hill: hill.build() }, solids }
+}
+
+/** Where a road crosses over a tunnel: its surface over a spot, and how far the spot is past its edge (negative: under it). */
+interface OverHit {
+  surface: number
+  beyond: number
+}
+
+/** Samples closer than this (metres) to a tunnel's stretch along the road are its own road. */
+const OWN_ROAD = 80
+
+/**
+ * A lookup for "is there a road crossing over tunnel `id` at (x, z)?": other road (not the
+ * tunnel's own stretch [a, b], nor OWN_ROAD metres either side) that passes over the tube's
+ * footprint. Returns its surface there and how far past its edge the spot is, or null.
+ */
+function makeOverRoad(S: TrackSamples, ts: TunnelSamples, id: number, a: number, b: number): (x: number, z: number) => OverHit | null {
+  // The tube's footprint, roughly: a box round its samples, out past its walls.
+  let minX = Infinity
+  let maxX = -Infinity
+  let minZ = Infinity
+  let maxZ = -Infinity
+  for (let i = a; i <= b; i++) {
+    if (ts.slot[i] !== id) continue
+    minX = Math.min(minX, S.px[i])
+    maxX = Math.max(maxX, S.px[i])
+    minZ = Math.min(minZ, S.pz[i])
+    maxZ = Math.max(maxZ, S.pz[i])
+  }
+  const pad = TUNNEL_WALL + 30
+  const own = Math.round(OWN_ROAD / S.ds)
+  const list: number[] = []
+  for (let j = 0; j < S.count; j++) {
+    if (S.surface[j] !== SURFACE_CODE.road) continue
+    if (j >= a - own && j <= b + own) continue
+    if (j + S.count <= b + own || j - S.count >= a - own) continue
+    if (S.px[j] < minX - pad || S.px[j] > maxX + pad || S.pz[j] < minZ - pad || S.pz[j] > maxZ + pad) continue
+    list.push(j)
+  }
+  if (!list.length) return () => null
+  return (x, z) => {
+    let best = -1
+    let bestD = Infinity
+    for (const j of list) {
+      const d = (x - S.px[j]) ** 2 + (z - S.pz[j]) ** 2
+      if (d < bestD) {
+        bestD = d
+        best = j
+      }
+    }
+    const dx = x - S.px[best]
+    const dz = z - S.pz[best]
+    if (Math.abs(dx * S.tx[best] + dz * S.tz[best]) > S.ds) return null
+    const rh2 = S.rx[best] * S.rx[best] + S.rz[best] * S.rz[best]
+    const lat = rh2 > 1e-4 ? (dx * S.rx[best] + dz * S.rz[best]) / rh2 : 0
+    const hw = S.halfWidth[best]
+    if (Math.abs(lat) > hw + 3) return null
+    return { surface: S.py[best] + S.ry[best] * Math.max(-hw, Math.min(hw, lat)), beyond: Math.abs(lat) - hw }
+  }
+}
+
+/**
+ * Is (x, z) under a road crossing over the tube, or close enough past its edge that the roof is held
+ * just under that edge (OVER_EDGE_CAP, half a metre more)? The rim there meets that road, not the
+ * ground: the tunnel check's lip measure leaves it out, and its over-road measure judges it.
+ */
+function nearOver(overAt: (x: number, z: number) => OverHit | null, x: number, z: number): boolean {
+  const o = overAt(x, z)
+  return !!o && o.beyond <= OVER_EDGE_CAP + 0.5
+}
+
+/**
+ * The tube's top for physics, under a road crossing over it, without:
+ *  - the triangles wholly under its deck: that road's closed slab holds a car there, and a face a
+ *    few centimetres under the deck only gives a car's body something to catch on through the
+ *    road (the ground under a road is left out too);
+ *  - steep faces (the short skirts round the tube's edge) under it or within OVER_EDGE_CAP of its
+ *    edges: their top edge runs across the road just under its surface, and a car's soft CCD,
+ *    looking a whole step ahead, takes an edge there for a wall across the road (CLAUDE.md). The
+ *    road's slab meets the ground there instead.
+ */
+function withoutUnderOver(m: MeshBuffers, overAt: (x: number, z: number) => OverHit | null): MeshBuffers {
+  const P = m.positions
+  const under = new Uint8Array(P.length / 3)
+  const near = new Uint8Array(P.length / 3)
+  let any = false
+  for (let v = 0; v < under.length; v++) {
+    const o = overAt(P[v * 3], P[v * 3 + 2])
+    if (!o || o.beyond > OVER_EDGE_CAP) continue
+    near[v] = 1
+    if (o.beyond <= -OVER_COVER_MARGIN) under[v] = 1
+    any = true
+  }
+  if (!any) return m
+  const keep: number[] = []
+  for (let t = 0; t < m.indices.length; t += 3) {
+    const i0 = m.indices[t]
+    const i1 = m.indices[t + 1]
+    const i2 = m.indices[t + 2]
+    if (under[i0] && under[i1] && under[i2]) continue
+    if ((near[i0] || near[i1] || near[i2]) && steep(P, i0, i1, i2)) continue
+    keep.push(i0, i1, i2)
+  }
+  return { ...m, indices: Uint32Array.from(keep) }
+}
+
+/** Is triangle (a, b, c) steeper than 60 degrees (its normal less than half up)? */
+function steep(P: Float32Array, a: number, b: number, c: number): boolean {
+  const ux = P[b * 3] - P[a * 3]
+  const uy = P[b * 3 + 1] - P[a * 3 + 1]
+  const uz = P[b * 3 + 2] - P[a * 3 + 2]
+  const vx = P[c * 3] - P[a * 3]
+  const vy = P[c * 3 + 1] - P[a * 3 + 1]
+  const vz = P[c * 3 + 2] - P[a * 3 + 2]
+  const nx = uy * vz - uz * vy
+  const ny = uz * vx - ux * vz
+  const nz = ux * vy - uy * vx
+  return Math.abs(ny) < 0.5 * Math.hypot(nx, ny, nz)
 }
 
 /**

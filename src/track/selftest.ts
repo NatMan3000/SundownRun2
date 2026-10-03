@@ -36,7 +36,9 @@
 //      stopped; cars fired at the walls at 60 m/s stay inside; cars dropped on
 //      the roof at 40 and 100 m/s stay on top of it (never inside the tunnel);
 //      and frictionless boxes slide through every tunnel without hitting a face
-//      (the drive-through, 3b).
+//      (the drive-through, 3b). Where a road crosses over a tunnel's roof, cars
+//      dropped on it and on the roof beside it stay on top, and boxes slide
+//      along it over the roof without hitting a face (3b again).
 //
 //  The checks that need no physics (line, winding, smooth, banking,
 //  bridges, loops, tracking, ground) live in gates.ts, shared with the
@@ -52,6 +54,7 @@ import { createTerrainTiles, groundHoleAt, removeTerrainTiles, updateTerrainTile
 import { buildTrack, trackInternals } from './build'
 import { SIDE_RUN } from './ramps'
 import { LOOP_RUN_IN, loopShape } from './road'
+import { roadOverTunnels } from './tunnels'
 import { where } from './gates'
 import { surfaceOf } from '../core/physics'
 import * as THREE from 'three'
@@ -448,6 +451,15 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         for (const lat of [0, -(frame.halfWidth - CAR.hx - 0.6), frame.halfWidth - CAR.hx - 0.6]) runs.push({ what: `through a tunnel (lateral ${lat.toFixed(1)} m)`, s, until: s + 60, v: 45, lat, turn: true })
       }
     }
+    // Over every tunnel's roof, on the road crossing it: from 40 m before the tube to 40 m past it.
+    const tsIn = trackInternals(t)?.tunnels
+    for (const r of tsIn ? roadOverTunnels(t.samples, tsIn) : []) {
+      const s0 = r.i0 * t.samples.ds - 40
+      const len = ((r.i1 - r.i0 + t.samples.count) % t.samples.count) * t.samples.ds + 80
+      t.frameAt(s0, frame)
+      // (At 45 m/s, and flat out: a car's soft CCD looks further ahead the faster it goes.)
+      for (const v of [45, 70]) for (const lat of [0, -(frame.halfWidth - CAR.hx - 0.6), frame.halfWidth - CAR.hx - 0.6]) runs.push({ what: `over a tunnel's roof at ${v} m/s (lateral ${lat.toFixed(1)} m)`, s: s0, until: s0 + len, v, lat, turn: true })
+    }
     // Plus a plain run at every checkpoint (straight road joints, bridges, the seam).
     // One that would cross a ramp's footprint runs in the clear lane beside the ramp
     // instead (the ramp's own runs cover the ramp), or is left to them if there is none.
@@ -572,12 +584,15 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         const p = body.translation()
         n++
         // It may have slid down a slope or a bank: judge it against the surface where it ended up.
-        ray.origin = { x: p.x, y: topY, z: p.z }
-        const under = world.castRay(ray, topY - t.world.catchFloorY + 10, true, undefined, undefined, undefined, body)
-        const endSurface = under ? topY - under.timeOfImpact : -Infinity
+        // (Inside a covered tunnel, the surface under its ceiling: one dropped on the road at a
+        // portal can tumble in under the roof, and the roof over it isn't what it fell through.)
+        const fromY = insideTunnelCeiling(t, p.x, p.y, p.z) ?? topY
+        ray.origin = { x: p.x, y: fromY, z: p.z }
+        const under = world.castRay(ray, fromY - t.world.catchFloorY + 10, true, undefined, undefined, undefined, body)
+        const endSurface = under ? fromY - under.timeOfImpact : -Infinity
         if (p.y < endSurface - 0.2) {
           fails++
-          if (failed.length < 5) failed.push(`(${x.toFixed(0)}, ${z.toFixed(0)}) surface ${surfaceY.toFixed(1)} -> ended at y ${p.y.toFixed(1)}, under a surface at ${endSurface.toFixed(1)}`)
+          if (failed.length < 5) failed.push(`(${x.toFixed(0)}, ${z.toFixed(0)}) surface ${surfaceY.toFixed(1)} -> ended at (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}), under a surface at ${endSurface.toFixed(1)}`)
         }
         world.removeRigidBody(body)
       }
@@ -951,6 +966,16 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
   return { ok, lines }
 }
 
+/** If (x, y, z) is inside a covered tunnel (under its ceiling, between its walls), a height just under that ceiling; else null. */
+function insideTunnelCeiling(t: TrackRuntime, x: number, y: number, z: number): number | null {
+  const ts = trackInternals(t)?.tunnels
+  if (!ts || !t.tunnels.length) return null
+  const hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+  t.nearest(x, y, z, hit)
+  const i = hit.index
+  return ts.covered[i] === 1 && y < ts.ceil[i] && Math.abs(hit.lateral) < t.samples.halfWidth[i] + 0.5 ? ts.ceil[i] - 0.05 : null
+}
+
 /**
  * The tunnel cases (11): every built tunnel's walls are smooth to slide along at speed and
  * hold a car fired at them, and its roof holds cars dropped on it. `world` already has the
@@ -1135,6 +1160,46 @@ function tunnelPhysics(
       const pass = fell === 0 && drops > 0
       if (!pass) ok = false
       lines.push(`${pass ? 'ok  ' : 'FAIL'} ${name}: roof holds: ${drops - fell}/${drops} car boxes dropped on it at 40 and 100 m/s stayed on top`)
+      for (const f of failed) lines.push(`     fell in: ${f}`)
+    }
+    // ---- a road crossing over the roof: cars dropped on it, and on the roof just beside it ----
+    const overs = roadOverTunnels(S, ts).filter((r) => r.tunnel === t.tunnels.indexOf(tn))
+    if (overs.length) {
+      let drops = 0
+      let fell = 0
+      const failed: string[] = []
+      const ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 })
+      for (const r of overs) {
+        const len = ((r.i1 - r.i0 + S.count) % S.count) + 1
+        for (const V of [40, 100]) {
+          for (const f of [0.15, 0.5, 0.85]) {
+            const i = (r.i0 + Math.round(f * (len - 1))) % S.count
+            const hw = S.halfWidth[i]
+            for (const lat of [0, -(hw - 2), hw - 2, -(hw + 2), hw + 2]) {
+              const x = S.px[i] + S.rx[i] * lat
+              const z = S.pz[i] + S.rz[i] * lat
+              ray.origin = { x, y: t.terrain.maxHeight + 60, z }
+              const h = world.castRay(ray, 1000, true)
+              if (!h) continue
+              const topY = t.terrain.maxHeight + 60 - h.timeOfImpact
+              quat.identity()
+              const body = spawnBox(x, topY + 4, z, quat, 0, -V, 0)
+              run(1.2)
+              const p = body.translation()
+              drops++
+              // Never into the tunnel under it: it ends over the road it was dropped on (or the roof).
+              if (p.y < topY - 1.5) {
+                fell++
+                if (failed.length < 4) failed.push(`${V} m/s on the road over it at ${where(t, i * S.ds)}, ${lat.toFixed(0)} m across: ended at y ${p.y.toFixed(1)} (landed on ${topY.toFixed(1)})`)
+              }
+              world.removeRigidBody(body)
+            }
+          }
+        }
+      }
+      const pass = fell === 0 && drops > 0
+      if (!pass) ok = false
+      lines.push(`${pass ? 'ok  ' : 'FAIL'} ${name}: the road over it holds: ${drops - fell}/${drops} car boxes dropped on it and on the roof beside it at 40 and 100 m/s stayed on top`)
       for (const f of failed) lines.push(`     fell in: ${f}`)
     }
   }

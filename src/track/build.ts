@@ -27,11 +27,13 @@ import {
   BIGAIR_LAYOUT,
   flattenToRoad,
   gridHeight,
+  hillGroundOf,
   makeNaturalTerrain,
   makeTerrainGrid,
   roundedRadius,
   roundedToEuclid,
   sampleNaturalGrid,
+  type FlattenInput,
   type NaturalGrid,
   type NaturalTerrain,
 } from './terrain'
@@ -121,6 +123,11 @@ export interface TrackInternals {
   tunnels: TunnelSamples
   /** Each built tunnel's physics: walls and ceiling, and the hill on top (tunnelMeshes.ts). */
   tunnelSolids: TunnelSolids[]
+  /**
+   * The hill the tunnels are dug through (terrain.ts hillGroundOf): the ground as every other road
+   * shaped it, on the terrain grid. The natural grid itself on a track with no tunnel.
+   */
+  hillGrid: NaturalGrid
   /** Per grid vertex under a tunnel's solid: the solid's top, and metres inside its outer edge (terrain.ts). */
   tunnelTop: Float32Array | null
   tunnelIn: Float32Array | null
@@ -163,7 +170,12 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const L = c.length
 
   // ---- the ground, cut and filled to the road ----
-  const flat = flattenToRoad(natGrid, { samples: S, thickness: c.thickness, barrierHeight: file.road.barriers === 'walls' ? file.road.barrierHeight : 0, overCut: c.overCut, underCut: c.underCut, sameStretch: SAME_STRETCH, tunnels: c.tunnels })
+  const flatInput: FlattenInput = { samples: S, thickness: c.thickness, barrierHeight: file.road.barriers === 'walls' ? file.road.barrierHeight : 0, overCut: c.overCut, underCut: c.underCut, sameStretch: SAME_STRETCH, tunnels: c.tunnels }
+  // With tunnels: first the hill they are dug through (every other road shaping the ground), so a
+  // road crossing over a tunnel runs on its roof as on the ground (terrain.ts hillGroundOf).
+  const hill = hillGroundOf(natGrid, flatInput)
+  const hillGrid: NaturalGrid = hill ? { n: natGrid.n, half: natGrid.half, cellSize: natGrid.cellSize, heights: hill } : natGrid
+  const flat = flattenToRoad(natGrid, { ...flatInput, hill: hill ?? undefined })
   const heights = flat.heights
   const terrain = makeTerrainGrid(natGrid, heights)
   const terrainHeight = (x: number, z: number) => gridHeight(terrain, x, z)
@@ -277,7 +289,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   // ---- meshes ----
   const ribbon = buildRibbonMeshes(c, file.road.barriers === 'walls', file.road.barrierHeight)
   const ramps = buildRampMeshes(rampSpots, q, tmpFrame)
-  const tunnelBuild = buildTunnelMeshes(S, c.tunnels, natGrid, terrain)
+  const tunnelBuild = buildTunnelMeshes(S, c.tunnels, hillGrid, terrain)
 
   // ---- world edges ----
   const minGround = Math.min(terrain.minHeight, minOf(S.py) - 2)
@@ -485,6 +497,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     groundCovered: flat.covered,
     tunnels: c.tunnels,
     tunnelSolids: tunnelBuild ? tunnelBuild.solids : [],
+    hillGrid,
     tunnelTop: flat.tunnelTop,
     tunnelIn: flat.tunnelIn,
   })

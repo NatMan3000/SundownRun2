@@ -88,8 +88,16 @@ const RAMP_MAX = 280
 const RAMP_K = 4730
 /** The deepest a tunnel may dig the road down, metres. */
 export const TUNNEL_DIG_MAX = 22
-/** Other road must keep this far (metres) beyond the tunnel's walls. */
+/** Other road must keep this far (metres) beyond the walls of a tunnel's open approaches (over its roof it may cross). */
 const OTHER_ROAD_GAP = 8
+/** So other road keeps this far (metres) past a tunnel road's edge, beside its open approaches, to its own edge (the editor sizes a tunnel at a crossing by it). */
+export const TUNNEL_CLEAR_BESIDE = TUNNEL_WALL + OTHER_ROAD_GAP
+/**
+ * A road crossing over a tunnel's roof: the underside of its slab (TunnelPlanInput.overSlab, a road
+ * on the ground's: road.ts SLAB_GROUNDED) keeps at least this much roof (metres) over the ceiling,
+ * so the slab never pokes into the tunnel.
+ */
+const OVER_ROAD_AIR = 0.5
 /** Samples of the same road closer than this (metres) along it are the tunnel's own stretch. */
 const OWN_STRETCH = 80
 
@@ -168,6 +176,8 @@ export interface TunnelPlan {
   depth: number
   /** Why it can't be built (plain words), or null when it is built. */
   problem: string | null
+  /** How many times other road crosses over its roof. */
+  crossings: number
 }
 
 /** Per base sample: how far the tunnels dig it, and which tunnel's stretch it is in. */
@@ -179,6 +189,8 @@ export interface TunnelDigs {
   slot: Uint8Array
   /** 1 for base samples in a covered stretch. */
   covered: Uint8Array
+  /** 1 for base samples of other road that crosses over a built tunnel's roof (its slab there is a bridge's, road.ts). */
+  over: Uint8Array
 }
 
 export interface TunnelPlanInput {
@@ -196,6 +208,26 @@ export interface TunnelPlanInput {
   keepClear: TunnelKeepClear[]
   /** A road with barriers (a stadium) can't take a tunnel. */
   walled: boolean
+  /** How far down (metres) a road crossing over a tunnel's roof reaches: its slab (road.ts SLAB_GROUNDED). */
+  overSlab: number
+}
+
+/** Is s within [s0, s1] on a lap of length L (s1 may pass the lap's end)? */
+function onLapWithin(s: number, s0: number, s1: number, L: number): boolean {
+  let d = s - s0
+  d -= Math.floor(d / L) * L
+  return d <= s1 - s0
+}
+
+/** How many separate runs of samples (gaps of more than 5 apart) a set holds: the number of times a road crosses. */
+function countRuns(set: Set<number>, n: number): number {
+  if (!set.size) return 0
+  const list = [...set].sort((a, b) => a - b)
+  let runs = 1
+  for (let q = 1; q < list.length; q++) if (list[q] - list[q - 1] > 5) runs++
+  // The first and last runs join across the lap's start.
+  if (runs > 1 && list[0] + n - list[list.length - 1] <= 5) runs--
+  return runs
 }
 
 /** Wrap a (possibly negative or past-the-end) index into [0, n). */
@@ -214,9 +246,10 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
   const dig = new Float64Array(nb)
   const slot = new Uint8Array(nb)
   const covered = new Uint8Array(nb)
+  const overRoof = new Uint8Array(nb)
   const plans: TunnelPlan[] = []
   const tunnels = inp.pieces.map((p, index) => ({ p, index })).filter((x) => x.p.type === 'tunnel') as { p: TunnelPiece; index: number }[]
-  if (!tunnels.length) return { plans, dig, slot, covered }
+  if (!tunnels.length) return { plans, dig, slot, covered, over: overRoof }
 
   // Base samples on a coarse grid, for "is other road near this stretch?".
   const CELL = 32
@@ -232,12 +265,23 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
   for (let k = 0; k < nb; k++) widest = Math.max(widest, bHalf[k])
   const own = Math.round(OWN_STRETCH / dsb)
   const taken: TunnelKeepClear[] = []
+  /** Visit every base sample near base sample k (within the coarse cells round it) that isn't in [from, to] on the lap. */
+  const forOtherRoad = (k: number, from: number, to: number, visit: (j: number) => void) => {
+    const r = Math.ceil((bHalf[k] + TUNNEL_WALL + OTHER_ROAD_GAP + widest) / CELL)
+    const cx = Math.floor(bx[k] / CELL)
+    const cz = Math.floor(bz[k] / CELL)
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (const j of cells.get(key(cx + dx, cz + dz)) ?? []) if (wrapI(j - from, nb) > to - from) visit(j)
+      }
+    }
+  }
 
   for (const { p, index } of tunnels) {
     const length = p.length ?? TRACK_DEFAULTS.tunnelLength
     const sb0 = inp.baseSOfAt(p.at)
     const sb1 = sb0 + length
-    const plan: TunnelPlan = { index, sb0, sb1, ramp: 0, depth: 0, problem: null }
+    const plan: TunnelPlan = { index, sb0, sb1, ramp: 0, depth: 0, problem: null, crossings: 0 }
     plans.push(plan)
     if (inp.walled) {
       plan.problem = "a road with barriers can't have a tunnel (its walls would stand where the barriers are)"
@@ -272,8 +316,35 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
       const n = Math.max(0, highEdge + TUNNEL_CEILING + TUNNEL_ROOF_MIN + DIG_MARGIN - lowest)
       D = Math.max(D, n)
     }
+    // Other road crossing over the covered stretch runs on the roof: the dig goes deep enough
+    // for that road's slab to sit over the ceiling with roof to spare.
+    const near = (k: number, j: number) => Math.hypot(bx[k] - bx[j], bz[k] - bz[j]) < bHalf[k] + TUNNEL_WALL + OTHER_ROAD_GAP + bHalf[j]
+    const ownReach = Math.round((RAMP_MAX + OWN_STRETCH) / dsb)
+    const over = new Set<number>()
+    let overTunnel: TunnelKeepClear | null = null
+    for (let kk = k0; kk <= k1; kk++) {
+      const k = wrapI(kk, nb)
+      const highEdge = by[k] + bHalf[k] * Math.abs(Math.sin(bBank[k]))
+      forOtherRoad(k, k0 - ownReach, k1 + ownReach, (j) => {
+        if (!near(k, j)) return
+        // A road already in a tunnel of its own can't run over this one.
+        const inTunnel = taken.find((c) => onLapWithin(j * dsb, c.s0, c.s1, Lb))
+        if (inTunnel) overTunnel = inTunnel
+        over.add(j)
+        const overLow = by[j] - bHalf[j] * Math.abs(Math.sin(bBank[j]))
+        D = Math.max(D, highEdge + TUNNEL_CEILING + inp.overSlab + OVER_ROAD_AIR + DIG_MARGIN - overLow)
+      })
+    }
+    if (overTunnel) {
+      plan.problem = `the road that crosses over it is in ${(overTunnel as TunnelKeepClear).what} already, and a tunnel can't go under another tunnel. Move one of them`
+      continue
+    }
+    plan.crossings = countRuns(over, nb)
     if (D > TUNNEL_DIG_MAX) {
-      plan.problem = `the road is too high above the ground here: a tunnel would have to dig it ${D.toFixed(0)} m down (at most ${TUNNEL_DIG_MAX} m). Put it where the road runs on the ground, or through a hill`
+      plan.problem =
+        over.size > 0
+          ? `the road crossing over it is too high above the ground here: a tunnel under it would have to dig ${D.toFixed(0)} m down (at most ${TUNNEL_DIG_MAX} m). Bring that road down to the ground first, or put the tunnel where the road over it runs on the ground`
+          : `the road is too high above the ground here: a tunnel would have to dig it ${D.toFixed(0)} m down (at most ${TUNNEL_DIG_MAX} m). Put it where the road runs on the ground, or through a hill`
       continue
     }
     const R = rampLength(by, nb, dsb, sb0, sb1, D)
@@ -298,35 +369,27 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
       plan.problem = `there's ${clash.what} in the way. The road dips ${D.toFixed(1)} m into the ground for this tunnel, on ramps ${R.toFixed(0)} m long before and after the covered part, and all of that has to be clear road. Move the tunnel, or make it shorter`
       continue
     }
-    // No other road close beside it or across it (the tube needs the ground either side).
-    let crossing = false
+    // No other road close beside the open approaches, or across them: there the road runs in a
+    // trench between walls of ground, with nothing over it.
     const kf0 = Math.floor(f0 / dsb)
     const kf1 = Math.ceil(f1 / dsb)
-    search: for (let kk = kf0; kk <= kf1; kk += 2) {
+    let open = false
+    for (let kk = kf0; kk <= kf1 && !open; kk += 2) {
+      if (kk >= k0 && kk <= k1) continue
       const k = wrapI(kk, nb)
-      const reach = bHalf[k] + TUNNEL_WALL + OTHER_ROAD_GAP + widest
-      const r = Math.ceil(reach / CELL)
-      const cx = Math.floor(bx[k] / CELL)
-      const cz = Math.floor(bz[k] / CELL)
-      for (let dx = -r; dx <= r; dx++) {
-        for (let dz = -r; dz <= r; dz++) {
-          for (const j of cells.get(key(cx + dx, cz + dz)) ?? []) {
-            // Its own stretch (ramps included, and a little either side) isn't "other road".
-            if (wrapI(j - (kf0 - own), nb) <= kf1 - kf0 + 2 * own) continue
-            const d = Math.hypot(bx[k] - bx[j], bz[k] - bz[j])
-            if (d < bHalf[k] + TUNNEL_WALL + OTHER_ROAD_GAP + bHalf[j]) {
-              crossing = true
-              break search
-            }
-          }
-        }
-      }
+      forOtherRoad(k, kf0 - own, kf1 + own, (j) => {
+        if (near(k, j)) open = true
+      })
     }
-    if (crossing) {
-      plan.problem = "another part of the road crosses this stretch or runs too close beside it: a tunnel needs ground either side of it, and it can't go under a road yet. Move the tunnel where nothing else is near"
+    if (open) {
+      plan.problem =
+        over.size > 0
+          ? "the other road comes too close to this tunnel's open ends, where the road dips down between walls of ground. It can only cross over the covered part. Make the tunnel longer so the other road crosses over its roof, or move it"
+          : "another part of the road runs too close beside the open ends of this tunnel, where the road dips down between walls of ground. Move the tunnel, or make it longer so the other road crosses over its roof"
       continue
     }
     taken.push({ s0: f0, s1: f1, what: `another tunnel (pieces[${index}])` })
+    for (const j of over) overRoof[j] = 1
 
     // The dig: the deepest any covered sample needs, all the way through (so the road under
     // the roof runs exactly as it did, just lower, never with a kink of its own), easing back
@@ -341,7 +404,7 @@ export function planTunnelDigs(inp: TunnelPlanInput): TunnelDigs {
       if (s >= sb0 && s <= sb1) covered[k] = 1
     }
   }
-  return { plans, dig, slot, covered }
+  return { plans, dig, slot, covered, over: overRoof }
 }
 
 /** Per final sample: everything about the tunnels the ground, the meshes and the checks share. */
@@ -456,12 +519,98 @@ export function finishTunnels(S: TrackSamples, plans: TunnelPlan[], dig: Float32
         }
         for (let i = a; i <= b; i++) arr[i] = i >= c0 && i <= c1 ? 1 : tmp[i - a]
       }
+      // The blur lifts the stretch's very ends off nothing (it averages in the wall further in), so a
+      // wall would start with a sixth of it already standing, a step over the open shoulder beyond
+      // its end cap (up to 28 cm on a hillside). Fade it out at the ends again.
+      for (let i = a; i < c0; i++) arr[i] *= smoothstep(0, WALL_FADE, (i - a) * S.ds)
+      for (let i = c1 + 1; i <= b; i++) arr[i] *= smoothstep(0, WALL_FADE, (b - i) * S.ds)
     }
     list.push({ index: plans[p].index, s0: c0 * S.ds, s1: (c1 + 1) * S.ds, a0: a * S.ds, a1: (b + 1) * S.ds, depth, clearance })
   }
   // Samples outside a built tunnel carry no dig or cover.
   for (let i = 0; i < n; i++) if (!slot[i]) covered[i] = 0
   return { plans, list, slot, covered, dig, wallL, wallR, ceil, cover }
+}
+
+/** A stretch of other road that crosses over a tunnel's roof. */
+export interface RoadOverTunnel {
+  /** Index into TunnelSamples.list (and TrackRuntime.tunnels). */
+  tunnel: number
+  /** Its first and last sample over the tube (i1 may be below i0 where it runs over the lap's start). */
+  i0: number
+  i1: number
+}
+
+/**
+ * Every stretch of road that crosses over a built tunnel's covered part: samples of other road
+ * (not the tunnel's own stretch, nor OWN_STRETCH metres of road either side) whose spot lies over
+ * the tube (over its road, or over its walls out to TUNNEL_WALL past the edge).
+ */
+export function roadOverTunnels(S: TrackSamples, ts: TunnelSamples): RoadOverTunnel[] {
+  const out: RoadOverTunnel[] = []
+  const n = S.count
+  const own = Math.round(OWN_STRETCH / S.ds)
+  for (let t = 0; t < ts.list.length; t++) {
+    const id = t + 1
+    const cov: number[] = []
+    let a = -1
+    let b = -1
+    let minX = Infinity
+    let maxX = -Infinity
+    let minZ = Infinity
+    let maxZ = -Infinity
+    for (let i = 0; i < n; i++) {
+      if (ts.slot[i] !== id) continue
+      if (a < 0) a = i
+      b = i
+      if (!ts.covered[i]) continue
+      cov.push(i)
+      minX = Math.min(minX, S.px[i])
+      maxX = Math.max(maxX, S.px[i])
+      minZ = Math.min(minZ, S.pz[i])
+      maxZ = Math.max(maxZ, S.pz[i])
+    }
+    if (!cov.length) continue
+    const pad = TUNNEL_WALL + 20
+    const over = (j: number): boolean => {
+      if (S.surface[j] !== SURFACE_CODE.road) return false
+      if (wrapI(j - (a - own), n) <= b - a + 2 * own) return false
+      const x = S.px[j]
+      const z = S.pz[j]
+      if (x < minX - pad || x > maxX + pad || z < minZ - pad || z > maxZ + pad) return false
+      let best = -1
+      let bestD = Infinity
+      for (const i of cov) {
+        const d = (x - S.px[i]) ** 2 + (z - S.pz[i]) ** 2
+        if (d < bestD) {
+          bestD = d
+          best = i
+        }
+      }
+      const dx = x - S.px[best]
+      const dz = z - S.pz[best]
+      if (Math.abs(dx * S.tx[best] + dz * S.tz[best]) > S.ds) return false
+      const rh2 = S.rx[best] * S.rx[best] + S.rz[best] * S.rz[best]
+      const lat = rh2 > 1e-4 ? (dx * S.rx[best] + dz * S.rz[best]) / rh2 : 0
+      return Math.abs(lat) <= S.halfWidth[best] + TUNNEL_WALL
+    }
+    // Runs of samples over the tube (joined across the lap's start).
+    let start = -1
+    for (let k = 0; k <= n; k++) {
+      const yes = k < n && over(k)
+      if (yes && start < 0) start = k
+      if (!yes && start >= 0) {
+        out.push({ tunnel: t, i0: start, i1: k - 1 })
+        start = -1
+      }
+    }
+    const mine = out.filter((r) => r.tunnel === t)
+    if (mine.length > 1 && mine[0].i0 === 0 && mine[mine.length - 1].i1 === n - 1) {
+      mine[0].i0 = mine[mine.length - 1].i0
+      out.splice(out.indexOf(mine[mine.length - 1]), 1)
+    }
+  }
+  return out
 }
 
 /**

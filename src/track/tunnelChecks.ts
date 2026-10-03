@@ -16,16 +16,21 @@
 //    lip         the edge of the tube's top meets the ground beside
 //                it within TUNNEL_LIP_MAX metres (it sits a road-edge
 //                lip above it, never a step a car catches on)
+//    over        a road crossing over the roof: the roof stays under
+//                its surface right across it as the ground under a road
+//                does (never poking up through the road), and just past
+//                its edges it meets the road like ground does, within
+//                OVER_EDGE_MAX metres
 //
 //  The physics checks (a car sliding along the walls, cars dropped on
 //  the roof) are in selftest.ts. Pure: reads the built track.
 // ============================================================
 
 import { trackInternals } from './build'
-import { gridHeight, TUNNEL_WALL_MIN } from './terrain'
+import { gridHeight, requiredClearance, TUNNEL_WALL_MIN } from './terrain'
 import { groundHoleAt } from './terrainTiles'
-import { TUNNEL_HOLLOW, TUNNEL_LIP, TUNNEL_WALL } from './tunnels'
-import type { NearestHit, TrackRuntime } from './types'
+import { roadOverTunnels, TUNNEL_HOLLOW, TUNNEL_LIP, TUNNEL_WALL } from './tunnels'
+import type { MeshBuffers, NearestHit, TrackRuntime } from './types'
 
 /** The least room (metres) from the road up to a tunnel's ceiling, over any lane. */
 export const TUNNEL_CLEARANCE_MIN = 5
@@ -35,6 +40,14 @@ export const TUNNEL_ROOF_CHECK = 0.8
 export const TUNNEL_LIP_MAX = 0.1
 /** Ground inside the tube must sit at least this far below the road's edge, or be a hole (metres). */
 export const TUNNEL_GROUND_BELOW = 0.04
+/**
+ * Under a road crossing over the roof, the roof's top keeps the clearance the ground under a road
+ * keeps (terrain.ts requiredClearance: 15 cm across the middle, 3 cm at the edges), give or take
+ * this much (metres): the `ground` check's own allowance.
+ */
+export const OVER_ROOF_SLACK = 0.03
+/** Just past that road's edges the roof sits within this much (metres) of the edge's height: no kerb, no ditch. */
+export const OVER_EDGE_MAX = 0.15
 
 export interface TunnelCheck {
   /** Index in file.pieces. */
@@ -60,6 +73,14 @@ export interface TunnelCheck {
   /** How long the approaches are (metres, both together) and how deep the road goes. */
   approach: number
   depth: number
+  /** How many times other road crosses over the roof. */
+  overRoads: number
+  /** Under that road: the least room (metres) from the roof's top up to its surface past the clearance it must keep (Infinity: no road over it). */
+  overRoof: number
+  overRoofAt: number
+  /** Just past that road's edges: the most the roof's top sits above or below the edge (metres). */
+  overEdge: number
+  overEdgeAt: number
 }
 
 /** Check every tunnel piece. Empty when the track has none. */
@@ -70,6 +91,8 @@ export function tunnelChecks(t: TrackRuntime): TunnelCheck[] {
   const S = t.samples
   const out: TunnelCheck[] = []
   const hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+  const overs = roadOverTunnels(S, ts)
+  const topAt = overs.length ? makeTopQuery(t.meshes.tunnels?.hill ?? null) : () => -Infinity
   for (const plan of ts.plans) {
     const piece = t.pieces.find((p) => p.index === plan.index)
     const c: TunnelCheck = {
@@ -88,6 +111,11 @@ export function tunnelChecks(t: TrackRuntime): TunnelCheck[] {
       under: 0,
       approach: 0,
       depth: plan.depth,
+      overRoads: 0,
+      overRoof: Infinity,
+      overRoofAt: 0,
+      overEdge: 0,
+      overEdgeAt: 0,
     }
     out.push(c)
     if (plan.problem) continue
@@ -114,7 +142,7 @@ export function tunnelChecks(t: TrackRuntime): TunnelCheck[] {
         }
         for (let k = 0; k <= 8; k++) {
           const l = -(hw + TUNNEL_WALL) + (2 * (hw + TUNNEL_WALL) * k) / 8
-          const roof = gridHeight(x.natGrid, S.px[i] + S.rx[i] * l, S.pz[i] + S.rz[i] * l) + TUNNEL_LIP - ts.ceil[i]
+          const roof = gridHeight(x.hillGrid, S.px[i] + S.rx[i] * l, S.pz[i] + S.rz[i] * l) + TUNNEL_LIP - ts.ceil[i]
           if (roof < c.roof) {
             c.roof = roof
             c.roofAt = s
@@ -157,6 +185,99 @@ export function tunnelChecks(t: TrackRuntime): TunnelCheck[] {
         c.under = Math.max(c.under, -lip)
       }
     }
+    // The road over the roof, every half metre across it and just past each edge.
+    const runs = overs.filter((r) => r.tunnel === id - 1)
+    c.overRoads = runs.length
+    for (const r of runs) {
+      const len = ((r.i1 - r.i0 + S.count) % S.count) + 1
+      for (let q = 0; q < len; q++) {
+        const i = (r.i0 + q) % S.count
+        const hw = S.halfWidth[i]
+        const s = i * S.ds
+        for (let l = -hw; l <= hw + 1e-6; l += 0.5) {
+          const x = S.px[i] + S.rx[i] * l
+          const z = S.pz[i] + S.rz[i] * l
+          const top = topAt(x, z)
+          if (top === -Infinity) continue
+          const room = S.py[i] + S.ry[i] * l - top - requiredClearance(l, hw)
+          if (room < c.overRoof) {
+            c.overRoof = room
+            c.overRoofAt = s
+          }
+        }
+        for (const side of [-1, 1]) {
+          const edgeY = S.py[i] + S.ry[i] * side * hw
+          for (const b of [0.5, 1, 1.5]) {
+            const l = side * (hw + b)
+            const top = topAt(S.px[i] + S.rx[i] * l, S.pz[i] + S.rz[i] * l)
+            if (top === -Infinity) continue
+            const step = Math.abs(top - edgeY)
+            if (step > c.overEdge) {
+              c.overEdge = step
+              c.overEdgeAt = s
+            }
+          }
+        }
+      }
+    }
   }
   return out
+}
+
+/**
+ * The height of a tunnel's drawn top (its roof, walls' tops and the faces round them) straight
+ * down at (x, z): the highest of its triangles over the spot (steep faces left out), or -Infinity.
+ * Triangles are bucketed on a 4 m grid so each look-up is quick.
+ */
+function makeTopQuery(m: MeshBuffers | null): (x: number, z: number) => number {
+  if (!m) return () => -Infinity
+  const P = m.positions
+  const I = m.indices
+  const CELL = 4
+  const cells = new Map<number, number[]>()
+  const key = (cx: number, cz: number) => cx * 100003 + cz
+  for (let t = 0; t < I.length; t += 3) {
+    const a = I[t] * 3
+    const b = I[t + 1] * 3
+    const c = I[t + 2] * 3
+    // Steep faces (portals, skirts, wall faces) aren't a top a road can sit on.
+    const ux = P[b] - P[a]
+    const uy = P[b + 1] - P[a + 1]
+    const uz = P[b + 2] - P[a + 2]
+    const vx = P[c] - P[a]
+    const vy = P[c + 1] - P[a + 1]
+    const vz = P[c + 2] - P[a + 2]
+    const ny = uz * vx - ux * vz
+    const nl = Math.hypot(uy * vz - uz * vy, ny, ux * vy - uy * vx)
+    if (nl < 1e-9 || Math.abs(ny) / nl < 0.5) continue
+    const x0 = Math.floor(Math.min(P[a], P[b], P[c]) / CELL)
+    const x1 = Math.floor(Math.max(P[a], P[b], P[c]) / CELL)
+    const z0 = Math.floor(Math.min(P[a + 2], P[b + 2], P[c + 2]) / CELL)
+    const z1 = Math.floor(Math.max(P[a + 2], P[b + 2], P[c + 2]) / CELL)
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const k = key(cx, cz)
+        const list = cells.get(k)
+        if (list) list.push(t)
+        else cells.set(k, [t])
+      }
+    }
+  }
+  return (x, z) => {
+    let best = -Infinity
+    for (const t of cells.get(key(Math.floor(x / CELL), Math.floor(z / CELL))) ?? []) {
+      const a = I[t] * 3
+      const b = I[t + 1] * 3
+      const c = I[t + 2] * 3
+      // Barycentric in plan view.
+      const d = (P[b + 2] - P[c + 2]) * (P[a] - P[c]) + (P[c] - P[b]) * (P[a + 2] - P[c + 2])
+      if (Math.abs(d) < 1e-9) continue
+      const wa = ((P[b + 2] - P[c + 2]) * (x - P[c]) + (P[c] - P[b]) * (z - P[c + 2])) / d
+      const wb = ((P[c + 2] - P[a + 2]) * (x - P[c]) + (P[a] - P[c]) * (z - P[c + 2])) / d
+      const wc = 1 - wa - wb
+      if (wa < -1e-6 || wb < -1e-6 || wc < -1e-6) continue
+      best = Math.max(best, wa * P[a + 1] + wb * P[b + 1] + wc * P[c + 1])
+    }
+    return best
+  }
 }

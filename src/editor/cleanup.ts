@@ -27,6 +27,7 @@
 // ============================================================
 
 import type { RoadPoint } from '../track/schema'
+import { TUNNEL_CLEAR_BESIDE } from '../track/tunnels'
 import {
   type P,
   arcLengths,
@@ -116,8 +117,10 @@ export type CleanupOptions = typeof CLEANUP & {
    * same way, keeps that road on top instead of the automatic choice. Redrawing
    * a stretch passes these in, so a swapped bridge stays swapped. `under` marks
    * an underpass: the other road dips under this one, which stays on the ground.
+   * `tunnel` marks a tunnel: the other road goes under this one in a tunnel (its
+   * Tunnel piece moves with the road), so both stay on the ground here.
    */
-  keepOver?: readonly { at: P; heading: number; under?: boolean }[]
+  keepOver?: readonly { at: P; heading: number; under?: boolean; tunnel?: boolean }[]
   /**
    * The ground a road point with no height of its own sits on (the draft's world: see
    * pointGroundFor in draft.ts). With it, each bridge's top runs straight between its
@@ -776,6 +779,17 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
     const keptChoice = keptSide(pts, c, o.keepOver ?? [], length)
     const kept = keptChoice?.side ?? null
     if (kept) order = kept === 'A' ? ['A', 'B'] : ['B', 'A']
+    // A tunnel stays a tunnel: both roads stay on the ground here (the Tunnel piece digs the one
+    // under), and no other bridge's ramps may reach the tunnel's stretch or the road over it.
+    if (keptChoice?.tunnel && kept) {
+      const overS = kept === 'A' ? c.sA : c.sB
+      const tunnelS = kept === 'A' ? c.sB : c.sA
+      downs.push({ s: tunnelS, flat: (o.width + TUNNEL_CLEAR_BESIDE) / Math.sin((c.angleDeg * Math.PI) / 180) + 10 + o.bridgeRamp })
+      downs.push({ s: overS, flat })
+      c.over = kept
+      issues.push({ level: 'note', code: 'bridged', message: 'The road crosses itself here, and one side still goes under the other in a tunnel.', at: c.at })
+      continue
+    }
     // An underpass stays an underpass: the road under it dips down, the one on top stays on the ground.
     const dip = !!keptChoice?.under
     // Every way round that fits, in order of preference, with its straight-topped deck.
@@ -836,10 +850,10 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
 /**
  * If this crossing was on the road before (a kept choice within 40 m), which
  * pass goes over: the one heading the same way as the road that was on top,
- * and whether it was an underpass.
+ * and whether it was an underpass or a tunnel.
  */
-function keptSide(pts: readonly P[], c: Crossing, keep: readonly { at: P; heading: number; under?: boolean }[], length: number): { side: 'A' | 'B'; under: boolean } | null {
-  let best: { at: P; heading: number; under?: boolean } | null = null
+function keptSide(pts: readonly P[], c: Crossing, keep: readonly { at: P; heading: number; under?: boolean; tunnel?: boolean }[], length: number): { side: 'A' | 'B'; under: boolean; tunnel: boolean } | null {
+  let best: { at: P; heading: number; under?: boolean; tunnel?: boolean } | null = null
   for (const k of keep) if (dist(k.at, c.at) < 40 && (!best || dist(k.at, c.at) < dist(best.at, c.at))) best = k
   if (!best) return null
   const heading = (s: number) => {
@@ -851,7 +865,7 @@ function keptSide(pts: readonly P[], c: Crossing, keep: readonly { at: P; headin
   const offA = off(heading(c.sA))
   const offB = off(heading(c.sB))
   if (Math.min(offA, offB) > 60) return null
-  return { side: offA <= offB ? 'A' : 'B', under: !!best.under }
+  return { side: offA <= offB ? 'A' : 'B', under: !!best.under, tunnel: !!best.tunnel }
 }
 
 /**

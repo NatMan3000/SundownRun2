@@ -41,7 +41,7 @@ import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFromFile
 import { randomTrack } from './randomTrack'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import { checkBuiltTrack, gateItems } from './checks'
-import { type SwapResult, crossingNear, keepOverOf, roadCrossings, swapDraft, tryOneWay, underDraft, underEither } from './bridges'
+import { type SwapResult, crossingNear, crossingsWithTunnels, keepOverOf, swapDraft, tryOneWay, tunnelDraft, tunnelEither, underDraft, underEither } from './bridges'
 import { keepBridgesClear } from './bankBridges'
 import { type StretchTool, isStretchTool } from './stretchRuns'
 import type { P } from './geom'
@@ -921,7 +921,7 @@ export function onEditorOpen(mode: 'edit' | 'map'): void {
 function applySectionRedraw(loop: P[], metresPerPixel: number): CleanResult {
   const s = useEditor.getState()
   // Every crossing that is still there keeps the road it had on top (a swapped bridge stays swapped).
-  const keepOver = keepOverOf(s.draft.points, pointGroundFor(s.draft))
+  const keepOver = keepOverOf(s.draft.points, pointGroundFor(s.draft), s.draft.pieces)
   const res = cleanStroke(loop, { ...strokeOptions(s.draft, metresPerPixel), fairing: 0, keepOver })
   if (!res.ok) {
     say(res.issues.find((i) => i.level === 'error')?.message ?? 'That redraw did not work. Try again.', 'warn')
@@ -1145,6 +1145,65 @@ export function placeTunnelSpan(a: number, b: number): boolean {
     d.pieces.length,
     (w) => `Tunnel placed, ${span.length} m long: ${w}.${cut}`,
   )
+}
+
+/** The Tunnel pieces whose covered stretch overlaps the stretch from `from` to `to` (both `at` values), by index. */
+export function tunnelsOnStretch(d: Draft, from: number, to: number): number[] {
+  const rc = roadCurve(d.points)
+  const len = metresBetween(rc, from, to)
+  const out: number[] = []
+  d.pieces.forEach((p, i) => {
+    if (p.type !== 'tunnel') return
+    const plen = p.length ?? TRACK_DEFAULTS.tunnelLength
+    // Overlap on the lap: the tunnel starts inside the stretch, or the stretch starts inside the tunnel.
+    if (metresBetween(rc, from, p.at) < len || metresBetween(rc, p.at, from) < plen) out.push(i)
+  })
+  return out
+}
+
+/**
+ * The stretch panel's "Make it a tunnel": a Tunnel piece covering the picked stretch (the Height,
+ * Bank or Width tools' stretch), kept to a tunnel's lengths, if it fits there. The same rules as
+ * the Tunnel piece (tunnelPlace.ts): built for real, refused in plain words if it can't be. The
+ * stretch stays picked, so "Take the roof off" is right there.
+ */
+export function tunnelOnStretch(from: number, to: number): boolean {
+  const s = useEditor.getState()
+  const d = s.draft
+  if (isEmptyDraft(d) || s.selection?.kind !== 'section') return false
+  const sel = s.selection
+  const span = tunnelFromDrag(roadCurve(d.points), from, to)
+  const piece: Piece = { type: 'tunnel', at: span.at }
+  if (span.length !== TRACK_DEFAULTS.tunnelLength) piece.length = span.length
+  const cut =
+    span.cut === 'short'
+      ? ` The stretch was shorter than a tunnel can be, so it's ${TUNNEL_EDIT_MIN} m long, in its middle.`
+      : span.cut === 'long'
+        ? ` The stretch was longer than a tunnel can be, so it's ${TUNNEL_EDIT_MAX} m long, in its middle.`
+        : ''
+  const ok = tryTunnel(
+    (x) => {
+      x.pieces.push(piece)
+    },
+    d.pieces.length,
+    (w) => `Made it a tunnel, ${span.length} m long: ${w}.${cut} "Take the roof off" puts it back.`,
+  )
+  // Keep the stretch picked (tryTunnel selects the new piece): its panel has "Take the roof off".
+  if (ok) useEditor.setState({ selection: sel })
+  return ok
+}
+
+/** The stretch panel's "Take the roof off": every Tunnel piece on the picked stretch goes, in one Undo step. */
+export function roofOffStretch(from: number, to: number): boolean {
+  const d = useEditor.getState().draft
+  const gone = new Set(tunnelsOnStretch(d, from, to))
+  if (!gone.size) return false
+  commit((x) => {
+    x.pieces = x.pieces.filter((_, i) => !gone.has(i))
+  })
+  say(gone.size === 1 ? 'Took the roof off: the road is back on the ground, open to the sky. Undo puts the tunnel back.' : `Took the roof off ${gone.size} tunnels: the road is back on the ground. Undo puts them back.`, 'good')
+  audio.ui('select')
+  return true
 }
 
 /**
@@ -1759,9 +1818,9 @@ export function setSectionWidth(from: number, to: number, width: number | null):
 
 // ---------------------------------------------------------------- bridges: which road goes over
 
-/** Every place the draft's road crosses itself, with which road is on top (see bridges.ts). */
+/** Every place the draft's road crosses itself, with which road is on top, tunnels included (see bridges.ts). */
 export function draftCrossings(d: Draft = useEditor.getState().draft) {
-  return roadCrossings(d.points, pointGroundFor(d) ?? flatGround)
+  return crossingsWithTunnels(d.points, d.pieces, pointGroundFor(d) ?? flatGround)
 }
 
 /** Heights with no known world: just the lifts (only before the world's ground can be worked out). */
@@ -1805,7 +1864,17 @@ export function makeBridge(spot: P, up: 0 | 1): boolean {
   return changeCrossing((d, o) => tryOneWay(d, spot, up, o), "Can't make a bridge here.")
 }
 
-/** Run a crossing change (a swap or an underpass) on the draft as one commit, or say why not. */
+/**
+ * Put pass `under` (0 or 1, in driving order; null: either, as "Put one in a tunnel here" does)
+ * of the crossing nearest `spot` in a tunnel (bridges.ts tunnelDraft): both roads come to the
+ * ground there, a Tunnel piece covers that road through the crossing, and the other road runs
+ * over the hill on top. One commit; nothing changes if it can't, and Josh is told why.
+ */
+export function tunnelUnder(spot: P, under: 0 | 1 | null): boolean {
+  return changeCrossing((d, o) => (under === null ? tunnelEither(d, spot, o) : tunnelDraft(d, spot, under, o)), "Can't put this road in a tunnel.")
+}
+
+/** Run a crossing change (a swap, an underpass or a tunnel) on the draft as one commit, or say why not. */
 function changeCrossing(run: (d: Draft, o: Parameters<typeof swapDraft>[2]) => SwapResult, cant: string): boolean {
   const s = useEditor.getState()
   if (s.mode !== 'edit') return false

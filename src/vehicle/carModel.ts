@@ -66,6 +66,9 @@ import { BODIES, bodyEntry } from './bodies/catalog'
 import type { BodyId } from './bodies/catalog'
 import { bodyGeometry, ghostBodyGeometry, ghostWheelGeometry, wheelGeometry } from './bodies/build'
 import { CHASSIS, ROAD_Y_AT_REST, WHEEL } from './tuning'
+import { tunnelCoverAt } from '../track/tunnelCover'
+import { COVER_FOG, COVER_INDIRECT, coverLightsBegin } from '../look/road/tunnelLight'
+import { TUNNEL_BAR_EVERY } from '../look/road/tunnelMaterial'
 
 interface LightUniforms {
   uLivery: { value: THREE.Color }
@@ -121,6 +124,13 @@ interface CarRig {
   /** Per wheel: the last physics spin seen, and the drawn spin built from it. */
   spinSeen: Float64Array
   spinShown: Float64Array
+  /** 0..1 how far inside a covered tunnel this car is (its paint, glass, trim and wheels dim by it). */
+  cover: { value: number }
+  /** 0..1 how nearly a tunnel's ceiling light bar is over the car (its paint catches it as it passes). */
+  tunnelPulse: { value: number }
+  /** The road's s where the car was last found (a hint for next frame's look-up), and the frame it was. */
+  coverS: number
+  coverFrame: number
 }
 
 const rigs = new WeakMap<THREE.Group, CarRig>()
@@ -139,6 +149,26 @@ const CHROME = new THREE.Color(PALETTE.groundSheen).lerp(new THREE.Color(PALETTE
 const RUBBER = new THREE.Color(PALETTE.ground)
 
 // ---------------------------------------------------------------- materials
+
+/**
+ * In a tunnel (tunnelLight.ts): the outdoor light on a car's lit materials fades by its own
+ * uCover, as it does on the road by the road's per-vertex cover. The key light's share goes, the
+ * sky's fill and reflection drop to a trace, the haze lifts. Headlights are lit before the key
+ * light, so they stay. Patches a material's fragment shader; logs once if three's chunk changed.
+ */
+const coveredLightsBegin = coverLightsBegin(THREE.ShaderChunk.lights_fragment_begin)
+let coverPatchWarned = false
+function patchCover(shader: { uniforms: Record<string, { value: unknown }>; fragmentShader: string }, cover: { value: number }): void {
+  shader.uniforms.uCover = cover
+  let f = shader.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uCover;\n#define vCover uCover')
+  if (coveredLightsBegin) f = f.replace('#include <lights_fragment_begin>', coveredLightsBegin)
+  else if (!coverPatchWarned) {
+    coverPatchWarned = true
+    console.error("[vehicle] three's lights_fragment_begin chunk changed: cars keep the sun's light inside tunnels (only the sky fades)")
+  }
+  f = f.replace('#include <lights_fragment_end>', `${COVER_INDIRECT}\n#include <lights_fragment_end>`).replace('#include <fog_fragment>', COVER_FOG)
+  shader.fragmentShader = f
+}
 
 /**
  * A material that keeps its shader patch when cloned. Material.clone() does
@@ -313,7 +343,7 @@ function makePlumeMaterial(): { mat: THREE.MeshBasicMaterial; uniforms: PlumeUni
 }
 
 /** Wheel: rubber or dark chrome per vertex (`aMetal`), plus an emissive rim ring (`aGlow`) in the car's glow colour. */
-function makeWheelMaterial(): { mat: THREE.MeshStandardMaterial; uniforms: NonNullable<CarRig['wheelUniforms']> } {
+function makeWheelMaterial(cover: { value: number }): { mat: THREE.MeshStandardMaterial; uniforms: NonNullable<CarRig['wheelUniforms']> } {
   const uniforms = { uGlow: { value: new THREE.Color() } }
   const shared = { uRubber: { value: RUBBER }, uChrome: { value: CHROME } }
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 })
@@ -328,13 +358,14 @@ function makeWheelMaterial(): { mat: THREE.MeshStandardMaterial; uniforms: NonNu
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix( roughnessFactor, 0.24, vMetal );')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = mix( metalnessFactor, 0.9, vMetal );')
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += uGlow * vGlow;')
+    patchCover(shader, cover)
   }
-  mat.customProgramCacheKey = () => 'sr2-car-wheel-v2'
+  mat.customProgramCacheKey = () => 'sr2-car-wheel-v3'
   return { mat: keepPatchOnClone(mat), uniforms }
 }
 
 /** Trim: matte black parts and dark chrome parts (`aMetal`) in one material. Double-sided: plates and bells. */
-function makeTrimMaterial(): THREE.MeshStandardMaterial {
+function makeTrimMaterial(cover: { value: number }): THREE.MeshStandardMaterial {
   const shared = { uChrome: { value: CHROME } }
   const mat = new THREE.MeshStandardMaterial({ color: PALETTE.citySilhouette, metalness: 0.3, roughness: 0.62, side: THREE.DoubleSide })
   mat.onBeforeCompile = (shader) => {
@@ -347,8 +378,9 @@ function makeTrimMaterial(): THREE.MeshStandardMaterial {
       .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( mix( diffuse, uChrome, vMetal ), opacity );')
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix( roughnessFactor, 0.2, vMetal );')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = mix( metalnessFactor, 0.92, vMetal );')
+    patchCover(shader, cover)
   }
-  mat.customProgramCacheKey = () => 'sr2-car-trim-v1'
+  mat.customProgramCacheKey = () => 'sr2-car-trim-v2'
   return keepPatchOnClone(mat)
 }
 
@@ -420,6 +452,51 @@ function tickPaintSun(renderer: THREE.WebGLRenderer): void {
   paintSun.uUnderglow.value = NIGHT_FORM.underDay + (NIGHT_FORM.underNight - NIGHT_FORM.underDay) * night
 }
 
+/**
+ * TUNNEL FORM. Under a roof the outdoor light is gone, and a dark glossy car would read as a
+ * black cut-out. What its clear coat really catches in there is the tunnel's own light: the
+ * bars across the ceiling (lane-line cyan) sliding over the roof and bonnet as each passes
+ * overhead, and the glowing strips along the walls (the road's edge colour) as a band down
+ * its sides, plus a soft outline. Linear emissive, all well under T0: none of it blooms.
+ */
+const TUNNEL_FORM = { ceiling: 0.32, edge: 0.18, rim: 0.12, steady: 0.45 }
+const tunnelForm = {
+  uTunnelCeil: { value: new THREE.Color(PALETTE.laneLine).multiplyScalar(TUNNEL_FORM.ceiling) },
+  uTunnelEdge: { value: new THREE.Color(PALETTE.roadEdge).multiplyScalar(TUNNEL_FORM.edge) },
+}
+const tunnelFormPars = /* glsl */ `
+uniform vec3 uTunnelCeil;
+uniform vec3 uTunnelEdge;
+uniform float uTunnelPulse;
+`
+/** Added inside the paint's and glass's night-form block (it has rW, fres, band, above in scope). */
+const tunnelFormFragment = (strength: number) => /* glsl */ `
+  if (uCover > 0.001) {
+    float barsT = ${TUNNEL_FORM.steady.toFixed(2)} + ${(1 - TUNNEL_FORM.steady).toFixed(2)} * uTunnelPulse;
+    float rimT = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 3.0);
+    vec3 tunnelLight = uTunnelCeil * above * barsT + uTunnelEdge * band + uTunnelCeil * ${TUNNEL_FORM.rim.toFixed(2)} * rimT;
+    totalEmissiveRadiance += tunnelLight * (0.35 + 0.65 * fres) * uCover * ${strength.toFixed(2)};
+  }
+`
+
+/**
+ * A car's tunnel cover, once a frame: from where its body is (track/tunnelCover.ts), so the
+ * player's car and every Ai racer dim under a roof and brighten again at the portal. No allocation.
+ */
+function tickCover(rig: CarRig, renderer: THREE.WebGLRenderer): void {
+  const frame = renderer.info.render.frame
+  if (frame === rig.coverFrame) return
+  rig.coverFrame = frame
+  const e = rig.group.matrixWorld.elements
+  const r = tunnelCoverAt(e[12], e[13], e[14], Number.isFinite(rig.coverS) ? rig.coverS : undefined)
+  rig.coverS = r.s
+  rig.cover.value = r.cover
+  // A ceiling bar every TUNNEL_BAR_EVERY metres: brightest with one right overhead.
+  const c = Math.cos((2 * Math.PI * r.s) / TUNNEL_BAR_EVERY)
+  const near = 0.5 + 0.5 * c
+  rig.tunnelPulse.value = r.cover > 0 && Number.isFinite(near) ? near * near * near * near : 0
+}
+
 const paintSunPars = /* glsl */ `
 uniform vec3 uSunWarm;
 uniform vec3 uSunDir;
@@ -448,7 +525,7 @@ if (uSunWarm.r + uSunWarm.g + uSunWarm.b > 0.001) {
   vec3 washTint = mix(vec3(1.0), hue, 0.75);
   float sheen = pow(clamp(dot(reflect(-eyeV, normal), sunV), 0.0, 1.0), 6.0) * (0.06 + 0.3 * pow(1.0 - ndv, 3.0));
   float rim = pow(1.0 - ndv, 3.0) * smoothstep(0.0, 0.6, ndl) * 0.28;
-  totalEmissiveRadiance += uSunWarm * (washTint * wash + sheen + rim);
+  totalEmissiveRadiance += uSunWarm * (washTint * wash + sheen + rim) * (1.0 - uCover);
 }
 // NIGHT FORM. The reflection map is only the sky, which is nearly black at
 // night, so a dark glossy car mirrored nothing and read as a cut-out. Three
@@ -478,7 +555,9 @@ if (uSunWarm.r + uSunWarm.g + uSunWarm.b > 0.001) {
   float low = 1.0 - smoothstep(-0.34, 0.5, vCarY);
   float facing = 0.4 + 0.6 * clamp(0.5 - 0.5 * nW.y, 0.0, 1.0);
   vec3 bounce = uGlowCol * albedoN * (low * low * facing * uUnderglow);
-  totalEmissiveRadiance += mirror + rimCol + bounce;
+  // (In a tunnel there is no city, road edge or sky to mirror: those fade; the underglow's own light stays.)
+  totalEmissiveRadiance += (mirror + rimCol) * (1.0 - uCover) + bounce;
+  ${tunnelFormFragment(1)}
 }
 `
 
@@ -487,7 +566,7 @@ if (uSunWarm.r + uSunWarm.g + uSunWarm.b > 0.001) {
  * (above). `aAccent` per vertex swaps the paint for the accent colour, so the
  * whole painted body stays one draw call.
  */
-function makePaintMaterial(paint: string): { mat: THREE.MeshPhysicalMaterial; accent: { value: THREE.Color }; glow: { value: THREE.Color } } {
+function makePaintMaterial(paint: string, cover: { value: number }, pulse: { value: number }): { mat: THREE.MeshPhysicalMaterial; accent: { value: THREE.Color }; glow: { value: THREE.Color } } {
   const accent = { value: new THREE.Color() }
   const glow = { value: new THREE.Color() }
   const mat = new THREE.MeshPhysicalMaterial({
@@ -499,18 +578,20 @@ function makePaintMaterial(paint: string): { mat: THREE.MeshPhysicalMaterial; ac
     envMapIntensity: 1.4,
   })
   mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, paintSun)
+    Object.assign(shader.uniforms, paintSun, tunnelForm)
+    shader.uniforms.uTunnelPulse = pulse
     shader.uniforms.uAccent = accent
     shader.uniforms.uGlowCol = glow
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float aAccent;\nvarying float vAccent;\nvarying float vCarY;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvAccent = aAccent;\nvCarY = position.y;')
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\n${paintSunPars}\nuniform vec3 uAccent;\nvarying float vAccent;`)
+      .replace('#include <common>', `#include <common>\n${paintSunPars}\n${tunnelFormPars}\nuniform vec3 uAccent;\nvarying float vAccent;`)
       .replace('vec4 diffuseColor = vec4( diffuse, opacity );', 'vec4 diffuseColor = vec4( mix( diffuse, uAccent, vAccent ), opacity );')
       .replace('#include <emissivemap_fragment>', paintSunFragment)
+    patchCover(shader, cover)
   }
-  mat.customProgramCacheKey = () => 'sr2-car-paint-sun-v7'
+  mat.customProgramCacheKey = () => 'sr2-car-paint-sun-v9'
   return { mat: keepPatchOnClone(mat), accent, glow }
 }
 
@@ -532,21 +613,25 @@ const glassNightFragment = /* glsl */ `
   float above = smoothstep(0.08, 0.8, rW.y);
   vec3 mirror = (uNightCity * band + uNightEdge * below + uNightSky * above) * (0.35 + 0.65 * fres);
   // tinted glass seen from above still shows the sky's violet across its top, not just at its rim
-  totalEmissiveRadiance += mirror * 0.8 + uNightSky * (1.5 * pow(1.0 - ndvN, 3.0) + 1.2 * above);
+  totalEmissiveRadiance += (mirror * 0.8 + uNightSky * (1.5 * pow(1.0 - ndvN, 3.0) + 1.2 * above)) * (1.0 - uCover);
+  ${tunnelFormFragment(0.8)}
 }
 `
 
-function makeGlassMaterial(): THREE.MeshPhysicalMaterial {
+function makeGlassMaterial(cover: { value: number }, pulse: { value: number }): THREE.MeshPhysicalMaterial {
   const mat = new THREE.MeshPhysicalMaterial({ color: PALETTE.road, metalness: 0.9, roughness: 0.06, clearcoat: 1, envMapIntensity: 1.5 })
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNightCity = paintSun.uNightCity
     shader.uniforms.uNightEdge = paintSun.uNightEdge
     shader.uniforms.uNightSky = paintSun.uNightSky
+    Object.assign(shader.uniforms, tunnelForm)
+    shader.uniforms.uTunnelPulse = pulse
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uNightCity;\nuniform vec3 uNightEdge;\nuniform vec3 uNightSky;')
+      .replace('#include <common>', `#include <common>\nuniform vec3 uNightCity;\nuniform vec3 uNightEdge;\nuniform vec3 uNightSky;\n${tunnelFormPars}`)
       .replace('#include <emissivemap_fragment>', glassNightFragment)
+    patchCover(shader, cover)
   }
-  mat.customProgramCacheKey = () => 'sr2-car-glass-v2'
+  mat.customProgramCacheKey = () => 'sr2-car-glass-v4'
   return keepPatchOnClone(mat)
 }
 
@@ -699,6 +784,9 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
   group.add(sprung)
 
   const materials: THREE.Material[] = []
+  /** This car's tunnel cover (tickCover sets it each frame). */
+  const cover = { value: 0 }
+  const tunnelPulse = { value: 0 }
   let paintMat: THREE.MeshPhysicalMaterial | null = null
   let accent: CarRig['accent'] = null
   let paintGlow: CarRig['paintGlow'] = null
@@ -719,16 +807,16 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
   } else {
     // Dark glossy paint: metal flake under a clear coat, so it mirrors the neon world,
     // with the sunset's warmth on the side facing the sun.
-    const pm = makePaintMaterial(paint)
+    const pm = makePaintMaterial(paint, cover, tunnelPulse)
     paintMat = pm.mat
     accent = pm.accent
     paintGlow = pm.glow
-    glassMat = makeGlassMaterial()
-    trimMat = makeTrimMaterial()
+    glassMat = makeGlassMaterial(cover, tunnelPulse)
+    trimMat = makeTrimMaterial(cover)
     const lm = makeLightMaterial()
     lightMat = lm.mat
     lightUniforms = lm.uniforms
-    const wm = makeWheelMaterial()
+    const wm = makeWheelMaterial(cover)
     wheelMat = wm.mat
     wheelUniforms = wm.uniforms
     const plm = makePlumeMaterial()
@@ -755,7 +843,12 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     const paintMesh = new THREE.Mesh(g.paint, paintMat ?? glassMat)
     paintMesh.castShadow = !!opts.shadows
     paintMesh.receiveShadow = true
-    if (paintMat) paintMesh.onBeforeRender = tickPaintSun
+    if (paintMat) {
+      paintMesh.onBeforeRender = (renderer) => {
+        tickPaintSun(renderer)
+        if (rigRef) tickCover(rigRef, renderer)
+      }
+    }
     const glassMesh = new THREE.Mesh(g.glass, glassMat)
     const trimMesh = new THREE.Mesh(g.trim, trimMat)
     lightMesh = new THREE.Mesh(g.lights, lightMat)
@@ -771,6 +864,8 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     }
   }
 
+  // (The paint's draw ticks the rig's cover; the rig is made below.)
+  let rigRef: CarRig | null = null
   const steer: THREE.Group[] = []
   const spin: THREE.Group[] = []
   const hubLift = new Float64Array(4)
@@ -840,7 +935,12 @@ export function buildCarModel(bodyId: string, paint: string, glow: string, opts:
     spinScale,
     spinSeen: new Float64Array(4).fill(NaN),
     spinShown: new Float64Array(4),
+    cover,
+    tunnelPulse,
+    coverS: NaN,
+    coverFrame: -1,
   }
+  rigRef = rig
   rigs.set(group, rig)
   if (lightUniforms && lightMesh) {
     lightMesh.onBeforeRender = () => {

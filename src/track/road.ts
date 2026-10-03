@@ -454,7 +454,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     }
   })
   keepClear.push({ s0: -GRID_KEEP_BEHIND - 10, s1: GRID_KEEP_AHEAD + 10, what: 'the start grid' })
-  const tunnelDigs = planTunnelDigs({ pieces, baseSOfAt, nb, dsb, Lb, bx, by, bz, bHalf, bBank, nat, keepClear, walled: !pivotLow })
+  const tunnelDigs = planTunnelDigs({ pieces, baseSOfAt, nb, dsb, Lb, bx, by, bz, bHalf, bBank, nat, keepClear, walled: !pivotLow, overSlab: SLAB_THICKNESS })
   for (let k = 0; k < nb; k++) by[k] -= tunnelDigs.dig[k]
 
   // ---- base tangents (3D) ----
@@ -507,6 +507,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const ndig: number[] = []
   const nslot: number[] = []
   const ncov: number[] = []
+  const novr: number[] = []
   const pushBase = (k: number) => {
     // Horizontal right (for the loop shift) and the banked up vector.
     const hl = Math.hypot(btx[k], btz[k]) || 1
@@ -544,6 +545,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     ndig.push(tunnelDigs.dig[k])
     nslot.push(tunnelDigs.slot[k])
     ncov.push(tunnelDigs.covered[k])
+    novr.push(tunnelDigs.over[k])
   }
 
   let li = 0
@@ -607,6 +609,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
         ndig.push(0)
         nslot.push(0)
         ncov.push(0)
+        novr.push(0)
       }
       li++
     }
@@ -650,6 +653,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const tDig = new Float32Array(count)
   const tSlot = new Uint8Array(count)
   const tCov = new Uint8Array(count)
+  const tOver = new Uint8Array(count)
   let j = 0
   // Positions are kept in float64 until the end so long tracks don't wobble.
   const fx = new Float64Array(count)
@@ -679,6 +683,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     tDig[i] = ndig[a] + (ndig[b] - ndig[a]) * f
     tSlot[i] = f < 0.5 ? nslot[a] : nslot[b]
     tCov[i] = f < 0.5 ? ncov[a] : ncov[b]
+    tOver[i] = f < 0.5 ? novr[a] : novr[b]
     // Base s for mapping `at` -> final s (wraps cleanly: the last node pairs with node 0).
     const bsA = nbs[a]
     let bsB = nbs[b]
@@ -742,7 +747,9 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   denoiseRuns(S.grounded, S.surface, Math.round(10 / ds))
 
   const thickness = new Float32Array(count)
-  for (let i = 0; i < count; i++) thickness[i] = S.grounded[i] ? SLAB_GROUNDED : SLAB_THICKNESS
+  // (Over a tunnel's roof a road on the ground has a bridge's slab: the roof is under it, and the
+  // tunnel needn't dig deeper for a grounded slab's sides to clear its ceiling.)
+  for (let i = 0; i < count; i++) thickness[i] = S.grounded[i] && !tOver[i] ? SLAB_GROUNDED : SLAB_THICKNESS
   circularSmooth(thickness, Math.round(4 / ds), 1)
 
   // ---- mapping from `at` to final s ----

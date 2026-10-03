@@ -651,7 +651,8 @@ function headingDir(heading: number): P {
  * Bridges. Every crossing gets a marker where the roads cross and a label in
  * the gap between them: "BRIDGE 8 m" (violet) when one road goes over with
  * room for a car ("UNDERPASS 8 m" when the road underneath dips into a
- * cutting instead), "LOW BRIDGE" or "ROADS MEET" (amber) when not. Click either
+ * cutting instead, "TUNNEL" when it goes under in a tunnel: the game digs it,
+ * and its Checks row says how deep), "LOW BRIDGE" or "ROADS MEET" (amber) when not. Click either
  * to select it. The selected crossing lights up both roads: the one that
  * GOES OVER in violet, the one that GOES UNDER in cyan. Road raised by hand
  * away from any crossing has its own RAISED label (drawRaisedRuns).
@@ -672,7 +673,7 @@ function drawBridges(
   // so the BRIDGE labels (the things to click) always get their spot.
   const roadLabels = sel ? drawCrossingRoads(ctx, points, sel, width) : []
   for (const c of crossings) {
-    const good = c.over !== null && c.gap >= BRIDGE_GAP
+    const good = c.kind === 'tunnel' || (c.over !== null && c.gap >= BRIDGE_GAP)
     const colour = good ? PALETTE.wallRide : PALETTE.chevron
     const isSel = c === sel
     const { sx, sy } = worldToScreen(c.at.x, c.at.z)
@@ -697,7 +698,7 @@ function drawBridges(
     const ul = Math.hypot(ux, uz) || 1
     ux /= ul
     uz /= ul
-    const text = good ? `${c.kind === 'underpass' ? 'UNDERPASS' : 'BRIDGE'} ${Math.round(c.gap)} m` : c.over !== null ? `LOW BRIDGE ${c.gap.toFixed(1)} m` : 'ROADS MEET'
+    const text = c.kind === 'tunnel' ? 'TUNNEL' : good ? `${c.kind === 'underpass' ? 'UNDERPASS' : 'BRIDGE'} ${Math.round(c.gap)} m` : c.over !== null ? `LOW BRIDGE ${c.gap.toFixed(1)} m` : 'ROADS MEET'
     const box = placePill(ctx, text, sx + ux * 46, sy + uz * 46, [0, 24, -24, 48], isSel ? PALETTE.uiText : colour)
     crossingTargets.push({ spot: c.at, sx, sy, box })
   }

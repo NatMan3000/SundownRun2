@@ -40,8 +40,17 @@
 //  its own short bridge (the builder makes that bit a bridge by
 //  itself: road.ts, "over a cutting").
 //
+//  A tunnel (tunnelDraft) is the third kind: both roads stay on the
+//  ground through the crossing, and a Tunnel piece goes on the chosen
+//  road, centred on the crossing and long enough that the other road
+//  only ever crosses over its roof. The game digs that road down under
+//  the roof, and the other road runs over the hill on top, on ground
+//  (src/track/tunnels.ts). If the builder can't fit it, or a check
+//  that passed starts failing, it is refused with the reason.
+//
 //  A swap is remembered by the heights themselves: the raised road
-//  is the bridge, and a sunken road is an underpass. Bend, Straight, Curve, Corner, Smooth and moving
+//  is the bridge, and a sunken road is an underpass; a tunnel by its
+//  Tunnel piece. Bend, Straight, Curve, Corner, Smooth and moving
 //  points all keep every point's height, so they never flip it.
 //  Redrawing a stretch with the pencil re-runs the clean-up on the
 //  whole road; it is handed the old road's choices (keepOverOf) so
@@ -51,6 +60,10 @@
 // ============================================================
 
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
+import { TUNNEL_CLEAR_BESIDE } from '../track/tunnels'
+import { judgeTunnel } from './tunnelPlace'
+import type { Judged } from './judge'
+import { TUNNEL_EDIT_MAX, TUNNEL_EDIT_MIN, tunnelStartFor } from './pieces'
 import { validateTrack } from '../track/validate'
 import { buildTrack } from '../track/build'
 import { runTrackGates, type TrackGate } from '../track/gates'
@@ -114,18 +127,20 @@ export interface RoadCrossing {
   passes: [CrossingPass, CrossingPass]
   /** Which pass is on top (0 or 1), or null if they meet at about the same height. */
   over: 0 | 1 | null
-  /** Height between the two road surfaces, metres. */
+  /** Height between the two road surfaces, metres (NaN at a tunnel: the game works out how deep it digs, and the `tunnel` check measures it). */
   gap: number
   /**
    * What kind of crossing it is: 'bridge' (the upper road is up in the air),
    * 'underpass' (the lower road dips into a cutting under the other, which
-   * stays on the ground), or null where the roads meet.
+   * stays on the ground), 'tunnel' (a Tunnel piece covers the lower road here:
+   * it goes under in a tunnel and the other road runs over the hill on top;
+   * only crossingsWithTunnels says so), or null where the roads meet.
    */
   kind: CrossingKind | null
 }
 
-/** A bridge (the upper road goes up) or an underpass (the lower road goes down). */
-export type CrossingKind = 'bridge' | 'underpass'
+/** A bridge (the upper road goes up), an underpass (the lower road goes down into a cutting) or a tunnel (down under a roof). */
+export type CrossingKind = 'bridge' | 'underpass' | 'tunnel'
 
 // ---------------------------------------------------------------- finding crossings
 
@@ -162,6 +177,55 @@ function crossingsOn(line: RoadLine, ground: GroundFn): RoadCrossing[] {
     const kind = over === null ? null : passes[over === 0 ? 1 : 0].lift <= -UNDERPASS_MIN_DEPTH ? 'underpass' : 'bridge'
     return { at: c.at, angleDeg: c.angleDeg, passes, over, gap, kind }
   })
+}
+
+// ---------------------------------------------------------------- tunnels at crossings
+
+/** Index of the tunnel piece whose covered stretch holds the spot `s` metres along the editor's line, or -1. */
+function tunnelCovering(line: RoadLine, pieces: readonly Piece[], s: number): number {
+  return pieces.findIndex((p) => p.type === 'tunnel' && wrapS(s - sOf(line, p.at), line.length) <= (p.length ?? TRACK_DEFAULTS.tunnelLength))
+}
+
+const tunnelMemo = new WeakMap<readonly RoadPoint[], { pieces: readonly Piece[]; ground: GroundFn; list: RoadCrossing[] }>()
+
+/**
+ * Every crossing (roadCrossings) with the tunnels in: where a Tunnel piece covers one pass, that
+ * pass goes under in the tunnel and the other runs over its roof (kind 'tunnel', `over` the other
+ * pass). The points alone can't say how deep the game digs it, so `gap` is NaN there.
+ */
+export function crossingsWithTunnels(points: readonly RoadPoint[], pieces: readonly Piece[], ground: GroundFn = FLAT_GROUND): RoadCrossing[] {
+  const memo = tunnelMemo.get(points)
+  if (memo && memo.pieces === pieces && memo.ground === ground) return memo.list
+  const plain = roadCrossings(points, ground)
+  let list = plain
+  if (plain.length && pieces.some((p) => p.type === 'tunnel')) {
+    const line = roadLine(points)
+    list = plain.map((c) => {
+      const k = ([0, 1] as const).find((pass) => tunnelCovering(line, pieces, c.passes[pass].s) >= 0)
+      return k === undefined ? c : { ...c, over: k === 0 ? 1 : 0, kind: 'tunnel' as const, gap: NaN }
+    })
+  }
+  tunnelMemo.set(points, { pieces, ground, list })
+  return list
+}
+
+/** The draft's pieces without any Tunnel piece covering either road at the crossing nearest `spot` (a new crossing choice replaces it). */
+function withoutCrossingTunnels(d: Draft, spot: P, ground: GroundFn): Piece[] {
+  const c = crossingNear(roadCrossings(d.points, ground), spot)?.crossing
+  if (!c) return d.pieces
+  const line = roadLine(d.points)
+  const drop = new Set(c.passes.map((pass) => tunnelCovering(line, d.pieces, pass.s)).filter((i) => i >= 0))
+  return drop.size ? d.pieces.filter((_, i) => !drop.has(i)) : d.pieces
+}
+
+/**
+ * How long a tunnel at a crossing at `angleDeg` must be (metres, rounded up to 10) so the other road
+ * crosses only over its roof: it must keep TUNNEL_CLEAR_BESIDE metres past this road's edge to its
+ * own edge, beside the open approaches either side (src/track/tunnels.ts), plus a margin for bends.
+ */
+export function crossingTunnelLength(angleDeg: number, width: number): number {
+  const half = (width + TUNNEL_CLEAR_BESIDE) / Math.sin((Math.max(angleDeg, 1) * Math.PI) / 180) + 10
+  return Math.min(TUNNEL_EDIT_MAX, Math.max(TUNNEL_EDIT_MIN, Math.ceil((2 * half) / 10) * 10))
 }
 
 /** The crossing nearest a map spot, if one is within `within` metres. */
@@ -209,11 +273,11 @@ export function raisedTops(points: readonly RoadPoint[], crossings: readonly Roa
 }
 
 /**
- * How many bridges the road has: crossings with a road on top. Raised road away from any
- * crossing is a hill (the map labels it RAISED), not a bridge, so it isn't counted.
+ * How many bridges the road has: crossings with a road on top (a tunnel's isn't a bridge). Raised
+ * road away from any crossing is a hill (the map labels it RAISED), not a bridge, so it isn't counted.
  */
 export function bridgeCount(_points: readonly RoadPoint[], crossings: readonly RoadCrossing[]): number {
-  return crossings.filter((c) => c.over !== null).length
+  return crossings.filter((c) => c.over !== null && c.kind !== 'tunnel').length
 }
 
 // ---------------------------------------------------------------- the bridge's shape (the clean-up's own)
@@ -293,11 +357,23 @@ export function planUnder(input: SwapInput, spot: P, under: 0 | 1, rampMetres: n
 }
 
 /**
- * The shared shape of a swap and an underpass. `chosen` is the pass that moves:
- * up onto a bridge ('bridge'), or down into a cutting ('underpass'). The other
- * pass is held on the ground through the crossing either way.
+ * Hold BOTH passes of the crossing nearest `spot` on the ground through it (for a tunnel: pass
+ * `chosen` is the one that will go under, dug down by its Tunnel piece). Pass `chosen` comes down
+ * off any old bridge or up out of any old dip for `holdChosen` metres either side, the other for a
+ * bridge's reach; both blend back into their old heights beyond. Only the shape; tunnelDraft adds
+ * the piece, builds it and runs the game's checks.
  */
-function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: number, kind: CrossingKind): SwapPlan {
+export function planGround(input: SwapInput, spot: P, chosen: 0 | 1, holdChosen: number): SwapPlan {
+  return planCrossing(input, spot, chosen, CLEANUP.bridgeRamp, 'tunnel', holdChosen)
+}
+
+/**
+ * The shared shape of a swap, an underpass and a tunnel. `chosen` is the pass that moves:
+ * up onto a bridge ('bridge'), or down into a cutting ('underpass'); for a tunnel it is the
+ * pass that will go under, held on the ground here for `holdChosen` metres (the game digs it).
+ * The other pass is held on the ground through the crossing every time.
+ */
+function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: number, kind: CrossingKind, holdChosen = 0): SwapPlan {
   const ground = input.pointGround ?? FLAT_GROUND
   const original = input.points
   const found = crossingNear(roadCrossings(original, ground), spot)
@@ -308,7 +384,9 @@ function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: numb
       original,
       kind === 'bridge'
         ? `These two roads cross at a very flat angle (${Math.round(c0.angleDeg)} degrees), too flat for either one to be a bridge. Redraw one so they cross more squarely.`
-        : `These two roads cross at a very flat angle (${Math.round(c0.angleDeg)} degrees), too flat for one to go under the other. Redraw one so they cross more squarely.`,
+        : kind === 'tunnel'
+          ? `These two roads cross at a very flat angle (${Math.round(c0.angleDeg)} degrees), too flat for one to go under the other in a tunnel (the tunnel would have to be very long). Redraw one so they cross more squarely.`
+          : `These two roads cross at a very flat angle (${Math.round(c0.angleDeg)} degrees), too flat for one to go under the other. Redraw one so they cross more squarely.`,
     )
   }
   const { flat, lift } = bridgeShape(c0.angleDeg, input.width)
@@ -340,8 +418,9 @@ function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: numb
     const d = wrapS(s - moveS, L)
     return d > L / 2 ? d - L : d
   }
-  // An underpass's road also comes down off any old bridge of its own first (the same reach and blend as the held road).
-  const selfWeight = (dMove: number) => (kind === 'underpass' ? holdWeight(dMove, downFull, HOLD_BLEND) : 0)
+  // An underpass's road also comes down off any old bridge of its own first (the same reach and blend as the held road);
+  // a tunnel's road comes back to the ground from any old bridge or dip over the whole tunnel and its ramps.
+  const selfWeight = (dMove: number) => (kind === 'underpass' ? holdWeight(dMove, downFull, HOLD_BLEND) : kind === 'tunnel' ? holdWeight(dMove, Math.max(downFull, holdChosen), HOLD_BLEND) : 0)
   /** The moving road's height before its new shape: as it is, or for an underpass, with any old bridge of its own eased down. */
   const startHeight = (height: number, g: number, dMove: number) => {
     const oldLift = height - g
@@ -355,13 +434,15 @@ function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: numb
     return startHeight(roadHeightAt(points, atOf(line, s), ground), ground(p.x, p.z), Math.abs(d))
   }, -downFull - 40, downFull + 40)
   const deck = planDeck(wasAt, ground(c.at.x, c.at.z), kind === 'bridge' ? lift : -depth, flat, ramp)
+  /** How much pass `chosen` moves onto the deck d metres along it (a tunnel's road doesn't: it is held on the ground). */
+  const moveWeight = (d: number) => (kind === 'tunnel' ? 0 : rampWeight(d, flat, ramp))
 
   // New heights, point by point.
   let clash = false
   const next = points.map((p, k) => {
     const s = sOfPoint(line, k)
     const dMove = alongRoad(s, moveS, L)
-    const wMove = rampWeight(dMove, flat, ramp)
+    const wMove = moveWeight(dMove)
     const dHold = alongRoad(s, holdS, L)
     const wHold = holdWeight(dHold, downFull, HOLD_BLEND)
     const wSelf = selfWeight(dMove)
@@ -374,8 +455,9 @@ function planCrossing(input: SwapInput, spot: P, chosen: 0 | 1, rampMetres: numb
       if (wHold >= 1 || (wHold > 0 && Math.abs(oldLift) > 0.05)) clash = true
       newLift = deckHeight(deck, along(s), startHeight(g + oldLift, g, dMove)) - g
     } else {
-      // Held on the ground (the other road), or the moving road's old raised heights eased down beside its dip.
-      const w = Math.max(wHold, oldLift > 0 ? wSelf : 0)
+      // Held on the ground (the other road), or the moving road's old raised heights eased down beside its dip
+      // (a tunnel's road: raised or dug, back to the ground).
+      const w = Math.max(wHold, oldLift > 0 || kind === 'tunnel' ? wSelf : 0)
       newLift = oldLift * (1 - w)
     }
     if (Math.abs(newLift - oldLift) < 0.005) return p
@@ -571,7 +653,73 @@ export function underEither(d: Draft, spot: P, o: SwapOptions): SwapResult {
 }
 
 /** The words a refusal starts with, for each kind. */
-const CANT: Record<CrossingKind, string> = { bridge: "Can't swap this bridge", underpass: "Can't send this road under" }
+const CANT: Record<CrossingKind, string> = { bridge: "Can't swap this bridge", underpass: "Can't send this road under", tunnel: "Can't put this road in a tunnel" }
+
+/**
+ * Put pass `under` (0 or 1, in driving order) of the crossing nearest `spot` in a tunnel: both
+ * roads come to the ground through the crossing (planGround), and a Tunnel piece goes on that
+ * pass, centred on the crossing, as long as crossingTunnelLength says (then 40 and 80 m longer if
+ * that doesn't fit). The game digs that road down under the roof and the other road runs over the
+ * hill on top. It is built with the real builder: it lands only if the tunnel is built, no check
+ * that passed starts failing, and the other road ends up on top with room for a car. A tunnel
+ * already at this crossing is replaced (so Swap moves it to the other road). Never changes `d`.
+ */
+export function tunnelDraft(d: Draft, spot: P, under: 0 | 1, o: SwapOptions): SwapResult {
+  const ground = o.pointGround ?? FLAT_GROUND
+  const cant = CANT.tunnel
+  const found = crossingNear(roadCrossings(d.points, ground), spot)
+  if (!found) return { ok: false, reason: "There's no crossing there any more. Click a BRIDGE label on the map." }
+  const c0 = found.crossing
+  const base: Draft = { ...d, pieces: withoutCrossingTunnels(d, spot, ground) }
+  const L0 = crossingTunnelLength(c0.angleDeg, d.width)
+  const lengths = [...new Set([L0, L0 + 40, L0 + 80].map((l) => Math.min(TUNNEL_EDIT_MAX, l)))]
+  // Back to the ground over the longest tunnel tried and its ramps (about 280 m at most each side).
+  const plan = planGround({ points: base.points, pieces: base.pieces, startAt: base.startAt, width: base.width, pointGround: o.pointGround }, spot, under, lengths[lengths.length - 1] / 2 + 280)
+  if (!plan.ok || !plan.up || !plan.down) return { ok: false, reason: `${cant}. ${plan.reason} Nothing changed.` }
+  const rc = roadCurve(plan.points)
+  const middle = plan.mapAt(c0.passes[under].at)
+  const moved = base.pieces.map((p) => ({ ...p, at: Math.round(plan.mapAt(p.at) * 1000) / 1000 }))
+  const startAt = Math.round(plan.mapAt(base.startAt) * 1000) / 1000
+  const params = o.params ?? {}
+  // The checks before: the live preview's if known, else the draft as it is (built once, on the first try).
+  let before: Draft | Judged = o.gatesBefore ? { runtime: null, gates: [...o.gatesBefore], errors: [], warnings: [] } : d
+  let firstReason = ''
+  for (const length of lengths) {
+    const piece: Piece = { type: 'tunnel', at: tunnelStartFor(rc, middle, length) }
+    if (length !== TRACK_DEFAULTS.tunnelLength) piece.length = length
+    const next: Draft = { ...base, points: plan.points, pieces: [...moved, piece], startAt }
+    const v = judgeTunnel(before, next, next.pieces.length - 1, o.id, params, null, 'Try putting the other road in the tunnel, or make it a bridge instead.')
+    if (!('gates' in before)) before = { runtime: null, gates: buildAndCheck(d, o.id, params).gates, errors: [], warnings: [] }
+    if (!v.ok) {
+      firstReason ||= `${v.message.replace(/^Can't put a tunnel here/, cant)} Nothing changed.`
+      continue
+    }
+    // This crossing on the built road: the other road on top, with room for a car under it.
+    const built = v.judged.runtime ? builtGapAt(v.judged.runtime, spot, plan.up.heading) : null
+    if (!built || !built.upperMatches || built.gap < BRIDGE_GAP) {
+      firstReason ||= `${cant}: the game built it with too little room under the other road (a bug in the game, not your track). Nothing changed.`
+      continue
+    }
+    return {
+      ok: true,
+      draft: next,
+      gap: built.gap,
+      done: `Put in a tunnel: the road heading ${compassWord(plan.down.heading)} dips ${v.depth.toFixed(1)} m into the ground and runs under ${length} m of roof, and the road heading ${compassWord(plan.up.heading)} stays on the ground and goes over the hill on top. Undo puts it back.`,
+    }
+  }
+  return { ok: false, reason: firstReason }
+}
+
+/** Where the roads meet on the level: put one in a tunnel (the first pass from the start line, then the other). */
+export function tunnelEither(d: Draft, spot: P, o: SwapOptions): SwapResult {
+  let firstReason = ''
+  for (const under of [0, 1] as const) {
+    const res = tunnelDraft(d, spot, under, o)
+    if (res.ok) return res
+    firstReason ||= res.reason ?? ''
+  }
+  return { ok: false, reason: firstReason }
+}
 
 /**
  * Move pass `chosen` of the crossing at `spot` (up onto a bridge, or down into
@@ -579,7 +727,10 @@ const CANT: Record<CrossingKind, string> = { bridge: "Can't swap this bridge", u
  * new fails and the right road ends up on top with room for a car. Gentler
  * ramps are tried if the first ones don't pass.
  */
-function tryCrossing(d: Draft, spot: P, chosen: 0 | 1, o: SwapOptions, kind: CrossingKind): SwapResult {
+function tryCrossing(d0: Draft, spot: P, chosen: 0 | 1, o: SwapOptions, kind: CrossingKind): SwapResult {
+  // A tunnel at this crossing comes out first: a bridge or an underpass replaces it.
+  const pieces = withoutCrossingTunnels(d0, spot, o.pointGround ?? FLAT_GROUND)
+  const d: Draft = pieces === d0.pieces ? d0 : { ...d0, pieces }
   let before: readonly TrackGate[] | null = o.gatesBefore ?? null
   // Ramps as long as the crossing's own first (so swapping back gives back the very same bridge), then the ladder.
   const own = ownRamp(d.points, spot, d.width, o.pointGround ?? FLAT_GROUND)
@@ -623,7 +774,7 @@ function tryCrossing(d: Draft, spot: P, chosen: 0 | 1, o: SwapOptions, kind: Cro
         draft: next,
         gap: built.gap,
         done:
-          kind === 'bridge' && plan.wasOver === chosen
+          kind === 'bridge' && (plan.wasOver === chosen || d !== d0)
             ? `Made it a bridge: the road heading ${compassWord(plan.up.heading)} goes over on an ${CLEANUP.bridgeLift} m bridge, and the road heading ${compassWord(plan.down.heading)} goes under it on the ground. Undo puts it back.`
             : kind === 'bridge'
             ? `Swapped: the road heading ${compassWord(plan.up.heading)} goes over now, and the road heading ${compassWord(plan.down.heading)} goes under it. Undo puts it back.`
@@ -742,18 +893,24 @@ export interface OverChoice {
   heading: number
   /** True for an underpass: the other road dips under this one, which stays on the ground. */
   under?: boolean
+  /** True for a tunnel: the other road goes under this one in a tunnel (its Tunnel piece), and both stay on the ground here. */
+  tunnel?: boolean
 }
 
 /**
  * The road on top at every bridged crossing of this road, and whether it is
- * an underpass. Redrawing a stretch re-runs the clean-up on the whole road;
- * handing it these keeps every crossing that is still there the way it was
- * (a swap stays swapped, an underpass stays an underpass).
+ * an underpass or a tunnel (pass the draft's pieces to see tunnels). Redrawing
+ * a stretch re-runs the clean-up on the whole road; handing it these keeps
+ * every crossing that is still there the way it was (a swap stays swapped, an
+ * underpass stays an underpass, a tunnel's roads stay on the ground).
  */
-export function keepOverOf(points: readonly RoadPoint[], ground: GroundFn = FLAT_GROUND): OverChoice[] {
-  return roadCrossings(points, ground)
+export function keepOverOf(points: readonly RoadPoint[], ground: GroundFn = FLAT_GROUND, pieces: readonly Piece[] = []): OverChoice[] {
+  return crossingsWithTunnels(points, pieces, ground)
     .filter((c) => c.over !== null)
-    .map((c) => (c.kind === 'underpass' ? { at: c.at, heading: c.passes[c.over as 0 | 1].heading, under: true } : { at: c.at, heading: c.passes[c.over as 0 | 1].heading }))
+    .map((c) => {
+      const heading = c.passes[c.over as 0 | 1].heading
+      return c.kind === 'underpass' ? { at: c.at, heading, under: true } : c.kind === 'tunnel' ? { at: c.at, heading, tunnel: true } : { at: c.at, heading }
+    })
 }
 
 function lowerFirst(text: string): string {

@@ -67,6 +67,7 @@ const GATE_WORDS: Record<string, { title: string; label: string; how?: string }>
     how: 'Select the dipped stretch with the Height tool and make it longer, or less deep.',
   },
   loops: { title: 'Cars will crash into this loop.', label: 'LOOP BLOCKED', how: 'Drag it to another straight with Select and move, or select it and press Delete.' },
+  tunnel: { title: "A tunnel can't be built here, or isn't built right.", label: 'TUNNEL', how: 'Select the tunnel and make it shorter, drag it to clear road with Select and move, or press Delete.' },
   tracking: { title: 'The game loses track of where cars are on this road.', label: 'GAME BUG' },
   ground: { title: 'The ground pokes up into the road.', label: 'GROUND IN THE WAY' },
   under: { title: 'The ground pokes up just under the road here, where a car could catch on it.', label: 'GAME BUG' },

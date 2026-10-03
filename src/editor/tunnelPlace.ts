@@ -20,7 +20,7 @@
 import type { TrackRuntime } from '../track/types'
 import { trackInternals } from '../track/build'
 import type { Draft } from './draft'
-import { gateTitle, judgeDraft, newFailures, type Judged } from './judge'
+import { gateTitle, isGameBug, judgeDraft, newFailures, type Judged } from './judge'
 
 export type TunnelVerdict =
   | { ok: true; judged: Judged; depth: number; ramp: number; length: number }
@@ -29,9 +29,18 @@ export type TunnelVerdict =
 /**
  * Judge `next` (the draft with the tunnel at piece `index` added or changed) against `before`.
  * `id` and `params` are the draft's; `previous` a track built in the same world (its ground is
- * reused). `before` may be passed already judged (the live preview's checks).
+ * reused). `before` may be passed already judged (the live preview's checks). `tryInstead` ends a
+ * refusal that a check caused: what Josh can do instead (a tunnel at a crossing can't be moved).
  */
-export function judgeTunnel(before: Draft | Judged, next: Draft, index: number, id: string, params: Record<string, number>, previous?: TrackRuntime | null): TunnelVerdict {
+export function judgeTunnel(
+  before: Draft | Judged,
+  next: Draft,
+  index: number,
+  id: string,
+  params: Record<string, number>,
+  previous?: TrackRuntime | null,
+  tryInstead = 'Try it somewhere else, or make it shorter.',
+): TunnelVerdict {
   const after = judgeDraft(next, id, params, previous)
   if (!after.runtime) return { ok: false, message: `Can't put a tunnel here: ${after.error ?? 'the track has a problem'}.` }
   const x = trackInternals(after.runtime)
@@ -40,7 +49,10 @@ export function judgeTunnel(before: Draft | Judged, next: Draft, index: number, 
   if (plan.problem) return { ok: false, message: `Can't put a tunnel here: ${plan.problem}.` }
   const was = 'gates' in before ? before : judgeDraft(before, id, params, previous ?? after.runtime)
   const broke = newFailures(was.gates, after.gates)
-  if (broke.length) return { ok: false, message: `Can't put a tunnel here: with it, ${lowerFirst(gateTitle(broke[0], next))} Try it somewhere else, or make it shorter.` }
+  // A check that only fails through the game's own fault (its fix line says "builder bug") gets honest words.
+  const track = broke.find((g) => !isGameBug(g))
+  if (broke.length && !track) return { ok: false, message: `Can't put a tunnel here: the game can't build it cleanly there yet (its ${broke[0].name} check fails, a bug in the game, not your track). Try it somewhere else.` }
+  if (track) return { ok: false, message: `Can't put a tunnel here: with it, ${lowerFirst(gateTitle(track, next))} ${tryInstead}` }
   return { ok: true, judged: after, depth: plan.depth, ramp: plan.ramp, length: plan.sb1 - plan.sb0 }
 }
 

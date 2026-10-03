@@ -551,6 +551,18 @@ export interface FlattenInput {
   sameStretch?: number
   /** The tunnels (tunnels.ts): where the ground is hollowed out under a tube and walled in beside a dug road. */
   tunnels?: TunnelSamples
+  /**
+   * Per sample, 1 for road that doesn't shape the ground in this pass (hillGroundOf leaves out
+   * each tunnel's own stretch, to see the hill the rest of the road makes).
+   */
+  skip?: Uint8Array
+  /**
+   * With tunnels: the hill they are dug through (hillGroundOf): the natural ground as every OTHER
+   * road shaped it. A tunnel's roof, the tops of its walls of ground and its shoulders follow it,
+   * so a road crossing over a tunnel runs on the roof as it would on the ground. Natural ground
+   * where no other road is near.
+   */
+  hill?: Float32Array
 }
 
 /** The cut-and-filled ground, plus where the physics ground isn't needed. */
@@ -597,6 +609,44 @@ export function tunnelWallAt(ts: TunnelSamples, i: number, lat: number): number 
   if (!ts.slot[i]) return 0
   if (ts.covered[i]) return 1
   return lat < 0 ? ts.wallL[i] : ts.wallR[i]
+}
+
+/**
+ * Is (x, z) inside the solid of the tunnel stretch that sample i belongs to: over its road, or
+ * over one of its walls of ground (out to TUNNEL_WALL past the edge) where a wall stands?
+ */
+export function insideTunnelSolid(S: TrackSamples, ts: TunnelSamples, i: number, x: number, z: number): boolean {
+  const dx = x - S.px[i]
+  const dz = z - S.pz[i]
+  if (Math.abs(dx * S.tx[i] + dz * S.tz[i]) > S.ds) return false
+  const rh2 = S.rx[i] * S.rx[i] + S.rz[i] * S.rz[i]
+  const lat = rh2 > 1e-4 ? (dx * S.rx[i] + dz * S.rz[i]) / rh2 : 0
+  const beyond = Math.abs(lat) - S.halfWidth[i]
+  return beyond <= 0 || (beyond <= TUNNEL_WALL && tunnelWallAt(ts, i, lat) > TUNNEL_WALL_MIN)
+}
+
+/** Samples closer than this (metres) to a tunnel's stretch along the road are its own road, not "other road" over it. */
+const OWN_ROAD = 80
+
+/**
+ * The hill a track's tunnels are dug through: the natural ground cut and filled by every road
+ * EXCEPT each tunnel's own stretch (and OWN_ROAD metres of road either side of it). Where
+ * another road crosses over a tunnel, this is the ground under that road and its shoulders,
+ * so the tunnel's roof meets it with no step. Natural ground wherever no other road is near.
+ * null when the track has no tunnel (nothing needs it).
+ */
+export function hillGroundOf(grid: NaturalGrid, input: FlattenInput): Float32Array | null {
+  const ts = input.tunnels
+  if (!ts || !ts.list.length) return null
+  const S = input.samples
+  const n = S.count
+  const skip = new Uint8Array(n)
+  const reach = Math.round(OWN_ROAD / S.ds)
+  for (let i = 0; i < n; i++) {
+    if (!ts.slot[i]) continue
+    for (let k = -reach; k <= reach; k++) skip[(((i + k) % n) + n) % n] = 1
+  }
+  return flattenToRoad(grid, { ...input, tunnels: undefined, hill: undefined, skip }).heights
 }
 
 /**
@@ -650,6 +700,13 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
   const underCut = input.underCut && input.underCut.includes(1) ? input.underCut : null
   const bestC = underCut ? new Int32Array(vcount).fill(-1) : null
   const bestCd = underCut ? new Float32Array(vcount).fill(Infinity) : null
+  // A tunnel's stretch: for each vertex, its nearest sample (inside the tube's solid it shapes
+  // the vertex even where another road, crossing over the roof, is nearer).
+  const bestT = tunnels ? new Int32Array(vcount).fill(-1) : null
+  const bestTd = tunnels ? new Float32Array(vcount).fill(Infinity) : null
+  const skip = input.skip ?? null
+  /** The ground a tunnel's stretch is dug through at vertex v (see FlattenInput.hill). */
+  const hillAt = (v: number) => (input.hill ? input.hill[v] : nat[v])
 
   // For each raised (not grounded) road sample: metres along the road to the nearest grounded one.
   const toGround = new Float32Array(count).fill(Infinity)
@@ -675,11 +732,13 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
   const inv = 1 / cellSize
   for (let i = 0; i < count; i++) {
     // Loops never shape the ground (they sit on the flattened lanes either side): only road does.
-    if (S.surface[i] !== SURFACE_CODE.road) continue
+    if (S.surface[i] !== SURFACE_CODE.road || skip?.[i]) continue
     const cx = S.px[i]
     const cz = S.pz[i]
     const grounded = S.grounded[i] === 1
     const reach = S.halfWidth[i] + (grounded ? SHOULDER_MAX : BRIDGE_CLEARANCE + 4)
+    const inTunnel = bestT && bestTd && grounded && tunnels?.slot[i]
+    const tunnelReach2 = (S.halfWidth[i] + TUNNEL_WALL + 1) ** 2
     const ix0 = Math.max(0, Math.floor((cx - reach + half) * inv))
     const ix1 = Math.min(n, Math.ceil((cx + reach + half) * inv))
     const iz0 = Math.max(0, Math.floor((cz - reach + half) * inv))
@@ -706,20 +765,31 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
           bestCd[v] = d2
           bestC[v] = i
         }
+        if (inTunnel && d2 < bestTd[v] && d2 <= tunnelReach2) {
+          bestTd[v] = d2
+          bestT[v] = i
+        }
       }
     }
   }
   const sameStretch = Math.round((input.sameStretch ?? 80) / S.ds)
 
   for (let v = 0; v < vcount; v++) {
-    const ig = bestG[v]
+    let ig = bestG[v]
     const ib = bestB[v]
     if (ig < 0 && ib < 0) continue
     const ix = v % (n + 1)
     const iz = (v - ix) / (n + 1)
     const x = -half + ix * cellSize
     const z = -half + iz * cellSize
-    let h = nat[v]
+    // Inside a tunnel's solid the tunnel shapes the ground (hollowed out under it), even where a
+    // road crossing over its roof is nearer: that road runs on the roof, the hill put back on top.
+    const it = bestT ? bestT[v] : -1
+    if (it >= 0 && ig >= 0 && tunnels && !tunnels.slot[ig]) {
+      const apart = Math.abs(ig - it)
+      if (Math.min(apart, count - apart) >= sameStretch && insideTunnelSolid(S, tunnels, it, x, z)) ig = it
+    }
+    let h = ig >= 0 && tunnels?.slot[ig] ? hillAt(v) : nat[v]
     // Under a grounded road's deck (nothing can pass under it, so a bridge's clearance cut must not dig here).
     let underDeck = false
 
@@ -801,7 +871,7 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
         if (Math.abs(lat) <= hw - (walls || tunnelWall ? 0 : COVER_MARGIN) && Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds) cover[v] = 1
         // Under a tunnel's roof, the roof's top follows the natural ground over the road too.
         if (tunnels && tunnels.covered[ig] && tunnelTop && tunnelIn && Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds) {
-          tunnelTop[v] = nat[v] + TUNNEL_LIP
+          tunnelTop[v] = hillAt(v) + TUNNEL_LIP
           tunnelIn[v] = TUNNEL_WALL + hw - Math.abs(lat)
         }
       } else if (!walls) {
@@ -821,7 +891,7 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
         if (tw > TUNNEL_WALL_MIN && tunnels && tunnelTop && tunnelIn) {
           // (A wall only ever raises the ground: where the natural ground is below the usual
           // shoulder, the shoulder stays.)
-          const profile = h + Math.max(0, nat[v] - h) * tw
+          const profile = h + Math.max(0, hillAt(v) - h) * tw
           const alongS = dx * S.tx[ig] + dz * S.tz[ig]
           const side = lat < 0 ? -1 : 1
           // Next to the road the ground stays down at the edge's own height once the wall is more
@@ -899,7 +969,7 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
     }
     out[v] = h
   }
-  keepUnderRoad(grid, out, S)
+  keepUnderRoad(grid, out, S, skip)
   return { heights: out, covered: cover, tunnelTop, tunnelIn }
 }
 
@@ -927,14 +997,14 @@ function cutThrough(S: TrackSamples, i: number, x: number, z: number, natural: n
  * requiredClearance(), lower that cell's corners until it doesn't. Steep banks on tight
  * curves can otherwise leave a grid triangle poking up at the low edge.
  */
-function keepUnderRoad(grid: NaturalGrid, h: Float32Array, S: TrackSamples): void {
+function keepUnderRoad(grid: NaturalGrid, h: Float32Array, S: TrackSamples, skip: Uint8Array | null): void {
   const { n, half, cellSize } = grid
   const g = { n, half, cellSize, heights: h }
   const inv = 1 / cellSize
   for (let pass = 0; pass < 6; pass++) {
     let fixed = 0
     for (let i = 0; i < S.count; i++) {
-      if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1) continue
+      if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1 || skip?.[i]) continue
       const hw = S.halfWidth[i]
       const steps = Math.ceil((hw * 2) / 0.75)
       for (let k = 0; k <= steps; k++) {

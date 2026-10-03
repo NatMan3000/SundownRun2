@@ -53,6 +53,10 @@ import {
   swapBridge,
   sendUnder,
   makeBridge,
+  tunnelUnder,
+  tunnelOnStretch,
+  roofOffStretch,
+  tunnelsOnStretch,
 } from './draft'
 import { type FixOffer, canWords, currentProblems, fixAll, fixOffer, fixProblem, fixSearchVersion, goToProblem, lastFixed, raiseSection, selectProblem, subscribeFixSearch } from './fixActions'
 import { NO_NOTES, type Problem, problemByKey, problemsOf } from './problems'
@@ -324,6 +328,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
         {tool === 'height' && <HeightField from={sel.from} to={sel.to} draft={d} />}
         {tool === 'bank' && <BankField from={sel.from} to={sel.to} draft={d} />}
         {tool === 'width' && <WidthField from={sel.from} to={sel.to} draft={d} />}
+        <TunnelToggle from={sel.from} to={sel.to} draft={d} />
         <Segmented
           label="Change this stretch's"
           value={isStretchTool(tool) ? tool : ''}
@@ -402,18 +407,44 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
   if (c.over === null) {
     return (
       <>
-        <p className="sre-help">These two roads meet at the same height here, so cars would crash into each other. Make one of them a bridge over the other, or send one under the other.</p>
+        <p className="sre-help">These two roads meet at the same height here, so cars would crash into each other. Make one of them a bridge over the other, send one under the other, or put one in a tunnel.</p>
         <button type="button" className="sre-btn is-primary" onClick={swap}>
           Make a bridge here
         </button>
         <button type="button" className="sre-btn" onClick={() => sendUnder(p.spot, null)} data-testid="editor-make-underpass">
           Make an underpass here
         </button>
+        <button type="button" className="sre-btn" onClick={() => tunnelUnder(p.spot, null)} data-testid="editor-make-tunnel-crossing">
+          Put one in a tunnel here
+        </button>
       </>
     )
   }
   const over = c.over
   const under = over === 0 ? 1 : 0
+  /** "Put the road heading south-east in a tunnel": the tunnel button for pass k. */
+  const tunnelButton = (k: 0 | 1, primary = false) => (
+    <button type="button" className={primary ? 'sre-btn is-primary' : 'sre-btn'} onClick={() => tunnelUnder(p.spot, k)} data-testid={primary ? 'editor-swap-tunnel' : 'editor-tunnel-under'}>
+      {primary ? 'Swap: put the other road in the tunnel' : `Put the road heading ${compassWord(c.passes[k].heading)} in a tunnel`}
+    </button>
+  )
+  if (c.kind === 'tunnel') {
+    return (
+      <>
+        <p className="sre-help">
+          Going over, on the hill: {road(over)}. Going under, in a tunnel: {road(under)}.
+        </p>
+        {tunnelButton(over, true)}
+        <button type="button" className="sre-btn" onClick={() => makeBridge(p.spot, over)} data-testid="editor-make-bridge">
+          Make it a bridge instead
+        </button>
+        <button type="button" className="sre-btn" onClick={() => sendUnder(p.spot, under)} data-testid="editor-send-under">
+          Make it an open cutting instead
+        </button>
+        <p className="sre-help">Swap: this road comes out of its tunnel and the other one goes into one. A bridge: the road on top goes up over the other on smooth ramps. An open cutting: the same dip with no roof, and the road on top crosses it on a short bridge. Undo puts any of them back.</p>
+      </>
+    )
+  }
   const low = c.gap < BRIDGE_GAP
   const between = `${Math.round(c.gap * 10) / 10} m between them${low ? ', too low for a car to fit under' : ''}.`
   if (c.kind === 'underpass') {
@@ -428,7 +459,8 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
         <button type="button" className="sre-btn" onClick={() => makeBridge(p.spot, over)} data-testid="editor-make-bridge">
           Make it a bridge instead
         </button>
-        <p className="sre-help">Swap: the road in the cutting comes back up to the ground, and the other one dips under it. A bridge: the road on top goes up over the other on smooth ramps, and the road in the cutting comes back up to the ground. Undo puts either back.</p>
+        {tunnelButton(under)}
+        <p className="sre-help">Swap: the road in the cutting comes back up to the ground, and the other one dips under it. A bridge: the road on top goes up over the other on smooth ramps, and the road in the cutting comes back up to the ground. A tunnel: the hill goes back over the road in the cutting, and the other road runs over it on the ground. Undo puts any of them back.</p>
       </>
     )
   }
@@ -443,8 +475,30 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
       <button type="button" className="sre-btn" onClick={() => sendUnder(p.spot, under)} data-testid="editor-send-under">
         Send the road heading {compassWord(c.passes[under].heading)} under
       </button>
-      <p className="sre-help">Swap: the road on top comes down to the ground, and the other one goes up over it on smooth ramps. Send under: the road underneath dips {UNDER_DEPTH} m into a cutting, and the road on top comes down to the ground and crosses it on a short bridge. Undo puts either back.</p>
+      {tunnelButton(under)}
+      <p className="sre-help">Swap: the road on top comes down to the ground, and the other one goes up over it on smooth ramps. Send under: the road underneath dips {UNDER_DEPTH} m into a cutting, and the road on top comes down to the ground and crosses it on a short bridge. A tunnel: the road underneath dips into the ground under a roof, and the road on top comes down and runs over the hill above it. Undo puts any of them back.</p>
     </>
+  )
+}
+
+/**
+ * A picked stretch: "Make it a tunnel" covers it with a Tunnel piece (the same rules as the
+ * Tunnel piece: refused in plain words if it can't go there), and on a stretch a tunnel already
+ * covers, "Take the roof off" takes it away. Either is one Undo step.
+ */
+function TunnelToggle(p: { from: number; to: number; draft: Draft }) {
+  const covered = tunnelsOnStretch(p.draft, p.from, p.to).length > 0
+  return covered ? (
+    <>
+      <p className="sre-help">A tunnel covers this stretch: the road dips into the ground and the hill goes back over it.</p>
+      <button type="button" className="sre-btn" onClick={() => roofOffStretch(p.from, p.to)} data-testid="editor-roof-off">
+        Take the roof off
+      </button>
+    </>
+  ) : (
+    <button type="button" className="sre-btn" onClick={() => tunnelOnStretch(p.from, p.to)} data-testid="editor-make-tunnel">
+      Make it a tunnel
+    </button>
   )
 }
 
@@ -1012,6 +1066,7 @@ function Legend(p: { editing: boolean }) {
         </KeyRow>
         <KeyRow mark={<span className="k-pill is-bridge">BRIDGE</span>}>Where the road crosses itself.{click('Click it to pick which road goes over.')}</KeyRow>
         <KeyRow mark={<span className="k-pill is-bridge">UNDERPASS</span>}>A crossing where one road dips into the ground under the other.{click('Click it to pick which road goes under.')}</KeyRow>
+        <KeyRow mark={<span className="k-pill is-bridge">TUNNEL</span>}>A crossing where one road goes under the other in a tunnel, and the other runs over the hill on top.{click('Click it to pick which road goes under.')}</KeyRow>
         <KeyRow mark={<span className="k-pill is-low">LOW BRIDGE</span>}>Too low for a car to fit under (or ROADS MEET: two roads at the same height).{click('Click it to fix it.')}</KeyRow>
         {p.editing && <KeyRow mark={<i className="k-section" />}>The stretch you picked with Height, Bank or Width</KeyRow>}
         <KeyRow mark={<i className="k-boost" />}>Boost pad</KeyRow>

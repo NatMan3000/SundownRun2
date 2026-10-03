@@ -66,6 +66,11 @@
 //                                          underpass; pass null: either, as "Make an underpass
 //                                          here" does); returns like swap
 //    __dev.editor('makeBridge', [i, pass]) make crossing i a bridge with that pass on top
+//    __dev.editor('tunnel', [i, pass])     put pass 0 or 1 of crossing i in a tunnel, the other road
+//                                          over its roof (pass null: either, as "Put one in a tunnel
+//                                          here" does); returns like swap (tunnel3)
+//    __dev.editor('stretchTunnel')         the picked stretch's "Make it a tunnel" (tunnel3)
+//    __dev.editor('roofOff')               the picked stretch's "Take the roof off" (tunnel3)
 //
 //  Height and problems (editor8):
 //    __dev.editor('stretch', [from, to, tool])  select a stretch of road with the Height, Bank or Width
@@ -112,6 +117,9 @@ import {
   swapBridge,
   sendUnder,
   makeBridge,
+  tunnelUnder,
+  tunnelOnStretch,
+  roofOffStretch,
   draftId,
   newTrack,
   saveAsNewTrack,
@@ -244,7 +252,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | under [i,pass] | makeBridge [i,pass] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | under [i,pass] | makeBridge [i,pass] | tunnel [i,pass] | stretchTunnel | roofOff | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -355,13 +363,21 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       return { ok, message: useEditor.getState().message?.text ?? '', crossings: crossingsSummary() }
     }
     case 'under':
-    case 'makeBridge': {
+    case 'makeBridge':
+    case 'tunnel': {
       const [i, pass] = Array.isArray(arg) ? arg : [arg ?? 0, null]
       const c = draftCrossings()[Number(i)]
       if (!c) return `no crossing ${String(i)}`
       const which = pass === null || pass === undefined ? null : Number(pass) === 1 ? 1 : 0
-      const ok = cmd === 'under' ? sendUnder(c.at, which) : makeBridge(c.at, which ?? (c.over ?? 0))
+      const ok = cmd === 'under' ? sendUnder(c.at, which) : cmd === 'tunnel' ? tunnelUnder(c.at, which) : makeBridge(c.at, which ?? (c.over ?? 0))
       return { ok, message: useEditor.getState().message?.text ?? '', crossings: crossingsSummary() }
+    }
+    case 'stretchTunnel':
+    case 'roofOff': {
+      const sel = useEditor.getState().selection
+      if (sel?.kind !== 'section') return 'select a stretch first'
+      const ok = cmd === 'stretchTunnel' ? tunnelOnStretch(sel.from, sel.to) : roofOffStretch(sel.from, sel.to)
+      return { ok, message: useEditor.getState().message?.text ?? '', pieces: useEditor.getState().draft.pieces }
     }
     case 'checks':
       return checksSummary()

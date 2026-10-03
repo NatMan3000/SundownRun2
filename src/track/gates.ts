@@ -51,7 +51,7 @@ import { barrierAxes, type BarrierAxes } from './ribbon'
 import { brakeOnSlope, carFullLockG, LINE_MAX_LAT_G } from './derived'
 import { CREST_CHECK_KMH, CREST_LANE_INSET, CREST_LIMIT, CREST_SPAN, LEAN_AHEAD_DEG, LEAN_SPEED_KMH } from './bankRolls'
 import { CUT_SLOPE_MAX_DEG, CUT_STEP_MAX, cuttingSides, dipLips } from './cuttings'
-import { TUNNEL_CLEARANCE_MIN, TUNNEL_GROUND_BELOW, TUNNEL_LIP_MAX, TUNNEL_ROOF_CHECK, tunnelChecks } from './tunnelChecks'
+import { OVER_EDGE_MAX, OVER_ROOF_SLACK, TUNNEL_CLEARANCE_MIN, TUNNEL_GROUND_BELOW, TUNNEL_LIP_MAX, TUNNEL_ROOF_CHECK, tunnelChecks } from './tunnelChecks'
 
 const G = 9.81
 /** The banking gate's limit on leaning ahead of the bend: the builder's own rule plus a degree. */
@@ -367,7 +367,16 @@ export function roadTracking(t: TrackRuntime): { crossings: number; tooLow: numb
       expect(`on the bridge, hint on the road below (stale)`, lo, hi)
       expect(`on the bridge, no hint`, undefined, hi)
     }
+    // In a covered tunnel there is no grass beside the lower road (its walls stand there); a car
+    // can be up on the roof beside the road crossing over it instead.
+    const inTunnel = !!trackInternals(t)?.tunnels.covered[lo]
     for (const side of [-1, 1]) {
+      if (inTunnel) {
+        at(hi, side * (hwH + 4), CAR_Y)
+        expect(`on the tunnel's roof beside the road over it, hint on that road (slid off its edge)`, hi, hi)
+        expect(`on the tunnel's roof beside the road over it, no hint`, undefined, hi)
+        continue
+      }
       // On the grass beside the lower road, under or beside the bridge.
       const p = at(lo, side * (hwL + 8), 0)
       P.y = t.terrainHeight(p.x, p.z) + CAR_Y
@@ -1481,12 +1490,17 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
     if (tc.roof < TUNNEL_ROOF_CHECK) bad.push(`the roof is only ${tc.roof.toFixed(1)} m thick at ${at(tc.roofAt)} (at least ${TUNNEL_ROOF_CHECK})`)
     if (tc.ground > -TUNNEL_GROUND_BELOW) bad.push(`physics ground ${tc.ground.toFixed(2)} m from the road's edge inside the tunnel at ${at(tc.groundAt)} (it must be a hole or sit ${TUNNEL_GROUND_BELOW} m below)`)
     if (tc.lip > TUNNEL_LIP_MAX || tc.under > 0.02) bad.push(`the top's edge stands ${tc.lip.toFixed(2)} m over the ground beside it at ${at(tc.lipAt)}${tc.under > 0.02 ? ` (and the ground rises ${tc.under.toFixed(2)} m over it somewhere)` : ''} (limit ${TUNNEL_LIP_MAX} m)`)
+    if (tc.overRoof < -OVER_ROOF_SLACK) bad.push(`the roof comes up too close under the road over it at ${at(tc.overRoofAt)} (${(-tc.overRoof * 100).toFixed(0)} cm closer than the ground under a road may; limit ${(OVER_ROOF_SLACK * 100).toFixed(0)} cm)`)
+    if (tc.overEdge > OVER_EDGE_MAX) bad.push(`beside the road over it the roof is ${(tc.overEdge * 100).toFixed(0)} cm off the road's edge at ${at(tc.overEdgeAt)} (limit ${(OVER_EDGE_MAX * 100).toFixed(0)} cm)`)
+    const overWords = tc.overRoads
+      ? `; the road over it (${tc.overRoads === 1 ? 'one crossing' : `${tc.overRoads} crossings`}) runs on its roof, which stays under the road like ground (closest ${(-tc.overRoof * 100).toFixed(1)} cm past the allowed clearance, limit ${(OVER_ROOF_SLACK * 100).toFixed(0)}) and meets its edges within ${(tc.overEdge * 100).toFixed(0)} cm (limit ${(OVER_EDGE_MAX * 100).toFixed(0)})`
+      : ''
     gate(
       'tunnel',
       bad.length === 0,
       bad.length
         ? `${name}: ${bad.join('; ')}`
-        : `${name}, ${tc.length.toFixed(0)} m covered, the road dug ${tc.depth.toFixed(1)} m down on ${(tc.approach / 2).toFixed(0)} m ramps: ${tc.clearance.toFixed(1)} m from the road to the ceiling (at least ${TUNNEL_CLEARANCE_MIN}), a roof ${tc.roof.toFixed(1)} m thick or more, no ground inside (${Number.isFinite(tc.ground) ? `the highest sits ${(-tc.ground * 100).toFixed(0)} cm under the road's edge` : 'it is all left out under the road and the walls'}), the top's edge within ${(tc.lip * 100).toFixed(0)} cm of the ground beside it (limit ${(TUNNEL_LIP_MAX * 100).toFixed(0)})`,
+        : `${name}, ${tc.length.toFixed(0)} m covered, the road dug ${tc.depth.toFixed(1)} m down on ${(tc.approach / 2).toFixed(0)} m ramps: ${tc.clearance.toFixed(1)} m from the road to the ceiling (at least ${TUNNEL_CLEARANCE_MIN}), a roof ${tc.roof.toFixed(1)} m thick or more, no ground inside (${Number.isFinite(tc.ground) ? `the highest sits ${(-tc.ground * 100).toFixed(0)} cm under the road's edge` : 'it is all left out under the road and the walls'}), the top's edge within ${(tc.lip * 100).toFixed(0)} cm of the ground beside it (limit ${(TUNNEL_LIP_MAX * 100).toFixed(0)})${overWords}`,
       'this is a builder bug, not your file: report it.',
     )
   }

@@ -538,14 +538,26 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
     if (r > bound.limit) I.warn(`road.points[${i}]`, `is ${(half - r).toFixed(0)} m from the world edge; the road may run into the ${t.environment.terrain.edge === 'ridge' ? 'mountains' : 'wall'}`)
   }
 
-  // Self-crossings in plan view (fine for bridges; warn so the author adds height).
+  // Self-crossings in plan view (fine for bridges; warn so the author adds height). A crossing where
+  // one road is in a tunnel needs no height: that road dips under the other (the tunnel row checks it).
+  const tunnelSpans = t.pieces.filter((p) => p.type === 'tunnel').map((p) => {
+    const s0 = arcLengthAtParam(dense, p.at)
+    return { s0, s1: s0 + (p.length ?? TRACK_DEFAULTS.tunnelLength) }
+  })
+  const inTunnel = (at: number) => {
+    const s = arcLengthAtParam(dense, at)
+    return tunnelSpans.some((sp) => {
+      const d = (((s - sp.s0) % L) + L) % L
+      return d <= sp.s1 - sp.s0
+    })
+  }
   const stride = 4
   for (let i = 0; i < n; i += stride) {
     const i2 = Math.min(n, i + stride)
     for (let j = i + stride * 8; j < n - stride * 4; j += stride) {
       if (i < stride * 4 && j > n - stride * 8) continue
       const j2 = Math.min(n, j + stride)
-      if (segmentsCross(dense.x[i], dense.z[i], dense.x[i2], dense.z[i2], dense.x[j], dense.z[j], dense.x[j2], dense.z[j2])) {
+      if (segmentsCross(dense.x[i], dense.z[i], dense.x[i2], dense.z[i2], dense.x[j], dense.z[j], dense.x[j2], dense.z[j2]) && !inTunnel(dense.at[i]) && !inTunnel(dense.at[j])) {
         // Both roads stand on the same patch of ground, so their height difference
         // is the difference in lift (when neither uses an absolute y).
         const la = liftAt(pts, dense.at[i])
