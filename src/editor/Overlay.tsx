@@ -63,7 +63,7 @@ import { inputState } from '../core/controls'
 import { closeMap } from '../core/session'
 import { audio } from '../core/api'
 import { askNewTrack, askVersion } from './askFirst'
-import { PLACE_TOOLS, toolFor, wallRideFromDrag, wallRideSide, wallRideStartFor } from './pieces'
+import { PLACE_TOOLS, toolFor, tunnelFromDrag, tunnelStartFor, wallRideFromDrag, wallRideSide, wallRideStartFor } from './pieces'
 import { TRACK_DEFAULTS } from '../track/schema'
 import {
   type BendView,
@@ -88,6 +88,7 @@ import {
   moveBend,
   placeAt,
   placeWallRideSpan,
+  placeTunnelSpan,
   redo,
   roadBoundFor,
   draftCrossings,
@@ -579,8 +580,8 @@ export function Overlay() {
         return
       }
       if (s.tool === 'place') {
-        // A wall ride: a click puts its middle here, a drag along the road draws how long it is (decided when the button comes up).
-        if (wallRideSide(s.placeKind)) {
+        // A wall ride or tunnel: a click puts its middle here, a drag along the road draws how long it is (decided when the button comes up).
+        if (wallRideSide(s.placeKind) || s.placeKind === 'tunnel') {
           const hit = nearestOnRoad(roadGeometry(s.draft.points, s.draft.width).rc, q)
           if (hit.distance <= s.draft.width / 2 + 12) {
             placeDrag = { at: hit.at, q, x: e.clientX, y: e.clientY, moved: false }
@@ -691,6 +692,11 @@ export function Overlay() {
           const span = wallRideFromDrag(rc, placeDrag.at, nearestOnRoad(rc, q).at)
           const f = frameAt(rc, span.at)
           ghost = { kind: s.placeKind, at: f.p, dir: f.dir, wall: { at: span.at, length: span.length, side, dragged: { from: span.from, to: span.to }, cut: span.cut } }
+        } else if (placeDrag.moved && s.placeKind === 'tunnel') {
+          const rc = roadGeometry(s.draft.points, s.draft.width).rc
+          const span = tunnelFromDrag(rc, placeDrag.at, nearestOnRoad(rc, q).at)
+          const f = frameAt(rc, span.at)
+          ghost = { kind: s.placeKind, at: f.p, dir: f.dir, tunnel: { at: span.at, length: span.length, cut: span.cut } }
         }
       } else if (s.tool === 'place') {
         const tool = toolFor(s.placeKind)
@@ -702,7 +708,10 @@ export function Overlay() {
             const side = wallRideSide(s.placeKind)
             const length = TRACK_DEFAULTS.wallride.length
             const wall = side ? { at: wallRideStartFor(g.rc, hit.at, length), length, side, dragged: null, cut: null } : undefined
-            ghost = { kind: s.placeKind, at: hit.p, dir: frameAt(g.rc, hit.at).dir, wall }
+            // A tunnel shows the stretch a click would cover, its middle under the pointer.
+            const tl = TRACK_DEFAULTS.tunnelLength
+            const tunnel = s.placeKind === 'tunnel' ? { at: tunnelStartFor(g.rc, hit.at, tl), length: tl, cut: null } : undefined
+            ghost = { kind: s.placeKind, at: hit.p, dir: frameAt(g.rc, hit.at).dir, wall, tunnel }
           } else ghost = null
         } else ghost = { kind: s.placeKind, at: q, dir: { x: 1, z: 0 } }
       }
@@ -739,8 +748,11 @@ export function Overlay() {
         const pd = placeDrag
         placeDrag = null
         if (pd.moved) {
-          const d = useEditor.getState().draft
-          placeWallRideSpan(pd.at, nearestOnRoad(roadGeometry(d.points, d.width).rc, screenToWorld(e.clientX, e.clientY)).at)
+          const st = useEditor.getState()
+          const d = st.draft
+          const to = nearestOnRoad(roadGeometry(d.points, d.width).rc, screenToWorld(e.clientX, e.clientY)).at
+          if (st.placeKind === 'tunnel') placeTunnelSpan(pd.at, to)
+          else placeWallRideSpan(pd.at, to)
         } else placeAt(pd.q)
         // The hover preview comes back when the pointer next moves (not on top of the one just placed).
         ghost = null

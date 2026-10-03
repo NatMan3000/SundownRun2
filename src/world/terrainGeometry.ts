@@ -30,6 +30,16 @@
 //  road we use the lowest height we skipped, so a big triangle can
 //  never poke up through the asphalt.
 //
+//  TUNNELS. Over a tunnel the ground grid holds the cutting floor,
+//  and the tube's own top (the roof, the walls of ground and their
+//  tops: track/tunnelMeshes.ts) is the hill you see. The drawn ground
+//  tucks itself under that top the same way it does under the road,
+//  and its shading (relief and normals) is worked out as though the
+//  hill were whole, so the top, drawn here in the ground's own
+//  material (buildTunnelHill), matches the ground round it. Chunks a
+//  tunnel touches always use their most detailed level: a coarse
+//  triangle there would reach from the hill down into the dig.
+//
 //  RELIEF. Every vertex also carries `aRelief`: how many metres it
 //  stands above (or sits below) the average ground around it, about
 //  80 m each way. Crests are positive, valley floors negative. The
@@ -41,6 +51,7 @@
 import * as THREE from 'three'
 import type { QualityLevel } from '../core/settings'
 import type { TrackRuntime } from '../track/types'
+import { trackInternals } from '../track/build'
 
 /** Chunks per side: 6 x 6 = 36 meshes, usually under half of them in view. */
 const CHUNKS = 6
@@ -110,6 +121,8 @@ function strideForCell(cellSize: number, metres: number): number {
 export interface TerrainChunk {
   /** Geometry per level of detail: [near, mid, far]. */
   levels: THREE.BufferGeometry[]
+  /** A tunnel reaches into this chunk: always draw its near level. */
+  pinNear: boolean
   triangles: number[]
   /** The chunk's square in x/z, for distance checks. */
   minX: number
@@ -121,6 +134,9 @@ export interface TerrainChunk {
 export interface TerrainBuild {
   chunks: TerrainChunk[]
   strides: number[]
+  /** Per grid vertex: the relief and the lightly smoothed heights the shading uses (for buildTunnelHill). */
+  relief: Float32Array
+  shade: Float32Array
 }
 
 /** Build every chunk at every level of detail for a track and preset. */
@@ -129,22 +145,33 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
   const side = n + 1
   const edge = roadEdgeDistance(track)
 
-  // Full-detail heights as drawn: tucked under the road.
+  // Under a tunnel's solid: the height of its top, and how far inside its outer edge (track/terrain.ts).
+  const extras = trackInternals(track)
+  const tunnelTop = extras?.tunnelTop ?? null
+  const tunnelIn = extras?.tunnelIn ?? null
+
+  // Full-detail heights as drawn: tucked under the road (and under a tunnel's top).
   const drawn = new Float32Array(side * side)
+  // ...and as the shading sees them: the hill whole where a tunnel's top covers the dig.
+  const whole = new Float32Array(side * side)
   for (let k = 0; k < drawn.length; k++) {
     let h = heights[k]
     const d = edge[k]
     // Only UNDER the road: at the edge the ground already meets the slab's lip,
     // so tucking past it would leave a visible trough beside the road.
-    if (d < 0) h -= TUCK * smoothstep(0, TUCK_FADE, -d)
+    let tuck = d < 0 ? TUCK * smoothstep(0, TUCK_FADE, -d) : 0
+    const top = tunnelTop ? tunnelTop[k] : NaN
+    if (tunnelIn && !Number.isNaN(top)) tuck = Math.max(tuck, TUCK * smoothstep(0, TUCK_FADE, tunnelIn[k]))
+    h -= tuck
     drawn[k] = h
+    whole[k] = Number.isNaN(top) ? h : top
   }
 
-  const relief = localRelief(drawn, side, Math.max(1, Math.round(RELIEF_RADIUS / cellSize)))
+  const relief = localRelief(whole, side, Math.max(1, Math.round(RELIEF_RADIUS / cellSize)))
   // Shading normals come from a lightly smoothed copy (one 3 x 3 average), so
   // a stepped cut slope shades as one surface instead of a row of facets.
   // Positions stay exact (the drawn ground is still the ground the wheels touch).
-  const shade = boxBlur(drawn, side, 1, 1)
+  const shade = boxBlur(whole, side, 1, 1)
 
   const strides = LEVEL_CELL[quality].map((m) => strideForCell(cellSize, m))
   const per = Math.ceil(n / CHUNKS)
@@ -164,8 +191,20 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
         levels.push(g)
         triangles.push((g.index ? g.index.count : 0) / 3)
       }
+      let pinNear = false
+      if (tunnelTop) {
+        for (let iz = Math.max(0, z0 - 1); iz <= Math.min(n, z1 + 1) && !pinNear; iz++) {
+          for (let ix = Math.max(0, x0 - 1); ix <= Math.min(n, x1 + 1); ix++) {
+            if (!Number.isNaN(tunnelTop[iz * side + ix])) {
+              pinNear = true
+              break
+            }
+          }
+        }
+      }
       chunks.push({
         levels,
+        pinNear,
         triangles,
         minX: -half + x0 * cellSize,
         maxX: -half + x1 * cellSize,
@@ -174,7 +213,58 @@ export function buildTerrain(track: TrackRuntime, quality: QualityLevel): Terrai
       })
     }
   }
-  return { chunks, strides }
+  return { chunks, strides, relief, shade }
+}
+
+/** Bilinear value of a per-vertex grid array at (x, z). */
+function gridSample(a: Float32Array, n: number, half: number, cellSize: number, x: number, z: number): number {
+  const fx = Math.min(n, Math.max(0, (x + half) / cellSize))
+  const fz = Math.min(n, Math.max(0, (z + half) / cellSize))
+  const ix = Math.min(n - 1, Math.floor(fx))
+  const iz = Math.min(n - 1, Math.floor(fz))
+  const tx = fx - ix
+  const tz = fz - iz
+  const s = n + 1
+  const k = iz * s + ix
+  return (a[k] * (1 - tx) + a[k + 1] * tx) * (1 - tz) + (a[k + s] * (1 - tx) + a[k + s + 1] * tx) * tz
+}
+
+/**
+ * The hill over every tunnel (TrackRuntime.meshes.tunnels.hill) as a geometry for the ground's
+ * own material: relief from the ground round it, and on its tops the same smooth shading
+ * normals as the ground (so the roof and the hill beside it shade as one surface). Its
+ * upright faces (the walls of ground, the portals) keep their own normals. null without tunnels.
+ */
+export function buildTunnelHill(track: TrackRuntime, build: TerrainBuild): THREE.BufferGeometry | null {
+  const hill = track.meshes.tunnels?.hill
+  if (!hill || !hill.indices.length) return null
+  const { n, half, cellSize } = track.terrain
+  const P = hill.positions
+  const count = P.length / 3
+  const normal = new Float32Array(hill.normals)
+  const relief = new Float32Array(count)
+  const e = cellSize
+  for (let v = 0; v < count; v++) {
+    const x = P[v * 3]
+    const z = P[v * 3 + 2]
+    relief[v] = gridSample(build.relief, n, half, cellSize, x, z)
+    if (normal[v * 3 + 1] > 0.5) {
+      const dhdx = (gridSample(build.shade, n, half, cellSize, x + e, z) - gridSample(build.shade, n, half, cellSize, x - e, z)) / (2 * e)
+      const dhdz = (gridSample(build.shade, n, half, cellSize, x, z + e) - gridSample(build.shade, n, half, cellSize, x, z - e)) / (2 * e)
+      const inv = 1 / Math.sqrt(dhdx * dhdx + 1 + dhdz * dhdz)
+      normal[v * 3] = -dhdx * inv
+      normal[v * 3 + 1] = inv
+      normal[v * 3 + 2] = -dhdz * inv
+    }
+  }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(P, 3))
+  g.setAttribute('normal', new THREE.BufferAttribute(normal, 3))
+  g.setAttribute('aRelief', new THREE.BufferAttribute(relief, 1))
+  g.setIndex(new THREE.BufferAttribute(hill.indices, 1))
+  g.computeBoundingBox()
+  g.computeBoundingSphere()
+  return g
 }
 
 /**

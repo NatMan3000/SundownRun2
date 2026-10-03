@@ -36,6 +36,7 @@ import { type RedrawPlan, type RoadCurve, PER, advanceAt, frameAt, metresBetween
 import { roadLine, stretchOf } from './shape'
 import { view, worldToScreen } from './view'
 import { WALL_RAMP, WALL_REACH } from '../track/road'
+import { TUNNEL_WALL } from '../track/tunnels'
 import { smoothstep } from '../track/noise'
 
 /** What can be picked on the map. */
@@ -51,7 +52,7 @@ export interface MapExtras {
   stroke: readonly P[]
   hover: P | null
   /** Place tool: where the thing would go if you clicked now (a wall ride: the whole wall, see GhostWall). */
-  ghost: { kind: PlaceKind; at: P; dir: P; wall?: GhostWall } | null
+  ghost: { kind: PlaceKind; at: P; dir: P; wall?: GhostWall; tunnel?: GhostTunnel } | null
   /** Select tool: the thing under the pointer. */
   hoverPick: Pick | null
   /** Where the road crosses itself, and which road is on top (bridges.ts roadCrossings). */
@@ -79,6 +80,14 @@ export interface GhostWall {
   /** While dragging: the stretch dragged so far (drawn like the Bank tool's pick). Null while just hovering. */
   dragged: { from: number; to: number } | null
   /** The drag was too short or too long, so the wall ride sits on its middle at the nearest allowed length. */
+  cut: 'short' | 'long' | null
+}
+
+/** Place tool, Tunnel: the stretch a click (or the drag so far) would cover. */
+export interface GhostTunnel {
+  at: number
+  length: number
+  /** The drag was too short or too long, so it sits on the drag's middle at the nearest allowed length. */
   cut: 'short' | 'long' | null
 }
 
@@ -971,6 +980,7 @@ function drawPieces(ctx: CanvasRenderingContext2D, rc: RoadCurve, pieces: readon
     const p = pieces[i]
     const colour = pieceColour(p)
     if (p.type === 'wallride') drawWallRide(ctx, rc, p.at, p.length ?? TRACK_DEFAULTS.wallride.length, p.side, roadWidth)
+    if (p.type === 'tunnel') drawTunnel(ctx, rc, p.at, p.length ?? TRACK_DEFAULTS.tunnelLength, roadWidth, 1, true)
     const at = pieceScreen(rc, p)
     drawPieceIcon(ctx, p.type === 'wallride' ? (p.side === 'both' ? 'wallride-both' : p.side === 'left' ? 'wallride-left' : 'wallride-right') : p.type, at.sx, at.sy, at.dir, pieceFootprint(p, roadWidth), colour, 1)
     if (isPicked(sel, 'piece', i)) ring(ctx, at.sx, at.sy, 20, PALETTE.uiText, 2)
@@ -1032,6 +1042,45 @@ function drawWallRide(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, 
     }
   }
   ctx.restore()
+}
+
+/**
+ * A tunnel on the map: the stretch it covers, as a band of the ground grid's violet over the
+ * road as wide as the tunnel's walls reach (the hill goes back over it there), edged with
+ * dashes, and (when `label`) a TUNNEL pill with its length.
+ */
+function drawTunnel(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, length: number, roadWidth: number, alpha: number, label: boolean): void {
+  const steps = Math.max(8, Math.ceil(length / 4))
+  const along = (off: number): P[] => {
+    const pts: P[] = []
+    for (let k = 0; k <= steps; k++) {
+      const f = frameAt(rc, advanceAt(rc, at, (length * k) / steps))
+      pts.push({ x: f.p.x + f.right.x * off, z: f.p.z + f.right.z * off })
+    }
+    return pts
+  }
+  const half = roadWidth / 2 + TUNNEL_WALL
+  ctx.save()
+  ctx.globalAlpha = 0.45 * alpha
+  ctx.strokeStyle = PALETTE.grid
+  ctx.lineCap = 'butt'
+  ctx.lineWidth = Math.max(4, (2 * half) / view.mpp)
+  line(ctx, along(0), false)
+  ctx.stroke()
+  ctx.globalAlpha = alpha
+  ctx.lineWidth = 1.5
+  ctx.setLineDash([6, 5])
+  for (const sign of [-1, 1]) {
+    line(ctx, along(sign * half), false)
+    ctx.stroke()
+  }
+  ctx.setLineDash([])
+  ctx.restore()
+  if (label) {
+    const f = frameAt(rc, advanceAt(rc, at, length / 2))
+    const m = worldToScreen(f.p.x, f.p.z)
+    placePill(ctx, `TUNNEL ${Math.round(length)} m`, m.sx + f.right.x * 44, m.sy + f.right.z * 44, [0, 24, -24, 48], PALETTE.grid)
+  }
 }
 
 /**
@@ -1189,6 +1238,7 @@ export function drawCoreIcon(ctx: CanvasRenderingContext2D, sx: number, sy: numb
 /** Place tool: a see-through preview of what a click would drop. */
 function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['ghost']>, roadWidth: number, rc: RoadCurve): void {
   if (ghost.wall && rc.curve.length) return drawWallGhost(ctx, rc, ghost.wall, roadWidth)
+  if (ghost.tunnel && rc.curve.length) return drawTunnel(ctx, rc, ghost.tunnel.at, ghost.tunnel.length, roadWidth, 0.6, true)
   const { sx, sy } = worldToScreen(ghost.at.x, ghost.at.z)
   if (ghost.kind === 'props') return drawPropIcon(ctx, sx, sy, 'medium', 0.55)
   if (ghost.kind === 'cores') return drawCoreIcon(ctx, sx, sy, 0.55)

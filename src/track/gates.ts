@@ -21,6 +21,10 @@
 //    cutting   the sides of a road dug into the ground are slopes,
 //              not cliffs (cuttings.ts)
 //    dips      a car stays on over the lip of a dip (cuttings.ts)
+//    tunnel    every tunnel piece is a real tunnel: room for a car
+//              under its ceiling, a solid roof, no ground inside, its
+//              top meeting the ground beside it (tunnelChecks.ts); or,
+//              if it couldn't be built, why
 //    tracking  "where am I on the road?" never jumps by mistake
 //    ground    the ground stays under the road
 //    ride      road riding the ground has no hilltop that throws a car
@@ -39,7 +43,7 @@
 
 import type { TrackRuntime, NearestHit } from './types'
 import { SURFACE_CODE } from './types'
-import { requiredClearance } from './terrain'
+import { requiredClearance, TUNNEL_WALL_MIN } from './terrain'
 import { buildTrack, trackInternals } from './build'
 import { colliderDriveSurface } from './colliders'
 import { groundHoleAt } from './terrainTiles'
@@ -47,6 +51,7 @@ import { barrierAxes, type BarrierAxes } from './ribbon'
 import { brakeOnSlope, carFullLockG, LINE_MAX_LAT_G } from './derived'
 import { CREST_CHECK_KMH, CREST_LANE_INSET, CREST_LIMIT, CREST_SPAN, LEAN_AHEAD_DEG, LEAN_SPEED_KMH } from './bankRolls'
 import { CUT_SLOPE_MAX_DEG, CUT_STEP_MAX, cuttingSides, dipLips } from './cuttings'
+import { TUNNEL_CLEARANCE_MIN, TUNNEL_GROUND_BELOW, TUNNEL_LIP_MAX, TUNNEL_ROOF_CHECK, tunnelChecks } from './tunnelChecks'
 
 const G = 9.81
 /** The banking gate's limit on leaning ahead of the bend: the builder's own rule plus a degree. */
@@ -96,10 +101,12 @@ export function groundClearance(t: TrackRuntime): { worst: number; s: number; la
       }
     }
   }
-  // Edge step: how far the ground sits below the edge just outside it (median over the lap).
+  // Edge step: how far the ground sits below the edge just outside it (median over the lap;
+  // not beside a tunnel's walls, which stand there instead).
   const steps: number[] = []
+  const tunnelSlot = trackInternals(t)?.tunnels.slot
   for (let i = 0; i < S.count; i += 5) {
-    if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1) continue
+    if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1 || tunnelSlot?.[i]) continue
     for (const side of [-1, 1]) {
       const l = side * (S.halfWidth[i] + 0.5)
       const ey = S.py[i] + S.ry[i] * side * S.halfWidth[i]
@@ -382,7 +389,7 @@ export function roadTracking(t: TrackRuntime): { crossings: number; tooLow: numb
  */
 export function windingErrors(t: TrackRuntime): Record<string, { bad: number; total: number }> {
   const out: Record<string, { bad: number; total: number }> = {}
-  const meshes = { road: t.meshes.road, skirt: t.meshes.skirt, barriers: t.meshes.barriers, ramps: t.meshes.ramps }
+  const meshes = { road: t.meshes.road, skirt: t.meshes.skirt, barriers: t.meshes.barriers, ramps: t.meshes.ramps, 'tunnel inside': t.meshes.tunnels?.inside ?? null, 'tunnel hill': t.meshes.tunnels?.hill ?? null }
   for (const [name, m] of Object.entries(meshes)) {
     if (!m) continue
     const P = m.positions
@@ -1013,10 +1020,13 @@ export function lowEdgeDitch(t: TrackRuntime): { depth: number; at: number; out:
   const onGround = (i: number) => S.surface[i] === SURFACE_CODE.road && S.grounded[i] === 1
   let off = 0
   for (let k = -reach; k <= reach; k++) if (!onGround((k + S.count) % S.count)) off++
+  const tunnels = trackInternals(t)?.tunnels
   for (let i = 0; i < S.count; i++) {
     const clear = off === 0
     off += (onGround((i - reach + S.count) % S.count) ? 0 : -1) + (onGround((i + reach + 1) % S.count) ? 0 : 1)
     if (!clear || Math.abs(S.bank[i]) < minBank) continue
+    // Beside a tunnel's wall of ground there is no ground to judge (the tunnel check does).
+    if (tunnels && tunnels.slot[i] && (S.ry[i] > 0 ? tunnels.wallL[i] : tunnels.wallR[i]) > TUNNEL_WALL_MIN) continue
     if (tooLow[i]) {
       lowBridge++
       continue
@@ -1458,6 +1468,27 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
         'the road tips down into the dip too sharply for the speed cars arrive at. Make the ramp down longer (the dipped stretch longer), or the dip shallower.',
       )
     }
+  }
+  // Tunnels: room under the ceiling, a solid roof, no ground inside, a road-edge lip round the top.
+  for (const tc of tunnelChecks(t)) {
+    const name = `tunnel at ${at(tc.s0)}`
+    if (tc.problem) {
+      gate('tunnel', false, `${name} can't be built: ${tc.problem}`, 'move the tunnel to clear road on the ground (or through a hill), away from loops, ramps, wall rides, the start grid and other road, or make it shorter.')
+      continue
+    }
+    const bad: string[] = []
+    if (tc.clearance < TUNNEL_CLEARANCE_MIN) bad.push(`only ${tc.clearance.toFixed(1)} m from the road to the ceiling at ${at(tc.clearanceAt)} (needs ${TUNNEL_CLEARANCE_MIN})`)
+    if (tc.roof < TUNNEL_ROOF_CHECK) bad.push(`the roof is only ${tc.roof.toFixed(1)} m thick at ${at(tc.roofAt)} (at least ${TUNNEL_ROOF_CHECK})`)
+    if (tc.ground > -TUNNEL_GROUND_BELOW) bad.push(`physics ground ${tc.ground.toFixed(2)} m from the road's edge inside the tunnel at ${at(tc.groundAt)} (it must be a hole or sit ${TUNNEL_GROUND_BELOW} m below)`)
+    if (tc.lip > TUNNEL_LIP_MAX || tc.under > 0.02) bad.push(`the top's edge stands ${tc.lip.toFixed(2)} m over the ground beside it at ${at(tc.lipAt)}${tc.under > 0.02 ? ` (and the ground rises ${tc.under.toFixed(2)} m over it somewhere)` : ''} (limit ${TUNNEL_LIP_MAX} m)`)
+    gate(
+      'tunnel',
+      bad.length === 0,
+      bad.length
+        ? `${name}: ${bad.join('; ')}`
+        : `${name}, ${tc.length.toFixed(0)} m covered, the road dug ${tc.depth.toFixed(1)} m down on ${(tc.approach / 2).toFixed(0)} m ramps: ${tc.clearance.toFixed(1)} m from the road to the ceiling (at least ${TUNNEL_CLEARANCE_MIN}), a roof ${tc.roof.toFixed(1)} m thick or more, no ground inside (${Number.isFinite(tc.ground) ? `the highest sits ${(-tc.ground * 100).toFixed(0)} cm under the road's edge` : 'it is all left out under the road and the walls'}), the top's edge within ${(tc.lip * 100).toFixed(0)} cm of the ground beside it (limit ${(TUNNEL_LIP_MAX * 100).toFixed(0)})`,
+      'this is a builder bug, not your file: report it.',
+    )
   }
   // Road tracking: nearest() with a hint never jumps to another bit of road by mistake,
   // and a car that dropped off a bridge is found on the road below.

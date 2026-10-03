@@ -31,6 +31,12 @@
 //      at the low barrier stays on the road.
 //  10. Barriers are smooth to slide along: a car body pressed into each barrier
 //      at 200 and 300 km/h is never pushed back along the road or stopped.
+//  11. Tunnels: a car body pressed into each wall (under the roof and along the
+//      approaches) at 250 and 300 km/h slides along it, never pushed back or
+//      stopped; cars fired at the walls at 60 m/s stay inside; cars dropped on
+//      the roof at 40 and 100 m/s stay on top of it (never inside the tunnel);
+//      and frictionless boxes slide through every tunnel without hitting a face
+//      (the drive-through, 3b).
 //
 //  The checks that need no physics (line, winding, smooth, banking,
 //  bridges, loops, tracking, ground) live in gates.ts, shared with the
@@ -41,9 +47,9 @@ import type { Collider, Rapier, RigidBody } from './rapierTypes'
 import type { TrackRuntime, NearestHit, TrackFrame } from './types'
 import { SURFACE_CODE } from './types'
 import { BIGAIR_LAYOUT } from './terrain'
-import { createRoadColliders, createWorldColliders } from './colliders'
+import { createRoadColliders, createWorldColliders, isTunnelCollider } from './colliders'
 import { createTerrainTiles, groundHoleAt, removeTerrainTiles, updateTerrainTiles } from './terrainTiles'
-import { buildTrack } from './build'
+import { buildTrack, trackInternals } from './build'
 import { SIDE_RUN } from './ramps'
 import { LOOP_RUN_IN, loopShape } from './road'
 import { where } from './gates'
@@ -117,7 +123,8 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
   // ---- 1. the ground collider matches terrainHeight() ----
   {
     const ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 })
-    const onlyTerrain = (c: Collider) => surfaceOf(c.handle) === 'terrain'
+    // (The ground tiles only: a tunnel's roof is ground too, but it stands over its own hole.)
+    const onlyTerrain = (c: Collider) => surfaceOf(c.handle) === 'terrain' && !isTunnelCollider(c.handle)
     let maxErr = 0
     let n = 0
     let holes = 0
@@ -374,7 +381,7 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
     // A steered run ends when it reaches `until`. A hands-off run ends after `metres` of
     // travel, or (when `mouthS` is set) as soon as it is riding up the loop past mouthS.
     type HandsOff = { metres: number; mouthS?: number }
-    type Run = { what: string; s: number; until: number; v: number; lat?: number; headDeg?: number; handsOff?: HandsOff; why?: string }
+    type Run = { what: string; s: number; until: number; v: number; lat?: number; headDeg?: number; handsOff?: HandsOff; why?: string; turn?: boolean }
     const runs: Run[] = []
     const rampZones: { s0: number; s1: number; off: number; reach: number }[] = []
     const HANDS_OFF = [
@@ -430,6 +437,16 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         }
       }
       else if (pc.type === 'wallride') runs.push({ what: 'wall ride', s: pc.s0 - 20, until: pc.s0 + Math.min(span, 60), v: 30 })
+    }
+    // Right through every tunnel, down one approach and up the other, in the middle and in both
+    // outer lanes (a car's width from the walls), in 60 m legs. These boxes turn with the road
+    // like a car does: between walls standing right at the road's edges, a box that kept its
+    // heading round a bend would swing its corners into them.
+    for (const tn of t.tunnels) {
+      for (let s = tn.a0 - 20; s < tn.a1 + 20; s += 50) {
+        t.frameAt(s, frame)
+        for (const lat of [0, -(frame.halfWidth - CAR.hx - 0.6), frame.halfWidth - CAR.hx - 0.6]) runs.push({ what: `through a tunnel (lateral ${lat.toFixed(1)} m)`, s, until: s + 60, v: 45, lat, turn: true })
+      }
     }
     // Plus a plain run at every checkpoint (straight road joints, bridges, the seam).
     // One that would cross a ramp's footprint runs in the clear lane beside the ramp
@@ -510,6 +527,12 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
         )
         const ang = body.angvel()
         if (Math.abs(ang.y) > 0) body.setAngvel({ x: ang.x, y: 0, z: ang.z }, true)
+        if (r.turn) {
+          negRight.crossVectors(frame.up, frame.tangent).normalize()
+          basis.makeBasis(negRight, frame.up, frame.tangent)
+          quat.setFromRotationMatrix(basis)
+          body.setRotation({ x: quat.x, y: quat.y, z: quat.z, w: quat.w }, true)
+        }
       }
       // Gravity alone on a vertical loop face is ~10 m/s^2; a face across the lane is hundreds.
       if (worstDecel > 40) {
@@ -918,6 +941,203 @@ export function runPhysicsSelfTest(t: TrackRuntime, RAPIER: Rapier): SelfTestRes
       `${bad ? 'FAIL' : 'ok  '} barriers smooth to slide along, at bank ${results.join(' / ')} deg: ${runs} car bodies pressed into a barrier at 200 and 300 km/h, ${snagRuns} pushed back along the road, ${stops} stopped (the most speed any lost in one step: ${worstDrop.toFixed(1)} km/h)${worstTxt ? ` (first: ${worstTxt}; a builder bug, not your file)` : ''}`,
     )
   }
+  // ---- 11. tunnels: walls to slide along, a roof to drive on, nothing to fall through ----
+  if (t.tunnels.length) {
+    const tt = tunnelPhysics(t, RAPIER, world, spawnBox, run, SOFT_CCD)
+    if (!tt.ok) ok = false
+    lines.push(...tt.lines)
+  }
   world.free()
   return { ok, lines }
 }
+
+/**
+ * The tunnel cases (11): every built tunnel's walls are smooth to slide along at speed and
+ * hold a car fired at them, and its roof holds cars dropped on it. `world` already has the
+ * track's colliders; `spawnBox` and `run` are the self-test's own helpers.
+ */
+function tunnelPhysics(
+  t: TrackRuntime,
+  RAPIER: Rapier,
+  world: InstanceType<Rapier['World']>,
+  spawnBox: (x: number, y: number, z: number, q: THREE.Quaternion, vx: number, vy: number, vz: number, sliding?: boolean) => RigidBody,
+  run: (seconds: number) => void,
+  SOFT_CCD: number,
+): { ok: boolean; lines: string[] } {
+  const lines: string[] = []
+  let ok = true
+  const ts = trackInternals(t)?.tunnels
+  if (!ts) return { ok, lines }
+  const S = t.samples
+  const fr: TrackFrame = { s: 0, position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3(), halfWidth: 0, bank: 0, curvature: 0, surface: 'road' }
+  const fr2: TrackFrame = { s: 0, position: new THREE.Vector3(), tangent: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3(), halfWidth: 0, bank: 0, curvature: 0, surface: 'road' }
+  const hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+  const quat = new THREE.Quaternion()
+  const basis = new THREE.Matrix4()
+  const fw = new THREE.Vector3()
+  const left = new THREE.Vector3()
+  const acc = new THREE.Vector3()
+  // Where along a tunnel a full wall stands on a side (under the roof, or a deep approach).
+  const fullWall = (s: number, side: -1 | 1): boolean => {
+    const i = ((Math.round(s / S.ds) % S.count) + S.count) % S.count
+    return !!ts.slot[i] && (ts.covered[i] === 1 || (side < 0 ? ts.wallL[i] : ts.wallR[i]) > 0.95)
+  }
+
+  for (const tn of t.tunnels) {
+    const name = `tunnel at ${where(t, tn.s0)}`
+    // ---- a car body sliding along each wall, pressed into it at half a g ----
+    {
+      const PRESS_G = 0.5
+      const RIDE = 0.7
+      const ROUND = 0.25
+      let runs = 0
+      let snags = 0
+      let stops = 0
+      let first = ''
+      let worstDrop = 0
+      for (const kmh of [250, 300]) {
+        for (const side of [-1, 1] as const) {
+          for (let s0 = tn.a0 + 10; s0 < tn.a1 - 60; s0 += 35) {
+            if (!fullWall(s0, side)) continue
+            t.frameAt(s0, fr)
+            runs++
+            const p = fr.position.clone().addScaledVector(fr.right, side * (fr.halfWidth - CAR.hx - 0.02)).addScaledVector(fr.up, RIDE)
+            const v0 = fr.tangent.clone().multiplyScalar(kmh / 3.6)
+            const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z).setLinvel(v0.x, v0.y, v0.z).setSoftCcdPrediction(SOFT_CCD).setCanSleep(false).setGravityScale(0))
+            const cd = RAPIER.ColliderDesc.roundCuboid(CAR.hx - ROUND, CAR.hy - ROUND, CAR.hz - ROUND, ROUND).setMass(1200).setFriction(0.1).setRestitution(0.08)
+            cd.setCollisionGroups(((1 << 1) << 16) | (1 << 0))
+            const col = world.createCollider(cd, body)
+            let sh = s0
+            let snag = ''
+            let stopped = false
+            // Until it runs out of wall (or 2 s).
+            for (let k = 0; k < 120 && !snag && !stopped; k++) {
+              const q = body.translation()
+              t.nearest(q.x, q.y, q.z, hit, sh)
+              sh = hit.s
+              if (!fullWall(sh + 6, side) || t.deltaS(tn.a1, sh) > -20) break
+              t.frameAt(hit.s, fr)
+              t.frameAt(hit.s + 1, fr2)
+              fw.copy(fr.tangent)
+              left.crossVectors(fr.up, fw).normalize()
+              basis.makeBasis(left, fr.up, fw)
+              quat.setFromRotationMatrix(basis)
+              body.setRotation({ x: quat.x, y: quat.y, z: quat.z, w: quat.w }, true)
+              body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+              const lv = body.linvel()
+              const vu = lv.x * fr.up.x + lv.y * fr.up.y + lv.z * fr.up.z
+              const want = Math.max(-30, Math.min(30, 40 * (RIDE - hit.height)))
+              body.setLinvel({ x: lv.x + fr.up.x * (want - vu), y: lv.y + fr.up.y * (want - vu), z: lv.z + fr.up.z * (want - vu) }, true)
+              const vt = lv.x * fr.tangent.x + lv.y * fr.tangent.y + lv.z * fr.tangent.z
+              acc.copy(fr2.tangent).sub(fr.tangent).multiplyScalar((vt * vt) / Math.max(1e-6, t.deltaS(hit.s, hit.s + 1)))
+              acc.addScaledVector(fr.right, side * PRESS_G * 9.81)
+              const m = body.mass() / 60
+              body.applyImpulse({ x: acc.x * m, y: acc.y * m, z: acc.z * m }, true)
+              const lb = body.linvel()
+              const before = Math.hypot(lb.x, lb.y, lb.z)
+              world.step()
+              world.contactPairsWith(col, (o) => {
+                if (snag || !isTunnelCollider(o.handle)) return
+                world.contactPair(col, o, (mm) => {
+                  let imp = 0
+                  for (let c = 0; c < mm.numContacts(); c++) imp += mm.contactImpulse(c)
+                  const n = mm.normal()
+                  const along = Math.abs(n.x * fr.tangent.x + n.y * fr.tangent.y + n.z * fr.tangent.z)
+                  if (imp > 50 && along > 0.3 && !snag) snag = `pushed back along the road (${Math.round(along * 100)}% of the contact, ${Math.round(imp)} N s) at ${where(t, hit.s)}`
+                })
+              })
+              const nv = body.linvel()
+              const after = Math.hypot(nv.x, nv.y, nv.z)
+              worstDrop = Math.max(worstDrop, (before - after) * 3.6)
+              if (after < 5 / 3.6) stopped = true
+            }
+            if (snag || stopped) {
+              if (snag) snags++
+              if (stopped) stops++
+              if (!first) first = `${kmh} km/h along the ${side < 0 ? 'left' : 'right'} wall from ${where(t, s0)}: ${snag || `stopped at ${where(t, sh)}`}`
+            }
+            world.removeRigidBody(body)
+          }
+        }
+      }
+      const bad = snags + stops
+      if (bad || !runs) ok = false
+      lines.push(
+        `${bad || !runs ? 'FAIL' : 'ok  '} ${name}: walls smooth to slide along: ${runs} car bodies pressed into a wall at 250 and 300 km/h, ${snags} pushed back along the road, ${stops} stopped (the most speed any lost in one step: ${worstDrop.toFixed(1)} km/h)${first ? ` (first: ${first}; a builder bug, not your file)` : ''}`,
+      )
+    }
+    // ---- cars fired at the walls at 60 m/s stay inside ----
+    {
+      const V = 60
+      let shots = 0
+      let out = 0
+      const failed: string[] = []
+      for (let s = tn.a0 + 20; s < tn.a1 - 20; s += 25) {
+        for (const side of [-1, 1] as const) {
+          if (!fullWall(s, side)) continue
+          t.frameAt(s, fr)
+          const o = fr.right.clone().multiplyScalar(side)
+          const base = fr.position.clone()
+          const hw = fr.halfWidth
+          const start = base.clone().addScaledVector(o, hw - 3).addScaledVector(fr.up, 1)
+          quat.identity()
+          const body = spawnBox(start.x, start.y, start.z, quat, o.x * V, o.y * V, o.z * V)
+          run(1)
+          const p = body.translation()
+          shots++
+          if ((p.x - base.x) * o.x + (p.z - base.z) * o.z > hw + 0.3) {
+            out++
+            if (failed.length < 4) failed.push(`went through the ${side < 0 ? 'left' : 'right'} wall at ${where(t, s)}`)
+          }
+          world.removeRigidBody(body)
+        }
+      }
+      const pass = out === 0 && shots > 0
+      if (!pass) ok = false
+      lines.push(`${pass ? 'ok  ' : 'FAIL'} ${name}: walls hold: ${shots - out}/${shots} car boxes fired at them at ${V} m/s stayed inside`)
+      for (const f of failed) lines.push(`     ${f}`)
+    }
+    // ---- cars dropped on the roof at 40 and 100 m/s stay on top of it ----
+    {
+      let drops = 0
+      let fell = 0
+      const failed: string[] = []
+      const ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 })
+      for (const V of [40, 100]) {
+        for (let s = tn.s0 + 8; s < tn.s1 - 4; s += Math.max(12, (tn.s1 - tn.s0) / 6)) {
+          t.frameAt(s, fr)
+          for (const lat of [0, -(fr.halfWidth + 3), fr.halfWidth + 3, fr.halfWidth * 0.6]) {
+            const x = fr.position.x + fr.right.x * lat
+            const z = fr.position.z + fr.right.z * lat
+            // The roof here: the first thing straight down from high above.
+            ray.origin = { x, y: t.terrain.maxHeight + 60, z }
+            const h = world.castRay(ray, 1000, true)
+            if (!h) continue
+            const roofY = t.terrain.maxHeight + 60 - h.timeOfImpact
+            quat.identity()
+            const body = spawnBox(x, roofY + 4, z, quat, 0, -V, 0)
+            run(1.2)
+            const p = body.translation()
+            drops++
+            // It may roll off the roof's edge onto the ground beside it, but never into the
+            // tunnel: it ends above the ceiling (or outside the walls).
+            t.nearest(p.x, p.y, p.z, hit, s)
+            const i = hit.index
+            const inside = ts.covered[i] === 1 && Math.abs(hit.lateral) < S.halfWidth[i] + 0.5 && p.y < ts.ceil[i]
+            if (inside || p.y < roofY - 2.5) {
+              fell++
+              if (failed.length < 4) failed.push(`${V} m/s at ${where(t, s)}, ${lat.toFixed(0)} m across: ended at y ${p.y.toFixed(1)} (roof ${roofY.toFixed(1)}, ceiling ${ts.ceil[i].toFixed(1)})`)
+            }
+            world.removeRigidBody(body)
+          }
+        }
+      }
+      const pass = fell === 0 && drops > 0
+      if (!pass) ok = false
+      lines.push(`${pass ? 'ok  ' : 'FAIL'} ${name}: roof holds: ${drops - fell}/${drops} car boxes dropped on it at 40 and 100 m/s stayed on top`)
+      for (const f of failed) lines.push(`     fell in: ${f}`)
+    }
+  }
+  return { ok, lines }
+}
+

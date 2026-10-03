@@ -112,6 +112,8 @@ export interface MeshBuffers {
    *   aHalfWidth (1)  drivable half width at this vertex's sample
    *   aCurv      (1)  signed curvature at this sample (chevrons: + = right-hander)
    *   aKind      (1)  SURFACE_CODE (road / loop / wall / ramp ...)
+   *   aCover     (1)  0..1 how far inside a covered tunnel (0 in the open, 1 from
+   *                    30 m inside a portal on): sun, sky, reflections and haze dim by it
    */
   attributes: Record<string, { array: Float32Array; itemSize: number }>
 }
@@ -134,7 +136,7 @@ export interface BoostZone {
 
 export interface ResolvedPiece {
   index: number
-  type: 'boost' | 'ramp' | 'loop' | 'wallride' | 'speedtrap'
+  type: 'boost' | 'ramp' | 'loop' | 'wallride' | 'speedtrap' | 'tunnel'
   /** Start and end distance along the final road. */
   s0: number
   s1: number
@@ -147,6 +149,42 @@ export interface ResolvedPiece {
   loopCenter?: { x: number; y: number; z: number }
   side?: 'left' | 'right' | 'both'
   height?: number
+}
+
+/**
+ * A covered tunnel (a `tunnel` piece) as built. The road dips into the ground on a ramp,
+ * runs between walls of ground (the approach, open to the sky), under a roof from portal
+ * s0 to portal s1, and back out the same way. Distances are along the final road.
+ */
+export interface TunnelInfo {
+  /** The piece's index in file.pieces. */
+  index: number
+  /** The portals: the covered stretch runs from s0 to s1 (s1 may pass the lap length: it wraps). */
+  s0: number
+  s1: number
+  /** Where the dug approaches start and end (the walls of ground stand between a0 and a1). */
+  a0: number
+  a1: number
+  /** The deepest the road was dug, metres. */
+  depth: number
+  /** Metres from the road surface up to the ceiling, at the tightest. */
+  clearance: number
+}
+
+/** The tunnels as meshes (MeshBuffers, like the road). */
+export interface TunnelMeshes {
+  /**
+   * Inside every covered stretch: the walls and the ceiling, facing in. uv.x = metres above the
+   * road's edge on a wall, metres right of the middle on the ceiling; uv.y = s. Attributes:
+   * aCover (as the road), aPart (0 a wall, 1 the ceiling).
+   */
+  inside: MeshBuffers
+  /**
+   * The hillside the tunnel is dug into, drawn like the ground: the roof over each covered
+   * stretch, the walls of ground along its approaches and their tops, and the portal faces
+   * over each mouth. Positions and normals only.
+   */
+  hill: MeshBuffers
 }
 
 /** A placed thing beside the road: position on the ground + heading. */
@@ -259,6 +297,9 @@ export interface TrackRuntime {
 
   readonly world: TrackWorldInfo
 
+  /** Covered tunnels (tunnel pieces that could be built), in the order of the file. */
+  readonly tunnels: readonly TunnelInfo[]
+
   /** Geometry for rendering and colliders. */
   readonly meshes: {
     /** Drivable top surface (road, loops, wall rides). Has the shader attributes. */
@@ -274,6 +315,8 @@ export interface TrackRuntime {
     barriers: MeshBuffers | null
     /** Kicker ramps, else null. */
     ramps: MeshBuffers | null
+    /** Covered tunnels, else null. */
+    tunnels: TunnelMeshes | null
   }
 }
 

@@ -1,8 +1,8 @@
 // ============================================================
 //  PIECES - the things Josh can drop onto his track
 // ------------------------------------------------------------
-//  Road pieces (boost pads, ramps, loops, wall rides, speed traps)
-//  live ON the road: they are stored by `at` (how far along) and
+//  Road pieces (boost pads, ramps, loops, wall rides, speed traps,
+//  tunnels) live ON the road: they are stored by `at` (how far along) and
 //  `offset` (how far right of the centre). Crash props and energy
 //  cores go anywhere on the ground: they are stored by x and z.
 //  The start line is a road "piece" too, stored as start.at.
@@ -14,8 +14,9 @@
 //  metres forward, but Josh places and resizes them by their MIDDLE:
 //  a click puts the middle under the mouse, a drag along the road
 //  covers what he dragged, and a new Length grows or shrinks both
-//  ends equally (wallRideStartFor, wallRideFromDrag). Boost pads and
-//  ramps are already stored by their middle, so they need nothing.
+//  ends equally (wallRideStartFor, wallRideFromDrag). Tunnels work the
+//  same way (tunnelStartFor, tunnelFromDrag). Boost pads and ramps are
+//  already stored by their middle, so they need nothing.
 // ============================================================
 
 import { PALETTE } from '../core/palette'
@@ -23,7 +24,7 @@ import { TRACK_DEFAULTS, type CoreSpot, type Piece, type PropSpot } from '../tra
 import type { P } from './geom'
 import { type RoadCurve, type RoadHit, advanceAt, frameAt, metresBetween } from './road'
 
-export type PlaceKind = 'boost' | 'ramp' | 'loop' | 'wallride-left' | 'wallride-right' | 'wallride-both' | 'speedtrap' | 'start' | 'props' | 'cores'
+export type PlaceKind = 'boost' | 'ramp' | 'loop' | 'wallride-left' | 'wallride-right' | 'wallride-both' | 'speedtrap' | 'tunnel' | 'start' | 'props' | 'cores'
 
 export interface PlaceTool {
   kind: PlaceKind
@@ -45,6 +46,14 @@ export const PLACE_TOOLS: readonly PlaceTool[] = [
   { kind: 'wallride-right', label: 'Wall ride (right)', blurb: 'A curved wall up the right side. Best round the outside of a bend. Click: its middle goes there. Or drag along the road to draw how long it is.', colour: PALETTE.wallRide, onRoad: true, key: '5' },
   { kind: 'wallride-both', label: 'Half-pipe', blurb: 'Curved walls on both sides. Click: its middle goes there. Or drag along the road to draw how long it is.', colour: PALETTE.wallRide, onRoad: true, key: '6' },
   { kind: 'speedtrap', label: 'Speed trap', blurb: 'Clocks how fast you go through it. Put it on a fast straight.', colour: PALETTE.speedTrap, onRoad: true, key: '7' },
+  {
+    kind: 'tunnel',
+    label: 'Tunnel',
+    blurb: 'A real tunnel: the road dips into the ground and the hill goes back over it. Needs clear road either side for its ramps. Click: its middle goes there. Or drag along the road to draw how long it is.',
+    colour: PALETTE.grid,
+    onRoad: true,
+    key: '',
+  },
   { kind: 'start', label: 'Start line', blurb: 'Where the race starts and every lap ends. Needs a straight behind it for the grid.', colour: PALETTE.uiText, onRoad: true, key: '8' },
   { kind: 'props', label: 'Crash props', blurb: 'A pile of neon crates and cubes to smash for points. Anywhere.', colour: PALETTE.propCrate, onRoad: false, key: '9' },
   { kind: 'cores', label: 'Energy core', blurb: 'A collectible for the core hunt. Hide them all over the world.', colour: PALETTE.core, onRoad: false, key: '0' },
@@ -67,6 +76,8 @@ export function pieceLabel(p: Piece): string {
       return p.side === 'both' ? 'Half-pipe' : `Wall ride (${p.side})`
     case 'speedtrap':
       return 'Speed trap'
+    case 'tunnel':
+      return 'Tunnel'
   }
 }
 
@@ -82,6 +93,9 @@ export function pieceColour(p: Piece): string {
       return PALETTE.wallRide
     case 'speedtrap':
       return PALETTE.speedTrap
+    case 'tunnel':
+      // A tunnel is part of the ground: the ground grid's violet.
+      return PALETTE.grid
   }
 }
 
@@ -152,6 +166,35 @@ export function wallRideResized(rc: RoadCurve, at: number, oldLength: number | u
   return wallRideStartFor(rc, wallRideMiddle(rc, at, oldLength), newLength)
 }
 
+// ---------------------------------------------------------------- tunnels, by their middle
+
+/** The shortest and longest tunnel the editor makes, metres (the panel's Length slider has the same ends). */
+export const TUNNEL_EDIT_MIN = 40
+export const TUNNEL_EDIT_MAX = 600
+
+/** Where a tunnel `length` metres long must start so its middle is at `middle`. */
+export function tunnelStartFor(rc: RoadCurve, middle: number, length: number): number {
+  return r3(advanceAt(rc, middle, -length / 2))
+}
+
+/** Where a tunnel's middle is. */
+export function tunnelMiddle(rc: RoadCurve, at: number, length: number | undefined): number {
+  return advanceAt(rc, at, (length ?? TRACK_DEFAULTS.tunnelLength) / 2)
+}
+
+/** A tunnel made by dragging along the road from `a` to `b`: it covers the stretch dragged, kept within the editor's lengths. */
+export function tunnelFromDrag(rc: RoadCurve, a: number, b: number): WallRideSpan {
+  const forward = metresBetween(rc, a, b)
+  const backward = metresBetween(rc, b, a)
+  const from = forward <= backward ? a : b
+  const metres = Math.min(forward, backward)
+  const length = Math.round(metres / 10) * 10
+  const to = from === a ? b : a
+  if (length >= TUNNEL_EDIT_MIN && length <= TUNNEL_EDIT_MAX) return { at: tunnelStartFor(rc, advanceAt(rc, from, metres / 2), length), length, from, to, cut: null }
+  const fit = length < TUNNEL_EDIT_MIN ? TUNNEL_EDIT_MIN : TUNNEL_EDIT_MAX
+  return { at: tunnelStartFor(rc, advanceAt(rc, from, metres / 2), fit), length: fit, from, to, cut: length < TUNNEL_EDIT_MIN ? 'short' : 'long' }
+}
+
 // ---------------------------------------------------------------- a click becomes a piece
 
 /**
@@ -182,6 +225,9 @@ export function makeRoadPiece(kind: PlaceKind, hit: RoadHit, halfWidth: number, 
       return { type: 'loop', at }
     case 'speedtrap':
       return { type: 'speedtrap', at }
+    case 'tunnel':
+      // Its middle where you clicked.
+      return { type: 'tunnel', at: tunnelStartFor(rc, hit.at, TRACK_DEFAULTS.tunnelLength) }
     default:
       return null
   }
@@ -197,7 +243,7 @@ export function makeCore(q: P): CoreSpot {
 
 /** Where a road piece sits on the map (its centre), and the road direction there. */
 export function piecePlace(rc: RoadCurve, p: Piece): { p: P; dir: P; right: P } {
-  const at = p.type === 'wallride' ? wallRideMiddle(rc, p.at, p.length) : p.at
+  const at = p.type === 'wallride' ? wallRideMiddle(rc, p.at, p.length) : p.type === 'tunnel' ? tunnelMiddle(rc, p.at, p.length) : p.at
   const f = frameAt(rc, at)
   const offset = p.type === 'boost' || p.type === 'ramp' ? (p.offset ?? 0) : 0
   return { p: { x: f.p.x + f.right.x * offset, z: f.p.z + f.right.z * offset }, dir: f.dir, right: f.right }
@@ -216,5 +262,7 @@ export function pieceFootprint(p: Piece, roadWidth: number): { length: number; w
       return { length: p.length ?? TRACK_DEFAULTS.wallride.length, width: roadWidth }
     case 'speedtrap':
       return { length: 2, width: roadWidth + 2 }
+    case 'tunnel':
+      return { length: p.length ?? TRACK_DEFAULTS.tunnelLength, width: roadWidth + 18 }
   }
 }

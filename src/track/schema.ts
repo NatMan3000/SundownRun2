@@ -104,7 +104,7 @@ export interface BankingSpec {
 
 // ---------------------------------------------------------------- pieces
 
-export type Piece = BoostPiece | RampPiece | LoopPiece | WallRidePiece | SpeedTrapPiece
+export type Piece = BoostPiece | RampPiece | LoopPiece | WallRidePiece | SpeedTrapPiece | TunnelPiece
 
 export interface BoostPiece {
   type: 'boost'
@@ -151,6 +151,21 @@ export interface WallRidePiece {
 export interface SpeedTrapPiece {
   type: 'speedtrap'
   at: number
+}
+
+/**
+ * A covered tunnel: the road runs `length` metres under a roof of ground from `at`.
+ * The game digs the road down far enough for a car and a roof under the ground there
+ * (through a hill it runs through the hill; on flat ground it dips under), on a gentle
+ * ramp at each end between walls of ground, and puts the hill back over it. It needs
+ * clear road for those ramps: no loop, ramp, wall ride, start grid or other road there.
+ */
+export interface TunnelPiece {
+  type: 'tunnel'
+  /** Where the covered part starts; it runs `length` metres forward from here. */
+  at: number
+  /** Covered metres (default 150). */
+  length?: number
 }
 
 // ---------------------------------------------------------------- props, cores, start
@@ -331,6 +346,7 @@ export const TRACK_DEFAULTS = {
   ramp: { width: 8, length: 12, height: 2.4 },
   loopRadius: 13,
   wallride: { length: 120, height: 9 },
+  tunnelLength: 150,
   coreHeight: 1.6,
   huntMax: 12,
   postSpacing: 45,

@@ -16,10 +16,15 @@
 //    trackInfo()           summary of the current track build
 //    trackRebuild(bank?)   rebuild the road live (optionally at a bank angle)
 //  Inspector (window.__game.get('track')): the current TrackRuntime.
+//
+//  Each frame it also writes telemetry.tunnel: how far inside a
+//  covered tunnel the player's car is (0..1).
 // ============================================================
 
 import { useEffect, useRef } from 'react'
+import { useFrame } from '@react-three/fiber'
 import { useRapier } from '@react-three/rapier'
+import { telemetry } from '../core/telemetry'
 import { useGame } from '../core/store'
 import { registerDev, registerInspector } from '../core/devHandles'
 import { getTrack, setTrackParam, useTrack } from './current'
@@ -69,6 +74,22 @@ export function TrackPhysics() {
     if (paramVersion > 0) console.info(`[track] road colliders rebuilt in ${timing.roadMs.toFixed(1)} ms (${changedTiles} ground tiles)`)
     return () => removeColliderSet(world, set)
   }, [world, rapier, track, paramVersion])
+
+  // How far inside a tunnel the player's car is (telemetry.tunnel): the cover value under the
+  // roof at its spot on the road, 0 anywhere else (the hill over a tunnel included).
+  useFrame(() => {
+    const t = getTrack()
+    const ts = t && t.tunnels.length ? trackInternals(t)?.tunnels : null
+    if (!t || !ts) {
+      telemetry.tunnel = 0
+      return
+    }
+    const S = t.samples
+    const i = ((Math.round(telemetry.trackS / S.ds) % S.count) + S.count) % S.count
+    const under = ts.covered[i] === 1 && telemetry.carPosition.y < ts.ceil[i] && Math.abs(telemetry.lateral) < S.halfWidth[i] + 1
+    const v = under ? ts.cover[i] : 0
+    telemetry.tunnel = Number.isFinite(v) ? v : 0
+  })
 
   return null
 }

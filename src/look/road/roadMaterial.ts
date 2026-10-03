@@ -10,6 +10,10 @@
 //    aHalfWidth  half the drivable width here
 //    aCurv       how hard the road bends here (+ = right-hander)
 //    aKind       road / loop / wall ride ... (SURFACE_CODE)
+//    aCover      0..1 how far inside a tunnel: the sun, the sky's
+//                light and reflection and the haze fade with it
+//                (tunnelLight.ts), so a tunnel is dark but for the
+//                headlights and its glowing walls
 //    uv.y        s, metres along the road
 //
 //  What it draws:
@@ -33,6 +37,7 @@ import * as THREE from 'three'
 import { GLOW, PALETTE } from '../../core/palette'
 import { SURFACE_CODE } from '../../track/types'
 import { NAN_TAG, ROAD_GLSL } from './glsl'
+import { COVER_FOG, COVER_FRAGMENT_PARS, COVER_INDIRECT, COVER_VERTEX_MAIN, COVER_VERTEX_PARS, coverLightsBegin } from './tunnelLight'
 
 /** Most boost pads / speed traps one track can show (extra ones are skipped with a warning). */
 export const MAX_BOOSTS = 32
@@ -161,6 +166,7 @@ varying float vCurv;
 varying float vKind;
 varying float vS;
 varying vec3 vRoadWorld;
+${COVER_VERTEX_PARS}
 `
 
 const vertexWorld = /* glsl */ `
@@ -174,6 +180,7 @@ vHalf = aHalfWidth;
 vCurv = aCurv;
 vKind = aKind;
 vS = uv.y;
+${COVER_VERTEX_MAIN}
 `
 
 const fragmentPars = /* glsl */ `
@@ -215,6 +222,7 @@ uniform float uCityOn;
 uniform vec3 uCityWarm;
 uniform vec3 uCityCool;
 varying vec3 vRoadWorld;
+${COVER_FRAGMENT_PARS}
 ${ROAD_GLSL}
 // Signed distance along the road from b to a, wrapped into (-L/2, L/2].
 float sr2SDelta(float a, float b) {
@@ -442,7 +450,8 @@ const fragmentEmissive = /* glsl */ `
 
   // The lit city skyline mirrored in the wet road at night: the horizon band
   // around the city's compass direction, broken into building columns.
-  if (uCityOn > 0.001) {
+  // (No city to see mirrored inside a tunnel.)
+  if (uCityOn * (1.0 - vCover) > 0.001) {
     vec3 rW = reflect(viewW, nW);
     // Ripples on a wet road smear reflections into long vertical streaks, so
     // the band reaches much higher than the skyline itself (fading as it goes).
@@ -454,7 +463,7 @@ const fragmentEmissive = /* glsl */ `
       float lit = smoothstep(0.35, 0.8, sr2Noise(vec2(az * 60.0, 0.5)));
       vec3 cityCol = mix(uCityWarm, uCityCool, step(0.5, sr2Noise(vec2(az * 23.0, 3.0))));
       float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(nW, -viewW), 0.0, 1.0), 5.0);
-      em += cityCol * band * arc * lit * fres * (0.35 + 0.65 * wet) * uCityOn * 1.1;
+      em += cityCol * band * arc * lit * fres * (0.35 + 0.65 * wet) * uCityOn * (1.0 - vCover) * 1.1;
     }
   }
   totalEmissiveRadiance += em;
@@ -479,25 +488,21 @@ outgoingLight = sr2SafeLight(outgoingLight, ${ROAD_LIGHT_CAP.toFixed(1)});
 // flat clip), so it can never be the brightest thing on screen. The
 // headlights (spot lights) keep their full glare: they are lit before the
 // key light, so only the key light's share is touched.
-const KEY_START = '#if ( NUM_SUN_LIGHTS > 0 ) && defined( RE_Direct )'
-const KEY_END = '#if ( NUM_RECT_AREA_LIGHTS > 0 ) && defined( RE_Direct_RectArea )'
 const lightsBegin = THREE.ShaderChunk.lights_fragment_begin
-const keyLightsSplit = lightsBegin.includes(KEY_START) && lightsBegin.includes(KEY_END)
-const fragmentLightsBegin = keyLightsSplit
-  ? lightsBegin.replace(KEY_START, `vec3 sr2SpecBeforeKey = reflectedLight.directSpecular;\n${KEY_START}`).replace(
-      KEY_END,
-      `{
+const KEY_BEFORE = 'vec3 sr2SpecBeforeKey = reflectedLight.directSpecular;'
+const KEY_AFTER = `{
   vec3 key = (reflectedLight.directSpecular - sr2SpecBeforeKey) * uKeySpec;
   key = mix(key, key / (1.0 + key / uKeyCap), uKeyCapOn);
   reflectedLight.directSpecular = sr2SpecBeforeKey + key;
-}
-${KEY_END}`,
-    )
-  : '#include <lights_fragment_begin>'
+}`
+// (The key light's share also fades with the tunnel cover: tunnelLight.ts.)
+const keyLightsSplit = coverLightsBegin(lightsBegin, KEY_BEFORE, KEY_AFTER)
+const fragmentLightsBegin = keyLightsSplit ?? '#include <lights_fragment_begin>'
 if (!keyLightsSplit) console.error('[look] three.js light chunk changed: the road scales all direct highlights together (key-light split unavailable)')
+// Inside a tunnel the sky's fill and its reflection drop to a trace before they are added.
 const fragmentLightsEnd = keyLightsSplit
-  ? '#include <lights_fragment_end>'
-  : `#include <lights_fragment_end>
+  ? `${COVER_INDIRECT}\n#include <lights_fragment_end>`
+  : `${COVER_INDIRECT}\n#include <lights_fragment_end>
 reflectedLight.directSpecular *= uKeySpec;
 `
 
@@ -535,9 +540,10 @@ export function makeRoadMaterial(uniforms: RoadUniforms): THREE.MeshStandardMate
       .replace('#include <emissivemap_fragment>', fragmentEmissive)
       .replace('#include <lights_fragment_begin>', fragmentLightsBegin)
       .replace('#include <lights_fragment_end>', fragmentLightsEnd)
+      .replace('#include <fog_fragment>', COVER_FOG)
   }
   // One program for every road material (the shader text never changes).
-  mat.customProgramCacheKey = () => 'sr2-road-v8'
+  mat.customProgramCacheKey = () => 'sr2-road-v9'
   return mat
 }
 

@@ -345,7 +345,7 @@ function Palette() {
         >
           <i aria-hidden />
           <span>{t.label}</span>
-          <kbd>{t.key}</kbd>
+          {t.key && <kbd>{t.key}</kbd>}
         </button>
       ))}
     </div>

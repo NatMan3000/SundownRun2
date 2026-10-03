@@ -10,6 +10,10 @@
 //  (BridgePylons.tsx, placed by pylons.ts), so a bridge reads as a
 //  bridge and not a slab floating across the sky.
 //
+//  Inside every tunnel it draws the walls and ceiling (tunnelMaterial.ts:
+//  dark, lit by glowing strips). The hill over a tunnel is part of the
+//  ground and is drawn with it (world/Terrain.tsx).
+//
 //  It rebuilds when the track changes (trackVersion) or when a
 //  live parameter like the Hyperdrome's bank angle moves
 //  (trackParamVersion): useTrack() hands us a new runtime then, and
@@ -29,6 +33,7 @@ import { ROAD_TUNE, dashPeriodFor, lapPeriodFor, lanesFor, makeRoadMaterial, mak
 import type { RoadLook, RoadUniforms } from './roadMaterial'
 import { makeSkirtMaterial } from './skirtMaterial'
 import { makeBarrierMaterial, makeRampMaterial } from './pieceMaterials'
+import { makeTunnelMaterial } from './tunnelMaterial'
 import { SpeedTrapSigns } from './SpeedTrapSign'
 import { skirtExtras } from './skirtExtras'
 import { trackPylons } from './pylons'
@@ -132,13 +137,15 @@ export function RoadView() {
           bandPeriod: lapPeriodFor(track.length, 64),
         })
       : null
+    const tunnels = track.meshes.tunnels ? geometryFrom(track.meshes.tunnels.inside) : null
+    const tunnelMat = tunnels ? makeTunnelMaterial(look.edge).material : null
     lookState.road.triangles =
-      triCount(road) + triCount(skirt) + (ramps ? triCount(ramps) : 0) + (barriers ? triCount(barriers) : 0)
+      triCount(road) + triCount(skirt) + (ramps ? triCount(ramps) : 0) + (barriers ? triCount(barriers) : 0) + (tunnels ? triCount(tunnels) : 0)
     lookState.road.lanes = look.lanes
     lookState.road.edgeColor = look.edge
     lookState.road.rebuilds++
     lookState.road.pylons = pylons.length
-    return { uniforms, road, skirt, roadMat, skirtMat, ramps, rampMat, barriers, barrierMat, pylons, edge: look.edge }
+    return { uniforms, road, skirt, roadMat, skirtMat, ramps, rampMat, barriers, barrierMat, tunnels, tunnelMat, pylons, edge: look.edge }
   }, [track])
 
   useEffect(
@@ -152,6 +159,8 @@ export function RoadView() {
       built.rampMat?.dispose()
       built.barriers?.dispose()
       built.barrierMat?.dispose()
+      built.tunnels?.dispose()
+      built.tunnelMat?.dispose()
     },
     [built],
   )
@@ -169,6 +178,7 @@ export function RoadView() {
       {built.barriers && built.barrierMat && (
         <mesh name="road-barriers" geometry={built.barriers} material={built.barrierMat} receiveShadow />
       )}
+      {built.tunnels && built.tunnelMat && <mesh name="road-tunnels" geometry={built.tunnels} material={built.tunnelMat} />}
       {track && track.speedTraps.length > 0 && <SpeedTrapSigns track={track} time={built.uniforms.uTime} />}
       <BridgePylons pylons={built.pylons} edge={built.edge} />
     </group>

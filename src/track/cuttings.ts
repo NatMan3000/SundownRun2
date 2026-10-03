@@ -13,7 +13,8 @@
 //              drive or slide down, never a cliff: no steeper than
 //              CUT_SLOPE_MAX_DEG, and no step bigger than
 //              CUT_STEP_MAX between ground points a grid cell apart.
-//    dips      a car doesn't take off at the lip of a dip: where
+//    dips      a car doesn't take off at the lip of a dip (a tunnel's
+//              ramps down included): where
 //              the road tips over the top of its ramp down, the
 //              road falls away from the car no faster than gravity
 //              can hold it on (CREST_LIMIT, the bank-roll crests'
@@ -117,6 +118,7 @@ export function cuttingSides(t: TrackRuntime): { slopeDeg: number; slopeAt: numb
   const dug = dugDepth(t)
   if (!depth || !dug) return null
   const cell = t.terrain.cellSize
+  const tunnelSlot = trackInternals(t)?.tunnels.slot
   // Road samples bucketed on a 16 m grid, so "is this ground under another road?" only looks nearby.
   const CELL = 16
   const key = (cx: number, cz: number) => cx * 100003 + cz
@@ -155,7 +157,8 @@ export function cuttingSides(t: TrackRuntime): { slopeDeg: number; slopeAt: numb
   let sunk = 0
   const hs: number[] = []
   for (let i = 0; i < S.count; i++) {
-    if (S.surface[i] !== SURFACE_CODE.road || dug[i] < CUT_MIN_DEPTH || depth[i] < CUT_MIN_DEPTH) continue
+    // (A tunnel's stretch is walled in, not sloped: the tunnel check judges it.)
+    if (S.surface[i] !== SURFACE_CODE.road || dug[i] < CUT_MIN_DEPTH || depth[i] < CUT_MIN_DEPTH || tunnelSlot?.[i]) continue
     sunk++
     const hw = S.halfWidth[i]
     const rl = Math.hypot(S.rx[i], S.rz[i]) || 1
@@ -197,9 +200,9 @@ export function cuttingSides(t: TrackRuntime): { slopeDeg: number; slopeAt: numb
 /**
  * Per sample: how far the track file puts the road below its own ground (where a point
  * with no `y` sits: the natural ground smoothed by road.surfaceSmoothing), from the
- * points' `lift` (or `y`), blended between points. A road over a dune sits below the
- * dune's sharp top without being dug down (it rides the smoothed ground): that is not a
- * dip. null without the builder's extras.
+ * points' `lift` (or `y`), blended between points, plus how far a tunnel digs it down
+ * (tunnels.ts). A road over a dune sits below the dune's sharp top without being dug down
+ * (it rides the smoothed ground): that is not a dip. null without the builder's extras.
  */
 function dugDepth(t: TrackRuntime): Float32Array | null {
   const x = trackInternals(t)
@@ -214,7 +217,7 @@ function dugDepth(t: TrackRuntime): Float32Array | null {
     const at = x.atOfS(i * S.ds)
     const a = ((Math.floor(at) % n) + n) % n
     const f = at - Math.floor(at)
-    out[i] = -(lift[a] * (1 - f) + lift[(a + 1) % n] * f)
+    out[i] = -(lift[a] * (1 - f) + lift[(a + 1) % n] * f) + x.tunnels.dig[i]
   }
   return out
 }

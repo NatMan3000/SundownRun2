@@ -20,7 +20,8 @@
 // ============================================================
 
 import * as THREE from 'three'
-import type { ResolvedTrackFile, BoostPiece, RampPiece, WallRidePiece } from './schema'
+import type { ResolvedTrackFile, BoostPiece, RampPiece, WallRidePiece, TunnelPiece } from './schema'
+import { TRACK_DEFAULTS } from './schema'
 import type { BoostZone, GroundPose, PropAnchor, ResolvedPiece, TrackFrame, TrackRuntime, TrackWorldInfo } from './types'
 import {
   BIGAIR_LAYOUT,
@@ -41,6 +42,8 @@ import { buildRampMeshes, type RampSolid } from './ramps'
 import { buildSampleHash, makeRoadQueries } from './query'
 import { makeBillboards, makeCheckpoints, makeMinimap, makePosts, makeRacingLine } from './derived'
 import { hashString } from './noise'
+import { makeTunnelFootprint, type TunnelSamples } from './tunnels'
+import { buildTunnelMeshes, type TunnelSolids } from './tunnelMeshes'
 
 /**
  * Version of the road builder itself. Bump it whenever the way geometry is generated
@@ -114,6 +117,13 @@ export interface TrackInternals {
    * corners are covered (terrainTiles.ts).
    */
   groundCovered: Uint8Array
+  /** The tunnels per sample (tunnels.ts), every tunnel piece's plan (built or not) included. */
+  tunnels: TunnelSamples
+  /** Each built tunnel's physics: walls and ceiling, and the hill on top (tunnelMeshes.ts). */
+  tunnelSolids: TunnelSolids[]
+  /** Per grid vertex under a tunnel's solid: the solid's top, and metres inside its outer edge (terrain.ts). */
+  tunnelTop: Float32Array | null
+  tunnelIn: Float32Array | null
 }
 
 const internals = new WeakMap<TrackRuntime, TrackInternals>()
@@ -153,7 +163,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const L = c.length
 
   // ---- the ground, cut and filled to the road ----
-  const flat = flattenToRoad(natGrid, { samples: S, thickness: c.thickness, barrierHeight: file.road.barriers === 'walls' ? file.road.barrierHeight : 0, overCut: c.overCut, underCut: c.underCut, sameStretch: SAME_STRETCH })
+  const flat = flattenToRoad(natGrid, { samples: S, thickness: c.thickness, barrierHeight: file.road.barriers === 'walls' ? file.road.barrierHeight : 0, overCut: c.overCut, underCut: c.underCut, sameStretch: SAME_STRETCH, tunnels: c.tunnels })
   const heights = flat.heights
   const terrain = makeTerrainGrid(natGrid, heights)
   const terrainHeight = (x: number, z: number) => gridHeight(terrain, x, z)
@@ -252,6 +262,14 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
       q.frameAt(s, tmpFrame)
       speedTraps.push({ s })
       pieces.push({ index, type: 'speedtrap', s0: s, s1: s, center: { x: tmpFrame.position.x, y: tmpFrame.position.y, z: tmpFrame.position.z }, source: p })
+    } else if (p.type === 'tunnel') {
+      // A built tunnel spans its portals; one that couldn't be built (the tunnel check says
+      // why) still reports where it was asked for.
+      const built = c.tunnels.list.find((x) => x.index === index)
+      const s0 = built ? built.s0 : s
+      const s1 = built ? built.s1 : s + ((p as TunnelPiece).length ?? TRACK_DEFAULTS.tunnelLength)
+      q.frameAt(s0 + (s1 - s0) / 2, tmpFrame)
+      pieces.push({ index, type: 'tunnel', s0: q.wrapS(s0), s1: q.wrapS(s1), center: { x: tmpFrame.position.x, y: tmpFrame.position.y, z: tmpFrame.position.z }, source: p })
     }
   })
   speedTraps.sort((a, b) => a.s - b.s)
@@ -259,6 +277,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   // ---- meshes ----
   const ribbon = buildRibbonMeshes(c, file.road.barriers === 'walls', file.road.barrierHeight)
   const ramps = buildRampMeshes(rampSpots, q, tmpFrame)
+  const tunnelBuild = buildTunnelMeshes(S, c.tunnels, natGrid, terrain)
 
   // ---- world edges ----
   const minGround = Math.min(terrain.minHeight, minOf(S.py) - 2)
@@ -315,6 +334,8 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   // A wall ride's wall (its ramps included) and 15 m either side of it.
   for (const w of c.walls) noPosts.push({ s0: q.wrapS(w.s0 - WALL_FULL_INSET), s1: q.wrapS(w.s1 + WALL_FULL_INSET) })
   for (const r of rampSpots) noPosts.push({ s0: q.wrapS(r.s - 25), s1: q.wrapS(r.s + 25) })
+  // A tunnel's whole stretch: its walls of ground stand where the posts would.
+  for (const tn of c.tunnels.list) noPosts.push({ s0: q.wrapS(tn.a0 - 10), s1: q.wrapS(tn.a1 + 10) })
   // Keep the start grid clear too.
   noPosts.push({ s0: q.wrapS(-GRID_FIRST - GRID_ROW * 7), s1: 12 })
   // Billboards: never where cars fly or crowd. Round loops and wall rides, ramps and the
@@ -324,6 +345,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   for (const l of c.loops) noBillboards.push({ s0: q.wrapS(l.s0 - 60), s1: q.wrapS(l.s1 + 60) })
   for (const w of c.walls) noBillboards.push({ s0: q.wrapS(w.s0 - 30), s1: q.wrapS(w.s1 + 30) })
   for (const r of rampSpots) noBillboards.push({ s0: q.wrapS(r.s - 20), s1: q.wrapS(r.s + 150) })
+  for (const tn of c.tunnels.list) noBillboards.push({ s0: q.wrapS(tn.a0 - 20), s1: q.wrapS(tn.a1 + 20) })
   {
     const W = Math.max(1, Math.round(6 / S.ds))
     let lastS = -Infinity
@@ -355,7 +377,10 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     }
     return false
   }
-  const roadsideIn = { file, c, hash, terrainHeight, insideWorld, noPosts, noBillboards, keepOut, seed: env.seed }
+  // Nothing placed by the road stands on or in a tunnel's solid (its roof, walls or their tops).
+  const tunnelAt = makeTunnelFootprint(S, c.tunnels)
+  const keepOff = (x: number, z: number): boolean => tunnelAt(x, z, 4) !== null
+  const roadsideIn = { file, c, hash, terrainHeight, insideWorld, noPosts, noBillboards, keepOut: (x: number, z: number) => keepOut(x, z) || keepOff(x, z), keepOff, seed: env.seed }
   const posts = makePosts(roadsideIn)
   const billboards = makeBillboards(roadsideIn)
 
@@ -372,8 +397,23 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     }
     return ty
   }
-  const props: PropAnchor[] = file.props.map((p) => ({ x: p.x, y: groundAt(p.x, p.z), z: p.z, kind: p.kind ?? 'mixed', size: p.size ?? 'medium' }))
-  const cores = file.cores.map((c0) => ({ x: c0.x, y: groundAt(c0.x, c0.z) + (c0.y ?? 1.6), z: c0.z }))
+  // A crash prop or energy core whose spot falls on (or in) a tunnel moves sideways off it, to
+  // the ground beside the tunnel's walls.
+  const offTunnel = (x: number, z: number, margin: number): { x: number; z: number } => {
+    const hit = tunnelAt(x, z, margin)
+    if (!hit) return { x, z }
+    // (lateral counts along the road's right vector, as the ground builder does.)
+    const move = hit.side * (hit.outer + margin + 1) - hit.lateral
+    return { x: x + S.rx[hit.i] * move, z: z + S.rz[hit.i] * move }
+  }
+  const props: PropAnchor[] = file.props.map((p) => {
+    const at = offTunnel(p.x, p.z, 8)
+    return { x: at.x, y: groundAt(at.x, at.z), z: at.z, kind: p.kind ?? 'mixed', size: p.size ?? 'medium' }
+  })
+  const cores = file.cores.map((c0) => {
+    const at = offTunnel(c0.x, c0.z, 3)
+    return { x: at.x, y: groundAt(at.x, at.z) + (c0.y ?? 1.6), z: at.z }
+  })
 
   const checkpoints = makeCheckpoints(L, c.loops.map((l) => ({ s0: l.s0, s1: l.s1 })))
   const minimap = makeMinimap(S)
@@ -427,7 +467,8 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     cores,
     roadside: { posts, billboards },
     world,
-    meshes: { road: ribbon.road, skirt: ribbon.skirt, barriers: ribbon.barriers, ramps: ramps.mesh },
+    tunnels: c.tunnels.list,
+    meshes: { road: ribbon.road, skirt: ribbon.skirt, barriers: ribbon.barriers, ramps: ramps.mesh, tunnels: tunnelBuild ? tunnelBuild.meshes : null },
   }
   internals.set(runtime, {
     nat,
@@ -442,6 +483,10 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     pivotLift: c.pivotLift,
     loops: c.loops,
     groundCovered: flat.covered,
+    tunnels: c.tunnels,
+    tunnelSolids: tunnelBuild ? tunnelBuild.solids : [],
+    tunnelTop: flat.tunnelTop,
+    tunnelIn: flat.tunnelIn,
   })
   return runtime
 }

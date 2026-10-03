@@ -28,6 +28,7 @@ import { TRACK_DEFAULTS, type ResolvedTrackFile, type TerrainFeature } from './s
 import { SURFACE_CODE, type TerrainGrid, type TrackSamples } from './types'
 import { clamp, fbm, makeNoise2D, smoothstep } from './noise'
 import { BARRIER_BELOW, BARRIER_DEPTH, barrierAxes, type BarrierAxes } from './ribbon'
+import { TUNNEL_HOLLOW, TUNNEL_LIP, TUNNEL_WALL, type TunnelSamples } from './tunnels'
 
 type Env = ResolvedTrackFile['environment']
 
@@ -548,6 +549,8 @@ export interface FlattenInput {
   underCut?: Uint8Array
   /** Samples closer than this along the road are one stretch (road.ts SAME_STRETCH), metres. */
   sameStretch?: number
+  /** The tunnels (tunnels.ts): where the ground is hollowed out under a tube and walled in beside a dug road. */
+  tunnels?: TunnelSamples
 }
 
 /** The cut-and-filled ground, plus where the physics ground isn't needed. */
@@ -563,6 +566,14 @@ export interface FlattenResult {
    * ground facets under a 60 degree bank).
    */
   covered: Uint8Array
+  /**
+   * Per grid vertex under a tunnel's solid (its roof, or a retaining wall and its top): the
+   * height of the solid's top surface there (NaN elsewhere), and how far (metres) the vertex is
+   * inside the solid's outer edge. The drawn ground tucks itself under the top, and shades as
+   * though the hill were whole. null when the track has no tunnel.
+   */
+  tunnelTop: Float32Array | null
+  tunnelIn: Float32Array | null
 }
 
 /** On a road with barriers, how far (across, flat metres) from an edge the ground under the road comes up to meet it. */
@@ -575,6 +586,41 @@ const EDGE_REACH = 4.5
 const WALLED_HIDE = 1.5
 /** A vertex this close (metres) to the edge of the deck or of a barrier box doesn't count as covered (curves, rounding). */
 const COVER_MARGIN = 0.25
+
+/** A tunnel's wall of ground counts from this much of a full wall (below it, the usual shoulder). */
+export const TUNNEL_WALL_MIN = 0.005
+/** ...and from this much of one the ground next to the road under it sinks to the edge's height. */
+export const TUNNEL_HOLLOW_FROM = 0.15
+
+/** How much of a tunnel's wall of ground stands at sample i on the side `lat` points to (0..1). */
+export function tunnelWallAt(ts: TunnelSamples, i: number, lat: number): number {
+  if (!ts.slot[i]) return 0
+  if (ts.covered[i]) return 1
+  return lat < 0 ? ts.wallL[i] : ts.wallR[i]
+}
+
+/**
+ * The ground beside an OPEN road (no barriers) at sample i, `lat` out from its middle (in
+ * the units of its right vector, |lat| > half width), where the natural ground is `natural`
+ * and the road's own grade lifts it `gradeY` metres (0 on the sample's own cross-section):
+ * the cut or fill shoulder flattenToRoad gives it. Tunnels (tunnelMeshes.ts) use it for the
+ * tops of their retaining walls, which blend from this shoulder into a straight wall.
+ */
+export function openShoulderY(S: TrackSamples, i: number, lat: number, gradeY: number, natural: number): number {
+  const rh2 = S.rx[i] * S.rx[i] + S.rz[i] * S.rz[i]
+  const hw = S.halfWidth[i]
+  const runout = BANK_RUNOUT / Math.sqrt(Math.max(0.09, rh2))
+  const lowSide = S.ry[i] > 0 ? -1 : 1
+  const latC = clamp(lat, lowSide < 0 ? -hw : -hw - runout, lowSide > 0 ? hw : hw + runout)
+  const surfY = S.py[i] + S.ry[i] * latC + gradeY
+  const beyond = Math.abs(lat) - hw
+  const target = surfY - EDGE_DEPTH
+  // Past the LOW edge of a bank the ground stays level with the edge for the runout's width
+  // before the shoulder starts (see flattenToRoad).
+  const lowFlat = Math.sign(lat) === lowSide ? runout * smoothstep(0.02, 0.05, Math.abs(S.ry[i])) : 0
+  const shoulder = shoulderWidth(natural - target)
+  return target + (natural - target) * smoothstep(0, shoulder, Math.max(0, beyond - lowFlat))
+}
 
 /**
  * Cut and fill the natural grid to meet the road. Returns the final heights.
@@ -589,6 +635,9 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
   const S = input.samples
   const walls = input.barrierHeight > 0
   const cover = new Uint8Array((n + 1) * (n + 1))
+  const tunnels = input.tunnels && input.tunnels.list.length ? input.tunnels : null
+  const tunnelTop = tunnels ? new Float32Array((n + 1) * (n + 1)).fill(NaN) : null
+  const tunnelIn = tunnels ? new Float32Array((n + 1) * (n + 1)).fill(NaN) : null
   const ax: BarrierAxes = { dx: 0, dy: 0, dz: 0, ox: 0, oy: 0, oz: 0 }
   const count = S.count
   const vcount = (n + 1) * (n + 1)
@@ -746,21 +795,56 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
           const rise = Math.abs(S.ry[ig]) / Math.sqrt(Math.max(1e-4, rh2))
           h = Math.min(h, lowEdgeY - EDGE_DEPTH + Math.max(0, fromLow - EDGE_REACH) * rise * 2)
         }
-        // Under the deck. (Right to the edge on a road with barriers: their boxes cover beyond it.)
-        if (Math.abs(lat) <= hw - (walls ? 0 : COVER_MARGIN) && Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds) cover[v] = 1
-      } else {
-        const target = surfY - EDGE_DEPTH
-        // Deep cuts and tall fills get a wider shoulder, so the slope stays a slope.
-        // (On a road with barriers it is measured flat, so a steep bank's cut slope is no
-        // steeper than a flat road's, and starts EDGE_REACH metres out: the ground stays level
-        // with the edge under the barrier's foot, inside its box.)
+        // Under the deck. (Right to the edge on a road with barriers: their boxes cover beyond it;
+        // and beside a tunnel's wall of ground, whose solid covers beyond it too.)
+        const tunnelWall = tunnels ? tunnelWallAt(tunnels, ig, lat) > TUNNEL_WALL_MIN : false
+        if (Math.abs(lat) <= hw - (walls || tunnelWall ? 0 : COVER_MARGIN) && Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds) cover[v] = 1
+        // Under a tunnel's roof, the roof's top follows the natural ground over the road too.
+        if (tunnels && tunnels.covered[ig] && tunnelTop && tunnelIn && Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds) {
+          tunnelTop[v] = nat[v] + TUNNEL_LIP
+          tunnelIn[v] = TUNNEL_WALL + hw - Math.abs(lat)
+        }
+      } else if (!walls) {
+        // Deep cuts and tall fills get a wider shoulder, so the slope stays a slope (openShoulderY).
         // Past an open road's LOW edge on a bank, the ground stays level with the edge for the
         // runout's width before the shoulder starts (where the bank plane used to carry on down):
         // a cut's wall rising straight from the edge made a valley right at the edge, which the
         // 3 m ground triangles bridged above the road, and the safety pass then dug it out.
-        const lowFlat = !walls && Math.sign(lat) === lowSide ? runout * smoothstep(0.02, 0.05, Math.abs(S.ry[ig])) : 0
+        h = openShoulderY(S, ig, lat, gradeY, h)
+        // A tunnel's approach or roof: a wall of ground stands straight up from the edge (all
+        // of it under the roof, `w` of it along an approach, blending from the usual shoulder),
+        // reaching TUNNEL_WALL metres out. Under it the ground stays down at the road edge's height
+        // next to the road (TUNNEL_HOLLOW) and follows the wall's top further out, so no ground
+        // triangle reaches into the tunnel and the ground beside the wall meets its top a
+        // road-edge lip below it.
+        const tw = tunnels ? tunnelWallAt(tunnels, ig, lat) : 0
+        if (tw > TUNNEL_WALL_MIN && tunnels && tunnelTop && tunnelIn) {
+          // (A wall only ever raises the ground: where the natural ground is below the usual
+          // shoulder, the shoulder stays.)
+          const profile = h + Math.max(0, nat[v] - h) * tw
+          const alongS = dx * S.tx[ig] + dz * S.tz[ig]
+          const side = lat < 0 ? -1 : 1
+          // Next to the road the ground stays down at the edge's own height once the wall is more
+          // than a kerb (eased in as it grows), so no ground triangle reaching from under the road
+          // can rise in front of the wall, or into the tunnel.
+          const edgeCap = S.py[ig] + S.ry[ig] * side * hw + gradeY - EDGE_DEPTH
+          h = beyond <= TUNNEL_HOLLOW ? profile - smoothstep(TUNNEL_WALL_MIN, TUNNEL_HOLLOW_FROM, tw) * Math.max(0, profile - edgeCap) : profile
+          // Under the wall's solid (and only where the solid really is: not past the sample at
+          // either end of a wall, where the vertex lies beyond the wall's last row).
+          const next = alongS < 0 ? (ig - 1 + count) % count : (ig + 1) % count
+          if (Math.abs(alongS) <= S.ds && beyond <= TUNNEL_WALL && tunnelWallAt(tunnels, next, lat) > TUNNEL_WALL_MIN) {
+            if (beyond <= TUNNEL_WALL - COVER_MARGIN) cover[v] = 1
+            tunnelTop[v] = profile + TUNNEL_LIP
+            tunnelIn[v] = TUNNEL_WALL - beyond
+          }
+        }
+      } else {
+        // On a road with barriers the shoulder is measured flat, so a steep bank's cut slope is
+        // no steeper than a flat road's, and starts EDGE_REACH metres out: the ground stays level
+        // with the edge under the barrier's foot, inside its box.
+        const target = surfY - EDGE_DEPTH
         const shoulder = shoulderWidth(h - target)
-        const w = smoothstep(0, shoulder, walls ? Math.max(0, beyond * Math.sqrt(rh2) - EDGE_REACH) : Math.max(0, beyond - lowFlat))
+        const w = smoothstep(0, shoulder, Math.max(0, beyond * Math.sqrt(rh2) - EDGE_REACH))
         h = target + (h - target) * w
       }
       if (walls && beyond > 0 && cover[v] === 0) {
@@ -816,7 +900,7 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
     out[v] = h
   }
   keepUnderRoad(grid, out, S)
-  return { heights: out, covered: cover }
+  return { heights: out, covered: cover, tunnelTop, tunnelIn }
 }
 
 /**

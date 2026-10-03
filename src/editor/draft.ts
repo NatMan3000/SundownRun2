@@ -45,7 +45,8 @@ import { type SwapResult, crossingNear, keepOverOf, roadCrossings, swapDraft, tr
 import { keepBridgesClear } from './bankBridges'
 import { type StretchTool, isStretchTool } from './stretchRuns'
 import type { P } from './geom'
-import { type PlaceKind, WALLRIDE_MAX, WALLRIDE_MIN, makeCore, makeProp, makeRoadPiece, toolFor, wallRideFromDrag, wallRideResized, wallRideSide } from './pieces'
+import { type PlaceKind, TUNNEL_EDIT_MAX, TUNNEL_EDIT_MIN, WALLRIDE_MAX, WALLRIDE_MIN, makeCore, makeProp, makeRoadPiece, toolFor, tunnelFromDrag, tunnelMiddle, tunnelStartFor, wallRideFromDrag, wallRideResized, wallRideSide } from './pieces'
+import { judgeTunnel, tunnelWords } from './tunnelPlace'
 import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
 import {
   type ShapeResult,
@@ -1017,6 +1018,15 @@ export function placeAt(q: P): boolean {
     }
     const piece = makeRoadPiece(kind, hit, d.width / 2, rc)
     if (!piece) return false
+    if (piece.type === 'tunnel') {
+      return tryTunnel(
+        (x) => {
+          x.pieces.push(piece)
+        },
+        d.pieces.length,
+        (w) => `Tunnel placed, its middle where you clicked: ${w}. Drag along the road instead to draw how long it is.`,
+      )
+    }
     let note = piece.type === 'wallride' ? `${tool.label} placed, its middle where you clicked. Drag along the road instead to draw how long it is.` : `${tool.label} placed.`
     if (piece.type === 'loop') {
       // A loop needs a straight, level run-in either side or cars hit it instead of riding it.
@@ -1085,11 +1095,81 @@ export function placeWallRideSpan(a: number, b: number): boolean {
 }
 
 /**
+ * Add or change a tunnel (piece `index` once `change` is made), but only if the real track
+ * builder can build it there and no check that passed starts failing (tunnelPlace.ts).
+ * Refused in plain words otherwise, and nothing changes. One Undo step; it ends up selected.
+ */
+function tryTunnel(change: (d: Draft) => void, index: number, done: (words: string) => string): boolean {
+  const s = useEditor.getState()
+  const next = cloneJson(s.draft)
+  change(next)
+  const id = s.savedId ?? draftId(s.draft)
+  const t = getTrack()
+  const params = t && t.id === id ? { ...t.params } : {}
+  // The live preview's checks, if they are this draft's; else the draft is judged as it is.
+  const fresh = s.checkedDraft === s.draft && s.preview === 'built' && t && t.id === id && s.gates
+  const before = fresh && t && s.gates ? { runtime: t, gates: s.gates, errors: s.errors, warnings: s.warnings } : s.draft
+  const v = judgeTunnel(before, next, index, id, params, t)
+  if (!v.ok) {
+    say(v.message, 'warn')
+    audio.ui('error')
+    return false
+  }
+  commit(change)
+  useEditor.setState({ selection: { kind: 'piece', index } })
+  say(done(tunnelWords(v)), 'good')
+  audio.ui('select')
+  return true
+}
+
+/**
+ * Place tool, Tunnel picked, and a drag along the road from `a` to `b` (both `at` values): a
+ * tunnel covering the stretch dragged (pieces.ts tunnelFromDrag), if it fits there.
+ */
+export function placeTunnelSpan(a: number, b: number): boolean {
+  const d = useEditor.getState().draft
+  if (isEmptyDraft(d)) return false
+  const span = tunnelFromDrag(roadCurve(d.points), a, b)
+  const piece: Piece = { type: 'tunnel', at: span.at }
+  if (span.length !== TRACK_DEFAULTS.tunnelLength) piece.length = span.length
+  const cut =
+    span.cut === 'short'
+      ? ` That was shorter than a tunnel can be, so it's ${TUNNEL_EDIT_MIN} m long, in the middle of what you dragged.`
+      : span.cut === 'long'
+        ? ` That was longer than a tunnel can be, so it's ${TUNNEL_EDIT_MAX} m long, in the middle of what you dragged.`
+        : ''
+  return tryTunnel(
+    (x) => {
+      x.pieces.push(piece)
+    },
+    d.pieces.length,
+    (w) => `Tunnel placed, ${span.length} m long: ${w}.${cut}`,
+  )
+}
+
+/**
  * A new Length for piece `index`. A wall ride grows or shrinks from its
  * middle (both ends move the same amount), so its middle stays put. Boost
  * pads and ramps are stored by their middle already, so they just change.
  */
 export function setPieceLength(index: number, length: number): void {
+  const p0 = useEditor.getState().draft.pieces[index]
+  if (p0?.type === 'tunnel') {
+    // A tunnel grows or shrinks from its middle, if it still fits.
+    tryTunnel(
+      (d) => {
+        const p = d.pieces[index]
+        if (p?.type !== 'tunnel') return
+        const rc = roadCurve(d.points)
+        p.at = tunnelStartFor(rc, tunnelMiddle(rc, p.at, p.length), length)
+        if (length === TRACK_DEFAULTS.tunnelLength) delete p.length
+        else p.length = length
+      },
+      index,
+      (w) => `Tunnel now ${length} m long: ${w}.`,
+    )
+    return
+  }
   commit((d) => {
     const p = d.pieces[index]
     if (!p) return

@@ -30,6 +30,7 @@ import { hashString } from './noise'
 import { sampleClosedSpline, arcLengthAtParam } from './spline'
 import { LOOP_RUN_IN, loopShape, WALL_REACH } from './road'
 import { ROAD_SMOOTHING_MAX, ROAD_SMOOTHING_MIN } from './terrain'
+import { TUNNEL_MAX_LENGTH, TUNNEL_MIN_LENGTH, TUNNEL_RAMP_TYPICAL } from './tunnels'
 
 type Obj = Record<string, unknown>
 
@@ -275,8 +276,13 @@ export function validateTrack(json: unknown): ValidationResult {
           pieces.push({ type: 'speedtrap', at })
           break
         }
+        case 'tunnel': {
+          I.unknown(p, path, ['type', 'at', 'length'])
+          pieces.push({ type: 'tunnel', at, length: I.num(p, 'length', path, TRACK_DEFAULTS.tunnelLength, TUNNEL_MIN_LENGTH, TUNNEL_MAX_LENGTH) })
+          break
+        }
         default:
-          I.err(`${path}.type`, `must be 'boost', 'ramp', 'loop', 'wallride' or 'speedtrap'`)
+          I.err(`${path}.type`, `must be 'boost', 'ramp', 'loop', 'wallride', 'speedtrap' or 'tunnel'`)
       }
     })
   }
@@ -621,6 +627,8 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
     // A wall ride's wall grows in WALL_REACH metres before `at` and fades out as far past its end.
     else if (p.type === 'wallride') spans.push({ i, type: p.type, s0: s - WALL_REACH, s1: s + (p.length ?? 120) + WALL_REACH })
     else if (p.type === 'ramp') spans.push({ i, type: p.type, s0: s - (p.length ?? 12) / 2 - 5, s1: s + (p.length ?? 12) / 2 + 5 })
+    // A tunnel's approaches reach about TUNNEL_RAMP_TYPICAL metres beyond its covered stretch (the builder works out the real length).
+    else if (p.type === 'tunnel') spans.push({ i, type: p.type, s0: s - TUNNEL_RAMP_TYPICAL, s1: s + (p.length ?? TRACK_DEFAULTS.tunnelLength) + TUNNEL_RAMP_TYPICAL })
   })
   for (let a = 0; a < spans.length; a++) {
     for (let b = a + 1; b < spans.length; b++) {

@@ -18,6 +18,9 @@
 //                          per side, so a car slides along them (see
 //                          addBarrierSolids)
 //     ramp                 one closed triangle mesh per kicker
+//     tunnels              per tunnel: its walls and ceiling as one
+//                          'barrier' mesh (cars slide along), and the hill
+//                          on top as a 'terrain' mesh (tunnelMeshes.ts)
 //
 //   terrain tiles (terrainTiles.ts): the ground as a grid of trimesh
 //   tiles. Only tiles whose heights changed are rebuilt on a live
@@ -111,7 +114,29 @@ export function createRoadColliders(world: World, R: Rapier, t: TrackRuntime): C
   const extras = trackInternals(t)
   for (const r of extras?.rampSolids ?? []) add(world, R, set, R.ColliderDesc.trimesh(r.vertices, r.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), 'ramp')
 
+  // Tunnels: the walls and ceiling cars slide along, and the hill over them. Both are kept in
+  // tunnelHandles so the camera can treat them as solid (it never sits inside the hill).
+  for (const tn of extras?.tunnelSolids ?? []) {
+    for (const [m, kind] of [
+      [tn.walls, 'barrier'],
+      [tn.top, 'terrain'],
+    ] as const) {
+      if (!m.indices.length) continue
+      const before = set.handles.length
+      add(world, R, set, R.ColliderDesc.trimesh(m.vertices, m.indices, R.TriMeshFlags.FIX_INTERNAL_EDGES), kind)
+      for (let k = before; k < set.handles.length; k++) tunnelHandles.add(set.handles[k])
+    }
+  }
+
   return set
+}
+
+/** Collider handles of every tunnel's walls, ceiling and hill (see isTunnelCollider). */
+const tunnelHandles = new Set<number>()
+
+/** True for a tunnel's walls, ceiling or the hill over it: solid ground the camera keeps out of. */
+export function isTunnelCollider(handle: number): boolean {
+  return tunnelHandles.has(handle)
 }
 
 /**
@@ -435,7 +460,10 @@ function addWallSegment(world: World, R: Rapier, set: ColliderSet, x0: number, z
 
 /** Remove a set (safe after the physics world itself has been torn down). */
 export function removeColliderSet(world: World, set: ColliderSet): void {
-  for (const h of set.handles) untagSurface(h)
+  for (const h of set.handles) {
+    untagSurface(h)
+    tunnelHandles.delete(h)
+  }
   set.handles.length = 0
   // react-three-rapier replaces a freed world with a fresh one; only remove from the world that owns it.
   if (world.getRigidBody(set.body.handle) === set.body) world.removeRigidBody(set.body)

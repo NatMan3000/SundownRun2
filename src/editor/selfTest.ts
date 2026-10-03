@@ -69,6 +69,7 @@ import { builderRows } from './selfTestBuilder'
 import { setTrackModules, trackRows } from './selfTestTracks'
 import { pieceRows } from './selfTestPieces'
 import { underpassRows } from './selfTestUnder'
+import { tunnelRows } from './selfTestTunnel'
 import { deckRows } from './selfTestDeck'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
@@ -1645,6 +1646,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- straight-topped bridges (selfTestDeck.ts)
 
   deckRows(check, { shaky, opts })
+
+  // ---------------------------------------------------------------- tunnels (selfTestTunnel.ts)
+
+  tunnelRows(check, store)
 
   return results
 }

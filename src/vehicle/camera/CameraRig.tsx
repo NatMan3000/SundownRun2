@@ -40,6 +40,7 @@ import type { CameraMode } from '../../core/settings'
 import { getGame } from '../../core/store'
 import { GROUPS, surfaceOf } from '../../core/physics'
 import { getTrack } from '../../track/current'
+import { isTunnelCollider } from '../../track/colliders'
 import { links } from '../links'
 import { computeShot } from './bookmarks'
 import type { Shot } from './bookmarks'
@@ -104,10 +105,10 @@ const _carFrame: TrackFrame = {
   curvature: 0,
   surface: 'road',
 }
-/** The slabs the camera must never sit inside: the road and everything built like it. */
+/** The slabs the camera must never sit inside: the road and everything built like it, and a tunnel's walls, ceiling and the hill over it. */
 function isSlab(collider: { handle: number }): boolean {
   const k = surfaceOf(collider.handle)
-  return k === 'road' || k === 'loop' || k === 'wall' || k === 'ramp' || k === 'skirt'
+  return k === 'road' || k === 'loop' || k === 'wall' || k === 'ramp' || k === 'skirt' || isTunnelCollider(collider.handle)
 }
 
 /** The arm limits the look-ahead found at each of CAMERA.clipAhead's times (scratch, per frame). */

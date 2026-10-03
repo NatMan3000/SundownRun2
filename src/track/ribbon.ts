@@ -10,7 +10,8 @@
 //
 //    road      the drivable top: 13 vertices across every sample, plus
 //              the curved walls of wall rides. Carries the shader
-//              attributes aLateral, aHalfWidth, aCurv, aKind.
+//              attributes aLateral, aHalfWidth, aCurv, aKind, aCover
+//              (how far inside a tunnel: tunnels.ts).
 //    skirt     the slab's sides and underside (and the back of every
 //              wall-ride wall), so the road is a solid you can see and
 //              can't fall through, never a paper-thin sheet.
@@ -120,8 +121,9 @@ export function buildRibbonMeshes(c: Centerline, barriers: boolean, barrierHeigh
   const rows = count + 1
 
   // ---------------- road top ----------------
-  const road = new MeshBuilder(['aLateral', 'aHalfWidth', 'aCurv', 'aKind'])
-  const extra = { aLateral: 0, aHalfWidth: 0, aCurv: 0, aKind: 0 }
+  const road = new MeshBuilder(['aLateral', 'aHalfWidth', 'aCurv', 'aKind', 'aCover'])
+  const extra = { aLateral: 0, aHalfWidth: 0, aCurv: 0, aKind: 0, aCover: 0 }
+  const cover = c.tunnels.cover
   const topRow: number[] = []
   for (let r = 0; r < rows; r++) {
     const i = rowSample(r, count)
@@ -134,6 +136,7 @@ export function buildRibbonMeshes(c: Centerline, barriers: boolean, barrierHeigh
       extra.aHalfWidth = hw
       extra.aCurv = S.curvature[i]
       extra.aKind = S.surface[i]
+      extra.aCover = cover[i]
       road.vertex(
         S.px[i] + S.rx[i] * l,
         S.py[i] + S.ry[i] * l,

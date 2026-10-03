@@ -529,8 +529,10 @@ export interface RoadsideInput {
    * landings, crests that throw you): no billboard beside any road in them.
    */
   noBillboards: { s0: number; s1: number }[]
-  /** True where a billboard must not stand off the road (a big-air run's flight path). */
+  /** True where a billboard must not stand off the road (a big-air run's flight path, a tunnel). */
   keepOut: (x: number, z: number) => boolean
+  /** True where nothing placed by the road may stand (on or in a tunnel's solid). */
+  keepOff: (x: number, z: number) => boolean
   seed: number
 }
 
@@ -580,7 +582,7 @@ export function makePosts(inp: RoadsideInput): GroundPose[] {
       const lat = S.halfWidth[i] + 3.5
       const x = S.px[i] + rxh * lat * side
       const z = S.pz[i] + rzh * lat * side
-      if (!inp.insideWorld(x, z, 10)) continue
+      if (!inp.insideWorld(x, z, 10) || inp.keepOff(x, z)) continue
       // Not on (or right next to) another bit of road.
       if (edgeClearance(S, inp.hash, x, z, 30) < 2.5) continue
       const y = inp.terrainHeight(x, z)

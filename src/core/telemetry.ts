@@ -9,7 +9,8 @@
 //  replace these objects or their vectors - mutate in place.
 //
 //  Writers:
-//    telemetry      - vehicle (the player's car) and its trick/lap trackers
+//    telemetry      - vehicle (the player's car) and its trick/lap trackers;
+//                     track writes `tunnel`
 //    cars[]         - each car's owner: vehicle for 'player' and 'ai'
 //                     cars (sim), net for 'remote', vehicle for 'ghost'
 //  Everyone else only reads.
@@ -66,6 +67,12 @@ export const telemetry = {
   trackS: 0,
   /** Lateral offset from the centreline, metres (+ = right of travel direction). */
   lateral: 0,
+  /**
+   * 0..1 how far inside a covered tunnel the car is: 0 in the open (or on the hill over one),
+   * rising to 1 over the first 30 m past a portal. Writer: track (src/track/index.tsx), each
+   * frame. Readers: look (reflections), audio (the engine's echo).
+   */
+  tunnel: 0,
 
   // ---- pose (world space, RENDER-interpolated - smooth at any refresh rate) ----
   carPosition: new THREE.Vector3(0, 2, 0),

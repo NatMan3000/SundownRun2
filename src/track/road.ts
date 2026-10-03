@@ -39,6 +39,7 @@ import { averagedHeight, shoulderHeight, type NaturalTerrain } from './terrain'
 import { arcLengthAtParam, nodeAtLength, sampleClosedSpline } from './spline'
 import { clamp, smoothstep } from './noise'
 import { shapeBankRolls } from './bankRolls'
+import { finishTunnels, planTunnelDigs, type TunnelKeepClear, type TunnelSamples } from './tunnels'
 
 const G = 9.81
 /** Target spacing of the final samples, metres. */
@@ -182,6 +183,8 @@ export interface Centerline {
    * the other road's shoulders (terrain.ts flattenToRoad).
    */
   underCut: Uint8Array
+  /** The tunnels (tunnels.ts): which samples they dig, cover and wall in. */
+  tunnels: TunnelSamples
 }
 
 /** Shortest signed distance from a to b on a loop of length L. */
@@ -436,6 +439,24 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     for (let k = 0; k < nb; k++) by[k] += bLift[k]
   }
 
+  // ---- tunnels: the road dips into the ground wherever a tunnel piece covers it ----
+  // (tunnels.ts: deep enough for a car, a ceiling and a roof under the natural ground, on
+  // ramps gentle enough to drive flat out.) Its stretch, ramps included, must be clear road.
+  const keepClear: TunnelKeepClear[] = []
+  for (const L of loopSpecs) keepClear.push({ s0: L.sb - LOOP_RUN_IN, s1: L.sb + L.shape.advance + LOOP_EXIT_EASE, what: `a loop (pieces[${L.pieceIndex}])` })
+  pieces.forEach((p, idx) => {
+    const sb = baseSOfAt(p.at)
+    if (p.type === 'ramp') {
+      const len = (p as { length?: number }).length ?? 12
+      keepClear.push({ s0: sb - len / 2 - RAMP_HOLD_BEFORE, s1: sb + len / 2 + RAMP_HOLD_AFTER, what: `a ramp (pieces[${idx}]) and the road it throws you onto` })
+    } else if (p.type === 'wallride') {
+      keepClear.push({ s0: sb - WALL_REACH, s1: sb + ((p as WallRidePiece).length ?? 120) + WALL_REACH, what: `a wall ride (pieces[${idx}])` })
+    }
+  })
+  keepClear.push({ s0: -GRID_KEEP_BEHIND - 10, s1: GRID_KEEP_AHEAD + 10, what: 'the start grid' })
+  const tunnelDigs = planTunnelDigs({ pieces, baseSOfAt, nb, dsb, Lb, bx, by, bz, bHalf, bBank, nat, keepClear, walled: !pivotLow })
+  for (let k = 0; k < nb; k++) by[k] -= tunnelDigs.dig[k]
+
   // ---- base tangents (3D) ----
   const btx = new Float64Array(nb)
   const bty = new Float64Array(nb)
@@ -483,6 +504,9 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const nuz: number[] = []
   const nsurf: number[] = []
   const nbs: number[] = []
+  const ndig: number[] = []
+  const nslot: number[] = []
+  const ncov: number[] = []
   const pushBase = (k: number) => {
     // Horizontal right (for the loop shift) and the banked up vector.
     const hl = Math.hypot(btx[k], btz[k]) || 1
@@ -517,6 +541,9 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     nuz.push(u0z * c + r0z * s)
     nsurf.push(SURFACE_CODE.road)
     nbs.push(k * dsb)
+    ndig.push(tunnelDigs.dig[k])
+    nslot.push(tunnelDigs.slot[k])
+    ncov.push(tunnelDigs.covered[k])
   }
 
   let li = 0
@@ -577,6 +604,9 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
         nuz.push(-Tz * Math.sin(ph))
         nsurf.push(SURFACE_CODE.loop)
         nbs.push(L.sb)
+        ndig.push(0)
+        nslot.push(0)
+        ncov.push(0)
       }
       li++
     }
@@ -617,6 +647,9 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const baseS = new Float64Array(count)
   const overrideWeight = new Float32Array(count)
   const pivotLift = new Float32Array(count)
+  const tDig = new Float32Array(count)
+  const tSlot = new Uint8Array(count)
+  const tCov = new Uint8Array(count)
   let j = 0
   // Positions are kept in float64 until the end so long tracks don't wobble.
   const fx = new Float64Array(count)
@@ -643,6 +676,9 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     huy[i] = nuy[a] + (nuy[b] - nuy[a]) * f
     huz[i] = nuz[a] + (nuz[b] - nuz[a]) * f
     S.surface[i] = f < 0.5 ? nsurf[a] : nsurf[b]
+    tDig[i] = ndig[a] + (ndig[b] - ndig[a]) * f
+    tSlot[i] = f < 0.5 ? nslot[a] : nslot[b]
+    tCov[i] = f < 0.5 ? ncov[a] : ncov[b]
     // Base s for mapping `at` -> final s (wraps cleanly: the last node pairs with node 0).
     const bsA = nbs[a]
     let bsB = nbs[b]
@@ -698,8 +734,10 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     const gap = S.py[i] - pivotLift[i] - nat.height(S.px[i], S.pz[i])
     S.grounded[i] = gap <= FILL_MAX ? 1 : 0
   }
+  // The tunnels on the final road: their stretches, walls of ground, ceilings and cover.
+  const tunnels = finishTunnels(S, tunnelDigs.plans, tDig, tSlot, tCov, nat)
   // A road on the ground over another stretch's cutting is a bridge there (an underpass).
-  const { overCut, underCut } = markOverCuttings(S, pivotLift, nat)
+  const { overCut, underCut } = markOverCuttings(S, pivotLift, nat, tunnels.slot)
   for (let i = 0; i < count; i++) if (overCut[i]) S.grounded[i] = 0
   denoiseRuns(S.grounded, S.surface, Math.round(10 / ds))
 
@@ -797,7 +835,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     }
   })
 
-  return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt, atOfS, overrideWeight, pivotLift, overCut, underCut }
+  return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt, atOfS, overrideWeight, pivotLift, overCut, underCut, tunnels }
 }
 
 /**
@@ -812,7 +850,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
  * (`overCut`), and 1 along every dip that passes under one (`underCut`). Tracks with no
  * road below the ground get all zeros (and the same road as before).
  */
-function markOverCuttings(S: TrackSamples, pivotLift: Float32Array, nat: NaturalTerrain): { overCut: Uint8Array; underCut: Uint8Array } {
+function markOverCuttings(S: TrackSamples, pivotLift: Float32Array, nat: NaturalTerrain, tunnelSlot: Uint8Array): { overCut: Uint8Array; underCut: Uint8Array } {
   const n = S.count
   const out = new Uint8Array(n)
   const under = new Uint8Array(n)
@@ -824,7 +862,8 @@ function markOverCuttings(S: TrackSamples, pivotLift: Float32Array, nat: Natural
     if (S.surface[i] !== SURFACE_CODE.road) continue
     floorY[i] = S.py[i] - pivotLift[i]
     natY[i] = nat.height(S.px[i], S.pz[i])
-    if (natY[i] - floorY[i] >= CUTTING_MIN_DEPTH) sunk.push(i)
+    // (A tunnel's road is walled in, not in a sloped cutting: no road crosses over it.)
+    if (natY[i] - floorY[i] >= CUTTING_MIN_DEPTH && !tunnelSlot[i]) sunk.push(i)
   }
   if (!sunk.length) return { overCut: out, underCut: under }
   // Bucket the sunken samples on a coarse grid, so each road sample only looks at its neighbours.

@@ -120,6 +120,36 @@ function drawBase(track: TrackRuntime): void {
   trace()
   g.stroke()
 
+  // Tunnels: the covered stretch drawn as road under the ground (a band in the ground grid's
+  // violet over the road, its line dashed), so you can see where the road goes underground.
+  for (const tn of track.tunnels) {
+    const steps = Math.max(2, Math.ceil((tn.s1 - tn.s0) / 5))
+    const under = () => {
+      g.beginPath()
+      for (let k = 0; k <= steps; k++) {
+        const fr = track.frameAt(tn.s0 + ((tn.s1 - tn.s0) * k) / steps, startFrame)
+        const x = fr.position.x * s + map.ox
+        const z = fr.position.z * s + map.oz
+        if (k === 0) g.moveTo(x, z)
+        else g.lineTo(x, z)
+      }
+    }
+    g.strokeStyle = PALETTE.grid
+    g.lineWidth = 7 * dpr
+    under()
+    g.stroke()
+    g.strokeStyle = PALETTE.road
+    g.lineWidth = 4 * dpr
+    under()
+    g.stroke()
+    g.strokeStyle = edge
+    g.lineWidth = 1.6 * dpr
+    g.setLineDash([3 * dpr, 3 * dpr])
+    under()
+    g.stroke()
+    g.setLineDash([])
+  }
+
   // start line: a short bar across the road where s = 0 (the real start, from the track)
   const f = track.frameAt(track.startS, startFrame)
   const x0 = f.position.x * s + map.ox

@@ -65,7 +65,7 @@ import { BRIDGE_GAP, UNDER_DEPTH, bridgeCount, compassWord, crossingNear } from 
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
 import { issueLocation, roadGeometry } from './mapDraw'
 import { checkVerdict } from './checks'
-import { pieceLabel } from './pieces'
+import { pieceLabel, TUNNEL_EDIT_MAX, TUNNEL_EDIT_MIN } from './pieces'
 import { setPieceLength } from './draft'
 import { liveRuntime } from './fixActions'
 import { builtBankAngle } from './bankAngle'
@@ -746,6 +746,21 @@ function PieceFields(p: { piece: Piece; index: number; roadWidth: number }) {
       )
     case 'speedtrap':
       return <p className="sre-help">Clocks your speed as you pass. Best on the fastest straight.</p>
+    case 'tunnel':
+      return (
+        <>
+          <SliderField
+            label="Length"
+            value={piece.length ?? TRACK_DEFAULTS.tunnelLength}
+            min={TUNNEL_EDIT_MIN}
+            max={TUNNEL_EDIT_MAX}
+            step={10}
+            unit="m"
+            onCommit={(v) => setPieceLength(index, v)}
+            help="How much of the road is covered. Grows or shrinks from the middle. The road dips into the ground on gentle ramps either side, so it needs clear road there too."
+          />
+        </>
+      )
   }
 }
 
