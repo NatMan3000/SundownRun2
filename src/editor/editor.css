@@ -1042,3 +1042,13 @@ textarea.sre-input {
     margin: 1px 4px;
   }
 }
+
+/* ---------------------------------------------------------------- Smooth the bumps here (SmoothField.tsx): what it did, brighter than a plain help line */
+
+.sre-help.is-good,
+.sre-help.is-info {
+  color: var(--text);
+}
+.sre-help.is-warn {
+  color: color-mix(in srgb, var(--warn) 75%, var(--text));
+}

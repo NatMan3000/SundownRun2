@@ -58,6 +58,7 @@ import { NO_NOTES, type Problem, problemByKey, problemsOf } from './problems'
 import { type HeightLimits, liftAt } from './raise'
 import { type StretchTool, heightsAboveGround, isStretchTool } from './stretchRuns'
 import { groundStretch, growStretch, heightLimitsNow, onHeightLimits, openHeightAtPoint } from './stretchTools'
+import { SmoothField } from './SmoothField'
 import './fixes.css'
 import { BRIDGE_GAP, bridgeCount, compassWord, crossingNear } from './bridges'
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
@@ -513,6 +514,7 @@ function HeightField(p: { from: number; to: number; draft: Draft }) {
         <p className="sre-help" data-testid="editor-height-limit">
           {lim === 'failed' ? "Couldn't work out how high this stretch can go. Try picking a different stretch." : 'Working out how high this stretch can go...'}
         </p>
+        <SmoothField from={p.from} to={p.to} draft={p.draft} />
       </>
     )
   }
@@ -559,6 +561,7 @@ function HeightField(p: { from: number; to: number; draft: Draft }) {
           Make the stretch {next.metres} m long
         </button>
       )}
+      <SmoothField from={p.from} to={p.to} draft={p.draft} />
     </>
   )
 }

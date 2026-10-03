@@ -63,6 +63,7 @@ import { BRIDGE_GAP, type GroundFn, buildAndCheck, builtGapAt, crossingNear, kee
 import { fixAndRaiseRows, setFixActions } from './selfTestFixes'
 import { look3dRows } from './selfTest3d'
 import { setStretchTools, toolRows } from './selfTestTools'
+import { setSmoothTools, smoothRows } from './selfTestSmooth'
 import { builderRows } from './selfTestBuilder'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
@@ -1596,6 +1597,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
 
   builderRows(check)
 
+  // ---------------------------------------------------------------- Smooth the bumps here, and wall rides on the map (selfTestSmooth.ts)
+
+  smoothRows(check, store)
+
   return results
 }
 
@@ -1667,6 +1672,7 @@ async function loadStoreForBun(): Promise<EditorStore | undefined> {
   // The Height, Bank and Width tools' actions, for their re-edit row (selfTestTools.ts).
   const toolsPath = './stretchTools.ts'
   setStretchTools((await import(/* @vite-ignore */ toolsPath)) as typeof import('./stretchTools'))
+  setSmoothTools((await import(/* @vite-ignore */ toolsPath)) as typeof import('./stretchTools'))
   return store
 }
 

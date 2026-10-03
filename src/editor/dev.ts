@@ -34,7 +34,9 @@
 //  The shaping tools, for checkers without a mouse:
 //    __dev.editor('smooth')                press Smooth once; returns the wobble before and after
 //    __dev.editor('roughness')             how wobbly the road is (shape.ts roadRoughness), and the
-//                                          same measure on the built preview's samples
+//                                          same measure on the built preview's samples; `bumps`: how
+//                                          bumpy the selected stretch (or the whole road) is on the built
+//                                          preview, as a share of g at 180 km/h (smooth.ts builtBumpiness)
 //    __dev.editor('bend', [at, dx, dz, reach])   grab the road at `at` and pull it by (dx, dz) metres
 //    __dev.editor('straight', [fromAt, toAt])    make that stretch straight
 //    __dev.editor('curve', [fromAt, toAt, x, z]) make it one curve through (x, z)
@@ -64,6 +66,8 @@
 //    __dev.editor('raise', [from, to, h])  set the middle of that stretch to h metres above the ground
 //                                          (the Height tool's slider); returns ok and the status line
 //    __dev.editor('raisePoint', [i, h])    the same smooth hump centred on road point i (editor8's point slider)
+//    __dev.editor('smoothBumps', [from, to])  press Smooth the bumps here on that stretch (or the selected
+//                                          one); returns ok, what it said and the selection (editor12)
 //    __dev.editor('problems')              the Checks list: each row's key, title, remedy, offer
 //    __dev.editor('findFixes')             finish looking for fixes now (no waiting), then the list
 //                                          (fix / go / game / none), its button and where it is
@@ -117,8 +121,9 @@ import { fitToDraft } from './Overlay'
 import { crossingScreens, markScreens, pinScreens } from './mapDraw'
 import { heightLimits } from './raise'
 import { type StretchTool, isStretchTool } from './stretchRuns'
-import { pickStretchAt } from './stretchTools'
-import { currentProblems, findFixesNow, fixAll, fixOffer, fixProblem, raisePoint, raiseSection, selectProblem } from './fixActions'
+import { pickStretchAt, smoothStretch } from './stretchTools'
+import { builtBumpiness } from './smooth'
+import { currentProblems, findFixesNow, fixAll, fixOffer, fixProblem, liveRuntime, raisePoint, raiseSection, selectProblem } from './fixActions'
 import { runEditorSelfTest } from './selfTest'
 import { checkVerdict } from './checks'
 import { cancelDriveToDraw, clearLaidRoad, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
@@ -221,7 +226,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -351,6 +356,13 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     }
     case 'marks':
       return markScreens()
+    case 'smoothBumps': {
+      const sel = useEditor.getState().selection
+      const [a, b] = Array.isArray(arg) ? arg.map(Number) : sel?.kind === 'section' ? [sel.from, sel.to] : []
+      if (![a, b].every(Number.isFinite)) return 'smoothBumps needs [fromAt, toAt] (or a stretch selected)'
+      const said = smoothStretch(a, b)
+      return { ok: said?.changed ?? false, message: said?.text ?? '', tone: said?.tone ?? null, selection: useEditor.getState().selection }
+    }
     case 'raisePoint': {
       const [i, h] = Array.isArray(arg) ? arg.map(Number) : []
       if (![i, h].every(Number.isFinite)) return 'raisePoint needs [pointIndex, metres]'
@@ -461,11 +473,23 @@ function roughnessNow() {
     for (let i = 0; i < S.count; i++) rough += Math.abs(S.curvature[(i + 1) % S.count] - S.curvature[i])
     built = Math.round((rough / (S.count * S.ds)) * 1e6)
   }
+  // How bumpy the road is up and down (Smooth the bumps here): the selected stretch, or the whole road.
+  const live = liveRuntime()
+  let bumps: { from: number; to: number; metres: number; kmh: number; worstG: number; crestG: number; p95G: number } | null = null
+  if (live) {
+    const n = s.draft.points.length
+    const sel = s.selection
+    const [from, to] = sel?.kind === 'section' ? [sel.from, sel.to] : [0, n - 1e-6]
+    const b = builtBumpiness(live, from, to, n, 180)
+    const r2 = (v: number) => Math.round(v * 100) / 100
+    bumps = { from, to, metres: Math.round(b.metres), kmh: b.kmh, worstG: r2(b.worst), crestG: r2(b.crest), p95G: r2(b.p95) }
+  }
   return {
     editor: Math.round(roadRoughness(s.draft.points)),
     built,
     tightestM: Math.round(tightestOnRoad(s.draft.points).radius * 10) / 10,
     points: s.draft.points.length,
+    bumps,
   }
 }
 

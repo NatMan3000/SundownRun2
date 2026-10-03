@@ -35,6 +35,8 @@ import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type Plac
 import { type RedrawPlan, type RoadCurve, PER, advanceAt, frameAt, metresBetween, roadCurve, wrapAt } from './road'
 import { roadLine, stretchOf } from './shape'
 import { view, worldToScreen } from './view'
+import { WALL_RAMP, WALL_REACH } from '../track/road'
+import { smoothstep } from '../track/noise'
 
 /** What can be picked on the map. */
 export type Pick =
@@ -963,23 +965,58 @@ function drawPieces(ctx: CanvasRenderingContext2D, rc: RoadCurve, pieces: readon
   }
 }
 
+/**
+ * Where a wall ride's wall really stands, as the game builds it (src/track/road.ts):
+ * from WALL_REACH metres before `at` to WALL_REACH metres past `at + length`. Its
+ * `at` values on the map's road, and `height(m)`: how much of its full height the
+ * wall has `m` metres after `at` (0 to 1: it grows in over WALL_RAMP metres at
+ * the start and fades out over WALL_RAMP at the end).
+ */
+export function wallRideReach(rc: RoadCurve, at: number, length: number): { from: number; to: number; startM: number; endM: number; height: (m: number) => number } {
+  const startM = -WALL_REACH
+  const endM = length + WALL_REACH
+  return {
+    from: advanceAt(rc, at, startM),
+    to: advanceAt(rc, at, endM),
+    startM,
+    endM,
+    height: (m) => smoothstep(0, WALL_RAMP, Math.min(m - startM, endM - m)),
+  }
+}
+
+/**
+ * A wall ride on the map: a bold glowing line along the road's edge where the
+ * wall stands full height, thinning and fading where it grows in and fades out,
+ * so the map shows the whole wall the game builds, not just the piece's length.
+ */
 function drawWallRide(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, length: number, side: 'left' | 'right' | 'both', roadWidth: number): void {
-  const steps = 24
+  const reach = wallRideReach(rc, at, length)
+  const steps = Math.max(24, Math.ceil((reach.endM - reach.startM) / 4))
   ctx.save()
   ctx.strokeStyle = PALETTE.wallRide
   ctx.shadowColor = PALETTE.wallRide
   ctx.shadowBlur = 8
-  ctx.lineWidth = 5
   ctx.lineCap = 'round'
   for (const sign of side === 'both' ? [-1, 1] : side === 'left' ? [-1] : [1]) {
-    const pts: P[] = []
-    for (let k = 0; k <= steps; k++) {
-      const f = frameAt(rc, advanceAt(rc, at, (length * k) / steps))
-      const off = sign * (roadWidth / 2 + 1)
-      pts.push({ x: f.p.x + f.right.x * off, z: f.p.z + f.right.z * off })
+    const off = sign * (roadWidth / 2 + 1)
+    const spot = (m: number): P => {
+      const f = frameAt(rc, advanceAt(rc, at, m))
+      return { x: f.p.x + f.right.x * off, z: f.p.z + f.right.z * off }
     }
-    line(ctx, pts, false)
-    ctx.stroke()
+    // Segment by segment, as thick and as bright as the wall is tall there.
+    let a = spot(reach.startM)
+    for (let k = 1; k <= steps; k++) {
+      const m = reach.startM + ((reach.endM - reach.startM) * k) / steps
+      const b = spot(m)
+      const h = reach.height(m - (reach.endM - reach.startM) / steps / 2)
+      if (h > 0.01) {
+        ctx.globalAlpha = 0.3 + 0.7 * h
+        ctx.lineWidth = 1.5 + 3.5 * h
+        line(ctx, [a, b], false)
+        ctx.stroke()
+      }
+      a = b
+    }
   }
   ctx.restore()
 }

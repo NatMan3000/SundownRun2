@@ -18,6 +18,9 @@
 //  (raise.ts heightLimitSteps), a build at a time between frames so
 //  the editor never freezes. heightLimitsNow() hands the panel what
 //  is known so far for the stretch on screen.
+//
+//  The Height tool's "Smooth the bumps here" (smoothStretch) lays the
+//  picked stretch on a smooth line through the ground (smooth.ts).
 // ============================================================
 
 import { audio } from '../core/api'
@@ -25,6 +28,7 @@ import { getTrack } from '../track/current'
 import { type Draft, commit, draftId, mapIsEmpty, pointGroundFor, say, setTool, useEditor, EMPTY_MAP_HINT } from './draft'
 import { liveRuntime } from './fixActions'
 import { type HeightLimits, type RaiseOptions, groundDraft, heightLimitSteps } from './raise'
+import { smoothDraft } from './smooth'
 import { type StretchMarks, type StretchRun, type StretchTool, bankStretchAround, heightStretchAround, resizeStretch, runAt, stretchMarks, stretchMetres, widthStretchAround } from './stretchRuns'
 
 /** Heights with no known world (only before the ground can be worked out): just the lifts. */
@@ -145,6 +149,52 @@ export function groundStretch(from: number, to: number): boolean {
   say(res.done ?? 'Done.', res.limited ? 'warn' : 'good')
   audio.ui('select')
   return true
+}
+
+// ---------------------------------------------------------------- Smooth the bumps here (editor12)
+
+/** What the last "Smooth the bumps here" did (or why it did nothing), on the draft it left and the stretch it left picked. */
+export interface SmoothSaid {
+  draft: Draft
+  from: number
+  to: number
+  text: string
+  tone: 'good' | 'warn' | 'info'
+  /** True when the road changed (one Undo step). */
+  changed: boolean
+}
+
+/**
+ * The Height tool's "Smooth the bumps here": the picked stretch's road laid on
+ * a smooth line through the ground under it (smooth.ts), built and checked
+ * first. One Undo step, and the same stretch stays picked. Returns what it did
+ * in words, for the panel (also said on the status line).
+ */
+export function smoothStretch(from: number, to: number): SmoothSaid | null {
+  const s = useEditor.getState()
+  if (s.mode !== 'edit') return null
+  const id = s.savedId ?? draftId(s.draft)
+  const t = getTrack()
+  const o = raiseOptions() ?? { id, pointGround: pointGroundFor(s.draft), params: t && t.id === id ? { ...t.params } : {} }
+  const res = smoothDraft(s.draft, from, to, o)
+  if (!res.ok || !res.draft) {
+    const said: SmoothSaid = { draft: s.draft, from, to, text: res.reason ?? "Can't smooth that stretch.", tone: res.already ? 'info' : 'warn', changed: false }
+    say(said.text, said.tone)
+    audio.ui(res.already ? 'select' : 'error')
+    return said
+  }
+  const next = res.draft
+  commit((x) => {
+    x.points = next.points
+    x.pieces = next.pieces
+    x.startAt = next.startAt
+  })
+  const sel = { from: res.from ?? from, to: res.to ?? to }
+  useEditor.setState({ selection: { kind: 'section', ...sel } })
+  const said: SmoothSaid = { draft: useEditor.getState().draft, ...sel, text: res.done ?? 'Smoothed.', tone: res.limited ? 'warn' : 'good', changed: true }
+  say(said.text, said.tone)
+  audio.ui('select')
+  return said
 }
 
 // ---------------------------------------------------------------- the Height slider's ends, a build at a time
