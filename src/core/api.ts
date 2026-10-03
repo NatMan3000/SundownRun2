@@ -64,6 +64,24 @@ export interface SongInfo {
   favourite: boolean
 }
 
+/** One saved song, as the Favourite songs list shows it. */
+export interface FavouriteSong {
+  /** The seed: the same seed always gives the same song and the same name. */
+  seed: number
+  /** The mood it plays in: 'cruise', 'drive', 'race' or 'hyper'. */
+  mood: string
+  /** The mood's name for people, e.g. "Race". */
+  moodName: string
+  /** Its speed, in beats a minute. */
+  bpm: number
+  /** Its generated name, e.g. "Midnight Overdrive". */
+  name: string
+  /** Its key in words, e.g. "A minor". */
+  key: string
+  /** It is the song playing now (or starting at the next bar). */
+  playing: boolean
+}
+
 export interface AudioApi {
   /** Menu sounds. */
   ui: (kind: UiSound) => void
@@ -80,6 +98,14 @@ export interface AudioApi {
   /** Which songs are picked from, and how many favourites there are. */
   songList: () => { list: SongList; favourites: number }
   setSongList: (list: SongList) => void
+  /** The saved songs, the first saved first. Works while no music plays. */
+  favourites: () => FavouriteSong[]
+  /** Play favourite number `index` (0 = the first), starting at the next bar like nextSong. False if there is no such favourite or no music. */
+  playFavourite: (index: number) => boolean
+  /** Take favourite number `index` out of the list. Returns the song taken out, or null. */
+  removeFavourite: (index: number) => FavouriteSong | null
+  /** Put the last song removeFavourite took out back where it was. False if there is nothing to put back. */
+  undoRemoveFavourite: () => boolean
 }
 
 // ---------------------------------------------------------------- vehicle catalog (owner: vehicle)
@@ -176,6 +202,10 @@ export const audio: AudioApi = {
   toggleFavourite: () => false,
   songList: () => ({ list: 'all', favourites: 0 }),
   setSongList: noop,
+  favourites: () => [],
+  playFavourite: () => false,
+  removeFavourite: () => null,
+  undoRemoveFavourite: () => false,
 }
 export const vehicle: VehicleApi = {
   bodies: () => [],

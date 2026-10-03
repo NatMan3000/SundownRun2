@@ -10,6 +10,8 @@
 //                saved song plays exactly the same every time.
 //    Play        All (a new song every drive) or only your
 //                Favourites, one after another.
+//    Favourite songs   opens the list of saved songs, to play one
+//                or remove one (FavouriteSongs.tsx).
 //
 //  Everything goes through the audio API (src/core/api.ts), which
 //  the music installs (src/audio/music/songs.ts keeps the list).
@@ -41,7 +43,7 @@ function useSongState() {
   return { song: audio.song(), list: audio.songList(), refresh }
 }
 
-export function SongRows() {
+export function SongRows(props: { onOpenFavourites: () => void }) {
   const { song, list, refresh } = useSongState()
   const options: { value: SongList; label: string }[] = [
     { value: 'all', label: 'All' },
@@ -91,6 +93,17 @@ export function SongRows() {
           />
         </div>
       )}
+      <MenuButton
+        id="fav-songs"
+        label="Favourite songs"
+        sub={list.favourites === 0 ? 'None saved yet' : `${list.favourites} saved`}
+        help={
+          list.favourites === 0
+            ? 'Your saved songs. None yet: open it to see how to save one.'
+            : 'See the songs you saved: play one now, or take one out.'
+        }
+        onAccept={props.onOpenFavourites}
+      />
     </>
   )
 }

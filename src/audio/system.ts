@@ -31,7 +31,7 @@
 import type { AnyGameEvent } from '../core/events'
 import { subscribe } from '../core/events'
 import { controlSignals } from '../core/controls'
-import type { SongInfo, SongList } from '../core/api'
+import type { FavouriteSong, SongInfo, SongList } from '../core/api'
 import { environment, rewind, telemetry } from '../core/telemetry'
 import { getGame } from '../core/store'
 import { getSettings } from '../core/settings'
@@ -478,6 +478,32 @@ export class AudioRig {
   setSongList = (list: SongList): void => {
     this.songs.setList(list)
     if (list === 'favourites' && this.songs.playingFavourites && !this.songs.isFavourite(this.songs.song)) this.nextSong()
+  }
+
+  /** The saved songs, as the Favourite songs list shows them. Works while no music plays. */
+  favourites = (): FavouriteSong[] => {
+    return this.songs.describeFavourites()
+  }
+
+  /** Play favourite number `index` from the next bar (like nextSong). False if there is no such favourite or no music. */
+  playFavourite = (index: number): boolean => {
+    const music = this.g?.music
+    if (!music) return false
+    const s = this.songs.pickFavourite(index)
+    if (!s) return false
+    music.newSession(s.mood, s.bpm, s.seed)
+    return true
+  }
+
+  /** Take favourite number `index` out of the list (the music carries on). Returns the song taken out, or null. */
+  removeFavourite = (index: number): FavouriteSong | null => {
+    const s = this.songs.removeFavourite(index)
+    return s ? this.songs.describe(s) : null
+  }
+
+  /** Put the last favourite taken out back where it was. */
+  undoRemoveFavourite = (): boolean => {
+    return this.songs.undoRemove()
   }
 
   // ---------------------------------------------------------------- dev

@@ -14,13 +14,16 @@
 //     Favourites" choice in this browser's localStorage, so they
 //     survive a reload;
 //   - picks the next song: a fresh seed in the track's mood, or
-//     the next favourite on the list.
+//     the next favourite on the list;
+//   - plays one favourite straight from the list, or takes one out
+//     (and can put the last one taken out back where it was).
 //
 //  The pause menu and the HUD reach it through the audio API in
-//  src/core/api.ts (song, nextSong, toggleFavourite, songList).
+//  src/core/api.ts (song, nextSong, toggleFavourite, songList,
+//  favourites, playFavourite, removeFavourite, undoRemoveFavourite).
 // ============================================================
 
-import type { SongInfo, SongList } from '../../core/api'
+import type { FavouriteSong, SongInfo, SongList } from '../../core/api'
 import { mulberry32 } from '../synth'
 import { keyName } from '../theory'
 import { MOODS, rollKey } from './score'
@@ -81,6 +84,9 @@ export function songKey(song: Song): string {
   return keyName(k.root, k.scale)
 }
 
+/** Each mood's name for people, as the favourites list shows it. */
+const MOOD_NAMES: Record<MoodId, string> = { cruise: 'Cruise', drive: 'Drive', race: 'Race', hyper: 'Hyper' }
+
 // ---------------------------------------------------------------- saved choices
 
 const STORAGE_KEY = 'sr2.music.v1'
@@ -135,6 +141,8 @@ export class SongBook {
   private picks = 0
   /** Where we are in the favourites while playing them in order. */
   private favCursor = -1
+  /** The last favourite taken out by removeFavourite, and where it was, so it can go back. */
+  private removed: { song: Song; index: number } | null = null
   /** True if saving to localStorage failed (private browsing): favourites last until reload. */
   storageBroken = false
 
@@ -186,6 +194,73 @@ export class SongBook {
     }
     this.save()
     return i < 0
+  }
+
+  /**
+   * Play favourite number `index` (0 = the first saved) next. The caller
+   * starts it at the next bar. In "Favourites", the songs after it follow
+   * on from there. Returns the song, or null if there is no such favourite.
+   */
+  pickFavourite(index: number): Song | null {
+    const fav = this.saved.favourites[index]
+    if (!fav) return null
+    this.favCursor = index
+    this.current = { ...fav }
+    this.picks++
+    return this.current
+  }
+
+  /**
+   * Take favourite number `index` out of the list. Only the last one taken
+   * out can be put back (undoRemove). Returns the song, or null if there is
+   * no such favourite. The song playing carries on either way.
+   */
+  removeFavourite(index: number): Song | null {
+    const favs = this.saved.favourites
+    if (!Number.isInteger(index) || index < 0 || index >= favs.length) return null
+    const [song] = favs.splice(index, 1)
+    // keep the cursor on the same next song after removing one before it
+    if (index <= this.favCursor) this.favCursor--
+    this.removed = { song, index }
+    this.save()
+    return song
+  }
+
+  /**
+   * Put the last song taken out back in the same place. False if nothing
+   * was taken out, it is already back (saved again meanwhile), or the list
+   * is full.
+   */
+  undoRemove(): boolean {
+    const r = this.removed
+    if (!r) return false
+    this.removed = null
+    const favs = this.saved.favourites
+    if (favs.some((f) => sameSong(f, r.song)) || favs.length >= MAX_FAVOURITES) return false
+    const at = Math.min(r.index, favs.length)
+    favs.splice(at, 0, r.song)
+    if (at <= this.favCursor) this.favCursor++
+    this.save()
+    return true
+  }
+
+  /** A saved song as the favourites list shows it. */
+  describe(song: Song): FavouriteSong {
+    const cur = this.current
+    return {
+      seed: song.seed,
+      mood: song.mood,
+      moodName: MOOD_NAMES[song.mood],
+      bpm: song.bpm,
+      name: songName(song.seed),
+      key: songKey(song),
+      playing: !!cur && sameSong(cur, song),
+    }
+  }
+
+  /** Every favourite as the list shows it, oldest first. */
+  describeFavourites(): FavouriteSong[] {
+    return this.saved.favourites.map((f) => this.describe(f))
   }
 
   get list(): SongList {

@@ -13,7 +13,8 @@
 //                                      engine readout, sounds played
 //    window.__dev.audio('help')        list the test commands
 //    N / pad B while driving           next song (the pause menu has
-//                                      Next song, Save, and All / Favourites)
+//                                      Next song, Save, All / Favourites,
+//                                      and the Favourite songs list)
 //    ?nomusic=1                        mute the music
 //    ?engine=muscle|rally|hover        pick the engine sound for this visit
 //    ?motor=nodes                      force the node motor (what a LAN guest hears)
@@ -50,6 +51,10 @@ const DEV_HELP = [
   "audio('next-song')                  skip to another song (as N / pad B / the pause menu)",
   "audio('favourite')                  save the song playing, or take it out; returns whether it is saved",
   "audio('songs', 'all'|'favourites')  pick from every song or only the favourites (no arg: show the choice)",
+  "audio('favourites')                 the saved songs: name, mood, key, bpm, seed, playing",
+  "audio('play-favourite', i)          play favourite number i (0 = the first) from the next bar",
+  "audio('remove-favourite', i)        take favourite number i out; returns the song taken out",
+  "audio('undo-remove')                put the last favourite taken out back where it was",
   "audio('lift')                       lift the song a key at the next phrase line (the final-lap key change)",
   "audio('style', s)                  which band plays the drive, from the next bar: classic | house, or 'auto' (back to config.ts musicStyle); no arg: show it",
   "audio('engine-sound', id)          play another engine now: muscle rally hover, or 'auto' (back to ?engine= / config.ts)",
@@ -74,6 +79,10 @@ export function AudioSystem() {
       toggleFavourite: () => rig.toggleFavourite(),
       songList: () => rig.songList(),
       setSongList: (list) => rig.setSongList(list),
+      favourites: () => rig.favourites(),
+      playFavourite: (index) => rig.playFavourite(index),
+      removeFavourite: (index) => rig.removeFavourite(index),
+      undoRemoveFavourite: () => rig.undoRemoveFavourite(),
     })
     const offInspector = registerInspector('audio', () => rig.inspect())
     const offDev = registerDev(
@@ -137,6 +146,14 @@ function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unkn
     case 'songs':
       if (a === 'all' || a === 'favourites') rig.setSongList(a)
       return rig.songList()
+    case 'favourites':
+      return rig.favourites()
+    case 'play-favourite':
+      return rig.playFavourite(Number(a))
+    case 'remove-favourite':
+      return rig.removeFavourite(Number(a))
+    case 'undo-remove':
+      return rig.undoRemoveFavourite()
     case 'lift':
       return rig.liftKey()
     case 'style':
