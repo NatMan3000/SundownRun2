@@ -14,7 +14,7 @@
 //                with changes not saved, and "Make a random track?")
 //
 //  The rail, top to bottom: the tools in the order Josh reaches for
-//  them (Select, Pencil, Straight, Curve, Bend, Height, Bank, Width,
+//  them (Select, Pencil, Straight, Curve, Bend, Bank, Height, Width,
 //  Place pieces), then the whole-road buttons (Undo, Redo, New track,
 //  Random track), then the view (Zoom in, Zoom out, Fit track, Whole
 //  world), then the Library. Every button shows its name in words, and
@@ -97,8 +97,8 @@ const RAIL = {
   straight: { name: 'Straight', tip: 'Click two spots on the road: the road between them goes dead straight.', key: 'L' },
   curve: { name: 'Curve', tip: 'Click where a bend starts and where it ends, then pull: the road between becomes one even curve.', key: 'C' },
   bend: { name: 'Bend', tip: 'Grab one spot on the road and pull it: the road around it follows. Mouse wheel: how much.', key: 'G' },
-  height: { name: 'Height', tip: 'Pick a stretch of road and raise it into a hill or a bridge, or bring it back down.', key: 'H' },
   bank: { name: 'Bank', tip: 'Pick a stretch of road and tilt it, like a banked corner.', key: 'B' },
+  height: { name: 'Height', tip: 'Pick a stretch of road and raise it into a hill or a bridge, or bring it back down.', key: 'H' },
   width: { name: 'Width', tip: 'Pick a stretch of road and make it wider or narrower.', key: 'N' },
   place: { name: 'Place pieces', tip: 'Boost pads, ramps, loops, the start line and more: pick one, then click the road.', key: '1-0' },
   undo: { name: 'Undo', tip: 'Take back the last change.', key: 'Ctrl+Z' },
@@ -263,8 +263,8 @@ function Toolbar(props: { onLibrary: () => void }) {
           <ToolButton id="straight" active={tool === 'straight'} onClick={() => pickTool('straight')} icon={<StraightIcon />} />
           <ToolButton id="curve" active={tool === 'curve'} onClick={() => pickTool('curve')} icon={<CurveIcon />} />
           <ToolButton id="bend" active={tool === 'bend'} onClick={() => pickTool('bend')} icon={<BendIcon />} />
-          <ToolButton id="height" active={tool === 'height'} onClick={() => pickTool('height')} icon={<HeightIcon />} />
           <ToolButton id="bank" active={tool === 'bank'} onClick={() => pickTool('bank')} icon={<BankIcon />} />
+          <ToolButton id="height" active={tool === 'height'} onClick={() => pickTool('height')} icon={<HeightIcon />} />
           <ToolButton id="width" active={tool === 'width'} onClick={() => pickTool('width')} icon={<WidthIcon />} />
           <ToolButton id="place" active={tool === 'place'} onClick={() => pickTool('place')} icon={<PiecesIcon />} />
           <div className="sre-tools-gap" />

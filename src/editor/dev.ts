@@ -464,7 +464,7 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       return { sx: Math.round(s.sx * 10) / 10, sy: Math.round(s.sy * 10) / 10, x: Math.round(w.x * 10) / 10, z: Math.round(w.z * 10) / 10 }
     }
     case 'tool': {
-      const tools = ['select', 'pencil', 'straight', 'curve', 'bend', 'height', 'bank', 'width', 'place']
+      const tools = ['select', 'pencil', 'straight', 'curve', 'bend', 'bank', 'height', 'width', 'place']
       if (!tools.includes(String(arg))) return `tool must be one of ${tools.join(' ')}`
       setTool(String(arg) as EditorTool)
       return useEditor.getState().tool
