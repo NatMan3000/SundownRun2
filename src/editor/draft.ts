@@ -34,6 +34,7 @@ import { randomTrack } from './randomTrack'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import { checkBuiltTrack, gateItems } from './checks'
 import { crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
+import { keepBridgesClear } from './bankBridges'
 import type { P } from './geom'
 import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
 import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
@@ -1316,12 +1317,30 @@ export function sectionPoints(count: number, from: number, to: number): number[]
 /** Set (or with null, clear back to automatic) the bank in degrees on a stretch of road. */
 export function setSectionBank(from: number, to: number, deg: number | null): void {
   if (noRoadYet()) return
+  let words = ''
+  const moved: { mapAt: ((at: number) => number) | null } = { mapAt: null }
   commit((d) => {
+    const old = d.points.map((p) => ({ ...p }))
     for (const i of sectionPoints(d.points.length, from, to)) {
       if (deg === null) delete d.points[i].bank
       else d.points[i].bank = Math.round(deg)
     }
+    // A bank lifts the road's middle (it tilts about its low edge): a bridge over this stretch goes up with it (bankBridges.ts).
+    const kept = keepBridgesClear(old, d.points, d.pieces, d.startAt, d.width, pointGroundFor(d) ?? flatGround)
+    if (kept.points !== d.points && kept.words) {
+      d.points = kept.points
+      for (const p of d.pieces) p.at = round3(kept.mapAt(p.at))
+      d.startAt = round3(kept.mapAt(d.startAt))
+      carryAlongside(d, old, kept.mapAt)
+      moved.mapAt = kept.mapAt
+    }
+    words = kept.words
   })
+  // The road was evened out to raise the bridge: the same stretch stays selected.
+  const sel = useEditor.getState().selection
+  const map = moved.mapAt
+  if (map && sel?.kind === 'section') useEditor.setState({ selection: { kind: 'section', from: round3(map(from)), to: round3(map(to)) } })
+  if (words) say(words, /couldn't|too low/.test(words) ? 'warn' : 'good')
 }
 
 /** Set (or with null, clear back to the track's width) the road width on a stretch. */

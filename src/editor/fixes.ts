@@ -34,13 +34,16 @@
 // ============================================================
 
 import { TRACK_DEFAULTS, type RoadPoint } from '../track/schema'
-import type { TrackGate } from '../track/gates'
+import { type TrackGate, crossingClearance } from '../track/gates'
 import { SURFACE_CODE, type NearestHit, type TrackRuntime } from '../track/types'
 import { trackInternals } from '../track/build'
+import { circularSmooth } from '../track/road'
 import type { StrokeIssue } from './cleanup'
 import type { Draft } from './draft'
 import { roadBound } from './draftFile'
-import { type GroundFn, crossingNear, roadCrossings, swapDraft, tryOneWay } from './bridges'
+import { BRIDGE_GAP, type GroundFn, crossingNear, roadCrossings, swapDraft, tryOneWay } from './bridges'
+import { liftBridgeBy } from './bankBridges'
+import { type BankRegion, bankRegions, handBankNear, regionNear } from './handBanks'
 import { type P, circumradius, dist } from './geom'
 import { LOOP_MIN_RADIUS, LOOP_RUN_IN, advanceAt, atAfterDelete, frameAt, metresBetween, nearestOnRoad, roadCurve, wrapAt } from './road'
 import { type KeepZone, type ShapeWorld, MIN_RADIUS, SMOOTH_SIGMA, atOf, densify, nearestStraightStart, pointHeight, posOf, roadLine, sOf, sOfPoint, smoothRoad, tightestBetween, wrapS } from './shape'
@@ -78,7 +81,7 @@ export interface FixResult {
 }
 
 /** At most this many ways are tried for one problem (each is a full build and check). */
-const MAX_TRIES = 8
+const MAX_TRIES = 10
 
 const FLAT: GroundFn = () => 0
 
@@ -258,7 +261,7 @@ function easeBank(d: Draft, at: number, reach: number, scale: number, ctx: FixCo
     return { ...p, bank }
   })
   if (!changed) return null
-  return { draft: withPoints(d, out, even.mapAt, ctx), did: `eased the tilt over ${Math.round(2 * reach)} m of road there${scale < 1 ? ', with less bank' : ''} (set by hand: the Stretch tool's Auto puts it back).` }
+  return { draft: withPoints(d, out, even.mapAt, ctx), did: `eased the tilt over ${Math.round(2 * reach)} m of road there${scale < 1 ? ', with less bank' : ''} (set by hand: the Bank tool's Auto puts it back).` }
 }
 
 /** Bank set by hand within `reach` metres of `at`, times `scale` (0: back to automatic). */
@@ -278,6 +281,229 @@ function scaleBankNear(d: Draft, at: number, reach: number, scale: number, ctx: 
   if (!changed) return null
   return { draft: withPoints(d, out, (a) => a, ctx), did: scale === 0 ? 'put the bank there back to automatic.' : `banked the road there ${Math.round((1 - scale) * 100)}% less.` }
 }
+
+// ---------------------------------------------------------------- banks Josh set by hand
+
+/** How fast a car can be going there, at most (the crest check's own top speed), m/s. */
+const TOP_SPEED = 250 / 3.6
+/** A spread roll is planned to ask this much of gravity at most (under the crest check's 80%, for the 3D road's extras). */
+const ROLL_PLAN = 0.55
+/** The smootherstep's steepest bend (its second derivative's peak): see bankRolls.ts. */
+const S_PEAK = 10 / Math.sqrt(3)
+const DEG = Math.PI / 180
+
+/** 0 -> 1 with no slope and no bend at either end. */
+function smootherstep(u: number): number {
+  const x = u < 0 ? 0 : u > 1 ? 1 : u
+  return x * x * x * (x * (x * 6 - 15) + 10)
+}
+
+/** The built road's bend smoothed the way the game smooths it before reading a `bank` setting's side (road.ts bCurvWide). */
+const sideBend = new WeakMap<TrackRuntime, Float32Array>()
+
+/** Which way a `bank` setting leans at each point, the way the game reads it (road.ts): +1 lifts the left edge, -1 the right. */
+function settingSides(points: readonly RoadPoint[], t: TrackRuntime, ground: GroundFn): number[] {
+  const S = t.samples
+  let bend = sideBend.get(t)
+  if (!bend) {
+    // The game reads a setting "into the corner" from the bend after two passes of a 30 m smoothing.
+    bend = new Float32Array(S.curvature)
+    circularSmooth(bend, Math.round(30 / S.ds), 2)
+    sideBend.set(t, bend)
+  }
+  const b = bend
+  const hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+  return points.map((p) => {
+    t.nearest(p.x, pointHeight(p, ground), p.z, hit)
+    return b[hit.index] >= -1 / 1500 ? 1 : -1
+  })
+}
+
+/** The built road's bank at a point, degrees (+ = left edge up), and the sample it is at. */
+function builtBankAt(t: TrackRuntime, p: RoadPoint, ground: GroundFn): { deg: number; index: number } {
+  const hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
+  t.nearest(p.x, pointHeight(p, ground), p.z, hit)
+  return { deg: t.samples.bank[hit.index] / DEG, index: hit.index }
+}
+
+/**
+ * How long a roll from one bank to another (degrees apart, at most `bankDeg` steep)
+ * needs to be so a car at `v` m/s on the outermost lane stays on: a smootherstep roll
+ * of length L bends that lane by lane x S_PEAK x change / L^2 (bankRolls.ts).
+ */
+function rollMetres(changeDeg: number, bankDeg: number, lane: number, v: number): number {
+  const need = (lane * S_PEAK * Math.abs(changeDeg) * DEG * v * v) / (ROLL_PLAN * G_ACC * Math.cos(Math.min(80, Math.abs(bankDeg)) * DEG))
+  return Math.max(40, Math.sqrt(need))
+}
+const G_ACC = 9.81
+
+/**
+ * Rework a hand-set region so the road rolls into and out of it gently enough.
+ *  scale     how much of Josh's bank to keep (1: all of it)
+ *  stretch   how much longer than the bare minimum to make each roll
+ * Inside the region every point keeps its bank (times `scale`), and the gaps
+ * between his stretches get the bank either side, so the road doesn't roll out
+ * and back in. The whole region leans the way most of it does (on a gentle bend
+ * the game can read the same setting as leaning either way). Either side, new
+ * hand-set points roll the bank in from what the road does there on its own,
+ * over as much road as a car at top speed needs. Returns null if nothing changes
+ * or there's no room.
+ */
+function spreadBank(d: Draft, region: BankRegion, scale: number, stretch: number, ctx: FixContext): Candidate | null {
+  const t = ctx.before.runtime
+  if (!t) return null
+  const ground = ctx.world.pointGround ?? FLAT
+  const even = evened(d, ctx)
+  const pts = even.points
+  const n = pts.length
+  const line = roadLine(pts)
+  const L = line.length
+  // The region on the evened road: the old points' positions moved across.
+  const k0 = Math.round(even.mapAt(region.k0 % d.points.length))
+  const k1raw = Math.round(even.mapAt(region.k1 % d.points.length))
+  const k1 = k1raw < k0 ? k1raw + n : k1raw
+  if (k1 - k0 >= n - 4) return null
+  const at = (k: number) => pts[((k % n) + n) % n]
+  const sides = settingSides(pts, t, ground)
+  const side = (k: number) => sides[((k % n) + n) % n]
+  // The way the region leans (+ = left edge up), weighted by how much each point banks.
+  let lean = 0
+  for (let k = k0; k <= k1; k++) {
+    const b = at(k).bank
+    if (b !== undefined) lean += b * side(k) * Math.abs(b)
+  }
+  const physical = lean >= 0 ? 1 : -1
+  // Each point's size of bank inside the region (gaps take the line between their neighbours).
+  const mag: number[] = []
+  for (let k = k0; k <= k1; k++) mag.push(Math.abs(at(k).bank ?? NaN))
+  for (let i = 0; i < mag.length; i++) {
+    if (!Number.isNaN(mag[i])) continue
+    let a = i - 1
+    while (a >= 0 && Number.isNaN(mag[a])) a--
+    let b = i + 1
+    while (b < mag.length && Number.isNaN(mag[b])) b++
+    const va = a >= 0 ? mag[a] : mag[b]
+    const vb = b < mag.length ? mag[b] : va
+    mag[i] = va + ((vb - va) * (i - a)) / Math.max(1, b - a)
+  }
+  const out = pts.map((p) => ({ ...p }))
+  const write = (k: number, physicalDeg: number) => {
+    const q = out[((k % n) + n) % n]
+    const v = Math.round(physicalDeg * side(k) * 2) / 2
+    q.bank = Math.max(-60, Math.min(85, v))
+  }
+  for (let k = k0; k <= k1; k++) write(k, physical * mag[k - k0] * scale)
+  // Where the road must stay level or as it is: the start grid, and loops with their run-ins.
+  const sStart = sOf(line, even.mapAt(d.startAt))
+  const busy = (s: number) => {
+    const ahead = wrapS(s - sStart, L)
+    if (ahead <= 30 || L - ahead <= 75) return true
+    return d.pieces.some((p) => {
+      if (p.type !== 'loop') return false
+      const sl = sOf(line, even.mapAt(p.at))
+      const a = wrapS(s - sl, L)
+      return L - a <= LOOP_RUN_IN + 60 || a <= 2.6 * (p.radius ?? TRACK_DEFAULTS.loopRadius) + 80
+    })
+  }
+  const others = bankRegions(d.points, roadLine(d.points)).filter((r) => r.k0 !== region.k0)
+  const inOther = (k: number) => {
+    const old = at(k)
+    return old.bank !== undefined && (k < k0 || k > k1) && others.length > 0
+  }
+  // An open road tilts about its low edge, so its high lane swings the whole width (road.ts, the bank's pivot).
+  const lane = Math.max(1, d.width - 1)
+  // Each end of the region: roll from its edge bank to the road's own bank further out.
+  let spread = 0
+  for (const dir of [-1, 1] as const) {
+    const edgeK = dir < 0 ? k0 : k1
+    const edge = mag[dir < 0 ? 0 : mag.length - 1] * scale
+    const sEdge = sOfPoint(line, ((edgeK % n) + n) % n)
+    const vHere = Math.min(TOP_SPEED, t.racingLine.speed[builtBankAt(t, at(edgeK), ground).index] * 1.15)
+    // What the road banks out there on its own (read off the built road well clear of the region), this way only.
+    const far = builtBankAt(t, pts[Math.floor(atOf(line, sEdge + dir * 260)) % n], ground).deg * physical
+    const goal = Math.max(0, Math.min(edge, far))
+    const metres = rollMetres(edge - goal, edge, lane, vHere) * stretch
+    spread = Math.max(spread, metres)
+    for (let j = 1; j < n; j++) {
+      const k = edgeK + dir * j
+      const s = sOfPoint(line, ((k % n) + n) % n)
+      const away = dir > 0 ? wrapS(s - sEdge, L) : wrapS(sEdge - s, L)
+      if (away > metres + 1 || (k >= k0 && k <= k1) || (k + n >= k0 && k + n <= k1) || (k - n >= k0 && k - n <= k1)) break
+      if (busy(s) || inOther(k)) return null
+      write(k, physical * (goal + (edge - goal) * smootherstep(1 - away / metres)))
+    }
+  }
+  const changed = out.some((p, k) => p.bank !== pts[k].bank)
+  if (!changed) return null
+  const kept = Math.round(scale * 100)
+  const did =
+    scale >= 1
+      ? `spread the tilt in and out over about ${Math.round(spread / 10) * 10} m either side of the bank you set, so it rolls gently (your bank is kept).`
+      : `spread the tilt in and out over about ${Math.round(spread / 10) * 10} m either side and banked that stretch ${100 - kept}% less (${Math.round(Math.max(...mag) * scale)} degrees at most), so it rolls gently.`
+  return { draft: withPoints(d, out, even.mapAt, ctx), did }
+}
+
+/** Put a hand-set region back to automatic banking (the game banks it from the bend). */
+function regionToAuto(d: Draft, region: BankRegion, ctx: FixContext): Candidate | null {
+  const n = d.points.length
+  const out = d.points.map((p, k) => {
+    const inside = (k >= region.k0 && k <= region.k1) || (k + n >= region.k0 && k + n <= region.k1)
+    if (!inside || p.bank === undefined) return p
+    const q = { ...p }
+    delete q.bank
+    return q
+  })
+  if (out.every((p, k) => p === d.points[k])) return null
+  return { draft: withPoints(d, out, (a) => a, ctx), did: 'put the bank on that stretch back to Auto (the game banks it to suit the bend).' }
+}
+
+/**
+ * The ways to ease a CAR GOES LIGHT or SUDDEN TILT that a bank Josh set causes,
+ * gentlest first and keeping as much of his bank as works: spread the roll over
+ * more road, then less bank (three quarters, half, a third), then back to Auto.
+ * None when no hand-set bank is near the problem.
+ */
+function* handBankWays(d: Draft, s0: number, s1: number, ctx: FixContext): Generator<Candidate> {
+  const line = roadLine(d.points)
+  const region = regionNear(d.points, line, s0, s1, 150)
+  if (!region) return
+  for (const c of [spreadBank(d, region, 1, 1, ctx), spreadBank(d, region, 1, 1.5, ctx), spreadBank(d, region, 0.75, 1.2, ctx), spreadBank(d, region, 0.5, 1.2, ctx), spreadBank(d, region, 0.3, 1.2, ctx), regionToAuto(d, region, ctx)]) {
+    if (c) yield c
+  }
+}
+
+/**
+ * A LOW BRIDGE over road Josh banked by hand (the bank lifts the lower road's
+ * middle towards the bridge, bankBridges.ts): raise the upper road by what the
+ * built road is short of (and a little more), or, keeping the bridge, ease the
+ * bank under it (less bank, then back to Auto). None when the road under the
+ * bridge has no bank set by hand.
+ */
+function* bankedBridgeWays(d: Draft, spot: P, ctx: FixContext): Generator<Candidate> {
+  const ground = ctx.world.pointGround ?? FLAT
+  const c = crossingNear(roadCrossings(d.points, ground), spot, 60)?.crossing
+  if (!c || c.over === null) return
+  const under = c.passes[c.over === 0 ? 1 : 0]
+  if (handBankNear(d.points, under.s) <= 0) return
+  const t = ctx.before.runtime
+  const gap = t ? crossingClearance(t)?.gap : undefined
+  if (gap !== undefined) {
+    for (const more of [0.6, 2]) {
+      const need = BRIDGE_GAP + more - gap
+      if (need <= 0) continue
+      const r = liftBridgeBy(d.points, d.pieces, d.startAt, d.width, c.at, need, ground)
+      if (r.ok) yield { draft: withPoints(d, r.points, r.mapAt, ctx), did: `raised the bridge ${need.toFixed(1)} m (with longer ramps) so a car fits under it over your banked road.` }
+    }
+  }
+  const line = roadLine(d.points)
+  const region = regionNear(d.points, line, under.s - UNDER_EASE, under.s + UNDER_EASE, 0)
+  if (!region) return
+  for (const cand of [spreadBank(d, region, 0.6, 1.2, ctx), spreadBank(d, region, 0.3, 1.2, ctx), regionToAuto(d, region, ctx)]) {
+    if (cand) yield { draft: cand.draft, did: cand.did.replace(/so it rolls gently\.$/, 'so the road under the bridge stays low enough for a car.') }
+  }
+}
+/** How far either side of the crossing the bank under a bridge counts, metres. */
+const UNDER_EASE = 40
 
 /** Lift the upper road at the crossing near `spot` onto a proper bridge (or swap, or make one where the roads meet). */
 function* bridgeAt(d: Draft, spot: P, ctx: FixContext): Generator<Candidate> {
@@ -420,10 +646,15 @@ export function* candidatesFor(p: Problem, d: Draft, ctx: FixContext): Generator
         if (at === null) return
         yield* some(smoothNear(d, at, 90, 1, ctx), smoothHeightsNear(d, at, 60, ctx), smoothNear(d, at, 140, 2, ctx), smoothHeightsNear(d, at, 120, ctx))
         return
-      case 'banking':
+      case 'banking': {
         if (at === null) return
+        // A bank Josh set by hand near here: rework his stretch first (it is his setting that tips too suddenly).
+        const line = roadLine(d.points)
+        const sAt = sOf(line, at)
+        yield* handBankWays(d, sAt - 30, sAt + 30, ctx)
         yield* some(easeBank(d, at, 70, 1, ctx), scaleBankNear(d, at, 120, 0.6, ctx), easeBank(d, at, 120, 1, ctx), smoothNear(d, at, 120, 1, ctx), easeBank(d, at, 160, 0.7, ctx), scaleBankNear(d, at, 200, 0, ctx))
         return
+      }
       case 'crest': {
         const ats = gateAts(g)
         const a0 = ats[0] ?? at
@@ -433,12 +664,17 @@ export function* candidatesFor(p: Problem, d: Draft, ctx: FixContext): Generator
         const len = wrapS(sOf(line, a1) - sOf(line, a0), line.length)
         const mid = atOf(line, sOf(line, a0) + len / 2)
         const reach = len / 2 + 60
+        // The roll is next to a bank Josh set by hand: rework his stretch first, keeping as much of his bank as works.
+        yield* handBankWays(d, sOf(line, a0), sOf(line, a0) + len, ctx)
         yield* some(easeBank(d, mid, reach, 1, ctx), easeBank(d, mid, reach + 60, 1, ctx), scaleBankNear(d, mid, reach, 0.7, ctx), easeBank(d, mid, reach + 60, 0.7, ctx), smoothNear(d, mid, reach + 40, 1, ctx), easeBank(d, mid, reach + 120, 0.5, ctx))
         return
       }
       case 'bridges':
       case 'ground':
-        if (p.at) yield* bridgeAt(d, p.at, ctx)
+        if (!p.at) return
+        // Over a road banked by hand: raise the bridge or ease the bank under it, before anything else.
+        yield* bankedBridgeWays(d, p.at, ctx)
+        yield* bridgeAt(d, p.at, ctx)
         return
       case 'loops':
       case 'surface': {
@@ -589,31 +825,129 @@ function nearIssue(path: string, d: Draft, spot: P | null): boolean {
   return !!p && dist(p, spot) < 40
 }
 
+/** A fix may mend a hand-set bank in one place and then go on to the next one the same check names, this many times. */
+const CHASE_DEPTH = 3
+/** A check's failure counts as somewhere else once its pin is this far away on the map, metres. */
+const MOVED_AWAY = 150
+
+/**
+ * Looking for a fix for one problem, one try at a time: each step() builds and
+ * checks one way of mending it (a few tenths of a second on a long road), so the
+ * editor can look in the background between frames (fixActions.ts) and only
+ * offer Fix it once a fix has really been found. runFix() runs it to the end.
+ *
+ * The rule: a way is kept only if the problem goes away and no other check that
+ * passed before fails after. One more thing for SUDDEN TILT and CAR GOES LIGHT:
+ * a road can have several banks Josh set by hand, and the check only names the
+ * worst one. If no way clears the whole check but one mends this spot (the check
+ * now names a place far from here) without breaking anything, the search goes on
+ * from there to mend the next one, and the two count as one fix.
+ */
+export class FixSearch {
+  /** The answer, once the search has finished. */
+  result: FixResult | null = null
+  private readonly ways: Iterator<Candidate>
+  private tried = 0
+  private first = ''
+  /** The first way that mended this spot while the check still failed somewhere else. */
+  private progress: { c: Candidate; after: Judged; next: Problem } | null = null
+  /** The search for that next spot, going on from `progress`. */
+  private sub: FixSearch | null = null
+
+  constructor(
+    readonly problem: Problem,
+    readonly draft: Draft,
+    readonly ctx: FixContext,
+    ways?: Iterable<Candidate>,
+    private readonly depth = 0,
+  ) {
+    this.ways = (ways ?? candidatesFor(problem, draft, ctx))[Symbol.iterator]()
+    if (problem.remedy.kind !== 'fix') this.result = { ok: false, reason: problem.remedy.does }
+  }
+
+  /** How many builds this search has done so far. */
+  get tries(): number {
+    return this.tried + (this.sub?.tries ?? 0)
+  }
+
+  /** Try one more way (one build and check). True once the search has finished. */
+  step(): boolean {
+    if (this.result) return true
+    if (this.sub) {
+      if (!this.sub.step()) return false
+      const r = this.sub.result as FixResult
+      const prog = this.progress as { c: Candidate; after: Judged }
+      this.result = r.ok ? { ok: true, draft: r.draft, did: `${prog.c.did} ${upperFirst(r.did ?? '')}`, after: r.after } : { ok: false, reason: this.first || r.reason }
+      return true
+    }
+    if (this.tried >= MAX_TRIES) return this.finish()
+    const n = this.ways.next()
+    if (n.done) return this.finish()
+    const c = n.value
+    this.tried++
+    const { ctx, problem: p } = this
+    const after = judgeDraft(c.draft, ctx.id, ctx.params, ctx.before.runtime)
+    if (!after.runtime) {
+      this.first ||= `the game couldn't build it that way (${after.error})`
+      return false
+    }
+    const fresh = newFailures(ctx.before.gates, after.gates)
+    if (!fresh.length && isResolved(p, after, c.draft)) {
+      this.result = { ok: true, draft: c.draft, did: c.did, after }
+      return true
+    }
+    if (!fresh.length && !this.progress && this.depth < CHASE_DEPTH) {
+      const next = movedOn(p, after, c.draft)
+      if (next) this.progress = { c, after, next }
+    }
+    if (!this.first) {
+      const g: TrackGate | undefined = fresh.find((x) => !isGameBug(x)) ?? fresh[0]
+      this.first = g ? `every way it tried made another problem (${lowerFirst(gateTitle(g, c.draft)).replace(/\.$/, '')})` : `nothing it tried made the problem go away`
+    }
+    return false
+  }
+
+  /** No way cleared the check: go on from a way that mended this spot, if there was one; else say why not. */
+  private finish(): boolean {
+    if (this.progress) {
+      const { c, after, next } = this.progress
+      this.sub = new FixSearch(next, c.draft, { ...this.ctx, before: after }, undefined, this.depth + 1)
+      return false
+    }
+    this.result = this.tried ? { ok: false, reason: this.first } : { ok: false, reason: "it couldn't find a way to mend it here" }
+    return true
+  }
+}
+
+/**
+ * After a try that didn't clear the check: is the same check (SUDDEN TILT or CAR GOES
+ * LIGHT) now failing somewhere else, far from where it was? Then this spot is mended,
+ * and the problem there (on the tried draft) is returned to go on with.
+ */
+function movedOn(p: Problem, after: Judged, mended: Draft): Problem | null {
+  if (p.source !== 'gate' || !p.gate || (p.gate.name !== 'crest' && p.gate.name !== 'banking') || !p.at) return null
+  const name = p.gate.name
+  const list = problemsOf({ draft: mended, gates: after.gates, errors: after.errors, warnings: after.warnings, notes: NO_NOTES })
+  const next = list.find((x) => x.source === 'gate' && x.gate?.name === name && x.gate.level === 'fail')
+  if (!next || !next.at || dist(next.at, p.at) < MOVED_AWAY || next.remedy.kind !== 'fix') return null
+  return next
+}
+
 /**
  * Mend problem `p` on draft `d`: try each way in turn, built and checked, and
  * keep the first that makes it go away without making any other check fail.
  * (`ways` defaults to candidatesFor; the self-test hands in its own to prove the rule.)
  */
-export function runFix(p: Problem, d: Draft, ctx: FixContext, ways: Iterable<Candidate> = candidatesFor(p, d, ctx)): FixResult {
-  if (p.remedy.kind !== 'fix') return { ok: false, reason: p.remedy.does }
-  let first = ''
-  let tried = 0
-  for (const c of ways) {
-    if (tried++ >= MAX_TRIES) break
-    const after = judgeDraft(c.draft, ctx.id, ctx.params, ctx.before.runtime)
-    if (!after.runtime) {
-      first ||= `the game couldn't build it that way (${after.error})`
-      continue
-    }
-    const fresh = newFailures(ctx.before.gates, after.gates)
-    if (!fresh.length && isResolved(p, after, c.draft)) return { ok: true, draft: c.draft, did: c.did, after }
-    if (!first) {
-      const g: TrackGate | undefined = fresh.find((x) => !isGameBug(x)) ?? fresh[0]
-      first = g ? `every way it tried made another problem (${lowerFirst(gateTitle(g, c.draft)).replace(/\.$/, '')})` : `nothing it tried made the problem go away`
-    }
+export function runFix(p: Problem, d: Draft, ctx: FixContext, ways?: Iterable<Candidate>): FixResult {
+  const search = new FixSearch(p, d, ctx, ways)
+  while (!search.step()) {
+    // one build and check per step
   }
-  if (!tried) return { ok: false, reason: "it couldn't find a way to mend it here" }
-  return { ok: false, reason: first }
+  return search.result as FixResult
+}
+
+function upperFirst(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 function lowerFirst(text: string): string {
@@ -630,7 +964,7 @@ function kindOf(p: Problem): string {
  * each built and checked on top of the last (so no fix can undo another or
  * make a check fail). Returns the mended draft and what was and wasn't done.
  */
-export function runFixAll(d: Draft, ctx: FixContext, notes: readonly StrokeIssue[]): { draft: Draft; after: Judged; did: string[]; couldNot: string[] } {
+export function runFixAll(d: Draft, ctx: FixContext, notes: readonly StrokeIssue[], known?: ReadonlyMap<string, FixResult>): { draft: Draft; after: Judged; did: string[]; couldNot: string[] } {
   let cur = d
   let judged = ctx.before
   const did: string[] = []
@@ -648,7 +982,8 @@ export function runFixAll(d: Draft, ctx: FixContext, notes: readonly StrokeIssue
     const next = list.find((x) => x.remedy.kind === 'fix' && eligible(kindOf(x)))
     if (!next) break
     const k = kindOf(next)
-    const r = runFix(next, cur, { ...ctx, before: judged })
+    // On the draft as it was, the background search (fixActions.ts) may already know the answer.
+    const r = (cur === d ? known?.get(next.key) : undefined) ?? runFix(next, cur, { ...ctx, before: judged })
     if (r.ok && r.draft && r.after) {
       cur = r.draft
       judged = r.after

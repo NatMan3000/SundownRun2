@@ -15,7 +15,7 @@
 //    Save / Library / Test drive / Exit
 // ============================================================
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { PALETTE } from '../core/palette'
 import { audio } from '../core/api'
 import { listTracks } from '../track/registry'
@@ -49,7 +49,7 @@ import {
   pointGroundFor,
   swapBridge,
 } from './draft'
-import { currentProblems, fixAll, fixProblem, goToProblem, lastFixed, liveRuntime, raisePoint, raiseSection, selectProblem } from './fixActions'
+import { type FixOffer, canWords, currentProblems, fixAll, fixOffer, fixProblem, fixSearchVersion, goToProblem, lastFixed, liveRuntime, raisePoint, raiseSection, selectProblem, subscribeFixSearch } from './fixActions'
 import { NO_NOTES, type Problem, problemByKey, problemsOf } from './problems'
 import { RAISE_MAX, heightRange, liftAt, stretchNow, stretchSpeed } from './raise'
 import './fixes.css'
@@ -611,6 +611,7 @@ function Problems() {
   const draft = useEditor((s) => s.draft)
   const selected = useEditor((s) => (s.selection?.kind === 'problem' ? s.selection.key : null))
   const items = useProblems()
+  useSyncExternalStore(subscribeFixSearch, fixSearchVersion)
   const fresh = checkedDraft === draft && preview !== 'pending'
   const cleanup = notes?.issues ?? []
   const verdict = checkVerdict({ fresh, errors, gates, cleanupErrors: cleanup.filter((i) => i.level === 'error').length })
@@ -627,7 +628,8 @@ function Problems() {
     )
   }
   const bad = items.filter((it) => it.tone === 'bad').length
-  const fixable = fresh ? items.filter((it) => it.remedy.kind === 'fix').length : 0
+  // Only fixes that have really been found (built and checked on this road) count.
+  const fixable = fresh ? items.filter((it) => it.remedy.kind === 'fix' && fixOffer(it.key) === 'found').length : 0
   const headline =
     verdict === 'pass'
       ? 'All good: this track builds and drives.'
@@ -664,13 +666,13 @@ function Problems() {
                 className={`sre-issue is-${it.tone}${it.key === selected ? ' is-selected' : ''}`}
                 aria-pressed={it.key === selected}
                 onClick={() => selectProblem(it.key)}
-                title={it.remedy.kind === 'fix' ? 'Select it: Fix it can mend it' : 'Select it to see what to do'}
+                title={offerTitle(it, fresh ? fixOffer(it.key) : 'looking')}
               >
                 <span className="sre-issue-text">
                   <span className="sre-issue-title">{it.title}</span>
                   {it.detail && <span className="sre-issue-detail">{it.detail}</span>}
                   {it.fix && <span className="sre-issue-fix">Fix: {it.fix}</span>}
-                  {it.remedy.kind === 'fix' && <span className="sre-issue-can">Fix it can mend this</span>}
+                  <CanMend p={it} offer={fresh ? fixOffer(it.key) : 'looking'} />
                 </span>
               </button>
             </li>
@@ -680,6 +682,17 @@ function Problems() {
       )}
     </section>
   )
+}
+
+/** "Fix it can mend this" (a fix was found), "Looking for a fix..." (dim), or nothing (none found). */
+function CanMend(p: { p: Problem; offer: FixOffer }) {
+  const words = canWords(p.p, p.offer)
+  if (!words) return null
+  return <span className={`sre-issue-can${p.offer === 'looking' ? ' is-looking' : ''}`}>{words}</span>
+}
+
+function offerTitle(p: Problem, offer: FixOffer): string {
+  return p.remedy.kind === 'fix' && offer === 'found' ? 'Select it: Fix it can mend it' : 'Select it to see what to do'
 }
 
 /** The Checks list as the panel shows it (problems.ts), kept up to date with the editor. */
@@ -719,6 +732,7 @@ function ProblemFields(p: { problemKey: string }) {
   const list = useProblems()
   const pending = useEditor((s) => s.preview === 'pending' || s.checkedDraft !== s.draft)
   const [busy, setBusy] = useState(false)
+  useSyncExternalStore(subscribeFixSearch, fixSearchVersion)
   const prob = problemByKey(list, p.problemKey)
   if (!prob) {
     if (pending) return <p className="sre-help">Checking the road again...</p>
@@ -726,18 +740,32 @@ function ProblemFields(p: { problemKey: string }) {
     return <p className="sre-problem-do">{fixed ? `Fixed: ${fixed.did} That problem has gone.` : 'That problem has gone. Pick another one in Checks.'}</p>
   }
   const r = prob.remedy
+  const offer = pending ? 'looking' : fixOffer(prob.key)
   return (
     <>
       <p className={`sre-problem is-${prob.tone}`}>{prob.title}</p>
       {prob.detail && <p className="sre-help">{prob.detail}</p>}
-      {r.kind === 'fix' && (
+      {r.kind === 'fix' && offer === 'found' && (
         <>
           <button type="button" className="sre-btn is-primary" disabled={busy || pending} onClick={() => soon(setBusy, () => fixProblem(prob.key))} data-testid="editor-fix-it">
             {busy ? 'Fixing...' : 'Fix it'}
           </button>
-          <p className="sre-help">{r.does} It's built and checked before it lands, and Undo puts it back.</p>
+          <p className="sre-help">{r.does} It's been built and checked already, and Undo puts it back.</p>
           {r.go && (
             <button type="button" className="sre-btn" onClick={() => goToProblem(prob.key)}>
+              {r.go.button}
+            </button>
+          )}
+        </>
+      )}
+      {r.kind === 'fix' && offer !== 'found' && (
+        <>
+          <p className="sre-problem-do" data-testid="editor-fix-hand">
+            {offer === 'looking' ? 'Looking for a fix... Meanwhile, by hand: ' : "Fix it couldn't find a safe way to mend this one by itself. By hand: "}
+            {r.hand}
+          </p>
+          {r.go && (
+            <button type="button" className="sre-btn is-primary" onClick={() => goToProblem(prob.key)} data-testid="editor-show-me">
               {r.go.button}
             </button>
           )}

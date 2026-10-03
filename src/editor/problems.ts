@@ -9,9 +9,14 @@
 //    key     a name that stays the same while the problem is there,
 //            so it can be selected (a click on its row or its map pin)
 //    at      where on the map it is (the pin), and on the road
-//    remedy  what Josh can do about it:
-//              fix   the Fix it button can mend it by itself (fixes.ts
-//                    builds the change and checks it before it lands)
+//  remedy  what Josh can do about it:
+//              fix   Fix it may be able to mend it by itself (fixes.ts
+//                    builds each way and checks it before it lands).
+//                    It is only OFFERED once a fix has really been found
+//                    for this road (fixActions.ts looks in the background
+//                    when the problem shows up); until then, and if none
+//                    is found, the row shows `hand`: how to do it by hand,
+//                    with the `go` button
 //              go    no safe automatic fix: a button takes him to the
 //                    right tool with the right bit of road selected
 //              game  the game's own fault (a builder bug): nothing for
@@ -32,6 +37,8 @@ import { issueLocation } from './mapDraw'
 import type { PlaceKind } from './pieces'
 import { type RoadCurve, advanceAt, frameAt, nearestOnRoad, roadCurve, wrapAt } from './road'
 import { nearestStraightStart, roadLine, sOf, sOfPoint, wrapS } from './shape'
+import { roadCrossings } from './bridges'
+import { regionNear, regionStretch } from './handBanks'
 
 /** Where a "take me there" button goes: a tool, what it selects, and where the map looks. */
 export interface GoTo {
@@ -44,8 +51,12 @@ export interface GoTo {
 }
 
 export type Remedy =
-  /** Fix it can mend it; `does` says how, in Josh's words. `go` is the way to do it by hand. */
-  | { kind: 'fix'; does: string; go?: GoTo }
+  /**
+   * Fix it may mend it: `does` says how, in Josh's words, once a fix has been found.
+   * `hand` says how to do it by hand (shown while looking, and when no fix was found),
+   * and `go` is the button that takes him to the right tool for that.
+   */
+  | { kind: 'fix'; does: string; hand: string; go?: GoTo }
   /** No safe automatic fix: what to do, and the button that takes him there. */
   | { kind: 'go'; does: string; go: GoTo }
   /** The game's own fault: nothing for him to do. */
@@ -77,6 +88,13 @@ export interface ProblemSource {
 
 /** No clean-up notes (one shared empty list, so the list below is only worked out again when something changed). */
 export const NO_NOTES: readonly StrokeIssue[] = []
+
+/**
+ * The tools that set a stretch's height and bank. editor9 is giving Height, Bank and
+ * Width their own tools ('height', 'bank', 'width', each selecting a stretch the same
+ * way); until that lands the Stretch tool ('section') does all three.
+ */
+export const STRETCH_TOOL: Record<'height' | 'bank' | 'width', EditorTool> = { height: 'section', bank: 'section', width: 'section' }
 
 const GAME_WORDS = "This one is the game's fault, not your track, so there's nothing here for you to fix. If it showed up straight after a change, Undo takes the change back."
 
@@ -131,6 +149,30 @@ function bankSetNear(d: Draft, at: number, metres: number): boolean {
   return d.points.some((p, k) => p.bank !== undefined && Math.abs(wrapS(sOfPoint(line, k) - s0 + line.length / 2, line.length) - line.length / 2) <= metres)
 }
 
+/**
+ * "Show me, with the Bank tool": the stretch Josh banked by hand near road metres
+ * s0..s1 (the whole of it, so he sees what he set), else that bit of road.
+ */
+function bankGo(d: Draft, rc: RoadCurve, a0: number, a1: number, spot: P | null): GoTo {
+  const line = roadLine(d.points)
+  const s0 = sOf(line, a0)
+  const r = regionNear(d.points, line, s0, s0 + wrapS(sOf(line, a1) - s0, line.length), 150)
+  const selection: Selection = r ? { kind: 'section', ...regionStretch(d.points, r) } : { kind: 'section', from: advanceAt(rc, a0, -30), to: advanceAt(rc, a1, 30) }
+  return { tool: STRETCH_TOOL.bank, selection, spot, button: 'Show me, with the Bank tool' }
+}
+
+/** "Show me, with the Height tool": the upper road at the crossing nearest `spot`, its bridge and ramps selected. */
+function bridgeGo(d: Draft, rc: RoadCurve, spot: P | null): GoTo | undefined {
+  if (!spot) return undefined
+  let best: { at: number; d: number } | null = null
+  for (const c of roadCrossings(d.points)) {
+    const dd = Math.hypot(c.at.x - spot.x, c.at.z - spot.z)
+    if (dd < 60 && (!best || dd < best.d)) best = { at: c.passes[c.over ?? 0].at, d: dd }
+  }
+  if (!best) return { tool: 'select', selection: null, spot, button: 'Show me the bridge' }
+  return { tool: STRETCH_TOOL.height, selection: stretchAround(rc, best.at, 110), spot, button: 'Show me, with the Height tool' }
+}
+
 // ---------------------------------------------------------------- remedies: the game's checks
 
 /** What to do about a failing or warning gate row. One branch per check in checks.ts GATE_WORDS. */
@@ -139,16 +181,17 @@ function gateRemedy(g: TrackGate, d: Draft, rc: RoadCurve, at: number | null): R
   const point = (button: string): GoTo | undefined => (at === null ? undefined : { tool: 'select', selection: { kind: 'point', index: nearestPoint(d, at) }, spot, button })
   switch (g.name) {
     case 'line':
-      return { kind: 'fix', does: 'Fix it smooths the road around the tightest corner, so the Ai racers can plan a way round it.', go: point('Show me the corner') }
+      return { kind: 'fix', does: 'Fix it smooths the road around the tightest corner, so the Ai racers can plan a way round it.', hand: 'Find the tightest corner and ease it: select a point in it and slide Corner to gentler, or drag its points further apart with Select and move.', go: point('Show me the corner') }
     case 'smooth':
-      return { kind: 'fix', does: 'Fix it smooths the road there (sideways, and up and down) until the kink is gone.', go: point('Show me the kink') }
+      return { kind: 'fix', does: 'Fix it smooths the road there (sideways, and up and down) until the kink is gone.', hand: 'Drag the points here further apart with Select and move, or reshape this bit with Bend.', go: point('Show me the kink') }
     case 'banking':
       // The gate calls a bank leaning ahead of its bend a builder bug, but next to a bank Josh set by hand it is his setting: that can be eased.
       if (/builder bug/.test(g.fix ?? '') && !(at !== null && bankSetNear(d, at, 150))) return { kind: 'game', does: GAME_WORDS }
       return {
         kind: 'fix',
-        does: 'Fix it eases the tilt in and out over a longer stretch of road.',
-        go: at === null ? undefined : { tool: 'section', selection: stretchAround(rc, at, 60), spot, button: 'Show me, with the Stretch tool' },
+        does: bankSetNear(d, at ?? 0, 150) ? 'Fix it rolls the road into and out of the bank you set over more road, or banks it less, keeping as much of your bank as it can.' : 'Fix it eases the tilt in and out over a longer stretch of road.',
+        hand: 'Select this stretch with the Bank tool and set less bank, or press Auto to let the game bank it. A bank set over a longer stretch rolls in more gently too.',
+        go: at === null ? undefined : bankGo(d, rc, at, at, spot),
       }
     case 'crest': {
       const ats = gateAts(g)
@@ -156,21 +199,28 @@ function gateRemedy(g: TrackGate, d: Draft, rc: RoadCurve, at: number | null): R
       const a1 = ats[1] ?? at
       return {
         kind: 'fix',
-        does: 'Fix it gives the tilt there more room: it eases the bank in and out over a longer stretch, with less bank if that is what it takes.',
-        go: a0 === null || a1 === null ? undefined : { tool: 'section', selection: { kind: 'section', from: advanceAt(rc, a0, -30), to: advanceAt(rc, a1, 30) }, spot, button: 'Show me, with the Stretch tool' },
+        does: 'Fix it gives the tilt there more room: it rolls the bank in and out over more road, with less bank only if that is what it takes.',
+        hand: 'Select this stretch with the Bank tool and set less bank (or press Auto), or give the bank more straight road either side so it can roll in gently.',
+        go: a0 === null || a1 === null ? undefined : bankGo(d, rc, a0, a1, spot),
       }
     }
     case 'bridges':
-      return { kind: 'fix', does: 'Fix it lifts the upper road there onto a proper 8 m bridge with smooth ramps.', go: spot ? { tool: 'select', selection: null, spot, button: 'Show me the bridge' } : undefined }
+      return {
+        kind: 'fix',
+        does: 'Fix it raises the upper road there (or, if the road underneath is banked, banks it less), so a car fits under the bridge.',
+        hand: 'Select the upper road at the crossing with the Height tool and raise it, or click the crossing and swap which road goes over. A bank on the road underneath lifts it towards the bridge: less bank there helps too.',
+        go: bridgeGo(d, rc, spot),
+      }
     case 'ground':
       // When a bridge above is too low, the ground under it is dug away: fixing the bridge fixes this.
-      if (/bridge above is too low/.test(g.fix ?? '')) return { kind: 'fix', does: 'This comes from the low bridge: Fix it lifts the upper road there onto a proper 8 m bridge.' }
+      if (/bridge above is too low/.test(g.fix ?? '')) return { kind: 'fix', does: 'This comes from the low bridge: Fix it raises the upper road there.', hand: 'Fix the low bridge first (its row in Checks): this one goes with it.', go: bridgeGo(d, rc, spot) }
       return { kind: 'game', does: GAME_WORDS }
     case 'loops': {
       const loop = loopNear(d, at)
       return {
         kind: 'fix',
         does: 'Fix it moves the loop to the nearest straight where nothing is in its way.',
+        hand: 'Drag the loop to another straight with Select and move, or select it and press Delete.',
         go: loop < 0 ? undefined : { tool: 'select', selection: { kind: 'piece', index: loop }, spot, button: 'Show me the loop' },
       }
     }
@@ -180,6 +230,7 @@ function gateRemedy(g: TrackGate, d: Draft, rc: RoadCurve, at: number | null): R
         return {
           kind: 'fix',
           does: "Fix it makes the loop bigger, as big as the game says it needs.",
+          hand: 'Select the loop and make it bigger with its size slider (the row above says about how big).',
           go: loop < 0 ? undefined : { tool: 'select', selection: { kind: 'piece', index: loop }, spot, button: 'Show me the loop' },
         }
       }
@@ -190,7 +241,7 @@ function gateRemedy(g: TrackGate, d: Draft, rc: RoadCurve, at: number | null): R
       if (nearestStraightStart(d.points, d.startAt, d.pieces) === null) {
         return { kind: 'go', does: "There's no straight on this road long enough for the start grid (about 60 m). Make one with the Straight tool, then put the start line on it.", go: { tool: 'straight', selection: null, spot, button: 'Pick the Straight tool' } }
       }
-      return { kind: 'fix', does: 'Fix it moves the start line to the nearest straight.', go: pick }
+      return { kind: 'fix', does: 'Fix it moves the start line to the nearest straight.', hand: 'Pick Start line in Place pieces, then click a straight bit of road.', go: pick }
     }
     case 'environment.roadside.billboards':
       return { kind: 'none', does: 'Nothing to fix: the game puts up as many billboards as fit, and fewer is fine.' }
@@ -220,8 +271,8 @@ function issueRemedy(issue: TrackIssue, d: Draft, rc: RoadCurve, spot: P | null)
     return { tool: 'select', selection: sel, spot, button }
   }
   // Road points.
-  if (/is within 2 m of point/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it takes out this road point: it sits on top of the one before it.', go: select('Show me the point') ?? undefined }, roadAt: roadAtOf(spot) }
-  if (/is outside the/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it pulls it back inside the world.', go: select('Show me') ?? undefined }, roadAt: roadAtOf(spot) }
+  if (/is within 2 m of point/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it takes out this road point: it sits on top of the one before it.', hand: 'Select the point and press Delete, or drag it away from the one before.', go: select('Show me the point') ?? undefined }, roadAt: roadAtOf(spot) }
+  if (/is outside the/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it pulls it back inside the world.', hand: 'Drag it back inside the world with Select and move.', go: select('Show me') ?? undefined }, roadAt: roadAtOf(spot) }
   if (/m from the world edge/.test(m)) {
     const go = select('Show me the point')
     return { remedy: go ? { kind: 'go', does: 'Drag this road point (and the road near it) further from the edge with Select and move, or bend that bit of road inward.', go } : { kind: 'none', does: plainWords(m) }, roadAt: roadAtOf(spot) }
@@ -231,10 +282,10 @@ function issueRemedy(issue: TrackIssue, d: Draft, rc: RoadCurve, spot: P | null)
     const at = Number(nearPoint[1])
     const p = frameAt(rc, at).p
     if (/crosses itself/.test(m)) {
-      return { remedy: { kind: 'fix', does: 'Fix it lifts one of the two roads onto a proper 8 m bridge with smooth ramps.', go: { tool: 'select', selection: null, spot: p, button: 'Show me the crossing' } }, roadAt: at }
+      return { remedy: { kind: 'fix', does: 'Fix it lifts one of the two roads onto a proper 8 m bridge with smooth ramps.', hand: 'Select one of the two roads at the crossing with the Height tool and raise it to 8 m, or redraw one so they cross somewhere else.', go: { tool: 'select', selection: null, spot: p, button: 'Show me the crossing' } }, roadAt: at }
     }
     if (/radius/.test(m)) {
-      return { remedy: { kind: 'fix', does: 'Fix it smooths the road around that corner until it is gentle enough.', go: { tool: 'select', selection: { kind: 'point', index: nearestPoint(d, at) }, spot: p, button: 'Show me the corner' } }, roadAt: at }
+      return { remedy: { kind: 'fix', does: 'Fix it smooths the road around that corner until it is gentle enough.', hand: 'Select a point in the corner and slide Corner to gentler, or drag its points further apart.', go: { tool: 'select', selection: { kind: 'point', index: nearestPoint(d, at) }, spot: p, button: 'Show me the corner' } }, roadAt: at }
     }
   }
   // Pieces.
@@ -242,10 +293,10 @@ function issueRemedy(issue: TrackIssue, d: Draft, rc: RoadCurve, spot: P | null)
     const piece = d.pieces[pi[1]]
     const go = select('Show me')
     const at = piece ? piece.at : null
-    if (/on or next to the start grid/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it moves it along the road, off the start grid.', go: go ?? undefined }, roadAt: at }
-    if (piece?.type === 'loop') return { remedy: { kind: 'fix', does: 'Fix it moves the loop to the nearest straight, level stretch where it fits.', go: go ?? undefined }, roadAt: at }
-    if (/sticks out past the road edge/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it slides the ramp back onto the road.', go: go ?? undefined }, roadAt: at }
-    if (/overlaps/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it moves it along the road, clear of the other one.', go: go ?? undefined }, roadAt: at }
+    if (/on or next to the start grid/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it moves it along the road, off the start grid.', hand: 'Drag it further along the road, away from the start line.', go: go ?? undefined }, roadAt: at }
+    if (piece?.type === 'loop') return { remedy: { kind: 'fix', does: 'Fix it moves the loop to the nearest straight, level stretch where it fits.', hand: 'Drag the loop to a straight, level bit of road with Select and move.', go: go ?? undefined }, roadAt: at }
+    if (/sticks out past the road edge/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it slides the ramp back onto the road.', hand: 'Select the ramp and slide its Offset back towards the middle.', go: go ?? undefined }, roadAt: at }
+    if (/overlaps/.test(m)) return { remedy: { kind: 'fix', does: 'Fix it moves it along the road, clear of the other one.', hand: 'Drag one of them further along the road with Select and move.', go: go ?? undefined }, roadAt: at }
     if (go) return { remedy: { kind: 'go', does: piece?.type === 'wallride' ? 'Drag the wall ride round the outside of a long bend.' : 'Drag it somewhere that suits it better.', go }, roadAt: at }
   }
   if (pi && (pi[0] === 'props' || pi[0] === 'cores')) {
@@ -263,7 +314,7 @@ function noteRemedy(note: StrokeIssue, rc: RoadCurve): { remedy: Remedy; roadAt:
   const roadAt = spot && rc.curve.length ? nearestOnRoad(rc, spot).at : null
   switch (note.code) {
     case 'tight-corner':
-      return { remedy: { kind: 'fix', does: 'Fix it smooths the road around that corner until a car can take it.', go: { tool: 'bend', selection: null, spot, button: 'Pick the Bend tool' } }, roadAt }
+      return { remedy: { kind: 'fix', does: 'Fix it smooths the road around that corner until a car can take it.', hand: 'Open the corner out with the Bend tool, or drag its points further apart.', go: { tool: 'bend', selection: null, spot, button: 'Pick the Bend tool' } }, roadAt }
     case 'shallow-crossing':
       return { remedy: { kind: 'go', does: 'Redraw one of the two roads with the pencil so they cross more squarely (a stroke that starts and ends on the road redraws just that bit).', go: { tool: 'pencil', selection: null, spot, button: 'Pick the pencil' } }, roadAt }
     case 'bridge-flipped':

@@ -18,6 +18,10 @@
 //              editor's own issues likewise; the game's own bugs get
 //              no Fix it button; a fix that would break another check
 //              changes nothing; Fix all
+//    editor10  Fix it only says it can mend a problem once it has found
+//              the fix; Nathan's hand-banked gentle bend is mended; a
+//              hand bank under a bridge gets the bridge raised; setting
+//              a bank under a bridge keeps room for a car
 //    undo      a raise, a fix and a Fix all are each ONE Undo step
 //              (the real editor store, Bun only)
 // ============================================================
@@ -32,6 +36,7 @@ import { checkVerdict } from './checks'
 import type { Draft } from './draft'
 import { DEFAULT_BASE_WORLD, draftFromFile, pointGroundOf } from './draftFile'
 import { BRIDGE_GAP, type GroundFn, builtGapAt, roadCrossings } from './bridges'
+import { keepBridgesClear } from './bankBridges'
 import type { P } from './geom'
 import { type FixContext, runFix, runFixAll } from './fixes'
 import { type Judged, judgeDraft } from './judge'
@@ -47,6 +52,9 @@ type EditorStore = typeof import('./draft')
 type Shaky = (shape: (t: number) => P, count: number, wobble: number, seed: number, t0?: number, t1?: number) => P[]
 
 const TAU = Math.PI * 2
+
+/** Where Nathan's case is drawn and banked (found by /tmp/sr2/editor10/findloop.sh: the editor before editor10 couldn't mend it). */
+const NATHAN = { seed: 4, k0: 50, len1: 6, gap: 2, len2: 4 }
 
 /** A road the way the editor holds it: a draft in the default world (seed pinned), and the ground under its points. */
 interface Fixture {
@@ -484,6 +492,170 @@ export function fixAndRaiseRows(check: Check, store: EditorStore | undefined, h:
     const fresh = failing(after.gates).filter((n) => !failing(before.gates).includes(n))
     if (fresh.length) bad.push(`made ${fresh.join(', ')} fail`)
     return bad.length ? bad : `before: ${failing(before.gates).join(', ')}; ${res.did.length} fixes: ${res.did.join(' ')}; after: every check passes`
+  })
+
+  // ---------------------------------------------------------------- editor10: only promise what it can do; banks set by hand
+
+  /**
+   * Nathan's case (GitHub playtest, 3 Oct): a gentle bend banked by hand at 32 degrees,
+   * a short gap, then 29.5 degrees, and CAR GOES LIGHT where the bank rolls. Before
+   * editor10 the row said "Fix it can mend this" and Fix all said it couldn't mend any.
+   */
+  const gentle = (() => {
+    const res = cleanStroke(h.shaky((t) => ({ x: 700 * Math.cos(t * TAU), z: 450 * Math.sin(t * TAU) }), 700, 2, NATHAN.seed, 0, 1.03), h.opts)
+    if (!res.ok) throw new Error('the gentle ellipse did not clean up')
+    const f = asDraft('selftest-gentle', res.points)
+    const n = f.d.points.length
+    for (let k = NATHAN.k0; k < NATHAN.k0 + NATHAN.len1; k++) f.d.points[k % n].bank = 32
+    for (let k = NATHAN.k0 + NATHAN.len1 + NATHAN.gap; k < NATHAN.k0 + NATHAN.len1 + NATHAN.gap + NATHAN.len2; k++) f.d.points[k % n].bank = 29.5
+    return f
+  })()
+  /** Judge a mended draft from scratch (its own build, not the one fixes.ts made): `p` gone, nothing new failing. */
+  const mendedVerdict = (label: string, d: Draft, p: Problem, mended: Draft): string[] => {
+    const after = judgeDraft(mended, d.id)
+    if (!after.runtime) return [`${label}: the mended road did not build: ${after.error}`]
+    const was = failing(judge(d).gates)
+    const fresh = failing(after.gates).filter((n) => !was.includes(n))
+    const bad: string[] = []
+    if (p.gate && after.gates.some((g) => g.name === p.gate?.name && g.level === 'fail')) bad.push(`${label}: ${p.gate.name} still fails`)
+    if (fresh.length) bad.push(`${label}: now fails ${fresh.join(', ')}`)
+    return bad
+  }
+  /** The steepest bank set by hand on a road. */
+  const steepest = (d: Draft) => Math.max(0, ...d.points.map((p) => Math.abs(p.bank ?? 0)))
+
+  check("Fix it: Nathan's gentle bend banked by hand at 32 and 29.5 degrees (CAR GOES LIGHT) is mended by Fix it and by Fix all, keeping as much bank as works", () => {
+    const j = judge(gentle.d)
+    const p = problemsFor(gentle.d).find(gate('crest'))
+    if (!p) return [`the fixture doesn't fail crest (it fails ${failing(j.gates).join(', ') || 'nothing'})`]
+    const bad: string[] = []
+    const one = runFix(p, gentle.d, ctxFor(gentle, gentle.d))
+    if (!one.ok || !one.draft) bad.push(`Fix it: not fixed: ${one.reason}`)
+    else bad.push(...mendedVerdict('Fix it', gentle.d, p, one.draft))
+    const all = runFixAll(gentle.d, ctxFor(gentle, gentle.d), [])
+    if (!all.did.length) bad.push(`Fix all couldn't mend any (${all.couldNot.length} tried)`)
+    else bad.push(...mendedVerdict('Fix all', gentle.d, p, all.draft))
+    // The gentlest fix keeps his bank: every point he banked still has (nearly) the bank he set, the
+    // roll just runs over more road either side. (Easing the bank itself, or Auto, is for when that can't work.)
+    if (one.draft) {
+      const mended = one.draft
+      const lost = gentle.d.points.filter((q) => q.bank !== undefined && !mended.points.some((m) => Math.hypot(m.x - q.x, m.z - q.z) < 1 && Math.abs(m.bank ?? 0) >= 0.9 * Math.abs(q.bank ?? 0)))
+      if (lost.length) bad.push(`Fix it changed the bank he set on ${lost.length} points (it should spread the roll and keep his bank here)`)
+    }
+    return bad.length ? bad : `${p.detail?.slice(0, 120)}... / Fix it: ${one.did} (steepest bank by hand now ${steepest(one.draft as Draft)} degrees, was 32) / Fix all: ${all.did.join(' ')}`
+  })
+
+  check('Fix it: a road banked by hand under a bridge (LOW BRIDGE) gets the bridge raised: the same road stays on top, with room for a car', () => {
+    const c = roadCrossings(eight.d.points, eight.ground)[0]
+    if (!c || c.over === null) return ['the eight has no bridge']
+    const f = clone(eight)
+    const line = roadLine(f.d.points)
+    const under = c.passes[c.over === 0 ? 1 : 0]
+    const over = c.passes[c.over]
+    f.d.points.forEach((q, k) => {
+      const a = wrapS(sOfPoint(line, k) - under.s, line.length)
+      if (Math.min(a, line.length - a) <= 60) q.bank = 30
+    })
+    const before = judge(f.d)
+    const gapBefore = before.runtime ? builtGapAt(before.runtime, c.at, over.heading) : null
+    const p = problemsFor(f.d).find(gate('bridges'))
+    if (!p) return [`banking the road under the bridge didn't make it too low (gap ${gapBefore?.gap.toFixed(2)} m): the row proves nothing`]
+    const r = runFix(p, f.d, ctxFor(f, f.d))
+    if (!r.ok || !r.draft) return [`not fixed: ${r.reason}`]
+    const bad = mendedVerdict('the low bridge', f.d, p, r.draft)
+    const after = judgeDraft(r.draft, f.d.id)
+    const g = after.runtime ? builtGapAt(after.runtime, c.at, over.heading) : null
+    // Which road is on top now, by the heights the mended points give (headings are 60-ish degrees apart here,
+    // too close for builtGapAt's "same way" test to tell a swap).
+    const c2 = roadCrossings(r.draft.points, f.ground).find((x) => Math.hypot(x.at.x - c.at.x, x.at.z - c.at.z) < 30)
+    const turn = c2 && c2.over !== null ? Math.abs(((c2.passes[c2.over].heading - over.heading + 540) % 360) - 180) : 180
+    if (turn > 20) bad.push(`the other road ended up on top (a swap, ${turn.toFixed(0)} degrees off): the bridge should be raised, or the bank under it eased`)
+    if (!g || g.gap < BRIDGE_GAP) bad.push(`only ${g?.gap.toFixed(2)} m between the roads`)
+    return bad.length ? bad : `banked 30 degrees under the bridge: ${gapBefore?.gap.toFixed(1)} m between the roads; ${r.did} Now ${g?.gap.toFixed(1)} m, the same road on top`
+  })
+
+  check('Setting a bank under a bridge keeps room for a car: the bridge goes up with it, and it says so', () => {
+    const c = roadCrossings(eight.d.points, eight.ground)[0]
+    if (!c || c.over === null) return ['the eight has no bridge']
+    const line = roadLine(eight.d.points)
+    const under = c.passes[c.over === 0 ? 1 : 0]
+    const over = c.passes[c.over]
+    const banked = eight.d.points.map((q, k) => {
+      const a = wrapS(sOfPoint(line, k) - under.s, line.length)
+      return Math.min(a, line.length - a) <= 60 ? { ...q, bank: 30 } : { ...q }
+    })
+    const kept = keepBridgesClear(eight.d.points, banked, eight.d.pieces, eight.d.startAt, eight.d.width, eight.ground)
+    const bad: string[] = []
+    if (!/went up/.test(kept.words)) bad.push(`it didn't say the bridge went up: "${kept.words}"`)
+    const d: Draft = { ...eight.d, points: kept.points, startAt: kept.mapAt(eight.d.startAt) }
+    const j = judgeDraft(d, eight.d.id)
+    const g = j.runtime ? builtGapAt(j.runtime, c.at, over.heading) : null
+    if (!g || !g.upperMatches || g.gap < BRIDGE_GAP) bad.push(`the built gap is ${g?.gap.toFixed(2)} m${g && !g.upperMatches ? ' and the wrong road is on top' : ''}`)
+    if (j.gates.some((x) => x.name === 'bridges' && x.level === 'fail')) bad.push('the bridges check fails')
+    // The bank Josh set is still there, untouched.
+    const still = kept.points.filter((q) => q.bank === 30).length
+    if (still < banked.filter((q) => q.bank === 30).length) bad.push('some of the bank he set was changed')
+    // In the editor: the Bank tool's setSectionBank does the same, as one Undo step.
+    if (store) {
+      store.replaceDraft(JSON.parse(JSON.stringify(eight.d)) as Draft, null)
+      const was = JSON.stringify(store.useEditor.getState().draft)
+      const lineNow = roadLine(store.useEditor.getState().draft.points)
+      store.setSectionBank(atOf(lineNow, under.s - 60), atOf(lineNow, under.s + 60), 30)
+      const s = store.useEditor.getState()
+      if (!/went up/.test(s.message?.text ?? '')) bad.push(`the Bank tool didn't say the bridge went up: "${s.message?.text}"`)
+      const jj = judgeDraft(s.draft, eight.d.id)
+      const gg = jj.runtime ? builtGapAt(jj.runtime, c.at, over.heading) : null
+      if (!gg || !gg.upperMatches || gg.gap < BRIDGE_GAP) bad.push(`with the Bank tool the built gap is ${gg?.gap.toFixed(2)} m`)
+      if (s.past.length < 1 || JSON.stringify(s.past[s.past.length - 1]) !== was) bad.push('the Bank tool change is not one Undo step')
+      store.undo()
+      if (JSON.stringify(store.useEditor.getState().draft) !== was) bad.push('Undo did not bring the road back exactly')
+    }
+    return bad.length ? bad : `"${kept.words}" Built gap ${g?.gap.toFixed(1)} m with the road banked 30 degrees under it${store ? '; the Bank tool does the same, one Undo step' : ''}`
+  })
+
+  check("Fix it only promises a fix it has found: each row says \"Fix it can mend this\" only once its fix is built and checked, and one it can't find shows how to do it by hand", () => {
+    if (!store) return 'skipped: needs the editor store (run `bun src/editor/selfTest.ts`); in the game it would change your draft'
+    const actions = fixActionsForBun
+    if (!actions) return ['the fix actions did not load']
+    const bad: string[] = []
+    const said: string[] = []
+    let none = 0
+    let found = 0
+    for (const [label, f] of [['the loop on a bend', (() => { const b = clone(oval); b.d.pieces = [{ type: 'loop', at: 30 } as Piece]; return b })()], ["Nathan's banked gentle bend", gentle]] as const) {
+      store.replaceDraft(JSON.parse(JSON.stringify(f.d)) as Draft, null)
+      store.previewNow()
+      // Before anything has been looked for: no row promises anything.
+      for (const p of actions.currentProblems()) if (actions.canWords(p, actions.fixOffer(p.key)) === 'Fix it can mend this') bad.push(`${label}: "${p.title}" promises a fix before one was looked for`)
+      actions.findFixesNow()
+      const d = store.useEditor.getState().draft
+      for (const p of actions.currentProblems()) {
+        if (p.remedy.kind !== 'fix') continue
+        const offer = actions.fixOffer(p.key)
+        const words = actions.canWords(p, offer)
+        if (offer === 'looking') bad.push(`${label}: "${p.title}" is still being looked for after the search finished`)
+        if (offer === 'none') {
+          none++
+          if (words) bad.push(`${label}: "${p.title}" has no fix but says "${words}"`)
+          if (!p.remedy.hand) bad.push(`${label}: "${p.title}" has no fix and no words for doing it by hand`)
+          said.push(`${label}: "${p.title}" no fix found, shows "${p.remedy.hand.slice(0, 60)}..."${p.remedy.go ? ` and "${p.remedy.go.button}"` : ''}`)
+        }
+        if (offer === 'found') {
+          found++
+          if (words !== 'Fix it can mend this') bad.push(`${label}: "${p.title}" has a fix but says "${words}"`)
+          // What it found really mends it: press Fix it, then judge the result from scratch.
+          const was = JSON.stringify(d)
+          if (!actions.fixProblem(p.key)) bad.push(`${label}: "${p.title}" was offered but Fix it refused: ${store.useEditor.getState().message?.text}`)
+          else bad.push(...mendedVerdict(`${label}: "${p.title}"`, d, p, store.useEditor.getState().draft))
+          store.undo()
+          if (JSON.stringify(store.useEditor.getState().draft) !== was) bad.push(`${label}: Undo after Fix it did not bring the road back`)
+          store.previewNow()
+          actions.findFixesNow()
+        }
+      }
+    }
+    if (!none) bad.push('no row had a fix it couldn\'t find, so this proves nothing about them: pick another fixture')
+    if (!found) bad.push('no row had a fix, so this proves nothing about the ones that do')
+    return bad.length ? bad : `${found} rows offered Fix it, each mended when pressed; ${none} without a fix: ${said.join(' / ')}`
   })
 
   // ---------------------------------------------------------------- one Undo step each (the real editor store)

@@ -58,7 +58,8 @@
 //    __dev.editor('raise', [from, to, h])  set the middle of that stretch to h metres above the ground
 //                                          (the Stretch tool's Height slider); returns ok and the status line
 //    __dev.editor('raisePoint', [i, h])    a road point's "Height above the ground" slider
-//    __dev.editor('problems')              the Checks list: each row's key, title, remedy
+//    __dev.editor('problems')              the Checks list: each row's key, title, remedy, offer
+//    __dev.editor('findFixes')             finish looking for fixes now (no waiting), then the list
 //                                          (fix / go / game / none), its button and where it is
 //    __dev.editor('selectProblem', key | i)   select a problem (as a click on its row or pin does)
 //    __dev.editor('fix', key | i)          press Fix it on that problem; returns ok and the status line
@@ -107,7 +108,7 @@ import {
 } from './draft'
 import { fitToDraft } from './Overlay'
 import { crossingScreens, pinScreens } from './mapDraw'
-import { currentProblems, fixAll, fixProblem, raisePoint, raiseSection, selectProblem } from './fixActions'
+import { currentProblems, findFixesNow, fixAll, fixOffer, fixProblem, raisePoint, raiseSection, selectProblem } from './fixActions'
 import { runEditorSelfTest } from './selfTest'
 import { checkVerdict } from './checks'
 import { cancelDriveToDraw, clearLaidRoad, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
@@ -210,7 +211,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to] | raise [from,to,h] | raisePoint [i,h] | problems | selectProblem key|i | fix key|i | fixAll | pins'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to] | raise [from,to,h] | raisePoint [i,h] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -330,6 +331,9 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     }
     case 'problems':
       return problemsSummary()
+    case 'findFixes':
+      findFixesNow()
+      return problemsSummary()
     case 'selectProblem':
       return selectProblem(problemKey(arg))
     case 'fix':
@@ -405,7 +409,9 @@ function problemsSummary() {
     tone: p.tone,
     title: p.title,
     remedy: p.remedy.kind,
-    button: p.remedy.kind === 'fix' ? 'Fix it' : p.remedy.kind === 'go' ? p.remedy.go.button : null,
+    // editor10: whether Fix it has a fix to offer yet (looking / found / none), and the by-hand button.
+    offer: p.remedy.kind === 'fix' ? fixOffer(p.key) : null,
+    button: p.remedy.kind === 'fix' ? (fixOffer(p.key) === 'found' ? 'Fix it' : p.remedy.go?.button ?? null) : p.remedy.kind === 'go' ? p.remedy.go.button : null,
     at: p.at ? { x: Math.round(p.at.x), z: Math.round(p.at.z) } : null,
     roadAt: p.roadAt === null ? null : Math.round(p.roadAt * 100) / 100,
   }))

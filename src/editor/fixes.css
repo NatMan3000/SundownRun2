@@ -21,6 +21,11 @@
   letter-spacing: 0.02em;
   color: var(--text);
 }
+/* "Looking for a fix...": still looking, so it promises nothing (dim, not bold). */
+.sre-issue-can.is-looking {
+  font-weight: 400;
+  color: var(--dim);
+}
 
 /* The problem's title in the Selected box, with the same dot as its row. */
 .sre-problem {
