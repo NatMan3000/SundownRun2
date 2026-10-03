@@ -22,7 +22,7 @@
 import * as THREE from 'three'
 import type { ResolvedTrackFile, BoostPiece, RampPiece, WallRidePiece, TunnelPiece } from './schema'
 import { TRACK_DEFAULTS } from './schema'
-import type { BoostZone, GroundPose, PropAnchor, ResolvedPiece, TrackFrame, TrackRuntime, TrackWorldInfo } from './types'
+import type { BoostZone, GroundPose, PropAnchor, ResolvedPiece, TrackFrame, TrackRuntime, TrackSamples, TrackWorldInfo } from './types'
 import {
   BIGAIR_LAYOUT,
   flattenToRoad,
@@ -103,6 +103,8 @@ export interface TrackInternals {
   nat: NaturalTerrain
   natGrid: NaturalGrid
   envKey: string
+  /** What shapes the racing line besides the plan view (racingLineKey): a later build reuses this line only if its own is the same. */
+  lineKey: string
   /** Build time in ms (for the checker and check-tracks). */
   buildMs: number
   /** Ramp collision meshes: one closed solid per ramp. */
@@ -140,6 +142,19 @@ export interface TrackInternals {
 }
 
 const internals = new WeakMap<TrackRuntime, TrackInternals>()
+
+/** The racing line's bounds in short: the road's width and surface at every sample, the pins, and the edge margin. */
+function racingLineKey(S: TrackSamples, pinned: readonly { s0: number; s1: number; value?: number }[], edgeMargin: number): string {
+  let h = 2166136261
+  const mix = (v: number): void => {
+    h = Math.imul(h ^ (Math.round(v * 1000) | 0), 16777619)
+  }
+  for (let i = 0; i < S.count; i++) {
+    mix(S.halfWidth[i])
+    mix(S.surface[i])
+  }
+  return `${S.count}|${edgeMargin}|${JSON.stringify(pinned)}|${h >>> 0}`
+}
 
 /** The builder's extras for a runtime (colliders and rebuilds use them). */
 export function trackInternals(t: TrackRuntime): TrackInternals | undefined {
@@ -337,14 +352,19 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     const len = r.piece.length ?? 12
     pinned.push({ s0: q.wrapS(r.s - len / 2 - 25), s1: q.wrapS(r.s + len / 2 + 5), value: r.piece.offset ?? 0 })
   }
-  // A live bank change leaves the road's plan view untouched: keep the line, redo the speeds.
+  // A live bank change leaves the road's plan view untouched: keep the line, redo the speeds. Only
+  // when the line's bounds are the same too (lineKey): a ramp or wall ride added and taken away again
+  // leaves the plan view as it was, and the line kept from the build that had it would make this
+  // build depend on what was built before it (tunnel3 round D: a tunnel fit changed with history).
+  const edgeMargin = file.road.barriers === 'walls' ? 3 : 2.5
+  const lineKey = racingLineKey(S, pinned, edgeMargin)
   let reuseOffset: Float32Array | undefined
-  if (previous && previous.samples.count === S.count && previous.file.id === file.id) {
+  if (previous && prev?.lineKey === lineKey && previous.samples.count === S.count && previous.file.id === file.id) {
     let same = true
     for (let i = 0; i < S.count && same; i += 7) same = Math.abs(previous.samples.px[i] - S.px[i]) < 1e-3 && Math.abs(previous.samples.pz[i] - S.pz[i]) < 1e-3
     if (same) reuseOffset = previous.racingLine.offset
   }
-  const racingLine = makeRacingLine({ samples: S, length: L, pinned, fast, ramps: rampSpots.map((r) => r.s), edgeMargin: file.road.barriers === 'walls' ? 3 : 2.5, reuseOffset })
+  const racingLine = makeRacingLine({ samples: S, length: L, pinned, fast, ramps: rampSpots.map((r) => r.s), edgeMargin, reuseOffset })
 
   const noPosts: { s0: number; s1: number }[] = []
   // Round a loop: nothing beside the mouth or under the way out (the loop's legs stand there).
@@ -495,6 +515,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     nat,
     natGrid,
     envKey,
+    lineKey,
     buildMs: now() - t0,
     rampSolids: ramps.solids,
     thickness: c.thickness,

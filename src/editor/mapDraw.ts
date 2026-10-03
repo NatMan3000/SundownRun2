@@ -1222,13 +1222,20 @@ function drawTunnel(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, le
   }
 }
 
-/** Points along the road's middle from `at` for `metres` (negative: backwards), every 4 m or so. */
-function roadAlong(rc: RoadCurve, at: number, metres: number): P[] {
+/** Points along the road from `at` for `metres` (negative: backwards), every 4 m or so: its middle, or `off` metres to its right. */
+function roadAlong(rc: RoadCurve, at: number, metres: number, off = 0): P[] {
   const steps = Math.max(4, Math.ceil(Math.abs(metres) / 4))
   const pts: P[] = []
-  for (let k = 0; k <= steps; k++) pts.push(frameAt(rc, advanceAt(rc, at, (metres * k) / steps)).p)
+  for (let k = 0; k <= steps; k++) {
+    const f = frameAt(rc, advanceAt(rc, at, (metres * k) / steps))
+    pts.push(off ? { x: f.p.x + f.right.x * off, z: f.p.z + f.right.z * off } : f.p)
+  }
   return pts
 }
+
+/** How a footprint's ramps are drawn: paler than the covered part, but clear from far out (round D). */
+const RAMP_FILL = 0.3
+const RAMP_EDGE = 0.9
 
 /**
  * A tunnel's whole footprint: each ramp down beyond the covered part in a lighter shade of the
@@ -1241,19 +1248,35 @@ function drawTunnelFootprint(ctx: CanvasRenderingContext2D, rc: RoadCurve, f: Tu
   const half = roadWidth / 2 + TUNNEL_WALL
   if (f.covered) drawTunnel(ctx, rc, f.at, f.length, roadWidth, 0.6, true)
   const end = advanceAt(rc, f.at, f.length)
-  const ramps: [P[], number][] = []
-  if (f.rampIn > 0) ramps.push([roadAlong(rc, f.at, -f.rampIn), f.rampIn])
-  if (f.rampOut > 0) ramps.push([roadAlong(rc, end, f.rampOut), f.rampOut])
+  // Each ramp from the tunnel's mouth out to where the dig starts (its last point).
+  const ramps: [P[], number, number, number][] = []
+  if (f.rampIn > 0) ramps.push([roadAlong(rc, f.at, -f.rampIn), f.rampIn, f.at, -f.rampIn])
+  if (f.rampOut > 0) ramps.push([roadAlong(rc, end, f.rampOut), f.rampOut, end, f.rampOut])
+  // A paler shade of the tunnel's colour where it fits (amber where it can't).
+  const rampColour = f.ok ? PALETTE.planetRing : PALETTE.chevron
   // Every band first, then the labels on top: the reason and what to try by the pointer (clear of
   // its icon), then each ramp's length and what is in the way.
   const blocker = f.blocker ? roadAlong(rc, f.blocker.from, Math.max(8, metresBetween(rc, f.blocker.from, f.blocker.to))) : null
   ctx.save()
   ctx.lineCap = 'butt'
   ctx.strokeStyle = colour
-  for (const [pts] of ramps) {
-    ctx.globalAlpha = 0.18
-    wideLine(ctx, pts, 2 * half, 4)
+  for (const [pts, , from, metres] of ramps) {
+    ctx.strokeStyle = rampColour
+    ctx.globalAlpha = RAMP_FILL
+    wideLine(ctx, pts, 2 * half, 6)
+    // Solid edges along both sides and a tick across where the dig starts: they read over any ground.
+    ctx.globalAlpha = RAMP_EDGE
+    ctx.lineWidth = 2
+    for (const side of [-1, 1]) {
+      line(ctx, roadAlong(rc, from, metres, side * half), false)
+      ctx.stroke()
+    }
+    const tip = frameAt(rc, advanceAt(rc, from, metres))
+    ctx.lineWidth = 3
+    line(ctx, [{ x: tip.p.x - tip.right.x * half, z: tip.p.z - tip.right.z * half }, { x: tip.p.x + tip.right.x * half, z: tip.p.z + tip.right.z * half }], false)
+    ctx.stroke()
   }
+  ctx.strokeStyle = colour
   if (!f.ok) {
     // The covered part, amber: it can't go here.
     ctx.globalAlpha = 0.4
@@ -1281,7 +1304,7 @@ function drawTunnelFootprint(ctx: CanvasRenderingContext2D, rc: RoadCurve, f: Tu
     const k = Math.floor(pts.length / 2)
     const mid = pts[k]
     const m = worldToScreen(mid.x, mid.z, headingAt(pts, k))
-    placePill(ctx, `ramp ${Math.round(metres)} m`, m.sx, m.sy, [0, 24, -24, 48], colour)
+    placePill(ctx, `ramp ${Math.round(metres)} m`, m.sx, m.sy, [0, 24, -24, 48], rampColour)
   }
   if (blocker) {
     const k = Math.floor(blocker.length / 2)

@@ -44,7 +44,7 @@ import { DEFAULT_BASE_WORLD, draftFromFile, pointGroundOf } from './draftFile'
 import { type GroundFn, BRIDGE_GAP, buildAndCheck, builtGapAt, crossingNear, crossingsWithTunnels, keepOverOf, matchHeading, roadCrossings, tryOneWay, tunnelDraft } from './bridges'
 import { checkVerdict } from './checks'
 import type { P } from './geom'
-import { advanceAt, metresBetween, roadCurve, sectionRedraw } from './road'
+import { advanceAt, frameAt, metresBetween, roadCurve, sectionRedraw } from './road'
 import { fitTunnelAt, fitWords, quickTunnelCheck, tunnelBlocker, tunnelWhy } from './tunnelPlace'
 import { tunnelStartFor } from './pieces'
 import { judgeDraft } from './judge'
@@ -345,6 +345,76 @@ export function tunnelCrossingRows(check: Check, store: EditorStore | undefined,
     if (q.ok) bad.push('the quick check says a tunnel fits right on the start line')
     else if (!/start line/.test(tunnelWhy(q, 150).why)) bad.push(`it gave the wrong reason: "${tunnelWhy(q, 150).why}"`)
     return bad.length ? bad : `moved ${Math.round(f.moved)} m, ${f.length} m long: "${words}"`
+  })
+
+  check('Tunnel fit: the same road and click always give the same tunnel: on a fresh load; after a ramp came and went with the game built in between; after the same road was asked about with barriers on; through the real editor store after edits and Undos; and on a computer so slow each tick of its clock is 50 ms', () => {
+    const load = (): Draft => ({ ...draftFromFile(afterglowJson as unknown as TrackFile, true), id: 'selftest-same' })
+    const said = (f: ReturnType<typeof fitTunnelAt>): string => (f.ok ? `at ${f.piece.at.toFixed(3)}, ${f.length} m` : `refused (${f.message.slice(0, 70)})`)
+    const bad: string[] = []
+    // By the start line: the fit has to look a long way (the slowest kind of click).
+    const START_CLICK = 2.0
+    const fresh = fitTunnelAt(load(), START_CLICK, 150, 'selftest-same', {})
+    if (!fresh.ok) return [`on a fresh load nothing fits by the start line: ${fresh.message}`]
+    const want = said(fresh)
+    // 1. A ramp came and went, the game built each time and handed on (as the live preview does).
+    {
+      const d = load()
+      // (1600 m on: a ramp there pins the racing line, so a line kept from that build would be 3 m off.)
+      const rampAt = advanceAt(roadCurve(d.points), START_CLICK, 1600)
+      const withRamp = judgeDraft({ ...d, pieces: [...d.pieces, { type: 'ramp', at: rampAt }] }, d.id)
+      const after = judgeDraft(d, d.id, {}, withRamp.runtime)
+      const plain = judgeDraft(load(), d.id)
+      const a = after.runtime?.racingLine.offset
+      const b = plain.runtime?.racingLine.offset
+      let worst = a && b && a.length === b.length ? 0 : Infinity
+      if (a && b && a.length === b.length) for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]))
+      if (worst > 1e-6) bad.push(`after a ramp came and went the game's racing line is ${worst.toFixed(2)} m from a fresh build's: a build depends on what was built before it`)
+      const got = said(fitTunnelAt(d, START_CLICK, 150, d.id, {}, after.runtime, after))
+      if (got !== want) bad.push(`after a ramp came and went: ${got} (fresh: ${want})`)
+    }
+    // 2. The same road (the very same points) asked about with barriers on first, then as it is.
+    {
+      const d = load()
+      const fits = tunnelStartFor(roadCurve(d.points), advanceAt(roadCurve(d.points), START_CLICK, fresh.moved), fresh.length)
+      const asIs = quickTunnelCheck(d, fits, fresh.length, d.id)
+      const walled = quickTunnelCheck({ ...d, roadSettings: { ...(d.roadSettings ?? {}), barriers: 'walls' } }, fits, fresh.length, d.id)
+      if (!asIs.ok) bad.push('the quick check refuses the spot the fit chose')
+      if (walled.ok || walled.refusal?.kind !== 'barriers') bad.push(`with barriers on, the same road's quick check says ${walled.ok ? 'it fits' : walled.refusal?.kind ?? walled.error}: an answer kept for the road without them`)
+      const got = said(fitTunnelAt(d, START_CLICK, 150, d.id, {}))
+      if (got !== want) bad.push(`after asking with barriers on: ${got} (fresh: ${want})`)
+    }
+    // 3. The real editor store: a ramp placed and undone, a tunnel placed elsewhere and undone, then the click.
+    if (store) {
+      const d = load()
+      store.replaceDraft(d, null)
+      const rc = roadCurve(d.points)
+      store.setTool('place', 'ramp')
+      store.placeAt(frameAt(rc, advanceAt(rc, START_CLICK, 1600)).p)
+      store.undo()
+      store.setTool('place', 'tunnel')
+      store.placeAt(frameAt(rc, advanceAt(rc, START_CLICK, 1900)).p)
+      store.undo()
+      store.placeAt(frameAt(rc, START_CLICK).p)
+      const st = store.useEditor.getState()
+      const t = st.draft.pieces.find((p, i) => p.type === 'tunnel' && i >= d.pieces.length)
+      const got = t?.type === 'tunnel' ? `at ${t.at.toFixed(3)}, ${t.length ?? 150} m` : `refused (${(st.message?.text ?? '').slice(0, 70)})`
+      if (got !== want) bad.push(`in the editor after edits and Undos: ${got} (fresh: ${want})`)
+    }
+    // 4. A slow computer: every look at the clock is 50 ms later.
+    {
+      const was = Object.getOwnPropertyDescriptor(performance, 'now')
+      let t = performance.now()
+      Object.defineProperty(performance, 'now', { configurable: true, writable: true, value: () => (t += 50) })
+      let got = ''
+      try {
+        got = said(fitTunnelAt(load(), START_CLICK, 150, 'selftest-same', {}))
+      } finally {
+        if (was) Object.defineProperty(performance, 'now', was)
+        else delete (performance as { now?: unknown }).now
+      }
+      if (got !== want) bad.push(`on a slow computer: ${got} (fresh: ${want})`)
+    }
+    return bad.length ? bad : `every way: ${want} (moved ${Math.round(fresh.moved)} m)`
   })
 
   check("Tunnel refusals read in Josh's words and say where the thing in the way is: by a loop, a wall ride and the start line on Afterglow, never a piece number, with what it needs and an amber spot on the road", () => {

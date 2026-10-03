@@ -38,10 +38,10 @@
 import type { TrackRuntime } from '../track/types'
 import { trackInternals } from '../track/build'
 import { validateTrack } from '../track/validate'
-import { buildCenterline } from '../track/road'
+import { tunnelPlanner } from '../track/road'
 import { makeNaturalTerrain, type NaturalTerrain } from '../track/terrain'
-import type { TunnelRefusal, TunnelWhere } from '../track/tunnels'
-import { TRACK_DEFAULTS, type Piece } from '../track/schema'
+import { TUNNEL_MAX_LENGTH, TUNNEL_MIN_LENGTH, type TunnelDigs, type TunnelRefusal, type TunnelWhere } from '../track/tunnels'
+import { TRACK_DEFAULTS, type Piece, type ResolvedTrackFile } from '../track/schema'
 import type { Draft } from './draft'
 import { fileOfDraft } from './draftFile'
 import { gateTitle, isGameBug, judgeDraft, newFailures, type Judged } from './judge'
@@ -102,29 +102,37 @@ export interface QuickTunnel {
 }
 
 const natCache = new Map<string, NaturalTerrain>()
-const quickCache = new WeakMap<Draft['points'], Map<string, QuickTunnel>>()
 
 /**
- * Would a tunnel `length` metres long starting at `at` fit on draft `d`? Asks the track builder's
- * planner only (src/track/tunnels.ts, on the road's centre line: no ground, meshes or checks), so it
- * is quick enough to answer while the pointer moves; answers are kept per road and spot. The checks
- * still have the last word when it is placed (judgeTunnel). `existing`: the index of a tunnel the
- * draft already has, to ask about it instead of adding one.
+ * One road's tunnel planner (road.ts tunnelPlanner) with the answers it has given: the draft's file is
+ * validated and its centre line worked out once, then each question costs only the planner.
  */
-export function quickTunnelCheck(d: Draft, at: number, length: number, id: string, params: Record<string, number> = {}, existing?: number): QuickTunnel {
-  const key = `${existing ?? 'new'}|${at.toFixed(3)}|${length}|${d.startAt}|${d.width}|${JSON.stringify(d.pieces)}|${JSON.stringify(params)}`
-  let memo = quickCache.get(d.points)
-  if (!memo) {
-    memo = new Map()
-    quickCache.set(d.points, memo)
+interface PlanBase {
+  file: ResolvedTrackFile | null
+  error: string | null
+  plan: ((pieces: ResolvedTrackFile['pieces']) => TunnelDigs) | null
+  answers: Map<string, QuickTunnel>
+}
+/**
+ * Per road (the points array, by identity) and then by everything else in the track file and the live
+ * settings: two drafts that share their points but differ in anything else (the world, the road's
+ * width or surface, the start line, a piece) never share an answer.
+ */
+const planBases = new WeakMap<Draft['points'], Map<string, PlanBase>>()
+
+function planBaseFor(d: Draft, id: string, params: Record<string, number>): PlanBase {
+  const f = fileOfDraft(d, id)
+  const key = JSON.stringify({ ...f, road: { ...f.road, points: null } }) + JSON.stringify(params)
+  let byFile = planBases.get(d.points)
+  if (!byFile) {
+    byFile = new Map()
+    planBases.set(d.points, byFile)
   }
-  const known = memo.get(key)
+  const known = byFile.get(key)
   if (known) return known
-  const next: Draft = existing === undefined ? { ...d, pieces: [...d.pieces, { type: 'tunnel', at, length } as Piece] } : d
-  const index = existing ?? next.pieces.length - 1
-  let out: QuickTunnel
-  const v = validateTrack(fileOfDraft(next, id))
-  if (!v.ok || !v.track) out = { ok: false, refusal: null, error: v.errors[0]?.message ?? 'the track has a problem', rampIn: 0, rampOut: 0, depth: 0 }
+  let base: PlanBase
+  const v = validateTrack(f)
+  if (!v.ok || !v.track) base = { file: null, error: v.errors[0]?.message ?? 'the track has a problem', plan: null, answers: new Map() }
   else {
     const file = v.track
     const envKey = JSON.stringify(file.environment)
@@ -137,7 +145,43 @@ export function quickTunnelCheck(d: Draft, at: number, length: number, id: strin
     const banking = file.road.banking
     const bank = banking.adjustable && typeof params.bankDeg === 'number' ? params.bankDeg : banking.maxDeg
     try {
-      const plan = buildCenterline(file, bank, nat).tunnels.plans.find((pl) => pl.index === index)
+      base = { file, error: null, plan: tunnelPlanner(file, bank, nat), answers: new Map() }
+    } catch (err) {
+      base = { file, error: (err as Error).message, plan: null, answers: new Map() }
+    }
+  }
+  if (byFile.size > 16) byFile.clear()
+  byFile.set(key, base)
+  return base
+}
+
+/**
+ * Would a tunnel `length` metres long starting at `at` fit on draft `d`? Asks the track builder's
+ * planner only (src/track/tunnels.ts, on the road's centre line: no ground, meshes or checks), so it
+ * is quick enough to answer while the pointer moves, and for every spot a click's fit looks at. The
+ * answer depends only on the draft, the spot and the settings, never on what was asked before. The
+ * checks still have the last word when it is placed (judgeTunnel). `existing`: the index of a tunnel
+ * the draft already has, to ask about it instead of adding one.
+ */
+export function quickTunnelCheck(d: Draft, at: number, length: number, id: string, params: Record<string, number> = {}, existing?: number): QuickTunnel {
+  const fresh = existing === undefined
+  // A spot or length the file itself wouldn't take: the validator's words, the slow way.
+  if (fresh && (!(at >= 0 && at < d.points.length) || !(length >= TUNNEL_MIN_LENGTH && length <= TUNNEL_MAX_LENGTH))) {
+    const v = validateTrack(fileOfDraft({ ...d, pieces: [...d.pieces, { type: 'tunnel', at, length } as Piece] }, id))
+    return { ok: false, refusal: null, error: v.errors[0]?.message ?? 'the track has a problem', rampIn: 0, rampOut: 0, depth: 0 }
+  }
+  const base = planBaseFor(d, id, params)
+  const key = `${existing ?? 'new'}|${at.toFixed(3)}|${length}`
+  const known = base.answers.get(key)
+  if (known) return known
+  let out: QuickTunnel
+  if (!base.file || !base.plan) out = { ok: false, refusal: null, error: base.error ?? 'the track has a problem', rampIn: 0, rampOut: 0, depth: 0 }
+  else {
+    // The piece as the validator resolves it (a tunnel's at and length pass through as they are).
+    const pieces = fresh ? [...base.file.pieces, { type: 'tunnel' as const, at, length }] : base.file.pieces
+    const index = existing ?? pieces.length - 1
+    try {
+      const plan = base.plan(pieces).plans.find((pl) => pl.index === index)
       out = plan
         ? { ok: !plan.problem, refusal: plan.refusal, rampIn: plan.rampIn, rampOut: plan.rampOut, depth: plan.depth }
         : { ok: false, refusal: null, error: "the game couldn't plan it", rampIn: 0, rampOut: 0, depth: 0 }
@@ -145,8 +189,8 @@ export function quickTunnelCheck(d: Draft, at: number, length: number, id: strin
       out = { ok: false, refusal: null, error: (err as Error).message, rampIn: 0, rampOut: 0, depth: 0 }
     }
   }
-  if (memo.size > 400) memo.clear()
-  memo.set(key, out)
+  if (base.answers.size > 2000) base.answers.clear()
+  base.answers.set(key, out)
   return out
 }
 
@@ -221,9 +265,24 @@ const FIT_REACH = 500
 const FIT_STEP = 20
 /** Shorter lengths a click may fall back to, metres (never below TUNNEL_EDIT_MIN). */
 const FIT_LENGTHS = [120, 90, 60, TUNNEL_EDIT_MIN]
-/** At most this many full builds while looking (each candidate first passes quickTunnelCheck), and this long (ms). */
+/**
+ * At most this many full builds while looking (each candidate first passes quickTunnelCheck). A count,
+ * never a time: the same road and click give the same tunnel on any computer, however busy (round D:
+ * with a 3 s budget, a click by the start line came out differently on a slow page).
+ */
 const FIT_JUDGES = 8
-const FIT_BUDGET_MS = 3000
+
+/** What the last fit did (__dev.editor('lastFit')): how many spots it asked the planner about, how many it built, and how long it took. */
+export interface TunnelFitTrace {
+  quick: number
+  judged: number
+  ms: number
+  refusedByChecks: string[]
+}
+let lastFit: TunnelFitTrace | null = null
+export function lastTunnelFit(): TunnelFitTrace | null {
+  return lastFit
+}
 
 /**
  * A tunnel `length` metres long with its middle at `middle` (an `at`) on draft `d`, or the nearest
@@ -247,29 +306,38 @@ export function fitTunnelAt(d: Draft, middle: number, length: number, id: string
     const w = tunnelWhy(asked, length)
     return { ok: false, message: `Can't put a tunnel here: ${w.why}. ${w.tryThis}` }
   }
-  // Nearest first: each metre moved costs as much as a metre and a half of tunnel lost.
+  // Nearest first: each metre moved costs as much as a metre and a half of tunnel lost. (A stable sort
+  // on a fixed list: ties always go the same way.)
   const candidates: { off: number; len: number; cost: number }[] = []
   for (const len of lengths) for (const off of offsets) candidates.push({ off, len, cost: Math.abs(off) + 1.5 * (length - len) })
   candidates.sort((a, b) => a.cost - b.cost)
+  const trace: TunnelFitTrace = { quick: 0, judged: 0, ms: 0, refusedByChecks: [] }
+  lastFit = trace
   const t0 = performance.now()
+  const done = <T,>(out: T): T => {
+    trace.ms = Math.round(performance.now() - t0)
+    return out
+  }
   for (const { off, len } of candidates) {
-    if (performance.now() - t0 > FIT_BUDGET_MS) break
     const at = tunnelStartFor(rc, advanceAt(rc, middle, off), len)
     const q = quickTunnelCheck(d, at, len, id, params)
+    trace.quick++
     if (!q.ok) continue
     const piece: Piece & { type: 'tunnel' } = { type: 'tunnel', at }
     if (len !== TRACK_DEFAULTS.tunnelLength) piece.length = len
     const next: Draft = { ...d, pieces: [...d.pieces, piece] }
     const v = judgeTunnel(judged, next, index, id, params, previous)
     judges++
+    trace.judged = judges
     if (!('gates' in judged)) judged = judgeDraft(d, id, params, previous)
-    if (v.ok) return { ok: true, piece, moved: off, length: len, asked: length, verdict: v }
+    if (v.ok) return done({ ok: true, piece, moved: off, length: len, asked: length, verdict: v })
+    trace.refusedByChecks.push(`${off} m, ${len} m: ${v.message.slice(0, 120)}`)
     firstWords ||= v.message
     if (judges >= FIT_JUDGES) break
   }
   const w = tunnelWhy(asked, length)
-  if (!asked.ok) return { ok: false, message: `Can't put a tunnel here: ${w.why}. There's no room for one within ${FIT_REACH} m of here either. ${w.tryThis}` }
-  return { ok: false, message: firstWords || `Can't put a tunnel here: there's no room for one within ${FIT_REACH} m of here.` }
+  if (!asked.ok) return done({ ok: false, message: `Can't put a tunnel here: ${w.why}. There's no room for one within ${FIT_REACH} m of here either. ${w.tryThis}` })
+  return done({ ok: false, message: firstWords || `Can't put a tunnel here: there's no room for one within ${FIT_REACH} m of here.` })
 }
 
 /** What a fitted tunnel's click did, in Josh's words: where it went if it moved, and its length if shorter. */

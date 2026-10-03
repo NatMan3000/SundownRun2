@@ -39,7 +39,7 @@ import { averagedHeight, shoulderHeight, type NaturalTerrain } from './terrain'
 import { arcLengthAtParam, nodeAtLength, sampleClosedSpline } from './spline'
 import { clamp, smoothstep } from './noise'
 import { shapeBankRolls } from './bankRolls'
-import { finishTunnels, planTunnelDigs, type TunnelKeepClear, type TunnelSamples } from './tunnels'
+import { finishTunnels, planTunnelDigs, type TunnelDigs, type TunnelKeepClear, type TunnelPlanInput, type TunnelSamples } from './tunnels'
 
 const G = 9.81
 /** Target spacing of the final samples, metres. */
@@ -243,6 +243,32 @@ function pointBlend(at: number, n: number): { i: number; j: number; w: number } 
  * `bankMaxDeg` is the auto-bank cap in effect (the file's, or the live slider's).
  */
 export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat: NaturalTerrain): Centerline {
+  const base = centerlineBase(file, bankMaxDeg, nat)
+  const tunnelDigs = planTunnelDigs(tunnelPlanInput(base, base.pieces, nat))
+  for (let k = 0; k < base.nb; k++) base.by[k] -= tunnelDigs.dig[k]
+  return centerlineAfterTunnels(nat, base, tunnelDigs)
+}
+
+/**
+ * The tunnel planner on its own, for the editor's quick check (src/editor/tunnelPlace.ts): the road's
+ * centre line is worked out once (everything a Tunnel piece can't change), then `plan(pieces)` plans
+ * the tunnels for `pieces`, which must differ from `file.pieces` in Tunnel pieces only. Each plan is
+ * the one buildCenterline makes for those pieces, at a small part of the cost. The centre line itself
+ * is never changed, so one planner answers any number of questions.
+ */
+export function tunnelPlanner(file: ResolvedTrackFile, bankMaxDeg: number, nat: NaturalTerrain): (pieces: ResolvedTrackFile['pieces']) => TunnelDigs {
+  const base = centerlineBase(file, bankMaxDeg, nat)
+  return (pieces) => planTunnelDigs(tunnelPlanInput(base, pieces, nat))
+}
+
+type CenterlineBase = ReturnType<typeof centerlineBase>
+
+function tunnelPlanInput(b: CenterlineBase, pieces: ResolvedTrackFile['pieces'], nat: NaturalTerrain): TunnelPlanInput {
+  return { pieces, baseSOfAt: b.baseSOfAt, nb: b.nb, dsb: b.dsb, Lb: b.Lb, bx: b.bx, by: b.by, bz: b.bz, bHalf: b.bHalf, bBank: b.bBank, nat, keepClear: b.keepClear, walled: !b.pivotLow, overSlab: SLAB_THICKNESS, curvature: b.bCurv, atOfBase: b.atOfBase }
+}
+
+/** The centre line up to the tunnels: heights, samples, banking, where loops sit, and what a tunnel must keep clear of. */
+function centerlineBase(file: ResolvedTrackFile, bankMaxDeg: number, nat: NaturalTerrain) {
   const road = file.road
   const pts = road.points
   const np = pts.length
@@ -462,8 +488,12 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     const f = seg > 0 ? (sd - dense.cum[j]) / seg : 0
     return (dense.at[j] + (dense.at[j + 1] - dense.at[j]) * f) % np
   }
-  const tunnelDigs = planTunnelDigs({ pieces, baseSOfAt, nb, dsb, Lb, bx, by, bz, bHalf, bBank, nat, keepClear, walled: !pivotLow, overSlab: SLAB_THICKNESS, curvature: bCurv, atOfBase })
-  for (let k = 0; k < nb; k++) by[k] -= tunnelDigs.dig[k]
+  return { road, np, pivotLow, dense, Lb, nb, dsb, sStart, bx, by, bz, baseSOfAt, bHalf, bOverW, bCurv, loopSpecs, bBank, bLift, pieces, keepClear, atOfBase }
+}
+
+/** The rest of the centre line, once the tunnels have dug the road down (`base.by` already lowered). */
+function centerlineAfterTunnels(nat: NaturalTerrain, base: CenterlineBase, tunnelDigs: TunnelDigs): Centerline {
+  const { np, dense, Lb, nb, dsb, sStart, bx, by, bz, baseSOfAt, bHalf, bOverW, loopSpecs, bBank, bLift, pieces } = base
 
   // ---- base tangents (3D) ----
   const btx = new Float64Array(nb)
