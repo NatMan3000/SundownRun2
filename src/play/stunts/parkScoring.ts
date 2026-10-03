@@ -16,18 +16,23 @@
 //                  x2 on the outer ring, x3 on the inner one
 //
 //  Events (core/events.ts): stunt.ring the moment a ring is passed
-//  (sound and flash right away), stunt.gap and stunt.target at the
-//  landing, just before its trick.land.
+//  (sound and explosion right away), stunt.gap and stunt.target at
+//  the landing, just before its trick.land.
+//
+//  A ring you fly through explodes and counts down before it can
+//  score again (ringComeback.ts, Josh's ringComebackSeconds knob):
+//  while it counts down, flying through its spot scores nothing and
+//  doesn't break a chain through other rings.
 //
 //  Everything here runs inside the player's physics step and
 //  allocates nothing except when it announces something.
 // ============================================================
 
 import { emit } from '../../core/events'
-import { fx } from '../../core/api'
-import { PALETTE } from '../../core/palette'
 import type { AirJudge, Trick, TrickInput } from '../../vehicle/tricks'
+import { DT } from '../../vehicle/tuning'
 import { parkLive } from './parkLive'
+import { explodeRing, ringLive } from './ringComeback'
 import { RING_MARGIN } from './parkLayout'
 import type { FrameBox, ParkLayout } from './parkLayout'
 
@@ -94,8 +99,6 @@ function throughRing(L: ParkLayout, i: number, x: number, y: number, z: number):
   return cx * cx + cy * cy + cz * cz <= (r.radius - RING_MARGIN) * (r.radius - RING_MARGIN)
 }
 
-const _pulse = { x: 0, y: 0, z: 0 }
-
 export const parkJudge: AirJudge = {
   takeoff(c: TrickInput): void {
     reset()
@@ -130,13 +133,12 @@ export const parkJudge: AirJudge = {
         if (dx * dx + dy * dy + dz * dz > (r.radius + 12) * (r.radius + 12)) continue
         let seen = false
         for (let k = 0; k < jump.chain; k++) if (jump.rings[k] === i) seen = true
-        if (seen || !throughRing(L, i, x, y, z)) continue
+        // A ring that is counting down (it exploded a moment ago) isn't there to score.
+        if (seen || !ringLive(i) || !throughRing(L, i, x, y, z)) continue
         jump.rings[jump.chain++] = i
-        parkLive.ringFlash[i] = 1
-        _pulse.x = r.x
-        _pulse.y = r.y
-        _pulse.z = r.z
-        fx.pulse(_pulse, PALETTE.core, r.radius * 1.25)
+        // It explodes now, flying on with the car (its velocity: this step's move), and counts down.
+        // The points it adds: the chain's total grows by RING_POINTS x its length (150, 300, 450...).
+        explodeRing(i, (x - jump.px) / DT, (y - jump.py) / DT, (z - jump.pz) / DT, RING_POINTS * jump.chain)
         emit('stunt.ring', { ring: r.id, chain: jump.chain })
       }
     }

@@ -92,6 +92,8 @@ export interface GameEventMap {
   'stunt.end': { score: number; best: boolean; previousBest: number | null }
   /** Stunt park (Stunt Attack and Free Roam): flew through a stunt ring. chain = rings so far in this jump (1, 2, 3...). Its points are banked with the jump's landing (trick.land), lost on a wipeout. */
   'stunt.ring': { ring: number; chain: number }
+  /** Stunt park: a ring you exploded has finished its countdown (config.ts ringComebackSeconds) and is back: flying through it scores again. */
+  'stunt.ringBack': { ring: number }
   /** Stunt park: cleared a named gap (took off from its launch and landed on its landing, upright). Emitted at that landing, just before its trick.land. */
   'stunt.gap': { name: string; points: number }
   /** Stunt park: landed upright on a bullseye target, so the jump's trick points are multiplied (outer ring x2, inner x3). Emitted just before the landing's trick.land. */

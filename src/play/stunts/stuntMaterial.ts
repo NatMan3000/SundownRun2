@@ -22,9 +22,10 @@
 //  A launch's face also carries its speed sign: the km/h to leave its lip
 //  at (parkLayout.ts signKmh), in amber 7-segment digits, T1.
 //  Glow tiers: edges and guidance T1, lips and the bullseye's middle
-//  T2 (like the road's chevron peaks), a ring you just flew through
-//  flashes T3 for under half a second, wall panels T0. The road stays
-//  brighter.
+//  T2 (like the road's chevron peaks), a ring flashes T3 for under
+//  half a second as it re-forms after its countdown (ringFx.ts draws
+//  the explosion), its ghost is T0 to T1, wall panels T0. The road
+//  stays brighter.
 // ============================================================
 
 import * as THREE from 'three'
@@ -255,37 +256,66 @@ export function makeParkMaterial(time: { value: number }, opts: ParkMaterialOpti
 
 // ---------------------------------------------------------------- rings
 
+// Each ring's state arrives per instance in aRing (written by ringFx.ts every frame it changes):
+//   x  hot: 0..1, the white-hot flash as a ring re-forms (T3, under half a second)
+//   y  thickness of the tube: 1 = a whole ring, 0.3 = the thin ghost that marks where an
+//      exploded ring will come back, 0 = nothing at all (the moment it explodes)
+//   z  ghost: 0 = the ring's own look, 1 = the ghost's look
+//   w  how far the countdown has got, 0..1: the ghost's dial lights up as it fills
 const ringVertexPars = /* glsl */ `
-attribute float aFlash;
-varying float vFlash;
+attribute vec4 aRing;
+varying vec4 vRing;
+varying vec2 vRingLocal;
 `
 const ringVertexMain = /* glsl */ `
-vFlash = aFlash;
+vRing = aRing;
+vRingLocal = position.xy;
+{
+  // Pull the tube in toward its centre line (radius 1 in the torus's own plane), so the ghost
+  // is a thin thread of the same ring and a ring that just exploded is gone.
+  vec2 c = position.xy / max(length(position.xy), 1e-4);
+  vec3 line = vec3(c, 0.0);
+  transformed = line + (transformed - line) * clamp(aRing.y, 0.0, 1.0);
+}
 `
 const ringFragmentPars = /* glsl */ `
 uniform vec3 uRing;
 uniform vec3 uHot;
+uniform float uGlowT0;
+uniform float uGlowT1;
 uniform float uGlowT2;
 uniform float uGlowT3;
-varying float vFlash;
+varying vec4 vRing;
+varying vec2 vRingLocal;
 ${ROAD_GLSL}
 `
 const ringFragmentEmissive = /* glsl */ `
 #include <emissivemap_fragment>
 {
-  // A tube of violet light; a ring you just flew through flashes white-hot (T3, under 0.5 s).
-  float f = clamp(vFlash, 0.0, 1.0);
-  totalEmissiveRadiance += mix(uRing * uGlowT2, mix(uRing, uHot, 0.6) * uGlowT3, f);
+  float hot = clamp(vRing.x, 0.0, 1.0);
+  float ghost = clamp(vRing.z, 0.0, 1.0);
+  float done = clamp(vRing.w, 0.0, 1.0);
+  // A whole ring: a tube of violet light (T2), white-hot for a moment as it re-forms (T3).
+  vec3 whole = mix(uRing * uGlowT2, mix(uRing, uHot, 0.6) * uGlowT3, hot);
+  // The ghost: a dashed thread, clockwise from the top; the part of the countdown already gone
+  // glows (T1), the rest is dim (T0), so it reads as a dial filling up.
+  float around = fract(atan(vRingLocal.x, vRingLocal.y) / 6.2831853);
+  float dash = step(0.4, fract(around * 36.0));
+  float lit = step(around, done);
+  vec3 thread = uRing * mix(uGlowT0 * 0.55 * dash, uGlowT1, lit);
+  totalEmissiveRadiance += mix(whole, thread, ghost);
 }
 `
 
-/** The stunt rings: violet light tubes (pickup colour), each able to flash when flown through. */
+/** The stunt rings: violet light tubes (pickup colour); ringFx.ts sets each one's state (aRing). */
 export function makeRingMaterial(): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({ color: PALETTE.uiPanelSolid, roughness: 0.4, metalness: 0.2 })
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, {
       uRing: { value: new THREE.Color(PALETTE.core) },
       uHot: { value: new THREE.Color(PALETTE.coreHot) },
+      uGlowT0: { value: GLOW.T0 },
+      uGlowT1: { value: GLOW.T1 },
       uGlowT2: { value: GLOW.T2 },
       uGlowT3: { value: GLOW.T3 },
       uSr2NanTag: NAN_TAG,
@@ -296,6 +326,6 @@ export function makeRingMaterial(): THREE.MeshStandardMaterial {
       .replace('#include <emissivemap_fragment>', ringFragmentEmissive)
       .replace('#include <opaque_fragment>', fragmentClamp)
   }
-  mat.customProgramCacheKey = () => 'sr2-stunt-ring-v1'
+  mat.customProgramCacheKey = () => 'sr2-stunt-ring-v2'
   return mat
 }

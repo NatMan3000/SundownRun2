@@ -18,7 +18,9 @@
 //      ramp and pad, one more for all the rings
 //    - gives every piece its own solid triangle-mesh collider,
 //      tagged 'ramp' (the car treats it like the road's kickers)
-//    - flashes a ring when you fly through it
+//    - draws the rings, and their explosion, countdown and comeback
+//      (ringFx.ts), and runs their clock once per physics step
+//      (ringComeback.ts: Josh's ringComebackSeconds knob)
 //    - works out the HUD's speed cue for the launch ahead (parkCue.ts)
 //    - dev handles: __dev.park(), __dev.parkGo(item, kmh) and the
 //      'stunts' section of window.__game.get('play')
@@ -31,13 +33,13 @@
 //  menu its hop in and out.
 // ============================================================
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
-import { useRapier } from '@react-three/rapier'
+import { useBeforePhysicsStep, useRapier } from '@react-three/rapier'
 import { PALETTE } from '../../core/palette'
 import { CONFIG } from '../../core/config'
-import { useGame } from '../../core/store'
+import { getGame, useGame } from '../../core/store'
 import { environment, getCar } from '../../core/telemetry'
 import { registerDev, urlParam } from '../../core/devHandles'
 import { useTrack } from '../../track/current'
@@ -53,21 +55,18 @@ import type { ParkLayout } from './parkLayout'
 import { makeParkMaterial, makeRingMaterial } from './stuntMaterial'
 import { parkLive } from './parkLive'
 import { loadParkJudge, PARK_REWIND_FLOATS, parkJudge, resetParkJudge, saveParkJudge } from './parkScoring'
+import { comebackSeconds, loadRings, resetRings, rings as ringClock, ringWaitDebug, saveRings, tickRings } from './ringComeback'
+import { RingFx } from './ringFx'
 import { installParkResets } from './parkReset'
 import { clearParkCue, cueLaunches, parkCueShown, stepParkCue } from './parkCue'
 import { setAirJudge } from '../../vehicle/tricks'
 import { addRewindPart } from '../../vehicle'
-/** A ring's flash after you fly through it, seconds (T3 must stay under half a second). */
-const FLASH_S = 0.45
+import { rewindPlaying } from '../../vehicle/rewind'
 /** The car's middle sits this far above the ground (spawning a run in parkGo). */
 const SPAWN_LIFT = 0.65
 
-const _m = new THREE.Matrix4()
 const _q = new THREE.Quaternion()
 const _p = new THREE.Vector3()
-const _s = new THREE.Vector3(1, 1, 1)
-const _z = new THREE.Vector3(0, 0, 1)
-const _n = new THREE.Vector3()
 const _basis = new THREE.Matrix4()
 const _left = new THREE.Vector3()
 const _up = new THREE.Vector3(0, 1, 0)
@@ -99,7 +98,7 @@ function layoutFor(track: TrackRuntime): ParkLayout {
 function ParkField({ track }: { track: TrackRuntime }) {
   const { world, rapier } = useRapier()
   const layout = layoutFor(track)
-  const ringRef = useRef<THREE.InstancedMesh>(null)
+  const round = useGame((s) => s.round)
 
   // ---- the render mesh and the physics solids, built once per layout ----
   const built = useMemo(() => {
@@ -129,37 +128,20 @@ function ParkField({ track }: { track: TrackRuntime }) {
   const material = useMemo(() => makeParkMaterial(time, { edge, horizon }), [time, edge, horizon])
   useEffect(() => () => material.dispose(), [material])
 
-  // ---- rings: one instanced torus, each with its own flash ----
+  // ---- rings: one instanced torus, plus their explosions, countdowns and comebacks (ringFx.ts) ----
   const rings = useMemo(() => {
     const geo = new THREE.TorusGeometry(1, 0.055, 10, 56)
-    const flash = new Float32Array(Math.max(1, layout.rings.length))
-    geo.setAttribute('aFlash', new THREE.InstancedBufferAttribute(flash, 1))
-    return { geo, flash, mat: makeRingMaterial() }
+    const mat = makeRingMaterial()
+    return { geo, mat, fx: new RingFx(layout.rings, geo, mat) }
   }, [layout])
   useEffect(
     () => () => {
+      rings.fx.dispose()
       rings.geo.dispose()
       rings.mat.dispose()
     },
     [rings],
   )
-  useEffect(() => {
-    const mesh = ringRef.current
-    if (!mesh) return
-    for (let i = 0; i < layout.rings.length; i++) {
-      const r = layout.rings[i]
-      _n.set(r.nx, r.ny, r.nz)
-      // The torus's hole looks along +z: turn +z onto the way cars fly through it.
-      _q.setFromUnitVectors(_z, _n)
-      _p.set(r.x, r.y, r.z)
-      _s.set(r.radius, r.radius, r.radius)
-      _m.compose(_p, _q, _s)
-      mesh.setMatrixAt(i, _m)
-    }
-    mesh.count = layout.rings.length
-    mesh.instanceMatrix.needsUpdate = true
-    mesh.computeBoundingSphere()
-  }, [layout, rings])
 
   // ---- the speed cue: the launches with a sign, and the HUD told nothing when the park goes ----
   const launches = useMemo(() => cueLaunches(layout), [layout])
@@ -175,10 +157,23 @@ function ParkField({ track }: { track: TrackRuntime }) {
   // ---- scoring: the trick detector's air judge, and its part of every rewind snapshot ----
   useEffect(() => {
     parkLive.layout = layout
-    parkLive.ringFlash = new Array(layout.rings.length).fill(0)
+    const nRings = layout.rings.length
+    resetRings(nRings)
     resetParkJudge()
     setAirJudge(parkJudge)
-    const offRewind = addRewindPart({ size: PARK_REWIND_FLOATS, save: saveParkJudge, load: loadParkJudge })
+    // One snapshot holds the jump in progress and every ring's countdown, so rewinding to before a
+    // pass brings the ring back whole (and the trick score takes its points back, vehicle/PlayerCar).
+    const offRewind = addRewindPart({
+      size: PARK_REWIND_FLOATS + nRings,
+      save: (out, at) => {
+        saveParkJudge(out, at)
+        saveRings(out, at + PARK_REWIND_FLOATS, nRings)
+      },
+      load: (src, at) => {
+        loadParkJudge(src, at)
+        loadRings(src, at + PARK_REWIND_FLOATS, nRings)
+      },
+    })
     // On a walled track, R inside the park returns to a park spot (parkReset.ts).
     const offResets = installParkResets()
     return () => {
@@ -186,9 +181,20 @@ function ParkField({ track }: { track: TrackRuntime }) {
       offResets()
       setAirJudge(null)
       resetParkJudge()
+      resetRings(0)
       if (parkLive.layout === layout) parkLive.layout = null
     }
   }, [layout])
+
+  // ---- a new round (Stunt Attack's next run, Restart): every ring is whole again, so runs are fair ----
+  useEffect(() => {
+    resetRings(layout.rings.length)
+  }, [round, layout])
+
+  // ---- the rings' countdowns run on physics steps: paused with the game, held while rewinding ----
+  useBeforePhysicsStep(() => {
+    tickRings(!rewindPlaying())
+  })
 
   // ---- dev handles ----
   useEffect(() => {
@@ -297,10 +303,26 @@ function ParkField({ track }: { track: TrackRuntime }) {
         }) as never,
         'parkLook(item, dist = 30, angleDeg = 60, up = 4, ahead = 0): camera on one stunt-park item (0 = from behind, 90 = its right side, 180 = from beyond), looking at its lip / ring / target moved `ahead` m along the lane',
       ),
+      registerDev(
+        'ringWait',
+        ((ring: number, seconds: number) => {
+          const i = Number(ring)
+          if (!(i >= 0 && i < ringClock.wait.length)) return `no ring ${ring} (0..${ringClock.wait.length - 1})`
+          const s = Number(seconds)
+          ringClock.wait[i] = Number.isFinite(s) ? Math.min(comebackSeconds(), Math.max(0, s)) : 0
+          return ringWaitDebug()
+        }) as never,
+        'ringWait(ring, seconds): set a stunt ring counting down (0 = whole now), for looking at the countdown; the rings list is park().items of kind ring, in order',
+      ),
       registerPlayInspector('stunts', () => ({
         zones: layout.zones.length,
         items: layout.items.length,
         rings: layout.rings.length,
+        ringWait: ringWaitDebug(),
+        ringComebackSeconds: comebackSeconds(),
+        ringsExploded: ringClock.explodedTotal,
+        ringsBack: ringClock.backTotal,
+        ringFx: rings.fx.debug(),
         targets: layout.targets.length,
         jumps: layout.jumps.length,
         triangles: built.triangles,
@@ -314,35 +336,21 @@ function ParkField({ track }: { track: TrackRuntime }) {
     return () => {
       for (const off of offs) off()
     }
-  }, [layout, built, track, launches])
+  }, [layout, built, track, launches, rings])
 
-  // ---- per frame: the shader clock, the sky's colour, the speed cue and the ring flashes (no allocation) ----
+  // ---- per frame: the shader clock, the sky's colour, the speed cue and the rings (no allocation) ----
   useFrame((_, delta) => {
     time.value = (time.value + Math.min(delta, 0.1)) % 600
     horizon.value.copy(environment.horizon)
     stepParkCue(launches)
-    const mesh = ringRef.current
-    if (!mesh) return
-    let dirty = false
-    const flash = rings.flash
-    for (let i = 0; i < layout.rings.length; i++) {
-      const hit = parkLive.ringFlash[i] ?? 0
-      if (hit > 0) {
-        flash[i] = 1
-        parkLive.ringFlash[i] = 0
-        dirty = true
-      } else if (flash[i] > 0) {
-        flash[i] = Math.max(0, flash[i] - Math.min(delta, 0.1) / FLASH_S)
-        dirty = true
-      }
-    }
-    if (dirty) (rings.geo.getAttribute('aFlash') as THREE.InstancedBufferAttribute).needsUpdate = true
+    // The rings' explosions and comebacks hold still while the game is paused.
+    rings.fx.update(getGame().phase === 'paused' ? 0 : Math.min(delta, 0.1))
   })
 
   return (
     <group name="stunt-park">
       <mesh geometry={built.geo} material={material} castShadow receiveShadow frustumCulled={false} />
-      {layout.rings.length > 0 && <instancedMesh ref={ringRef} args={[rings.geo, rings.mat, layout.rings.length]} frustumCulled={false} />}
+      {layout.rings.length > 0 && <primitive object={rings.fx.group} />}
     </group>
   )
 }

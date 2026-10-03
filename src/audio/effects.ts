@@ -195,8 +195,14 @@ export class Effects {
         this.chime(k, t, e.found, e.total)
         break
       case 'stunt.ring':
-        // The stunt park's rings: the pickup chime, climbing with each ring in the chain.
+        // The stunt park's rings: the ring blows apart (a boom and glass), with the pickup chime
+        // on top, climbing with each ring in the chain.
+        this.ringBurst(k, t)
         this.chime(k, t, Math.min(e.chain, 4), 4)
+        break
+      case 'stunt.ringBack':
+        // A ring's countdown ran out and it is back: a soft rising shimmer (it may be far away).
+        this.ringBack(k, t)
         break
       case 'hunt.complete':
         this.fanfare(k, t, e.best ? 1 : 0.6)
@@ -425,6 +431,19 @@ export class Effects {
     const step = 3 + Math.floor(this.rnd() * 4)
     bell(k, midiToHz(brightPentaMidi(step, 2)), t + 0.03, level * (0.11 + 0.06 * size), 0.55, 1.8)
     thump(k, t, level * 0.08, 200, 70, 0.1)
+  }
+
+  /** A stunt ring exploding as you fly through it: a deep boom, a rushing burst, then glass. */
+  private ringBurst(k: VoiceKit, t: number): void {
+    thump(k, t, 0.3, 160, 38, 0.32)
+    noiseHit(k, t, 0.12, 'lowpass', 2400, 0.8, 0.004, 0.32, 300)
+    this.shatter(k, t + 0.02, 0.9, 0.8)
+  }
+
+  /** A stunt ring re-forming after its countdown: a quiet glide up and three rising bells. */
+  private ringBack(k: VoiceKit, t: number): void {
+    sweep(k, 'sine', midiToHz(musicKey.root + 12), midiToHz(musicKey.root + 24), t, 0.45, 0.05, 0.2, 2400)
+    for (let n = 0; n < 3; n++) bell(k, midiToHz(brightPentaMidi(n * 2, 2)), t + 0.3 + n * 0.06, 0.05, 0.5, 1.6)
   }
 
   /** Roadside smash: crunchier than a prop, with weight from the speed. */
