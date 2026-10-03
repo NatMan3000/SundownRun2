@@ -28,6 +28,8 @@
 //                        default 60) and print the report
 //    --gpuinfo           print the WebGL renderer string (check it's the GPU)
 //    --headed            show the window (default headless)
+//    --real-pad          let the page see real controllers plugged into this
+//                        computer (hidden by default, so nobody's pad steers a probe)
 //    --angle <backend>   the GPU backend Chrome draws with (default metal).
 //                        swiftshader = Google's CPU renderer, whose maths
 //                        (pow, NaN) behaves like a Windows Direct3D GPU's
@@ -117,6 +119,14 @@ const browser = await puppeteer.launch({
 let pageThrew = false
 try {
   const page = await browser.newPage()
+  // A real controller plugged into this computer shows up in every headless browser too, so a
+  // probe would feel someone else's button presses (View restarts the car). Hide real pads
+  // unless asked; __dev.fakePad still plugs its virtual pad in on top.
+  if (!flag('real-pad')) {
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'getGamepads', { configurable: true, value: () => [] })
+    })
+  }
   page.on('console', (m) => {
     const t = m.type()
     if (t === 'error' || t === 'warn' || t === 'info') console.log(`[page ${t}] ${m.text()}`)
