@@ -17,6 +17,11 @@
 //  size as on the map, so the swap can't be seen; then it tilts and
 //  swoops into 3D. Going back, it tilts up to that same spot first
 //  and only then swaps back to the map camera.
+//
+//  Each frame, once the 3D camera is placed, it tells look3dSpace.ts
+//  (posed()), so the editor's marks and the mouse's picking in 3D use
+//  exactly the picture on screen. The camera counts as moved only when
+//  it really went somewhere, so a still view redraws nothing.
 // ============================================================
 
 import { useEffect, useLayoutEffect, useMemo } from 'react'
@@ -25,8 +30,12 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { getTrack } from '../track/current'
 import { registerInspector } from '../core/devHandles'
 import { view } from './view'
-import { look, resetLook3d, stepLook3d, groundAt, useLook3d, worldHalf } from './look3d'
+import { look, resetLook3d, setTrackSource, stepLook3d, groundAt, useLook3d, worldHalf } from './look3d'
 import { LOOK, aim, blendOrbit, ease, filmOffsetFor, followOrbit, mapOrbit, orbitOk, placeCamera, poseCamera } from './look3dMath'
+import { posed, setLookCamera } from './look3dSpace'
+
+// The 3D view and its picking read the track being shown through this (look3d.ts setTrackSource).
+setTrackSource(getTrack)
 
 /** How high above the tallest hill the camera hangs. Low enough that the world's haze stays thin. */
 const HEIGHT_ABOVE_TERRAIN = 350
@@ -42,6 +51,16 @@ const MAX_STEP = 1 / 30
 
 // scratch (no allocation per frame)
 const _aim = { yaw: 0, pitch: 0 }
+/** The pose drawn last frame (position, facing, lens), to tell whether the camera really moved. */
+const lastPose = new Float64Array(8)
+/** Moves smaller than this (metres, radians) count as still: the glide's last creep isn't worth a redraw. */
+const STILL = 1e-4
+/** 1 if pose number k changed since last frame (and remember it), else 0. */
+function poseMoved(k: number, v: number): number {
+  const changed = Math.abs(v - lastPose[k]) > STILL ? 1 : 0
+  lastPose[k] = v
+  return changed
+}
 
 export function TopDownCamera() {
   const scene = useThree((s) => s.scene)
@@ -61,6 +80,11 @@ export function TopDownCamera() {
     ;(c as THREE.PerspectiveCamera & { manual?: boolean }).manual = true
     return c
   }, [])
+  // The editor's tools pick and draw through this camera in 3D (look3dSpace.ts).
+  useEffect(() => {
+    setLookCamera(lookCam)
+    return () => setLookCamera(null)
+  }, [lookCam])
 
   // Checkers can look at what is under the map: __game.get('editorScene').
   useEffect(() => registerInspector('editorScene', () => scene), [scene])
@@ -147,5 +171,8 @@ function placeLookCamera(c: THREE.PerspectiveCamera, width: number, height: numb
     c.filmOffset = filmOffset
     c.updateProjectionMatrix()
   }
-  look.version++
+  // Did it really move? (Only then do the pins and the tools' marks redraw.)
+  const moved = poseMoved(0, pos.x) + poseMoved(1, pos.y) + poseMoved(2, pos.z) + poseMoved(3, _aim.yaw) + poseMoved(4, _aim.pitch) + poseMoved(5, filmOffset) + poseMoved(6, aspect) > 0
+  if (moved) look.version++
+  posed(moved)
 }

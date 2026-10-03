@@ -6,19 +6,26 @@
 //  3D button (beside the compass, or the T key) tilts the camera
 //  down out of the map into a 3D view of the same spot:
 //
-//    drag            turn round the spot (and tilt up and down)
-//    right-drag      slide along the ground (also middle-drag, or
-//                    Space + drag, or WASD / the arrow keys)
-//    mouse wheel     closer and further (also + and -)
+//    left button     the tool you picked, exactly as on the map:
+//                    select, draw, bend, pick a stretch, place a
+//                    piece. Where the tool has nothing to do (Select
+//                    on empty ground, say) a left-drag turns round
+//    right-drag      turn round the spot (and tilt up and down)
+//    middle-drag     slide along the ground (also Space + drag, or
+//                    WASD / the arrow keys; Q and E turn)
+//    mouse wheel     closer and further (also + and -), unless the
+//                    tool uses it (Bend's reach while you drag)
 //    controller      left stick slides, right stick turns,
 //                    triggers zoom, B goes back to the map
-//    3D again, T,    back to the map, exactly where it was
-//    or Esc
+//    3D again, or T  back to the map, exactly where it was
+//    Esc             stops a drag or a half-made line first; with
+//                    nothing going on, back to the map
 //
-//  It is for looking only: the drawing tools wait on the map (the
-//  rail dims and says "Back to the map to edit"). The map's own view
-//  (view.ts) is never touched while you look round in 3D, so the map
-//  comes back exactly as you left it.
+//  Every tool works here because the tools never ask the map where
+//  the mouse is: they ask look3dSpace.ts, which in 3D finds the road
+//  you see under the mouse (or the ground) with look3dPick.ts. The
+//  map's own view (view.ts) is never touched while you look round in
+//  3D, so the map comes back exactly as you left it.
 //
 //  How the pieces fit:
 //    look3dMath.ts   the camera-on-a-stick maths (Orbit)
@@ -26,13 +33,17 @@
 //                    the actions (open, close, turn, slide, zoom)
 //    TopDownCamera   the editor's two cameras: the flat map camera and
 //                    the 3D one, and the tilt between them
-//    Look3dUi.tsx    the 3D button, the note at the top, your mouse,
-//                    keys and controller in 3D, and the problem pins
-//    look3dMarks.tsx what is selected, lit up on the real road in 3D
+//    look3dSpace.ts  where the mouse is in the world, map or 3D (the
+//                    tools and the map's drawing ask it)
+//    look3dPick.ts   the picking maths: the road or ground under the
+//                    mouse, seen through the 3D camera
+//    Look3dUi.tsx    the 3D button, the note at the top, the keys and
+//                    controller that move the 3D view
+//    look3dMarks.tsx the selected spot and the problem pins, on stalks
 // ============================================================
 
 import { create } from 'zustand'
-import { getTrack } from '../track/current'
+import type { TrackRuntime } from '../track/types'
 import { audio } from '../core/api'
 import { view } from './view'
 import { LOOK, type Orbit, type V3, clampDist, clampPitch, clampToWorld, copyOrbit, mapOrbit, metresPerPixelAt, openingOrbit, orbit, orbitOk, panOrbit } from './look3dMath'
@@ -43,13 +54,13 @@ import { LOOK, type Orbit, type V3, clampDist, clampPitch, clampToWorld, copyOrb
  *   opening  tilting down out of the map
  *   3d       looking round
  *   closing  tilting back up into the map
- * The drawing tools only work in 'map'.
+ * The tools work in all four (in 'map' through the map's view, otherwise through the 3D camera).
  */
 export type LookMode = 'map' | 'opening' | '3d' | 'closing'
 
 export const useLook3d = create<{ mode: LookMode }>(() => ({ mode: 'map' }))
 
-/** True while the 3D view is showing (or tilting in or out): the map's tools wait. */
+/** True while the 3D view is showing (or tilting in or out): the tools work through the 3D camera. */
 export function look3dOn(): boolean {
   return useLook3d.getState().mode !== 'map'
 }
@@ -96,9 +107,24 @@ function openMiddleX(): number {
   return (left + right) / 2
 }
 
+/**
+ * Where the 3D view finds the track being shown. TopDownCamera.tsx hands over the game's
+ * (track/current.ts getTrack); this file doesn't import it itself, so the map's drawing
+ * (mapDraw.ts, through look3dSpace.ts) loads without the game's track list in the editor's
+ * Bun self-test.
+ */
+let trackSource: () => TrackRuntime | null = () => null
+export function setTrackSource(fn: () => TrackRuntime | null): void {
+  trackSource = fn
+}
+/** The track being shown (null before there is one). */
+export function shownTrack(): TrackRuntime | null {
+  return trackSource()
+}
+
 /** The ground height under x, z on the track being shown (0 before there is one). */
 export function groundAt(x: number, z: number): number {
-  const t = getTrack()
+  const t = trackSource()
   if (!t) return 0
   const half = t.world.half
   const h = t.terrainHeight(Math.min(half, Math.max(-half, x)), Math.min(half, Math.max(-half, z)))
@@ -107,7 +133,7 @@ export function groundAt(x: number, z: number): number {
 
 /** Half the side of the world square (the 3D camera stays inside it). */
 export function worldHalf(): number {
-  return getTrack()?.world.half ?? 1000
+  return trackSource()?.world.half ?? 1000
 }
 
 /** Tilt down out of the map into 3D, looking at what the map is looking at. */

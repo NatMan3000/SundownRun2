@@ -18,6 +18,14 @@
 //  amber with your new line bright cyan, or, when letting go would not
 //  change anything, a grey dashed line and a tag saying what to do.
 //
+//  In the 3D view the same drawing goes on the real road: every spot
+//  is placed through look3dSpace.ts (on the road, at the right height,
+//  the right road at a crossing), the wide bands are laid between the
+//  road's real edges, and labels stay flat to the screen so they read
+//  from any angle. What only makes sense looking straight down (the
+//  road's outline, the arrows, the scale bar) waits for the map, and
+//  the problem pins are look3dMarks.tsx's (on stalks).
+//
 //  Overlay.tsx calls drawMap() whenever something changed. Nothing
 //  here changes any state.
 // ============================================================
@@ -34,7 +42,8 @@ import { type P } from './geom'
 import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type PlaceKind } from './pieces'
 import { type RedrawPlan, type RoadCurve, PER, advanceAt, frameAt, metresBetween, roadCurve, wrapAt } from './road'
 import { roadLine, stretchOf } from './shape'
-import { view, worldToScreen } from './view'
+import { view } from './view'
+import { in3d, mppAt, pointToScreen, screenDir, viewMpp, worldToScreen } from './look3dSpace'
 import { WALL_RAMP, WALL_REACH } from '../track/road'
 import { TUNNEL_WALL } from '../track/tunnels'
 import { smoothstep } from '../track/noise'
@@ -162,7 +171,8 @@ export function roadGeometry(points: RoadPoint[], width: number) {
 /** Which road points are shown as handles right now. */
 export function pointsVisible(s: EditorState): boolean {
   if (s.mode !== 'edit') return false
-  return s.tool === 'select' ? view.mpp < 2.2 : view.mpp < 0.7
+  const mpp = viewMpp()
+  return s.tool === 'select' ? mpp < 2.2 : mpp < 0.7
 }
 
 // ---------------------------------------------------------------- the whole map
@@ -195,7 +205,8 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
   if (g.rc.curve.length) {
     // Zoomed out, the 3D road's light strips get thinner than a pixel, so the map draws its outline.
     // While bending, the 3D road waits for you to let go, so the outline shows the road as it is now.
-    if (view.mpp > 0.55 || x.bend?.dragging) drawRoadOutline(ctx, g.left, g.right, d.environment.palette?.edge ?? PALETTE.roadEdge)
+    // (In 3D the real road is right there: an outline only while bending, when the real road waits for you to let go.)
+    if ((!in3d() && view.mpp > 0.55) || x.bend?.dragging) drawRoadOutline(ctx, g.left, g.right, d.environment.palette?.edge ?? PALETTE.roadEdge)
     markTargets = []
     if (x.marks) {
       drawRaisedRuns(ctx, g.rc, x.marks.raised, x.crossings, s.mode === 'edit')
@@ -206,7 +217,7 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
     if (s.selection?.kind === 'section') drawSection(ctx, g.rc, s.selection.from, s.selection.to)
     if (x.bend) drawBend(ctx, x.bend.view, x.bend.dragging, d.width)
     if (x.shape) drawShape(ctx, x.shape, d.width)
-    drawDirectionArrows(ctx, g.rc.curve)
+    if (!in3d()) drawDirectionArrows(ctx, g.rc.curve)
     drawBridges(ctx, d.points, x.crossings, d.width, s.mode === 'edit' && s.selection?.kind === 'crossing' ? s.selection : null, x.hoverPick?.kind === 'crossing' ? x.hoverPick : null)
     drawPieces(ctx, g.rc, d.pieces, d.width, s.selection, x.hoverPick)
     drawStartLine(ctx, g.rc, d.startAt, d.width)
@@ -221,10 +232,11 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
     drawLabels(ctx, s, g.rc)
     drawCars(ctx)
   }
-  drawPins(ctx, s, g.rc)
+  // In 3D the pins stand on stalks (look3dMarks.tsx), and say where they were drawn (setPinTargets3d).
+  if (!in3d()) drawPins(ctx, s, g.rc)
   if (x.stroke.length > 1) drawStroke(ctx, x.stroke, x.pencil ?? null, d.width, x.pen?.to ?? x.stroke[x.stroke.length - 1])
   if (x.pen) drawPen(ctx, x.pen.at, x.pen.to)
-  drawScaleBar(ctx)
+  if (!in3d()) drawScaleBar(ctx)
   if (x.hover) drawReadout(ctx, x.hover)
 }
 
@@ -232,12 +244,93 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
 
 function line(ctx: CanvasRenderingContext2D, pts: readonly P[], closed: boolean): void {
   ctx.beginPath()
+  const on3d = in3d()
+  let pen = false
   for (let i = 0; i < pts.length; i++) {
-    const { sx, sy } = worldToScreen(pts[i].x, pts[i].z)
-    if (i === 0) ctx.moveTo(sx, sy)
+    // In 3D each spot sits on the road the line runs along (heading its way), or the ground; a spot the
+    // mouse picked (the pencil's line) right where it was picked.
+    const { sx, sy } = pointToScreen(pts[i], on3d ? headingAt(pts, i) : null)
+    if (!Number.isFinite(sx) || !Number.isFinite(sy)) {
+      // Behind the 3D camera: the line breaks here and starts again where it comes back.
+      pen = false
+      continue
+    }
+    if (!pen) ctx.moveTo(sx, sy)
     else ctx.lineTo(sx, sy)
+    pen = true
   }
   if (closed) ctx.closePath()
+}
+
+/** Which way the line through pts heads at its point i (the 3D view finds that road's height). */
+function headingAt(pts: readonly P[], i: number): P {
+  const a = pts[Math.max(0, i - 1)]
+  const b = pts[Math.min(pts.length - 1, i + 1)]
+  return { x: b.x - a.x, z: b.z - a.z }
+}
+
+/**
+ * A band `metres` wide along pts, in the current stroke colour and alpha: on the map a thick
+ * line (never thinner than `minPx`); in 3D laid on the road, its sides where the road's sides
+ * really are, so it follows hills, banks and bridges (never thinner than `minPx` on screen
+ * either). Either way the band's middle line is left as the current path, so a caller can
+ * stroke a crisp centre line over it next.
+ */
+function wideLine(ctx: CanvasRenderingContext2D, pts: readonly P[], metres: number, minPx: number): void {
+  if (!in3d()) {
+    ctx.lineWidth = Math.max(minPx, metres / view.mpp)
+    line(ctx, pts, false)
+    ctx.stroke()
+    return
+  }
+  const half = metres / 2
+  const left: { sx: number; sy: number }[] = []
+  const right: { sx: number; sy: number }[] = []
+  const fill = () => {
+    if (left.length > 1) {
+      ctx.beginPath()
+      ctx.moveTo(left[0].sx, left[0].sy)
+      for (let k = 1; k < left.length; k++) ctx.lineTo(left[k].sx, left[k].sy)
+      for (let k = right.length - 1; k >= 0; k--) ctx.lineTo(right[k].sx, right[k].sy)
+      ctx.closePath()
+      ctx.fill()
+    }
+    left.length = 0
+    right.length = 0
+  }
+  ctx.save()
+  ctx.fillStyle = ctx.strokeStyle
+  for (let i = 0; i < pts.length; i++) {
+    const h = headingAt(pts, i)
+    const hl = Math.hypot(h.x, h.z) || 1
+    const rx = -h.z / hl
+    const rz = h.x / hl
+    const p = pts[i]
+    const c = worldToScreen(p.x, p.z, h)
+    const l = worldToScreen(p.x - rx * half, p.z - rz * half, h)
+    const r = worldToScreen(p.x + rx * half, p.z + rz * half, h)
+    if (!Number.isFinite(c.sx + c.sy + l.sx + l.sy + r.sx + r.sy)) {
+      fill()
+      continue
+    }
+    // Never thinner than minPx: far away, widen it about its middle.
+    const wx = r.sx - l.sx
+    const wy = r.sy - l.sy
+    const w = Math.hypot(wx, wy)
+    if (w < minPx) {
+      const ux = w > 1e-6 ? wx / w : 1
+      const uy = w > 1e-6 ? wy / w : 0
+      l.sx = c.sx - (ux * minPx) / 2
+      l.sy = c.sy - (uy * minPx) / 2
+      r.sx = c.sx + (ux * minPx) / 2
+      r.sy = c.sy + (uy * minPx) / 2
+    }
+    left.push(l)
+    right.push(r)
+  }
+  fill()
+  ctx.restore()
+  line(ctx, pts, false)
 }
 
 /** A label on a dark pill, legible over the brightest scene. */
@@ -284,16 +377,15 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: readonly P[], plan: R
     ctx.lineCap = 'round'
     ctx.strokeStyle = PALETTE.uiWarn
     ctx.globalAlpha = 0.28
-    ctx.lineWidth = Math.max(8, (roadWidth + 6) / view.mpp)
-    line(ctx, plan.replaced, false)
-    ctx.stroke()
+    wideLine(ctx, plan.replaced, roadWidth + 6, 8)
     ctx.globalAlpha = 1
     ctx.lineWidth = 2
     ctx.setLineDash([6, 5])
     ctx.stroke()
     ctx.restore()
-    const mid = plan.replaced[Math.floor(plan.replaced.length / 2)]
-    const m = worldToScreen(mid.x, mid.z)
+    const k = Math.floor(plan.replaced.length / 2)
+    const mid = plan.replaced[k]
+    const m = worldToScreen(mid.x, mid.z, headingAt(plan.replaced, k))
     placePill(ctx, 'THIS BIT GOES', m.sx, m.sy, [-24, 24, -48, 48], PALETTE.uiWarn)
   }
   ctx.save()
@@ -321,15 +413,15 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: readonly P[], plan: R
   ctx.restore()
   if (plan && plan !== 'new' && plan.kind === 'nothing' && plan.why !== 'short') {
     const at = plan.why === 'start' ? stroke[0] : tip
-    const p = worldToScreen(at.x, at.z)
+    const p = pointToScreen(at)
     placePill(ctx, PENCIL_TAGS[plan.why], p.sx, p.sy, [-26, 26, -50], plan.why === 'end' ? PALETTE.uiAccent : PALETTE.uiWarn)
   }
 }
 
 /** The steady pencil's string: a thin line from the pen (where the road is drawn) to the pointer. */
 function drawPen(ctx: CanvasRenderingContext2D, at: P, to: P): void {
-  const a = worldToScreen(at.x, at.z)
-  const b = worldToScreen(to.x, to.z)
+  const a = pointToScreen(at)
+  const b = pointToScreen(to)
   ctx.save()
   ctx.strokeStyle = PALETTE.uiDim
   ctx.lineWidth = 1
@@ -361,15 +453,9 @@ function drawBend(ctx: CanvasRenderingContext2D, v: BendView, dragging: boolean,
   ctx.save()
   ctx.lineCap = 'round'
   ctx.strokeStyle = colour
-  ctx.lineWidth = Math.max(10, (roadWidth + 10) / view.mpp)
   for (let i = 0; i < n - 1; i++) {
-    const a = worldToScreen(v.line[i].x, v.line[i].z)
-    const b = worldToScreen(v.line[i + 1].x, v.line[i + 1].z)
     ctx.globalAlpha = 0.06 + 0.34 * ((v.weights[i] + v.weights[i + 1]) / 2)
-    ctx.beginPath()
-    ctx.moveTo(a.sx, a.sy)
-    ctx.lineTo(b.sx, b.sy)
-    ctx.stroke()
+    wideLine(ctx, [v.line[i], v.line[i + 1]], roadWidth + 10, 10)
   }
   ctx.globalAlpha = 1
   // The ends of the reach: a short tick across the road.
@@ -383,8 +469,9 @@ function drawBend(ctx: CanvasRenderingContext2D, v: BendView, dragging: boolean,
     const rx = -(q.z - p.z) / len
     const rz = (q.x - p.x) / len
     const half = roadWidth / 2 + 6
-    const a = worldToScreen(p.x - rx * half, p.z - rz * half)
-    const b = worldToScreen(p.x + rx * half, p.z + rz * half)
+    const along = { x: q.x - p.x, z: q.z - p.z }
+    const a = worldToScreen(p.x - rx * half, p.z - rz * half, along)
+    const b = worldToScreen(p.x + rx * half, p.z + rz * half, along)
     ctx.lineWidth = 2
     ctx.beginPath()
     ctx.moveTo(a.sx, a.sy)
@@ -393,7 +480,7 @@ function drawBend(ctx: CanvasRenderingContext2D, v: BendView, dragging: boolean,
   }
   // Your hand: a handle on the road where it is (or would be) grabbed.
   const mid = v.line[Math.floor(n / 2)]
-  const m = worldToScreen(mid.x, mid.z)
+  const m = worldToScreen(mid.x, mid.z, headingAt(v.line, Math.floor(n / 2)))
   ctx.beginPath()
   ctx.arc(m.sx, m.sy, dragging ? 9 : 8, 0, Math.PI * 2)
   ctx.fillStyle = PALETTE.uiPanelSolid
@@ -438,9 +525,7 @@ function drawShape(ctx: CanvasRenderingContext2D, sh: ShapeView, roadWidth: numb
   if (sh.preview.length > 1) {
     ctx.strokeStyle = colour
     ctx.globalAlpha = 0.22
-    ctx.lineWidth = Math.max(6, roadWidth / view.mpp)
-    line(ctx, sh.preview, false)
-    ctx.stroke()
+    wideLine(ctx, sh.preview, roadWidth, 6)
     ctx.globalAlpha = 1
     ctx.lineWidth = 2.5
     ctx.shadowColor = colour
@@ -450,7 +535,7 @@ function drawShape(ctx: CanvasRenderingContext2D, sh: ShapeView, roadWidth: numb
   }
   if (sh.pull && sh.marks.length === 2) {
     // A thin line from each end to the pulled middle, so you can see what you are pulling.
-    const p = worldToScreen(sh.pull.x, sh.pull.z)
+    const p = pointToScreen(sh.pull)
     ctx.strokeStyle = PALETTE.uiDim
     ctx.lineWidth = 1
     ctx.setLineDash([3, 4])
@@ -501,19 +586,22 @@ function drawShape(ctx: CanvasRenderingContext2D, sh: ShapeView, roadWidth: numb
 function drawRoadOutline(ctx: CanvasRenderingContext2D, left: readonly P[], right: readonly P[], edge: string): void {
   ctx.save()
   ctx.lineJoin = 'round'
-  ctx.beginPath()
-  for (const ring of [left, right]) {
-    for (let i = 0; i < ring.length; i++) {
-      const { sx, sy } = worldToScreen(ring[i].x, ring[i].z)
-      if (i === 0) ctx.moveTo(sx, sy)
-      else ctx.lineTo(sx, sy)
+  // In 3D just the two glowing edges (seen in perspective the fill between them would cross itself over hills).
+  if (!in3d()) {
+    ctx.beginPath()
+    for (const ring of [left, right]) {
+      for (let i = 0; i < ring.length; i++) {
+        const { sx, sy } = worldToScreen(ring[i].x, ring[i].z)
+        if (i === 0) ctx.moveTo(sx, sy)
+        else ctx.lineTo(sx, sy)
+      }
+      ctx.closePath()
     }
-    ctx.closePath()
+    ctx.fillStyle = PALETTE.road
+    ctx.globalAlpha = 0.6
+    ctx.fill('evenodd')
+    ctx.globalAlpha = 1
   }
-  ctx.fillStyle = PALETTE.road
-  ctx.globalAlpha = 0.6
-  ctx.fill('evenodd')
-  ctx.globalAlpha = 1
   ctx.strokeStyle = edge
   ctx.shadowColor = edge
   ctx.shadowBlur = 6
@@ -567,11 +655,12 @@ function isPicked(sel: EditorState['selection'] | Pick | null, kind: Pick['kind'
 
 /** Road points as handles: white, violet where the road is raised a metre or more (`raised`, per point), cyan when picked. */
 function drawControlPoints(ctx: CanvasRenderingContext2D, points: readonly RoadPoint[], sel: EditorState['selection'], hover: Pick | null, raised: readonly boolean[] | null): void {
-  const r = view.mpp < 0.5 ? 3.5 : 2.5
+  const r = viewMpp() < 0.5 ? 3.5 : 2.5
   ctx.save()
+  const on3d = in3d()
   for (let i = 0; i < points.length; i++) {
     const p = points[i]
-    const { sx, sy } = worldToScreen(p.x, p.z)
+    const { sx, sy } = worldToScreen(p.x, p.z, on3d ? headingAt(points, i) : null)
     if (sx < -10 || sy < -10 || sx > view.width + 10 || sy > view.height + 10) continue
     const picked = isPicked(sel, 'point', i)
     const hovered = isPicked(hover, 'point', i)
@@ -591,8 +680,9 @@ function drawControlPoints(ctx: CanvasRenderingContext2D, points: readonly RoadP
 function drawStartLine(ctx: CanvasRenderingContext2D, rc: RoadCurve, startAt: number, width: number): void {
   const f = frameAt(rc, startAt)
   const half = width / 2 + 1.5
-  const p0 = worldToScreen(f.p.x - f.right.x * half, f.p.z - f.right.z * half)
-  const p1 = worldToScreen(f.p.x + f.right.x * half, f.p.z + f.right.z * half)
+  const p0 = worldToScreen(f.p.x - f.right.x * half, f.p.z - f.right.z * half, f.dir)
+  const p1 = worldToScreen(f.p.x + f.right.x * half, f.p.z + f.right.z * half, f.dir)
+  if (!Number.isFinite(p0.sx + p0.sy + p1.sx + p1.sy)) return
   const barPx = Math.hypot(p1.sx - p0.sx, p1.sy - p0.sy)
   ctx.save()
   const grow = Math.max(1, 18 / Math.max(1, barPx))
@@ -611,8 +701,9 @@ function drawStartLine(ctx: CanvasRenderingContext2D, rc: RoadCurve, startAt: nu
     ctx.strokeStyle = k % 2 ? PALETTE.uiPanelSolid : PALETTE.uiText
     ctx.stroke()
   }
-  const ux = f.dir.x
-  const uy = f.dir.z
+  const sd = screenDir(f.p, f.dir, f.dir)
+  const ux = sd.x
+  const uy = sd.y
   const tip = { x: mx + ux * 34, y: my + uy * 34 }
   ctx.strokeStyle = PALETTE.uiAccent
   ctx.fillStyle = PALETTE.uiAccent
@@ -721,6 +812,11 @@ function drawBridges(
     const ul = Math.hypot(ux, uz) || 1
     ux /= ul
     uz /= ul
+    if (in3d()) {
+      const sd = screenDir(c.at, { x: ux, z: uz })
+      ux = sd.x
+      uz = sd.y
+    }
     const text = c.kind === 'tunnel' ? 'TUNNEL' : good ? `${c.kind === 'underpass' ? 'UNDERPASS' : 'BRIDGE'} ${Math.round(c.gap)} m` : c.over !== null ? `LOW BRIDGE ${c.gap.toFixed(1)} m` : 'ROADS MEET'
     const box = placePill(ctx, text, sx + ux * 46, sy + uz * 46, [0, 24, -24, 48], isSel ? PALETTE.uiText : colour)
     crossingTargets.push({ spot: c.at, sx, sy, box })
@@ -754,17 +850,16 @@ function drawCrossingRoads(
     ctx.lineJoin = 'round'
     ctx.strokeStyle = colour
     ctx.globalAlpha = 0.4
-    ctx.lineWidth = Math.max(10, (width * 1.1) / view.mpp)
-    line(ctx, pts, false)
-    ctx.stroke()
+    wideLine(ctx, pts, width * 1.1, 10)
     ctx.globalAlpha = 1
     ctx.lineWidth = 2
     ctx.stroke()
     ctx.restore()
     if (c.over === null) continue
     // A label along each road, out on its ramp in the driving direction (clear of the crossing's own marker and label).
-    const tip = pts[Math.round(0.85 * (pts.length - 1))]
-    const { sx, sy } = worldToScreen(tip.x, tip.z)
+    const ti = Math.round(0.85 * (pts.length - 1))
+    const tip = pts[ti]
+    const { sx, sy } = worldToScreen(tip.x, tip.z, headingAt(pts, ti))
     labels.push({ text: isOver ? 'GOES OVER' : 'GOES UNDER', sx, sy, colour })
   }
   return labels
@@ -808,8 +903,9 @@ function runLine(rc: RoadCurve, run: StretchRun, pad: number): P[] {
 /** A run's label: on a pill beside the road at its label point (`side` -1 left, +1 right), stepping round other labels; clickable while editing. */
 function runLabel(ctx: CanvasRenderingContext2D, rc: RoadCurve, run: StretchRun, text: string, colour: string, side: number, clickable: boolean): void {
   const f = frameAt(rc, run.labelPoint)
-  const { sx, sy } = worldToScreen(f.p.x, f.p.z)
-  const box = placePill(ctx, text, sx + f.right.x * side * 34, sy + f.right.z * side * 34, [0, 22, -22, 44, -44], colour)
+  const { sx, sy } = worldToScreen(f.p.x, f.p.z, f.dir)
+  const out = screenDir(f.p, f.right, f.dir)
+  const box = placePill(ctx, text, sx + out.x * side * 34, sy + out.y * side * 34, [0, 22, -22, 44, -44], colour)
   if (box && clickable) markTargets.push({ run, box })
 }
 
@@ -829,24 +925,38 @@ function drawRaisedRuns(ctx: CanvasRenderingContext2D, rc: RoadCurve, runs: read
   ctx.fillStyle = PALETTE.wallRide
   ctx.shadowColor = PALETTE.wallRide
   ctx.shadowBlur = 6
+  // Every dot goes in one path, filled once (a fill each was the slowest thing on screen in 3D).
+  ctx.beginPath()
+  const on3d = in3d()
   for (const run of runs) {
     // A dot every 11 px or so along the road.
     const pts = runLine(rc, run, 0)
     let gap = 0
     for (let i = 1; i < pts.length; i++) {
-      const a = worldToScreen(pts[i - 1].x, pts[i - 1].z)
-      const b = worldToScreen(pts[i].x, pts[i].z)
+      const along = on3d ? { x: pts[i].x - pts[i - 1].x, z: pts[i].z - pts[i - 1].z } : null
+      const a = worldToScreen(pts[i - 1].x, pts[i - 1].z, along)
+      const b = worldToScreen(pts[i].x, pts[i].z, along)
       const seg = Math.hypot(b.sx - a.sx, b.sy - a.sy)
+      if (!Number.isFinite(seg)) continue
+      // In 3D a bit of road right by the camera can stretch across thousands of pixels: skip it rather than dot it.
+      if (seg > 4000) {
+        gap = 0
+        continue
+      }
       gap += seg
       while (gap >= 11) {
         gap -= 11
         const t = seg > 0 ? 1 - gap / seg : 0
-        ctx.beginPath()
-        ctx.arc(a.sx + (b.sx - a.sx) * t, a.sy + (b.sy - a.sy) * t, 2.2, 0, Math.PI * 2)
-        ctx.fill()
+        const dx = a.sx + (b.sx - a.sx) * t
+        const dy = a.sy + (b.sy - a.sy) * t
+        // Only the dots on screen are drawn.
+        if (dx < -10 || dy < -10 || dx > view.width + 10 || dy > view.height + 10) continue
+        ctx.moveTo(dx + 2.2, dy)
+        ctx.arc(dx, dy, 2.2, 0, Math.PI * 2)
       }
     }
   }
+  ctx.fill()
   ctx.restore()
   for (const run of runs) {
     const top = rc.points[run.labelPoint]
@@ -919,16 +1029,14 @@ function drawStretchHover(ctx: CanvasRenderingContext2D, rc: RoadCurve, h: { fro
   ctx.lineJoin = 'round'
   ctx.strokeStyle = PALETTE.uiAccent
   ctx.globalAlpha = 0.2
-  ctx.lineWidth = Math.max(10, (roadWidth + 10) / view.mpp)
-  line(ctx, pts, false)
-  ctx.stroke()
+  wideLine(ctx, pts, roadWidth + 10, 10)
   ctx.globalAlpha = 1
   ctx.lineWidth = 2
   for (const at of [h.from, h.to]) {
     const f = frameAt(rc, at)
     const half = roadWidth / 2 + 6
-    const a = worldToScreen(f.p.x - f.right.x * half, f.p.z - f.right.z * half)
-    const b = worldToScreen(f.p.x + f.right.x * half, f.p.z + f.right.z * half)
+    const a = worldToScreen(f.p.x - f.right.x * half, f.p.z - f.right.z * half, f.dir)
+    const b = worldToScreen(f.p.x + f.right.x * half, f.p.z + f.right.z * half, f.dir)
     ctx.beginPath()
     ctx.moveTo(a.sx, a.sy)
     ctx.lineTo(b.sx, b.sy)
@@ -937,8 +1045,9 @@ function drawStretchHover(ctx: CanvasRenderingContext2D, rc: RoadCurve, h: { fro
   ctx.restore()
   const mid = pts[Math.floor(pts.length / 2)]
   const f = frameAt(rc, nearestAtOn(rc, mid))
-  const m = worldToScreen(mid.x, mid.z)
-  placePill(ctx, h.label, m.sx + f.right.x * 40, m.sy + f.right.z * 40, [0, 24, -24, 48], PALETTE.uiAccent)
+  const m = worldToScreen(mid.x, mid.z, f.dir)
+  const out = screenDir(mid, f.right, f.dir)
+  placePill(ctx, h.label, m.sx + out.x * 40, m.sy + out.y * 40, [0, 24, -24, 48], PALETTE.uiAccent)
 }
 
 /** The `at` of a spot that is on the road's drawn curve (for its direction). */
@@ -963,16 +1072,14 @@ function drawSection(ctx: CanvasRenderingContext2D, rc: RoadCurve, from: number,
   ctx.lineJoin = 'round'
   ctx.strokeStyle = PALETTE.uiAccent
   ctx.globalAlpha = 0.35
-  ctx.lineWidth = Math.max(10, 18 / view.mpp)
-  line(ctx, pts, false)
-  ctx.stroke()
+  wideLine(ctx, pts, 18, 10)
   ctx.globalAlpha = 1
   ctx.lineWidth = 2
   ctx.stroke()
   for (const at of [from, to]) {
     const f = frameAt(rc, at)
-    const a = worldToScreen(f.p.x - f.right.x * 12, f.p.z - f.right.z * 12)
-    const b = worldToScreen(f.p.x + f.right.x * 12, f.p.z + f.right.z * 12)
+    const a = worldToScreen(f.p.x - f.right.x * 12, f.p.z - f.right.z * 12, f.dir)
+    const b = worldToScreen(f.p.x + f.right.x * 12, f.p.z + f.right.z * 12, f.dir)
     ctx.beginPath()
     ctx.moveTo(a.sx, a.sy)
     ctx.lineTo(b.sx, b.sy)
@@ -985,8 +1092,9 @@ function drawSection(ctx: CanvasRenderingContext2D, rc: RoadCurve, from: number,
   if (label && metres >= 1) {
     const mid = pts[Math.floor(pts.length / 2)]
     const f = frameAt(rc, nearestAtOn(rc, mid))
-    const m = worldToScreen(mid.x, mid.z)
-    placePill(ctx, `${Math.round(metres)} m`, m.sx + f.right.x * 40, m.sy + f.right.z * 40, [0, 24, -24, 48], PALETTE.uiAccent)
+    const m = worldToScreen(mid.x, mid.z, f.dir)
+    const out = screenDir(mid, f.right, f.dir)
+    placePill(ctx, `${Math.round(metres)} m`, m.sx + out.x * 40, m.sy + out.y * 40, [0, 24, -24, 48], PALETTE.uiAccent)
   }
 }
 
@@ -995,8 +1103,15 @@ function drawSection(ctx: CanvasRenderingContext2D, rc: RoadCurve, from: number,
 /** Screen position of each road piece's icon (for drawing and picking). */
 export function pieceScreen(rc: RoadCurve, p: Piece): { sx: number; sy: number; dir: P; right: P; centre: P } {
   const place = piecePlace(rc, p)
-  const { sx, sy } = worldToScreen(place.p.x, place.p.z)
+  const { sx, sy } = worldToScreen(place.p.x, place.p.z, place.dir)
   return { sx, sy, dir: place.dir, right: place.right, centre: place.p }
+}
+
+/** 3D: an icon's turn and size on screen at a spot on the road heading `dir` (the map: as they are). */
+function iconOnScreen(at: P, dir: P, along: P | null): { dir: P; mpp: number } {
+  if (!in3d()) return { dir, mpp: view.mpp }
+  const sd = screenDir(at, dir, along)
+  return { dir: { x: sd.x, z: sd.y }, mpp: mppAt(at.x, at.z, along) }
 }
 
 function drawPieces(ctx: CanvasRenderingContext2D, rc: RoadCurve, pieces: readonly Piece[], roadWidth: number, sel: EditorState['selection'], hover: Pick | null): void {
@@ -1006,7 +1121,8 @@ function drawPieces(ctx: CanvasRenderingContext2D, rc: RoadCurve, pieces: readon
     if (p.type === 'wallride') drawWallRide(ctx, rc, p.at, p.length ?? TRACK_DEFAULTS.wallride.length, p.side, roadWidth)
     if (p.type === 'tunnel') drawTunnel(ctx, rc, p.at, p.length ?? TRACK_DEFAULTS.tunnelLength, roadWidth, 1, true)
     const at = pieceScreen(rc, p)
-    drawPieceIcon(ctx, p.type === 'wallride' ? (p.side === 'both' ? 'wallride-both' : p.side === 'left' ? 'wallride-left' : 'wallride-right') : p.type, at.sx, at.sy, at.dir, pieceFootprint(p, roadWidth), colour, 1)
+    const icon = iconOnScreen(at.centre, at.dir, at.dir)
+    drawPieceIcon(ctx, p.type === 'wallride' ? (p.side === 'both' ? 'wallride-both' : p.side === 'left' ? 'wallride-left' : 'wallride-right') : p.type, at.sx, at.sy, icon.dir, pieceFootprint(p, roadWidth), colour, 1, icon.mpp)
     if (isPicked(sel, 'piece', i)) ring(ctx, at.sx, at.sy, 20, PALETTE.uiText, 2)
     else if (isPicked(hover, 'piece', i)) ring(ctx, at.sx, at.sy, 18, PALETTE.uiDim, 1.5)
   }
@@ -1088,9 +1204,7 @@ function drawTunnel(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, le
   ctx.globalAlpha = 0.45 * alpha
   ctx.strokeStyle = PALETTE.grid
   ctx.lineCap = 'butt'
-  ctx.lineWidth = Math.max(4, (2 * half) / view.mpp)
-  line(ctx, along(0), false)
-  ctx.stroke()
+  wideLine(ctx, along(0), 2 * half, 4)
   ctx.globalAlpha = alpha
   ctx.lineWidth = 1.5
   ctx.setLineDash([6, 5])
@@ -1102,20 +1216,10 @@ function drawTunnel(ctx: CanvasRenderingContext2D, rc: RoadCurve, at: number, le
   ctx.restore()
   if (label) {
     const f = frameAt(rc, advanceAt(rc, at, length / 2))
-    const m = worldToScreen(f.p.x, f.p.z)
-    placePill(ctx, `TUNNEL ${Math.round(length)} m`, m.sx + f.right.x * 44, m.sy + f.right.z * 44, [0, 24, -24, 48], PALETTE.grid)
+    const m = worldToScreen(f.p.x, f.p.z, f.dir)
+    const out = screenDir(f.p, f.right, f.dir)
+    placePill(ctx, `TUNNEL ${Math.round(length)} m`, m.sx + out.x * 44, m.sy + out.y * 44, [0, 24, -24, 48], PALETTE.grid)
   }
-}
-
-/**
- * A band `metres` wide along pts in the current stroke style: on the map a thick line, never
- * thinner than `minPx`. (The same as editor16's wideLine on the map; in the 3D view that lays it on
- * the road, and this becomes wideLine once both are in.)
- */
-function footprintBand(ctx: CanvasRenderingContext2D, pts: readonly P[], metres: number, minPx: number): void {
-  ctx.lineWidth = Math.max(minPx, metres / view.mpp)
-  line(ctx, pts, false)
-  ctx.stroke()
 }
 
 /** Points along the road's middle from `at` for `metres` (negative: backwards), every 4 m or so. */
@@ -1148,23 +1252,24 @@ function drawTunnelFootprint(ctx: CanvasRenderingContext2D, rc: RoadCurve, f: Tu
   ctx.strokeStyle = colour
   for (const [pts] of ramps) {
     ctx.globalAlpha = 0.18
-    footprintBand(ctx, pts, 2 * half, 4)
+    wideLine(ctx, pts, 2 * half, 4)
   }
   if (!f.ok) {
     // The covered part, amber: it can't go here.
     ctx.globalAlpha = 0.4
-    footprintBand(ctx, roadAlong(rc, f.at, f.length), 2 * half, 4)
+    wideLine(ctx, roadAlong(rc, f.at, f.length), 2 * half, 4)
   }
   if (blocker) {
     // What is in the way, where it sits on the road.
     ctx.strokeStyle = PALETTE.chevron
     ctx.lineCap = 'round'
     ctx.globalAlpha = 0.85
-    footprintBand(ctx, blocker, roadWidth + 6, 8)
+    wideLine(ctx, blocker, roadWidth + 6, 8)
   }
   ctx.restore()
   if (!f.ok && f.why && f.pill) {
-    const m = worldToScreen(f.pill.x, f.pill.z)
+    // (In 3D, by the mouse: at the spot it picked, or on the road there.)
+    const m = pointToScreen(f.pill)
     labelBoxes.push({ x0: m.sx - 22, y0: m.sy - 22, x1: m.sx + 22, y1: m.sy + 22 })
     const r = placePill(ctx, `Can't fit: ${f.why}`, m.sx, m.sy, [38, -38, 64, -64, 90, -90], PALETTE.chevron)
     if (f.hint) {
@@ -1173,13 +1278,15 @@ function drawTunnelFootprint(ctx: CanvasRenderingContext2D, rc: RoadCurve, f: Tu
     }
   }
   for (const [pts, metres] of ramps) {
-    const mid = pts[Math.floor(pts.length / 2)]
-    const m = worldToScreen(mid.x, mid.z)
+    const k = Math.floor(pts.length / 2)
+    const mid = pts[k]
+    const m = worldToScreen(mid.x, mid.z, headingAt(pts, k))
     placePill(ctx, `ramp ${Math.round(metres)} m`, m.sx, m.sy, [0, 24, -24, 48], colour)
   }
   if (blocker) {
-    const mid = blocker[Math.floor(blocker.length / 2)]
-    const m = worldToScreen(mid.x, mid.z)
+    const k = Math.floor(blocker.length / 2)
+    const mid = blocker[k]
+    const m = worldToScreen(mid.x, mid.z, headingAt(blocker, k))
     placePill(ctx, 'IN THE WAY', m.sx, m.sy, [-30, 30, -54, 54, -78, 78], PALETTE.chevron)
   }
 }
@@ -1188,9 +1295,9 @@ function drawTunnelFootprint(ctx: CanvasRenderingContext2D, rc: RoadCurve, f: Tu
  * One piece icon at a screen point, turned to the road direction. Drawn at
  * its real size when zoomed in, and never smaller than a readable icon.
  */
-export function drawPieceIcon(ctx: CanvasRenderingContext2D, kind: PlaceKind, sx: number, sy: number, dir: P, size: { length: number; width: number }, colour: string, alpha: number): void {
-  const L = Math.max(16, size.length / view.mpp)
-  const W = Math.max(10, size.width / view.mpp)
+export function drawPieceIcon(ctx: CanvasRenderingContext2D, kind: PlaceKind, sx: number, sy: number, dir: P, size: { length: number; width: number }, colour: string, alpha: number, mpp: number = view.mpp): void {
+  const L = Math.max(16, size.length / mpp)
+  const W = Math.max(10, size.width / mpp)
   ctx.save()
   ctx.globalAlpha = alpha
   ctx.translate(sx, sy)
@@ -1276,7 +1383,7 @@ export function drawPieceIcon(ctx: CanvasRenderingContext2D, kind: PlaceKind, sx
 function drawProps(ctx: CanvasRenderingContext2D, props: EditorState['draft']['props'], sel: EditorState['selection'], hover: Pick | null): void {
   for (let i = 0; i < props.length; i++) {
     const p = props[i]
-    const { sx, sy } = worldToScreen(p.x, p.z)
+    const { sx, sy } = worldToScreen(p.x, p.z, 'ground')
     drawPropIcon(ctx, sx, sy, p.size ?? 'medium', 1)
     if (isPicked(sel, 'prop', i)) ring(ctx, sx, sy, 17, PALETTE.uiText, 2)
     else if (isPicked(hover, 'prop', i)) ring(ctx, sx, sy, 15, PALETTE.uiDim, 1.5)
@@ -1309,7 +1416,7 @@ export function drawPropIcon(ctx: CanvasRenderingContext2D, sx: number, sy: numb
 function drawCores(ctx: CanvasRenderingContext2D, cores: EditorState['draft']['cores'], sel: EditorState['selection'], hover: Pick | null): void {
   for (let i = 0; i < cores.length; i++) {
     const c = cores[i]
-    const { sx, sy } = worldToScreen(c.x, c.z)
+    const { sx, sy } = worldToScreen(c.x, c.z, 'ground')
     drawCoreIcon(ctx, sx, sy, 1)
     if (isPicked(sel, 'core', i)) ring(ctx, sx, sy, 15, PALETTE.uiText, 2)
     else if (isPicked(hover, 'core', i)) ring(ctx, sx, sy, 13, PALETTE.uiDim, 1.5)
@@ -1340,9 +1447,11 @@ export function drawCoreIcon(ctx: CanvasRenderingContext2D, sx: number, sy: numb
 function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['ghost']>, roadWidth: number, rc: RoadCurve): void {
   if (ghost.wall && rc.curve.length) return drawWallGhost(ctx, rc, ghost.wall, roadWidth)
   if (ghost.tunnel && rc.curve.length) return drawTunnel(ctx, rc, ghost.tunnel.at, ghost.tunnel.length, roadWidth, 0.6, true)
-  const { sx, sy } = worldToScreen(ghost.at.x, ghost.at.z)
+  const onGround = ghost.kind === 'props' || ghost.kind === 'cores'
+  const { sx, sy } = worldToScreen(ghost.at.x, ghost.at.z, onGround ? 'ground' : ghost.dir)
   if (ghost.kind === 'props') return drawPropIcon(ctx, sx, sy, 'medium', 0.55)
   if (ghost.kind === 'cores') return drawCoreIcon(ctx, sx, sy, 0.55)
+  const icon = iconOnScreen(ghost.at, ghost.dir, ghost.dir)
   const sizes: Record<string, { length: number; width: number }> = {
     boost: { length: TRACK_DEFAULTS.boost.length, width: TRACK_DEFAULTS.boost.width },
     ramp: { length: TRACK_DEFAULTS.ramp.length, width: TRACK_DEFAULTS.ramp.width },
@@ -1350,7 +1459,7 @@ function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['
     speedtrap: { length: 2, width: roadWidth + 2 },
     start: { length: 2, width: roadWidth + 3 },
   }
-  drawPieceIcon(ctx, ghost.kind, sx, sy, ghost.dir, sizes[ghost.kind] ?? { length: 16, width: roadWidth }, toolFor(ghost.kind).colour, 0.55)
+  drawPieceIcon(ctx, ghost.kind, sx, sy, icon.dir, sizes[ghost.kind] ?? { length: 16, width: roadWidth }, toolFor(ghost.kind).colour, 0.55, icon.mpp)
 }
 
 /**
@@ -1364,12 +1473,14 @@ function drawWallGhost(ctx: CanvasRenderingContext2D, rc: RoadCurve, w: GhostWal
   if (w.dragged) drawSection(ctx, rc, w.dragged.from, w.dragged.to, false)
   drawWallRide(ctx, rc, w.at, w.length, w.side, roadWidth, 0.8)
   const mid = frameAt(rc, advanceAt(rc, w.at, w.length / 2))
-  const { sx, sy } = worldToScreen(mid.p.x, mid.p.z)
+  const { sx, sy } = worldToScreen(mid.p.x, mid.p.z, mid.dir)
   const kind: PlaceKind = w.side === 'both' ? 'wallride-both' : w.side === 'left' ? 'wallride-left' : 'wallride-right'
-  drawPieceIcon(ctx, kind, sx, sy, mid.dir, { length: w.length, width: roadWidth }, PALETTE.wallRide, 0.8)
+  const icon = iconOnScreen(mid.p, mid.dir, mid.dir)
+  drawPieceIcon(ctx, kind, sx, sy, icon.dir, { length: w.length, width: roadWidth }, PALETTE.wallRide, 0.8, icon.mpp)
   ring(ctx, sx, sy, 20, PALETTE.uiText, 2)
   const words = w.cut === 'short' ? `${w.length} m (the shortest)` : w.cut === 'long' ? `${w.length} m (the longest)` : `${w.length} m`
-  placePill(ctx, w.side === 'both' ? `HALF-PIPE ${words}` : `WALL RIDE ${words}`, sx + mid.right.x * 46, sy + mid.right.z * 46, [0, 24, -24, 48], PALETTE.wallRide)
+  const out = screenDir(mid.p, mid.right, mid.dir)
+  placePill(ctx, w.side === 'both' ? `HALF-PIPE ${words}` : `WALL RIDE ${words}`, sx + out.x * 46, sy + out.y * 46, [0, 24, -24, 48], PALETTE.wallRide)
 }
 
 // ---------------------------------------------------------------- pins and scale (the compass is beside the 3D button, Look3dUi.tsx)
@@ -1438,6 +1549,14 @@ function drawPins(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve):
 
 /** Where each problem's pin (and its tag) was drawn last frame, screen pixels. See problemAtScreen. */
 let pinTargets: { key: string; sx: number; sy: number; box: { x0: number; y0: number; x1: number; y1: number } | null }[] = []
+
+/**
+ * 3D: the pins stand on stalks (look3dMarks.tsx draws them), which says here where each pin's
+ * head and tag went, so a click on one selects its problem exactly as on the map.
+ */
+export function setPinTargets3d(list: typeof pinTargets): void {
+  pinTargets = list
+}
 
 /** The problem whose pin (within 12 px) or tag is under screen point (sx, sy), as drawn last frame. */
 export function problemAtScreen(sx: number, sy: number): string | null {

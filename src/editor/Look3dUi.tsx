@@ -8,38 +8,39 @@
 //                           in 3D, so north is always findable) and
 //                           the 3D button beside it; in 3D it says
 //                           "Map" and takes you back
-//    top of the map, in 3D  one line: what your mouse does, and
-//                           "Back to the map to edit"
-//    the whole map, in 3D   a see-through layer that takes your mouse
-//                           (drag turns, right-drag slides, the wheel
-//                           zooms), with the problem pins and the
-//                           selected spot drawn on it (look3dMarks.tsx)
+//    top of the map, in 3D  one line: what your mouse does here, and
+//                           "Back to the map"
+//    the whole map, in 3D   a see-through layer holding the problem pins
+//                           and the selected spot (look3dMarks.tsx); the
+//                           mouse goes straight through it to the map's
+//                           own layer (Overlay.tsx), where every tool
+//                           works in 3D just as on the map
 //
-//  The T key opens and closes it anywhere on the map. Esc closes it
-//  too (EditorUi.tsx asks closeLook3d() before anything else Esc does).
-//  While it shows, the map's tools wait: the rail dims (look3d.css),
-//  the map's own keys and controller are off (Overlay.tsx), and a click
-//  on the rail says how to get back.
+//  The keys that move the 3D view (WASD and the arrows slide, Q and E
+//  turn, + and - zoom, Space + drag slides) and the controller are
+//  here; the tools' own keys stay in Overlay.tsx and work in 3D too.
+//  The T key opens and closes it anywhere on the map. Esc first stops a
+//  drag or a half-made line, and only then closes it (EditorUi.tsx).
 // ============================================================
 
 import { useEffect, useRef } from 'react'
 import { inputState } from '../core/controls'
 import { registerDev } from '../core/devHandles'
-import { say, useEditor } from './draft'
+import { useEditor } from './draft'
 import { look, closeLook3d, lookSummary, openLook3d, slideLook, toggleLook3d, turnLook, useLook3d, zoomLook, resetLook3d } from './look3d'
 import { setMarksCanvas, marksSummary } from './look3dMarks'
-import { view } from './view'
+import { frame3dStats, pick3d, pickStats, pose, roadUnder, worldToScreen, worldToScreenY } from './look3dSpace'
+import { roadGeometry } from './mapDraw'
+import { frameAt } from './road'
 import './look3d.css'
 
 /** Held-key and stick speeds in 3D. */
 const SLIDE_PX_PER_S = 700
 const STICK_SLIDE_PX_PER_S = 900
 const STICK_TURN_RAD_PER_S = 2.2
-/** One full turn for a drag the height of the screen (the same feel as most 3D viewers). */
-const TURN_PER_PX = () => (Math.PI * 2) / Math.max(300, view.height)
 
-/** The words on the rail when it is clicked in 3D, and in the note. */
-export const LOOK_BACK_HINT = 'Back to the map to edit: press Map, T or Esc.'
+/** The note's words in 3D: what the mouse does here (Josh's words). */
+export const LOOK_HINT = 'Right-drag to look round. Middle-drag or Space + drag to move. Wheel to zoom. Every tool works here too.'
 
 /** True while a mouse button is down anywhere (T waits, so a half-drawn line can't be cut off). */
 let pointerHeld = false
@@ -71,23 +72,15 @@ export function Look3dUi() {
       e.preventDefault()
       toggleLook3d()
     }
-    // A click on the dimmed rail in 3D says how to get back to the tools.
-    const onClick = (e: MouseEvent) => {
-      if (useLook3d.getState().mode === 'map') return
-      const t = e.target
-      if (t instanceof Element && t.closest('.sre-tools, .sre-options, .sre-palette')) say(LOOK_BACK_HINT, 'info')
-    }
     window.addEventListener('pointerdown', down, true)
     window.addEventListener('pointerup', up, true)
     window.addEventListener('pointercancel', up, true)
     window.addEventListener('keydown', onKey)
-    window.addEventListener('click', onClick, true)
     return () => {
       window.removeEventListener('pointerdown', down, true)
       window.removeEventListener('pointerup', up, true)
       window.removeEventListener('pointercancel', up, true)
       window.removeEventListener('keydown', onKey)
-      window.removeEventListener('click', onClick, true)
       pointerHeld = false
       resetLook3d()
     }
@@ -105,9 +98,9 @@ export function Look3dUi() {
       {on && (
         <div className="sre-look-note" role="note" data-testid="editor-3d-note">
           <span className="sre-look-kicker">3D view</span>
-          <span className="sre-look-text">Drag to look round. Right-drag to move. Wheel to zoom.</span>
+          <span className="sre-look-text">{LOOK_HINT}</span>
           <button type="button" className="sre-btn is-primary" onClick={() => closeLook3d()} data-testid="editor-3d-back">
-            Back to the map to edit
+            Back to the map
           </button>
         </div>
       )}
@@ -186,9 +179,9 @@ function MapIcon() {
 }
 
 /**
- * Over the whole map while in 3D: takes the mouse (the map's own canvas is
- * hidden underneath), the keys and the controller, and holds the canvas the
- * pins are drawn on.
+ * Over the whole map while in 3D: holds the canvas the pins are drawn on, and
+ * takes the keys that move the view and the controller. The mouse goes through
+ * it to the map's layer (Overlay.tsx), which works in 3D too.
  */
 function LookSurface() {
   const surface = useRef<HTMLDivElement>(null)
@@ -200,52 +193,11 @@ function LookSurface() {
   }, [])
 
   useEffect(() => {
-    const el = surface.current
-    if (!el) return
-    let drag: 'turn' | 'slide' | null = null
-    let lastX = 0
-    let lastY = 0
-    let spaceHeld = false
     const held = new Set<string>()
-    const setCursor = () => {
-      el.style.cursor = drag ? 'grabbing' : spaceHeld ? 'grab' : 'move'
-    }
-
-    const onDown = (e: PointerEvent) => {
-      // Clicking the view takes the keyboard back from any panel control.
-      if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur()
-      if (e.button !== 0 && e.button !== 1 && e.button !== 2) return
-      el.setPointerCapture(e.pointerId)
-      drag = e.button === 0 && !spaceHeld ? 'turn' : 'slide'
-      lastX = e.clientX
-      lastY = e.clientY
-      setCursor()
-    }
-    const onMove = (e: PointerEvent) => {
-      if (!drag) return
-      const dx = e.clientX - lastX
-      const dy = e.clientY - lastY
-      lastX = e.clientX
-      lastY = e.clientY
-      if (drag === 'turn') turnLook(-dx * TURN_PER_PX(), dy * TURN_PER_PX())
-      else slideLook(dx, dy)
-    }
-    const onUp = (e: PointerEvent) => {
-      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
-      drag = null
-      setCursor()
-    }
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      const lines = e.deltaMode === 1 ? 16 : 1
-      zoomLook(Math.exp(e.deltaY * lines * 0.0015))
-    }
-    const onContext = (e: Event) => e.preventDefault()
     const onKeyDown = (e: KeyboardEvent) => {
       if (typing(e) || e.ctrlKey || e.metaKey) return
+      // (Space + drag slides the view: the map's layer reads Space itself.)
       if (e.code === 'Space') {
-        spaceHeld = true
-        setCursor()
         e.preventDefault()
         return
       }
@@ -255,16 +207,9 @@ function LookSurface() {
     }
     const onKeyUp = (e: KeyboardEvent) => {
       held.delete(e.code)
-      if (e.code === 'Space') {
-        spaceHeld = false
-        setCursor()
-      }
     }
     const onBlur = () => {
       held.clear()
-      spaceHeld = false
-      drag = null
-      setCursor()
     }
 
     // Held keys and the controller, every frame while the 3D view shows.
@@ -317,25 +262,12 @@ function LookSurface() {
       for (let i = 0; i < pad.buttons.length; i++) padWas[i] = pressed(i)
     }
     raf = requestAnimationFrame(loop)
-    setCursor()
 
-    el.addEventListener('pointerdown', onDown)
-    el.addEventListener('pointermove', onMove)
-    el.addEventListener('pointerup', onUp)
-    el.addEventListener('pointercancel', onUp)
-    el.addEventListener('wheel', onWheel, { passive: false })
-    el.addEventListener('contextmenu', onContext)
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onBlur)
     return () => {
       cancelAnimationFrame(raf)
-      el.removeEventListener('pointerdown', onDown)
-      el.removeEventListener('pointermove', onMove)
-      el.removeEventListener('pointerup', onUp)
-      el.removeEventListener('pointercancel', onUp)
-      el.removeEventListener('wheel', onWheel)
-      el.removeEventListener('contextmenu', onContext)
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
@@ -358,13 +290,17 @@ function LookSurface() {
  *   'turn' [yawDeg, pitchDeg]   'slide' [dxPx, dyPx]   'zoom' factor
  *   'goto' [x, z, yawDeg, pitchDeg, dist]   put the camera somewhere exactly (after it has glided there)
  *   'marks'              how many pins and rings are drawn, and whether a stretch band shows
+ *   'picks'              how many road picks the mouse has needed so far (hover work is once a frame at most)
+ *   'screen' at          where the editor's road at `at` shows on screen in 3D (to aim the real mouse)
+ *   'project' [x, y, z]  where that world spot shows on screen in 3D
+ *   'pick' [sx, sy]      what the mouse there would pick in 3D: the built road's sample and the editor's `at`
  */
 function look3dCommand(cmd: string, arg?: unknown): unknown {
   const nums = Array.isArray(arg) ? arg.map(Number) : []
   const rad = (d: number) => (d * Math.PI) / 180
   switch (cmd) {
     case 'help':
-      return "state | open | close | turn [yawDeg, pitchDeg] | slide [dxPx, dyPx] | zoom factor | goto [x, z, yawDeg, pitchDeg, dist] | marks"
+      return "state | open | close | turn [yawDeg, pitchDeg] | slide [dxPx, dyPx] | zoom factor | goto [x, z, yawDeg, pitchDeg, dist] | marks | picks | screen at | project [x, y, z] | pick [sx, sy]"
     case 'open':
       openLook3d()
       return useLook3d.getState().mode
@@ -394,6 +330,38 @@ function look3dCommand(cmd: string, arg?: unknown): unknown {
     }
     case 'marks':
       return marksSummary()
+    case 'picks':
+      // How many road picks have been worked out, and how many frames the camera moved (picking stays once a frame at most).
+      return {
+        picks: pickStats.picks,
+        poseVersion: pose.version,
+        overlayFrames: frame3dStats.frames,
+        overlayAvgMs: Math.round((frame3dStats.ms / Math.max(1, frame3dStats.frames)) * 1000) / 1000,
+        overlayMaxMs: Math.round(frame3dStats.maxMs * 1000) / 1000,
+      }
+    case 'screen': {
+      // Where a spot on the editor's road (an `at`) shows on screen in 3D, on its own road (so a runner can aim the real mouse).
+      const d = useEditor.getState().draft
+      if (!d.points.length) return 'no road'
+      const f = frameAt(roadGeometry(d.points, d.width).rc, Number(arg))
+      const s = worldToScreen(f.p.x, f.p.z, f.dir)
+      return { sx: Math.round(s.sx * 10) / 10, sy: Math.round(s.sy * 10) / 10, x: Math.round(f.p.x * 10) / 10, z: Math.round(f.p.z * 10) / 10 }
+    }
+    case 'project': {
+      // Where world spot [x, y, z] shows on screen in 3D (to aim a drag at a spot on the drag sheet).
+      const [x, y, z] = nums
+      const s = worldToScreenY(x, y, z)
+      return { sx: Math.round(s.sx * 10) / 10, sy: Math.round(s.sy * 10) / 10 }
+    }
+    case 'pick': {
+      // What the mouse at screen spot [sx, sy] would pick in 3D: the built road there, and the editor's road (its `at`).
+      const [sx, sy] = nums
+      const hit = pick3d(sx, sy)
+      const d = useEditor.getState().draft
+      const e = d.points.length ? roadUnder(roadGeometry(d.points, d.width).rc, sx, sy) : null
+      const r = (v: number) => Math.round(v * 100) / 100
+      return hit ? { sample: hit.i, direct: hit.direct, px: r(hit.px), x: r(hit.x), y: r(hit.y), z: r(hit.z), at: e ? r(e.at) : null } : null
+    }
     case 'state':
       return lookSummary()
     default:

@@ -1,37 +1,35 @@
 // ============================================================
 //  3D VIEW MARKS - what is selected, and the problem pins, in 3D
 // ------------------------------------------------------------
-//  The map's own marks (mapDraw.ts) are drawn flat for a camera
-//  looking straight down, so in the 3D view they are hidden. This
-//  draws the few that matter while you look round:
+//  In 3D the map's own marks (mapDraw.ts) are drawn on the real road
+//  through the 3D camera (the selected stretch's band, labels, the
+//  tools' previews). This adds what reads better standing up:
 //
-//    a selected stretch   a see-through cyan band laid on the real
-//                         road, edges bright, following its hills
-//                         and banks (a real 3D mesh, so hills in
-//                         front of it hide it)
 //    a selected spot      a road point, a piece, a crossing, a prop
 //                         or a core: a cyan ring on a stalk above it
 //    problem pins         the Checks list's pins, each on a stalk
 //                         above its spot on the road, red or amber,
-//                         with a failing check's tag beside it
+//                         with a failing check's tag beside it; a
+//                         click on a pin or its tag selects it, as on
+//                         the map (setPinTargets3d)
 //
 //  The ring and pins are drawn into a flat canvas (Look3dUi.tsx owns
 //  it) at the spot's position on screen, worked out from the 3D
 //  camera after it has moved this frame.
 // ============================================================
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
-import { FONTS, GLOW, PALETTE } from '../core/palette'
+import { FONTS, PALETTE } from '../core/palette'
 import { useTrack } from '../track/current'
 import type { TrackRuntime } from '../track/types'
 import { type EditorState, useEditor } from './draft'
 import type { P } from './geom'
-import { roadGeometry } from './mapDraw'
+import { roadGeometry, setPinTargets3d } from './mapDraw'
 import { piecePlace } from './pieces'
 import { NO_NOTES, problemsOf } from './problems'
-import { type RoadCurve, frameAt } from './road'
+import { frameAt } from './road'
 import { groundAt, look, useLook3d } from './look3d'
 
 /** The flat canvas over the 3D view that the rings and pins are drawn on (Look3dUi.tsx hands it over). */
@@ -51,12 +49,6 @@ interface Spot {
   key: string
 }
 
-/** How high the selected-stretch band floats over the road, metres (separate from the road, so they never flicker into each other). */
-const BAND_LIFT = 0.35
-/** How far the band reaches past each road edge, metres. */
-const BAND_OVER = 1.5
-/** The bright strip along each edge of the band, metres wide. */
-const BAND_EDGE = 1.1
 /** Pixels from a spot on the road up to its pin or ring. */
 const STALK_PX = 30
 
@@ -137,63 +129,7 @@ function spotsOf(s: EditorState, t: TrackRuntime | null): Spot[] {
   return out
 }
 
-/** The selected stretch's band on the real road, or null. Rebuilt when the selection or the track changes. */
-function bandGeometry(s: EditorState, t: TrackRuntime | null): THREE.BufferGeometry | null {
-  const sel = s.selection
-  if (!t || sel?.kind !== 'section' || !s.draft.points.length) return null
-  const rc: RoadCurve = roadGeometry(s.draft.points, s.draft.width).rc
-  const a = frameAt(rc, sel.from)
-  const b = frameAt(rc, sel.to)
-  const i0 = sampleNear(t, a.p.x, a.p.z, a.dir, 20)
-  const i1 = sampleNear(t, b.p.x, b.p.z, b.dir, 20)
-  if (i0 < 0 || i1 < 0) return null
-  const S = t.samples
-  const n = S.count
-  const steps = ((i1 - i0 + n) % n) + 1
-  if (steps < 2) return null
-  // Four rows of vertices across the road per sample: outer edge, inner edge, inner edge, outer edge.
-  const pos = new Float32Array(steps * 4 * 3)
-  const col = new Float32Array(steps * 4 * 4)
-  const accent = new THREE.Color(PALETTE.uiAccent)
-  // The edges glow softly (T1); the middle is a faint see-through wash.
-  const edge = accent.clone().multiplyScalar(GLOW.T1)
-  const across = [-1, -1, 1, 1]
-  for (let k = 0; k < steps; k++) {
-    const i = (i0 + k) % n
-    const half = S.halfWidth[i] + BAND_OVER
-    for (let j = 0; j < 4; j++) {
-      const outer = j === 0 || j === 3
-      const w = across[j] * (outer ? half : half - BAND_EDGE)
-      const v = (k * 4 + j) * 3
-      pos[v] = S.px[i] + S.rx[i] * w + S.ux[i] * BAND_LIFT
-      pos[v + 1] = S.py[i] + S.ry[i] * w + S.uy[i] * BAND_LIFT
-      pos[v + 2] = S.pz[i] + S.rz[i] * w + S.uz[i] * BAND_LIFT
-      const c = (k * 4 + j) * 4
-      const tint = outer ? edge : accent
-      col[c] = tint.r
-      col[c + 1] = tint.g
-      col[c + 2] = tint.b
-      col[c + 3] = outer ? 0.95 : 0.14
-    }
-  }
-  // Triangles: each pair of neighbouring rows across, joined to the next sample.
-  const index: number[] = []
-  for (let k = 0; k < steps - 1; k++) {
-    for (let j = 0; j < 3; j++) {
-      const a0 = k * 4 + j
-      const b0 = (k + 1) * 4 + j
-      index.push(a0, b0, a0 + 1, a0 + 1, b0, b0 + 1)
-    }
-  }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-  g.setAttribute('color', new THREE.BufferAttribute(col, 4))
-  g.setIndex(index)
-  g.computeBoundingSphere()
-  return g
-}
-
-/** Inside the 3D scene while the editor is open: the selected stretch's band, and the canvas rings and pins. */
+/** Inside the 3D scene while the editor is open: the canvas rings and pins. */
 export function Look3dMarks() {
   const on = useLook3d((s) => s.mode !== 'map')
   const track = useTrack()
@@ -203,23 +139,6 @@ export function Look3dMarks() {
   const errors = useEditor((s) => s.errors)
   const notes = useEditor((s) => s.notes)
   const preview = useEditor((s) => s.preview)
-
-  const material = useMemo(
-    () =>
-      new THREE.MeshBasicMaterial({
-        vertexColors: true,
-        transparent: true,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-        toneMapped: false,
-        fog: false,
-      }),
-    [],
-  )
-  useEffect(() => () => material.dispose(), [material])
-
-  const band = useMemo(() => (on ? bandGeometry(useEditor.getState(), track) : null), [on, track, selection, draft])
-  useEffect(() => () => band?.dispose(), [band])
 
   // The spots only change when the editor's state does; their place on screen changes as the camera moves.
   const spots = useRef<Spot[]>([])
@@ -237,8 +156,7 @@ export function Look3dMarks() {
     drawSpots(canvas, state.camera, spots.current)
   })
 
-  if (!on || !band) return null
-  return <mesh geometry={band} material={material} renderOrder={5} frustumCulled={false} />
+  return null
 }
 
 /** Each spot on screen: a stalk up from where it is, and a pin (or the selection's ring) on top. */
@@ -254,6 +172,7 @@ function drawSpots(canvas: HTMLCanvasElement, camera: THREE.Camera, list: readon
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, w, h)
+  const targets: Parameters<typeof setPinTargets3d>[0] = []
   for (const spot of list) {
     // Into the camera's own space: anything behind the camera is not drawn.
     _v.set(spot.x, spot.y, spot.z).applyMatrix4(camera.matrixWorldInverse)
@@ -262,11 +181,15 @@ function drawSpots(canvas: HTMLCanvasElement, camera: THREE.Camera, list: readon
     const sx = (_v.x * 0.5 + 0.5) * w
     const sy = (-_v.y * 0.5 + 0.5) * h
     if (!Number.isFinite(sx) || !Number.isFinite(sy) || sx < -80 || sx > w + 80 || sy < -80 || sy > h + 80) continue
-    drawSpot(ctx, spot, sx, sy)
+    const box = drawSpot(ctx, spot, sx, sy)
+    // A problem's pin (and its tag) can be clicked, as on the map; the selection's own ring is only a marker.
+    if (spot.key !== 'sel') targets.push({ key: spot.key, sx, sy: sy - (spot.kind === 'note' ? STALK_PX * 0.6 : STALK_PX), box })
   }
+  setPinTargets3d(targets)
 }
 
-function drawSpot(ctx: CanvasRenderingContext2D, spot: Spot, sx: number, sy: number): void {
+/** Draws one spot; returns its tag's box on screen (null without a tag). */
+function drawSpot(ctx: CanvasRenderingContext2D, spot: Spot, sx: number, sy: number): { x0: number; y0: number; x1: number; y1: number } | null {
   const colour = spot.kind === 'selected' ? PALETTE.uiAccent : spot.kind === 'bad' ? PALETTE.uiBad : spot.kind === 'warn' ? PALETTE.uiWarn : PALETTE.uiDim
   const small = spot.kind === 'note'
   const top = sy - (small ? STALK_PX * 0.6 : STALK_PX)
@@ -305,6 +228,7 @@ function drawSpot(ctx: CanvasRenderingContext2D, spot: Spot, sx: number, sy: num
     ctx.fillText('!', sx, top + 0.5)
   }
   // A failing check's short tag, beside its pin.
+  let box: { x0: number; y0: number; x1: number; y1: number } | null = null
   if (spot.label && spot.kind !== 'note') {
     ctx.font = `600 12px ${FONTS.body}`
     const tw = ctx.measureText(spot.label).width + 14
@@ -321,11 +245,13 @@ function drawSpot(ctx: CanvasRenderingContext2D, spot: Spot, sx: number, sy: num
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
     ctx.fillText(spot.label, x0 + 7, y0 + 10.5)
+    box = { x0, y0, x1: x0 + tw, y1: y0 + 20 }
   }
   ctx.restore()
+  return box
 }
 
-/** For the dev handle: what the 3D view is marking right now. */
+/** For the dev handle: what the 3D view is marking right now (`band`: a picked stretch, drawn by the overlay on the road). */
 export function marksSummary(): { spots: number; band: boolean } {
   const s = useEditor.getState()
   return { spots: drawnSpots?.length ?? 0, band: s.selection?.kind === 'section' }

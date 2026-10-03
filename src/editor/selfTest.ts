@@ -63,6 +63,7 @@ import type { Draft } from './draft'
 import { BRIDGE_GAP, type GroundFn, buildAndCheck, builtGapAt, crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
 import { fixAndRaiseRows, setFixActions } from './selfTestFixes'
 import { look3dRows } from './selfTest3d'
+import { pickRows } from './selfTest3dPick'
 import { setStretchTools, toolRows } from './selfTestTools'
 import { setSmoothTools, smoothRows } from './selfTestSmooth'
 import { builderRows } from './selfTestBuilder'
@@ -1619,6 +1620,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- the 3D view's camera (selfTest3d.ts)
 
   look3dRows(check)
+
+  // ---------------------------------------------------------------- picking the road in the 3D view (selfTest3dPick.ts)
+
+  pickRows(check)
 
   // ---------------------------------------------------------------- Height, Bank, Width and the straight pencil (selfTestTools.ts)
 

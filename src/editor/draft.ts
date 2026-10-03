@@ -48,7 +48,7 @@ import type { P } from './geom'
 import { type PlaceKind, TUNNEL_EDIT_MAX, TUNNEL_EDIT_MIN, WALLRIDE_MAX, WALLRIDE_MIN, makeCore, makeProp, makeRoadPiece, toolFor, tunnelFromDrag, tunnelMiddle, tunnelStartFor, wallRideFromDrag, wallRideResized, wallRideSide } from './pieces'
 import { type QuickTunnel, type TunnelFit, fitTunnelAt, fitWords, judgeTunnel, quickTunnelCheck, tunnelBlocker, tunnelWhy, tunnelWords } from './tunnelPlace'
 import type { TunnelFootprint } from './mapDraw'
-import { advanceAt, atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
+import { type RoadHit, advanceAt, atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
 import {
   type ShapeResult,
   type ShapeWorld,
@@ -994,8 +994,12 @@ export function setTool(tool: EditorTool, placeKind?: PlaceKind): void {
   useEditor.setState({ tool, placeKind: placeKind ?? s.placeKind, selection: keep ? s.selection : null, shaping: tool === s.tool ? s.shaping : null })
 }
 
-/** Drop the current place tool's thing at world point q. Returns true if something was placed. */
-export function placeAt(q: P): boolean {
+/**
+ * Drop the current place tool's thing at world point q. Returns true if something was placed.
+ * `onRoad`: the spot on the road already found (the 3D view passes the road you clicked, so at a
+ * crossing it is the one you were looking at); else the road nearest q.
+ */
+export function placeAt(q: P, onRoad?: RoadHit): boolean {
   const s = useEditor.getState()
   const d = s.draft
   const kind = s.placeKind
@@ -1006,7 +1010,7 @@ export function placeAt(q: P): boolean {
   }
   if (tool.onRoad) {
     const rc = roadCurve(d.points)
-    const hit = nearestOnRoad(rc, q)
+    const hit = onRoad ?? nearestOnRoad(rc, q)
     if (hit.distance > d.width / 2 + 12) {
       say(`Click on the road to put a ${tool.label.toLowerCase()} there.`, 'warn')
       audio.ui('error')

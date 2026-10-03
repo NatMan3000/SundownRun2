@@ -42,7 +42,7 @@ import { controlSignals } from '../core/controls'
 import { endSession } from '../core/session'
 import { audio } from '../core/api'
 import { type EditorTool, EMPTY_MAP_HINT, cancelBend, cancelPendingPreview, cancelShaping, redo, say, setBendReach, setSteady, setTool, undo, useEditor } from './draft'
-import { Overlay, fitToDraft, pencilHint } from './Overlay'
+import { Overlay, cancelPointerGesture, fitToDraft, pencilHint } from './Overlay'
 import { Panel } from './Panel'
 import { Library } from './Library'
 import { closeWorldMap } from './worldMap'
@@ -147,10 +147,10 @@ export function EditorUi() {
         if (askTakesPause(seen)) {
           // The "Save it first?" box used this press to close.
         } else if (library) setLibrary(false)
-        else if (closeLook3d()) {
-          // Esc went back from the 3D view to the map.
-        } else if (cancelBend() || cancelShaping()) {
-          // Esc stopped a bend or a half-made Straight or Curve.
+        else if (cancelBend() || cancelShaping() || cancelPointerGesture()) {
+          // Esc stopped a bend, a half-made Straight or Curve, or a drag or pencil line (on the map or in 3D).
+        } else if (closeLook3d()) {
+          // Nothing was going on: Esc went back from the 3D view to the map.
         }
         else if (useEditor.getState().selection) useEditor.setState({ selection: null })
         else leaveEditor()

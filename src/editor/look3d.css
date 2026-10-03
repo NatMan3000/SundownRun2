@@ -1,6 +1,6 @@
 /* ============================================================
-   3D VIEW STYLES - the compass and 3D button, the note, the
-   surface that takes the mouse in 3D, and the map's tools waiting
+   3D VIEW STYLES - the compass and 3D button, the note, and the
+   layer the pins are drawn on in 3D
    ------------------------------------------------------------
    Colours come only from the CSS variables EditorUi.tsx sets from
    src/core/palette.ts (the same as editor.css).
@@ -118,12 +118,12 @@
   font-size: 1em;
 }
 
-/* The see-through layer that takes the mouse in 3D (the map's canvas waits underneath). */
+/* The see-through layer the pins are drawn on in 3D. The mouse goes through it to the map's own
+   layer underneath (Overlay.tsx), where every tool works in 3D too. */
 .sre-look-surface {
   position: absolute;
   inset: 0;
-  cursor: move;
-  touch-action: none;
+  pointer-events: none;
 }
 .sre-look-marks {
   position: absolute;
@@ -133,26 +133,8 @@
   pointer-events: none;
 }
 
-/* While the 3D view shows (or tilts in or out): the map's flat drawing, the empty map's note
-   and the chosen tool's settings box are hidden, and the rail waits, dimmed, until you go back
-   (a click on it says how). */
-.sre.is-3d .sre-overlay,
-.sre.is-3d .sre-empty,
-.sre.is-3d .sre-options,
-.sre.is-3d .sre-palette {
+/* While the 3D view shows (or tilts in or out) the tools, their settings and the pieces work as on
+   the map. Only the empty map's note steps aside (the 3D note has the top of the map). */
+.sre.is-3d .sre-empty {
   visibility: hidden;
-}
-.sre.is-3d .sre-tools {
-  opacity: 0.4;
-  filter: grayscale(0.7);
-  transition: opacity 200ms var(--ease);
-}
-.sre.is-3d .sre-tools * {
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sre.is-3d .sre-tools {
-    transition: none;
-  }
 }
