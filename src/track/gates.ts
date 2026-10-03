@@ -138,12 +138,62 @@ export function ribbonSmoothness(t: TrackRuntime): { roadTurn: number; loopTurn:
   return { roadTurn, loopTurn, upTurn, spacingErr, at }
 }
 
+/** Where the road passes over itself, the two levels must be at least this far apart (metres: the slab plus a car). */
+export const BRIDGE_ROOM = 6.2
+
+/**
+ * The height between two bits of road that overlap seen from above (sample a and b),
+ * across every lane: a point every half metre across each road, and the other road's
+ * surface straight above or below it, where it reaches. Measured between the two
+ * surfaces, like the middles: on a banked road the high lane sits higher than the middle
+ * (an open road tilts about its LOW edge, so by up to the width x sin(bank)), and a car
+ * on it has that much less room under a bridge. Infinity when no lane of one lies under
+ * or over the other's slice of road (they only touch at the corners).
+ */
+function laneGap(S: TrackRuntime['samples'], a: number, b: number): number {
+  let gap = Infinity
+  for (const [i, j] of [[a, b], [b, a]]) {
+    // Road j's surface over a plan spot (x, z): solve p_j + right_j * u + tangent_j * v = (x, z) seen from above.
+    const det = S.rx[j] * S.tz[j] - S.rz[j] * S.tx[j]
+    if (Math.abs(det) < 1e-6) continue
+    const hw = S.halfWidth[i]
+    for (let l = -hw; l <= hw + 1e-6; l += 0.5) {
+      const dx = S.px[i] + S.rx[i] * l - S.px[j]
+      const dz = S.pz[i] + S.rz[i] * l - S.pz[j]
+      const u = (dx * S.tz[j] - dz * S.tx[j]) / det
+      const v = (S.rx[j] * dz - S.rz[j] * dx) / det
+      // Only road j's own slice (half a sample either way) and its width.
+      if (Math.abs(u) > S.halfWidth[j] || Math.abs(v) > S.ds / 2) continue
+      const yj = S.py[j] + S.ry[j] * u + S.ty[j] * v
+      const yi = S.py[i] + S.ry[i] * l
+      gap = Math.min(gap, Math.abs(yj - yi))
+    }
+  }
+  return gap
+}
+
 /**
  * Where the road passes over itself (a bridge), the smallest height gap between
- * the two levels, measured on the built road. null when the road never overlaps
- * itself. Loops are left out (their lanes pass under their own loop by design).
+ * the two levels, measured on the built road: between the middles, and across every
+ * lane (laneGap: a banked road's high lane rises toward a bridge above it). null when
+ * the road never overlaps itself. Loops are left out (their lanes pass under their own
+ * loop by design).
  */
 export function crossingClearance(t: TrackRuntime): { gap: number; s1: number; s2: number } | null {
+  const S = t.samples
+  let best: { gap: number; s1: number; s2: number } | null = null
+  for (const p of crossingPairs(t)) if (!best || p.gap < best.gap) best = { gap: p.gap, s1: p.i * S.ds, s2: p.j * S.ds }
+  return best
+}
+
+/**
+ * Every pair of road samples (i < j, at least 80 m apart along the road) that overlap
+ * seen from above, with the height between them (the middles' and every lane's, the
+ * smaller: see crossingClearance). Loops are left out.
+ */
+function crossingPairs(t: TrackRuntime): { i: number; j: number; gap: number }[] {
+  const memo = pairsMemo.get(t)
+  if (memo) return memo
   const S = t.samples
   const n = S.count
   const CELL = 16
@@ -156,7 +206,7 @@ export function crossingClearance(t: TrackRuntime): { gap: number; s1: number; s
     if (list) list.push(i)
     else cells.set(k, [i])
   }
-  let best: { gap: number; s1: number; s2: number } | null = null
+  const pairs: { i: number; j: number; gap: number }[] = []
   for (let i = 0; i < n; i++) {
     if (S.surface[i] === SURFACE_CODE.loop) continue
     const cx = Math.floor(S.px[i] / CELL)
@@ -169,13 +219,35 @@ export function crossingClearance(t: TrackRuntime): { gap: number; s1: number; s
           if (ds < 80) continue
           const h = Math.hypot(S.px[i] - S.px[j], S.pz[i] - S.pz[j])
           if (h > S.halfWidth[i] + S.halfWidth[j]) continue
-          const gap = Math.abs(S.py[i] - S.py[j])
-          if (!best || gap < best.gap) best = { gap, s1: i * S.ds, s2: j * S.ds }
+          pairs.push({ i, j, gap: Math.min(Math.abs(S.py[i] - S.py[j]), laneGap(S, i, j)) })
         }
       }
     }
   }
-  return best
+  pairsMemo.set(t, pairs)
+  return pairs
+}
+/** crossingPairs per built track (three checks ask). */
+const pairsMemo = new WeakMap<TrackRuntime, { i: number; j: number; gap: number }[]>()
+
+/** How far along the road (metres) from a crossing too low for a car its checks leave to the `bridges` row. */
+const LOW_BRIDGE_REACH = 40
+
+/**
+ * 1 per sample within LOW_BRIDGE_REACH of a crossing whose levels are less than BRIDGE_ROOM
+ * apart (either level). Under a bridge that low the ground is cut away to make what room
+ * there is (terrain.ts), and a car can't be there anyway: the `bridges` row fails, and Josh
+ * fixes it by raising the bridge or easing the bank under it.
+ */
+function nearLowBridge(t: TrackRuntime): Uint8Array {
+  const S = t.samples
+  const out = new Uint8Array(S.count)
+  const reach = Math.ceil(LOW_BRIDGE_REACH / S.ds)
+  for (const p of crossingPairs(t)) {
+    if (p.gap >= BRIDGE_ROOM) continue
+    for (const c of [p.i, p.j]) for (let k = -reach; k <= reach; k++) out[(((c + k) % S.count) + S.count) % S.count] = 1
+  }
+  return out
 }
 
 /**
@@ -187,8 +259,13 @@ export function crossingClearance(t: TrackRuntime): { gap: number; s1: number; s
  *    lower one is found on the lower; a car on either level is found on it with a
  *    stale hint from the other or with no hint; a car flying above the lower road
  *    under the bridge, or on the grass beside it, keeps the lower road.
+ *    Not at a crossing too low for a car (less than BRIDGE_ROOM between the levels,
+ *    over any lane): a car can't be under that bridge, and the `bridges` row fails
+ *    there (Josh can fix that; a car under the high lane of a banked road was found on
+ *    the bridge a metre and a half above its roof, and this row blamed the game).
+ *    `tooLow` counts those.
  */
-export function roadTracking(t: TrackRuntime): { crossings: number; walks: number; maxStep: number; stepAt: number; failures: string[] } {
+export function roadTracking(t: TrackRuntime): { crossings: number; tooLow: number; walks: number; maxStep: number; stepAt: number; failures: string[] } {
   const S = t.samples
   const n = S.count
   const hit: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
@@ -258,7 +335,17 @@ export function roadTracking(t: TrackRuntime): { crossings: number; walks: numbe
       failures.push(`${what}: found at ${where(t, hit.s)}, should be ${where(t, want * S.ds)}`)
     }
   }
+  // The least room between the levels at each crossing (crossingClearance's measure, within 40 m of it).
+  const pairs = found.length ? crossingPairs(t) : []
+  const near = (a: number, b: number) => Math.abs(t.deltaS(a * S.ds, b * S.ds)) <= 40
+  let tooLow = 0
   for (const { lo, hi } of found) {
+    let room = Infinity
+    for (const p of pairs) if ((near(p.i, lo) && near(p.j, hi)) || (near(p.i, hi) && near(p.j, lo))) room = Math.min(room, p.gap)
+    if (room < BRIDGE_ROOM) {
+      tooLow++
+      continue
+    }
     const hwL = S.halfWidth[lo]
     const hwH = S.halfWidth[hi]
     for (const f of [-1, 0, 1]) {
@@ -281,7 +368,7 @@ export function roadTracking(t: TrackRuntime): { crossings: number; walks: numbe
     at(lo, 0, Math.min(6, gap / 2))
     expect(`in the air over the lower road under the bridge, hint on it`, lo, lo)
   }
-  return { crossings: found.length, walks, maxStep, stepAt, failures }
+  return { crossings: found.length, tooLow, walks, maxStep, stepAt, failures }
 }
 
 /**
@@ -883,9 +970,12 @@ export const LOW_SINK_MAX = 0.05
  *    falls away from a road on a bank of fill is not one): at each spot out to
  *    LOW_DITCH_REACH, the lower of the edge and the highest ground further out, less the
  *    ground there. The deepest, on road on the ground banked LOW_DITCH_BANK_DEG or more.
+ *    Not near a crossing too low for a car (nearLowBridge): the cut under that bridge digs
+ *    beside the road below it until the bridge is raised (the `bridges` row). `lowBridge`
+ *    is how many metres were left out for that.
  * null when no road is banked that much.
  */
-export function lowEdgeDitch(t: TrackRuntime): { depth: number; at: number; out: number; bankDeg: number; banked: number; sink: number; sinkAt: number; sinkBankDeg: number } | null {
+export function lowEdgeDitch(t: TrackRuntime): { depth: number; at: number; out: number; bankDeg: number; banked: number; lowBridge: number; sink: number; sinkAt: number; sinkBankDeg: number } | null {
   const S = t.samples
   const minBank = (LOW_DITCH_BANK_DEG * Math.PI) / 180
   const g = new Float64Array(Math.round(LOW_DITCH_REACH * 2))
@@ -895,6 +985,8 @@ export function lowEdgeDitch(t: TrackRuntime): { depth: number; at: number; out:
   let out = 0
   let bankDeg = 0
   let banked = 0
+  let lowBridge = 0
+  const tooLow = nearLowBridge(t)
   let sink = 0
   let sinkAt = 0
   let sinkBankDeg = 0
@@ -921,6 +1013,10 @@ export function lowEdgeDitch(t: TrackRuntime): { depth: number; at: number; out:
     const clear = off === 0
     off += (onGround((i - reach + S.count) % S.count) ? 0 : -1) + (onGround((i + reach + 1) % S.count) ? 0 : 1)
     if (!clear || Math.abs(S.bank[i]) < minBank) continue
+    if (tooLow[i]) {
+      lowBridge++
+      continue
+    }
     banked++
     const hw = S.halfWidth[i]
     const low = S.ry[i] > 0 ? -1 : 1
@@ -944,7 +1040,7 @@ export function lowEdgeDitch(t: TrackRuntime): { depth: number; at: number; out:
       }
     }
   }
-  return any ? { depth, at, out, bankDeg, banked: Math.round(banked * S.ds), sink, sinkAt, sinkBankDeg } : null
+  return any ? { depth, at, out, bankDeg, banked: Math.round(banked * S.ds), lowBridge: Math.round(lowBridge * S.ds), sink, sinkAt, sinkBankDeg } : null
 }
 
 /** A car can be going this much faster than the racing line plans (a later brake, a boost). */
@@ -1231,13 +1327,13 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
   }
   // Bridges: where the road passes over itself, a car must fit underneath.
   const cross = crossingClearance(t)
-  const bridgeLow = !!cross && cross.gap < 6.2
+  const bridgeLow = !!cross && cross.gap < BRIDGE_ROOM
   if (cross) {
     gate(
       'bridges',
-      cross.gap >= 6.2,
-      `the road passes over itself with ${cross.gap.toFixed(1)} m between levels at the tightest (${at(cross.s1)} over ${at(cross.s2)}; needs 6.2 m: slab plus a car)`,
-      'give the upper road more `lift` at the crossing (8 m or more).',
+      cross.gap >= BRIDGE_ROOM,
+      `the road passes over itself with ${cross.gap.toFixed(1)} m between levels at the tightest, over any lane (${at(cross.s1)} over ${at(cross.s2)}; needs ${BRIDGE_ROOM} m: slab plus a car)`,
+      'give the upper road more `lift` at the crossing (8 m or more). A bank on the road underneath lifts its high lane toward the bridge: less bank there helps too.',
     )
   }
   // Loops: room for a car everywhere on and around them, and a clean landing.
@@ -1325,7 +1421,7 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
         bad.length === 0,
         bad.length
           ? bad.join('; ')
-          : `every bank keeps its low edge where the road would sit unbanked (at most ${(dd.sink * 100).toFixed(0)} cm below, limit ${(LOW_SINK_MAX * 100).toFixed(0)}), and beside it (${dd.banked} m of banked road on the ground) the ground stays level with the edge or falls away: no ditch deeper than ${(dd.depth * 100).toFixed(0)} cm (limit ${(LOW_DITCH_MAX * 100).toFixed(0)})`,
+          : `every bank keeps its low edge where the road would sit unbanked (at most ${(dd.sink * 100).toFixed(0)} cm below, limit ${(LOW_SINK_MAX * 100).toFixed(0)}), and beside it (${dd.banked} m of banked road on the ground) the ground stays level with the edge or falls away: no ditch deeper than ${(dd.depth * 100).toFixed(0)} cm (limit ${(LOW_DITCH_MAX * 100).toFixed(0)})${dd.lowBridge ? `; ${dd.lowBridge} m by a bridge too low for a car not judged (the bridges row)` : ''}`,
         'this is a builder bug, not your file: report it.',
       )
     }
@@ -1339,7 +1435,7 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
       r.failures.length === 0,
       r.failures.length
         ? r.failures.slice(0, 3).join('; ')
-        : `walked the lap with hints in 3 lanes (biggest step ${r.maxStep.toFixed(1)} m)${r.crossings ? `; at ${r.crossings} crossing(s) a car is found on the level it is on, fallen, stale hint or none` : ''}`,
+        : `walked the lap with hints in 3 lanes (biggest step ${r.maxStep.toFixed(1)} m)${r.crossings > r.tooLow ? `; at ${r.crossings - r.tooLow} crossing(s) a car is found on the level it is on, fallen, stale hint or none` : ''}${r.tooLow ? `; ${r.tooLow} crossing(s) too low for a car not tried (the bridges row)` : ''}`,
       'this is a builder bug, not your file: report it.',
     )
   }

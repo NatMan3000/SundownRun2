@@ -63,6 +63,7 @@ import { BRIDGE_GAP, type GroundFn, buildAndCheck, builtGapAt, crossingNear, kee
 import { fixAndRaiseRows, setFixActions } from './selfTestFixes'
 import { look3dRows } from './selfTest3d'
 import { setStretchTools, toolRows } from './selfTestTools'
+import { builderRows } from './selfTestBuilder'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
 type EditorStore = typeof import('./draft')
@@ -1590,6 +1591,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- Height, Bank, Width and the straight pencil (selfTestTools.ts)
 
   toolRows(check, store, { opts })
+
+  // ---------------------------------------------------------------- the game's own bugs on drawn roads (selfTestBuilder.ts)
+
+  builderRows(check)
 
   return results
 }

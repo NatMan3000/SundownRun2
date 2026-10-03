@@ -500,6 +500,20 @@ const BRIDGE_TAPER = 10
  */
 const BRIDGE_JOIN_FLAT = 6
 const BRIDGE_JOIN_EASE = 4
+/**
+ * ...but the ground under the deck's outermost BRIDGE_JOIN_LIP metres still rises to just
+ * under the lip there (from BRIDGE_JOIN_LIP_RISE metres further in). Hidden right to the
+ * edge, a grid triangle reaching from under the deck to the level ground past the edge
+ * sagged 0.3-0.5 m just outside it: a groove along the edge for the last 10 m before the
+ * road lifts off, which a car's wheel off the low edge of a bank dropped into (the
+ * `lowedge` check failed on hand-banked drawn roads, and on raised stretches at some
+ * heights only, by how the road met the grid). Ground this close to the edge is too far
+ * from the middle for its cells to reach steeply under it: on track6's 192 drawn tracks
+ * the `under` check is exactly as clear with the lip kept from 0.5 m in as with none, and
+ * fails 1 and 2 tracks with it from 1 and 1.5 m in.
+ */
+const BRIDGE_JOIN_LIP = 0.5
+const BRIDGE_JOIN_LIP_RISE = 1.5
 
 /** Per-sample road info the flattener needs beyond TrackSamples. */
 export interface FlattenInput {
@@ -680,8 +694,9 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
         } else {
           // Under the road: hidden, rising to just under the lip over the last metre
           // (so driving back on from the grass is smooth)...
-          // (Not by a bridge's end: see BRIDGE_JOIN_FLAT.)
-          const lipRise = smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond) * smoothstep(BRIDGE_JOIN_FLAT, BRIDGE_JOIN_FLAT + BRIDGE_JOIN_EASE, toRaised[ig])
+          // (Not by a bridge's end, except right at the edge: see BRIDGE_JOIN_FLAT and BRIDGE_JOIN_LIP.)
+          const joinLip = smoothstep(-BRIDGE_JOIN_LIP - BRIDGE_JOIN_LIP_RISE, -BRIDGE_JOIN_LIP, beyond)
+          const lipRise = smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond) * Math.max(joinLip, smoothstep(BRIDGE_JOIN_FLAT, BRIDGE_JOIN_FLAT + BRIDGE_JOIN_EASE, toRaised[ig]))
           h = surfY - EDGE_DEPTH - (HIDE_DEPTH - EDGE_DEPTH) * (1 - lipRise)
           // ...but never above a level floor at the LOW edge's height within EDGE_REACH of
           // it (on a bank the deck rises away from that edge): a car's wheels just off the low

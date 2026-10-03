@@ -4,11 +4,12 @@
 // ------------------------------------------------------------
 //  An open road tilts about its LOW edge (src/track/road.ts, "the
 //  bank's pivot"): the high side rises and so does the middle, by
-//  half the road's width x sin(bank). Bank the lower road of a
-//  crossing by 30 degrees and its middle comes up 3.5 m towards the
-//  bridge above, so a bridge that had room for a car (6.2 m between
-//  the two roads) can be left with only 4.5 m: the game's `bridges`
-//  check fails (LOW BRIDGE).
+//  half the road's width x sin(bank), and the high lane by twice that.
+//  Bank the lower road of a crossing by 30 degrees and its high lane
+//  comes up 7 m towards the bridge above, so a bridge that had room
+//  for a car (6.2 m between the two roads) is left with none: the
+//  game's `bridges` check (measured over every lane) fails (LOW
+//  BRIDGE).
 //
 //  Two things here:
 //    liftBridgeBy       raise the upper road at a crossing by some
@@ -131,14 +132,15 @@ export function keepBridgesClear(before: readonly RoadPoint[], after: readonly R
     const c: RoadCrossing | undefined = crossingNear(roadCrossings(points, ground), c0.at, 30)?.crossing
     if (!c || c.over === null) continue
     const under = c.passes[c.over === 0 ? 1 : 0]
-    const over = c.passes[c.over]
     const bankNow = handBankNear(points, under.s)
     const was = crossingNear(roadCrossings(before, ground), c.at, 30)?.crossing
     const bankWas = was && was.over !== null ? handBankNear(before, was.passes[was.over === 0 ? 1 : 0].s) : 0
     if (bankNow <= bankWas) continue
     // The room there once the road is built: the gap between the two roads' heights, less what
-    // the lower road's bank lifts its middle, plus what the upper road's own bank lifts it.
-    const room = c.gap - pivotLift(width, bankNow) + pivotLift(width, handBankNear(points, over.s))
+    // the lower road's bank lifts its HIGH lane (twice its middle's lift: the game's `bridges`
+    // check measures over every lane). The upper road's own bank adds nothing: its low edge
+    // stays at its height, over some lane of the road below.
+    const room = c.gap - 2 * pivotLift(width, bankNow)
     const need = BRIDGE_GAP + SPARE - room
     if (need <= 0) continue
     if (need > MOST) {
