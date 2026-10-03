@@ -21,6 +21,9 @@
 //                          (no answer), a huge flip, a best lap (the
 //                          band's fanfare), the final lap's key lift
 //                          and a race win
+//    renderEngineSweep(id, motor, 'shifts', true)  the gear-change drive
+//                          through a tunnel (in at 3.5 s, out at 10.5 s,
+//                          a boost pad inside): the engine's echo
 //    renderRewind(stem)    a cruise with rewind held from 2 s to 5 s: the
 //                          rewind sound, the music muffle and the engine dip
 //                          (rewindNumbers() measures it: levels, how much is
@@ -52,7 +55,7 @@ import type { MoodId } from './music/score'
 const RATE = 48000
 
 function fullMix(): MixTargets {
-  return { musicVolume: 0.7, sfxVolume: 0.85, musicMuted: false, engineLevel: 1, paused: false, silent: false, engineLoad: 0, rewinding: false }
+  return { musicVolume: 0.7, sfxVolume: 0.85, musicMuted: false, engineLevel: 1, paused: false, silent: false, engineLoad: 0, rewinding: false, tunnel: 0 }
 }
 
 /**
@@ -107,15 +110,28 @@ export interface EngineRenderLog {
   tyreBarks: number
 }
 
+/** A drive through a tunnel (renderEngineSweep's `tunnel`): in at TUNNEL_IN_S, out at TUNNEL_OUT_S, a boost pad at TUNNEL_BOOST_S. */
+export const TUNNEL_IN_S = 3.5
+export const TUNNEL_OUT_S = 10.5
+const TUNNEL_BOOST_S = 7
+/** How far inside the tunnel at t (0..1): the cover rises over the 30 m inside each portal, about 0.6 s at 180 km/h. */
+export function tunnelAt(t: number): number {
+  const ease = (u: number) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u))
+  return Math.min(ease((t - TUNNEL_IN_S) / 0.6), ease((TUNNEL_OUT_S - t) / 0.6))
+}
+
 /**
  * The engine test drive (idle, revs, gears, cruise, lift-off, jump with free-rev,
  * landing, drift, boost, off-road, mag grip), for one engine voicing.
  * drive 'drift' records the tyre test drive instead (see driftInput in sweep.ts).
+ * `tunnel`: the drive goes through a tunnel (tunnelAt), with a boost pad inside it, so the
+ * engine's and the effects' echo can be heard ('dry': the same drive and boost in the open).
  */
 export async function renderEngineSweep(
   id: EngineSoundId = DEFAULT_ENGINE_SOUND,
   motor: MotorChoice = 'worklet',
   drive: TestDriveId = 'sweep',
+  tunnel: 'none' | 'tunnel' | 'dry' = 'none',
 ): Promise<{ buf: AudioBuffer; log: EngineRenderLog }> {
   const run = TEST_DRIVES[drive]
   const ctx = new OfflineAudioContext(2, Math.ceil(RATE * run.seconds), RATE)
@@ -125,7 +141,14 @@ export async function renderEngineSweep(
   const fxKit = makeKit(ctx, mix.fx, noise)
   const effects = new Effects(fxKit, makeKit(ctx, mix.ui, noise), (d, h) => duck(mix, d, h, ctx.currentTime))
   const input = makeEngineInput()
-  updateMix(mix, fullMix(), 0)
+  const targets = fullMix()
+  updateMix(mix, targets, 0)
+  if (tunnel !== 'none') {
+    ctx.suspend(TUNNEL_BOOST_S).then(() => {
+      effects.handleEvent({ type: 'boost', t: 0, strength: 1 } as unknown as AnyGameEvent)
+      return ctx.resume()
+    })
+  }
   // The engine only schedules smooth parameter moves, so the whole drive can
   // be laid out up front at 60 updates a second, like 60 fps.
   let wasAir = false
@@ -138,6 +161,10 @@ export async function renderEngineSweep(
   for (let f = 0; f <= run.seconds * 60; f++) {
     const t = f / 60
     run.input(t, input)
+    if (tunnel === 'tunnel') {
+      targets.tunnel = tunnelAt(t)
+      updateMix(mix, targets, t)
+    }
     const shifts = engine.readout.shifts
     const blows = engine.readout.blowOffs
     engine.update(input, t)

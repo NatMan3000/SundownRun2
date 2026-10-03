@@ -64,7 +64,7 @@ const DEV_HELP = [
   "audio('sweep', 'shifts')            14.5 s gear change test drive: flat-out upshifts, two quick ones on a boost pad, a gentle one, a lift right after a shift, a lift and a shift together, downshifts (the turbo's pssh on each upshift)",
   "audio('sweep', 'liftoff')           6 s lift-off test drive: flat out in 4th, lift at 2.5 s (the blow-off), coast",
   "audio('sweep', 'highrevs')          12 s high revs test drive: flat out to the top of 3rd, held there, a jump with the throttle held, a lift",
-  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed | shifts | liftoff | highrevs (the engine, tyre, top speed, gear change, lift-off or high revs test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1 and/or a style, e.g. 0.6, 'house' or 'house:0.6') | mix (arg: all | engine | music | fx) | rewind (rewind held 2-5 s over a cruise: adds the rewind sound's numbers) | reactions (race music answering a big landing, a hop, a flip, a best lap, the final lap's key lift and a race win; arg: a style)",
+  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed | shifts | liftoff | highrevs (the engine, tyre, top speed, gear change, lift-off or high revs test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | tunnel (the gear-change drive through a tunnel: the engine's echo; arg as above, add ':dry' for the same drive in the open) | effects | title | cruise | drive | race | hyper (arg: night 0..1 and/or a style, e.g. 0.6, 'house' or 'house:0.6') | mix (arg: all | engine | music | fx) | rewind (rewind held 2-5 s over a cruise: adds the rewind sound's numbers) | reactions (race music answering a big landing, a hop, a flip, a best lap, the final lap's key lift and a race win; arg: a style)",
 ].join('\n')
 
 export function AudioSystem() {
@@ -187,6 +187,9 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const buf = await renderMix(stem)
     return { ...measure(buf), stem, wav: toBase64(encodeWav(buf)) }
   }
+  // A drive through a tunnel (the gear-change drive, in at 3.5 s and out at 10.5 s): arg 'rally',
+  // 'rally:nodes', and ':dry' for the same drive in the open (no echo), to hear the difference.
+  if (what === 'tunnel') return renderTunnelDrive(arg)
   // 'engine' records the engine test drive (named 'sweep'); 'drift', 'speed', 'shifts', 'liftoff' and 'highrevs' the others.
   const drive = what === 'engine' ? 'sweep' : what
   if (isTestDrive(drive)) return renderDrive(drive, arg)
@@ -208,7 +211,19 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const { buf, log } = await renderMusic(what as MoodId | 'title', night, undefined, style)
     return { ...measure(buf), log, wav: toBase64(encodeWav(buf)) }
   }
-  return `unknown render "${what}" (engine | drift | speed | shifts | liftoff | highrevs | effects | mix | rewind | reactions | ${MUSIC_RENDERS.join(' | ')})`
+  return `unknown render "${what}" (engine | drift | speed | shifts | liftoff | highrevs | tunnel | effects | mix | rewind | reactions | ${MUSIC_RENDERS.join(' | ')})`
+}
+
+/** The gear-change drive through a tunnel, or (':dry') the same in the open. arg: 'rally', 'rally:nodes', 'rally:dry', 'rally:nodes:dry'. */
+async function renderTunnelDrive(arg: unknown): Promise<unknown> {
+  const parts = String(arg ?? '').split(':')
+  const name = parts[0]
+  if (name && !isEngineSound(name)) return `unknown engine "${name}" (${ENGINE_SOUND_IDS.join(' | ')})`
+  const id = resolveEngineSound(name)
+  const motor: MotorChoice = parts.includes('nodes') ? 'nodes' : 'worklet'
+  const how = parts.includes('dry') ? 'dry' : 'tunnel'
+  const { buf, log } = await renderEngineSweep(id, motor, 'shifts', how)
+  return { ...measure(buf), engine: id, motor, drive: `shifts ${how === 'dry' ? 'in the open' : 'through a tunnel'}`, log, wav: toBase64(encodeWav(buf)) }
 }
 
 /** Record one of the scripted drives through the engine. arg: 'rally' or 'rally:nodes'. */

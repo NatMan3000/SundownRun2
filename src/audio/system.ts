@@ -372,10 +372,13 @@ export class AudioRig {
     this.mixScratch.silent = silent || this.hidden
     this.mixScratch.engineLoad = this.lastInput ? this.lastInput.throttle : 0
     this.mixScratch.rewinding = rewind.active
+    // (In a tunnel the engine and effects echo; only while driving.)
+    this.mixScratch.tunnel = phase === 'playing' ? telemetry.tunnel : 0
     return this.mixScratch
   }
 
   private readonly mixScratch = {
+    tunnel: 0,
     musicVolume: 0,
     sfxVolume: 0,
     musicMuted: false,
@@ -609,6 +612,8 @@ export class AudioRig {
       time: g ? Math.round(g.ctx.currentTime * 1000) / 1000 : 0,
       sampleRate: g ? g.ctx.sampleRate : 0,
       outputDb: g ? readLevelDb(g.mix, this.levelScratch) : -100,
+      /** How much of the engine and effects is going into the tunnel echo right now (mixer.ts TUNNEL_ECHO; 0 in the open). */
+      tunnelEcho: g ? round3(g.mix.echoSend.gain.value) : 0,
       musicMuted: this.musicMuted,
       cpuMs: { perFrame: round3(this.frameMs), perMusicTick: round3(this.tickMs) },
       voices: g ? g.fxKit.active + g.uiKit.active : 0,
