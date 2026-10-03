@@ -18,8 +18,9 @@
 //              car's body catches on it through the road)
 //    barriers  stadium barriers stand up as walls on a bank's low edge,
 //              with no ditch behind them
-//    cutting   the sides of a road dug into the ground are slopes,
-//              not cliffs (cuttings.ts)
+//    cutting   the sides of a road dug into the ground, and the ground
+//              under and beside every bridge, are slopes, not cliffs
+//              (cuttings.ts)
 //    dips      a car stays on over the lip of a dip (cuttings.ts)
 //    tunnel    every tunnel piece is a real tunnel: room for a car
 //              under its ceiling, a solid roof, no ground inside, its
@@ -50,7 +51,7 @@ import { groundHoleAt } from './terrainTiles'
 import { barrierAxes, type BarrierAxes } from './ribbon'
 import { brakeOnSlope, carFullLockG, LINE_MAX_LAT_G } from './derived'
 import { CREST_CHECK_KMH, CREST_LANE_INSET, CREST_LIMIT, CREST_SPAN, LEAN_AHEAD_DEG, LEAN_SPEED_KMH } from './bankRolls'
-import { CUT_SLOPE_MAX_DEG, CUT_STEP_MAX, cuttingSides, dipLips } from './cuttings'
+import { BRIDGE_SIDE_JUDGE, CUT_SLOPE_MAX_DEG, CUT_STEP_MAX, bridgeSides, cuttingSides, dipLips, handBankCliff } from './cuttings'
 import { OVER_EDGE_MAX, OVER_ROOF_SLACK, TUNNEL_CLEARANCE_MIN, TUNNEL_GROUND_BELOW, TUNNEL_LIP_MAX, TUNNEL_ROOF_CHECK, tunnelChecks } from './tunnelChecks'
 
 const G = 9.81
@@ -65,6 +66,12 @@ export interface TrackGate {
   message: string
   /** What to change, when it failed or warned. */
   fix?: string
+  /**
+   * A failure that comes from the track file itself, on a row that is otherwise only ever a
+   * builder bug (`cutting`: a steep hand bank lifting into a bridge's slope). The editor words
+   * it as the track's to fix, not the game's.
+   */
+  byFile?: boolean
 }
 
 /**
@@ -1449,21 +1456,41 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
       )
     }
   }
-  // Road dug into the ground: a cutting's sides are slopes, not cliffs, and a car stays on over the lip of a dip.
+  // Road dug into the ground, and the ground round every bridge: slopes, not cliffs. And a car stays on over the lip of a dip.
   {
     const cs = cuttingSides(t)
-    if (cs) {
-      const bad: string[] = []
-      if (cs.slopeDeg > CUT_SLOPE_MAX_DEG) bad.push(`the side of the cutting at ${at(cs.slopeAt)} is ${cs.slopeDeg.toFixed(0)} deg steep (limit ${CUT_SLOPE_MAX_DEG})`)
-      if (cs.step > CUT_STEP_MAX) bad.push(`the side of the cutting at ${at(cs.stepAt)} steps ${cs.step.toFixed(1)} m in one grid cell (limit ${CUT_STEP_MAX} m)`)
-      gate(
-        'cutting',
-        bad.length === 0,
-        bad.length
-          ? `${bad.join('; ')}: a cliff, not a slope a car can drive down`
-          : `beside the ${cs.metres} m of road below the ground, the cutting's sides are slopes: at most ${cs.slopeDeg.toFixed(0)} deg steep (limit ${CUT_SLOPE_MAX_DEG}) and at most ${cs.step.toFixed(1)} m of change per grid cell (limit ${CUT_STEP_MAX})`,
-        'this is a builder bug, not your file: report it.',
-      )
+    const bs = bridgeSides(t)
+    if (cs || bs) {
+      const builder: string[] = []
+      const fine: string[] = []
+      if (cs) {
+        if (cs.slopeDeg > CUT_SLOPE_MAX_DEG) builder.push(`the side of the cutting at ${at(cs.slopeAt)} is ${cs.slopeDeg.toFixed(0)} deg steep (limit ${CUT_SLOPE_MAX_DEG})`)
+        if (cs.step > CUT_STEP_MAX) builder.push(`the side of the cutting at ${at(cs.stepAt)} steps ${cs.step.toFixed(1)} m in one grid cell (limit ${CUT_STEP_MAX} m)`)
+        fine.push(`beside the ${cs.metres} m of road below the ground, the cutting's sides are slopes: at most ${cs.slopeDeg.toFixed(0)} deg steep and at most ${cs.step.toFixed(1)} m of change per grid cell`)
+      }
+      // By a bridge: a builder bug, unless it's the file's own steep hand bank (handBankCliff).
+      let bank = ''
+      if (bs) {
+        const bad: string[] = []
+        if (bs.slopeDeg > CUT_SLOPE_MAX_DEG) bad.push(`the ground by the bridge at ${at(bs.slopeAt)} is ${bs.slopeDeg.toFixed(0)} deg steep (limit ${CUT_SLOPE_MAX_DEG})`)
+        if (bs.step > CUT_STEP_MAX) bad.push(`the ground by the bridge at ${at(bs.stepAt)} steps ${bs.step.toFixed(1)} m in one grid cell (limit ${CUT_STEP_MAX} m)`)
+        const hb = bad.length ? handBankCliff(t, bs) : null
+        if (hb) bank = `${bad.join('; ')}: the bank at ${at(hb.s)} (${hb.deg.toFixed(0)} deg, set by hand) lifts the road's high edge into the slope under the bridge, so the ground there is a cliff (without the hand bank it is a slope)`
+        else builder.push(...bad)
+        fine.push(`under and beside the ${bs.metres} m of bridge (${BRIDGE_SIDE_JUDGE} m out), the ground is a slope: at most ${bs.slopeDeg.toFixed(0)} deg steep and at most ${bs.step.toFixed(1)} m of change per grid cell`)
+      }
+      if (!builder.length && !bank) gate('cutting', true, `${fine.join('; ')} (limits ${CUT_SLOPE_MAX_DEG} deg and ${CUT_STEP_MAX} m)`)
+      else if (!builder.length) {
+        // The file's doing: say so, and what Josh can change (the editor shows its own words for it, checks.ts).
+        gates.push({ name: 'cutting', ok: false, level: 'fail', byFile: true, message: bank, fix: 'bank the road less there, or move the bridge away from the banked corner.' })
+      } else {
+        gate(
+          'cutting',
+          false,
+          `${builder.join('; ')}: a cliff, not a slope a car can drive down${bank ? `; and ${bank}` : ''}`,
+          `this is a builder bug, not your file: report it.${bank ? ' (The cliff by the hand bank is yours: bank the road less there, or move the bridge.)' : ''}`,
+        )
+      }
     }
     const dl = dipLips(t)
     if (dl) {

@@ -91,6 +91,21 @@ export const BUILDER_VERSION = 10
  * so a ramp on a bend is shorter.
  */
 export const TUNNEL_BUILDER_VERSION = 2
+/**
+ * Bump when the way the ground round a bridge is shaped moves geometry: it feeds only the keys
+ * of tracks whose built road has a bridge (a raised stretch: more than FILL_MAX over the natural
+ * ground, or an underpass's short bridge), so tracks without one keep their ghosts and records.
+ *   1 (track9): no cliffs round a bridge (terrain.ts easeBridgeSides): the ground under and
+ *     beside every raised stretch of road is never steeper than 31 degrees and bends gently,
+ *     only ever lowered, so every bridge keeps its clearance. A ramp's embankment no longer
+ *     carries on beside the bridge into a sheer face, the clearance cut no longer stops dead
+ *     3 m past the deck, and it deepens over 16 m from where the road lifts off (was 10), from
+ *     both ends of a short bridge at once. A bridge over another road stays a bridge until the
+ *     ground can slope down from it to that road (road.ts spanTheDrop). Of the built-ins only
+ *     Afterglow has a bridge (its ground beside it changes); Neon Pocket and the Hyperdrome
+ *     keep their keys.
+ */
+export const BRIDGE_BUILDER_VERSION = 1
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
@@ -458,9 +473,14 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
 
   // ---- identity ----
   // A track with a tunnel also carries TUNNEL_BUILDER_VERSION, so a change to how tunnels are dug
-  // retires only those tracks' ghosts and records (the rest keep their keys).
+  // retires only those tracks' ghosts and records (the rest keep their keys)...
   const tunnelKey = file.pieces.some((p) => p.type === 'tunnel') ? { tunnels: TUNNEL_BUILDER_VERSION } : {}
-  const hashText = JSON.stringify({ builder: BUILDER_VERSION, ...tunnelKey, road: file.road, pieces: file.pieces, start: file.start, params, env: [env.seed, env.size, env.terrain] })
+  // ...and a track whose built road has a bridge (any raised road sample) carries
+  // BRIDGE_BUILDER_VERSION: without one, nothing that shapes the ground round bridges runs.
+  let hasBridge = false
+  for (let i = 0; i < S.count && !hasBridge; i++) hasBridge = S.surface[i] === SURFACE_CODE.road && S.grounded[i] !== 1
+  const bridgeKey = hasBridge ? { bridges: BRIDGE_BUILDER_VERSION } : {}
+  const hashText = JSON.stringify({ builder: BUILDER_VERSION, ...tunnelKey, ...bridgeKey, road: file.road, pieces: file.pieces, start: file.start, params, env: [env.seed, env.size, env.terrain] })
   const geomHash = hashString(hashText).toString(16).padStart(8, '0')
 
   const basis = new THREE.Matrix4()

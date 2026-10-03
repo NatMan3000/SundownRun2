@@ -25,10 +25,11 @@
 //  Pure: reads the built track, changes nothing.
 // ============================================================
 
-import { trackInternals } from './build'
+import { buildTrack, trackInternals } from './build'
 import { CREST_CHECK_KMH, CREST_LIMIT } from './bankRolls'
 import { SAME_STRETCH } from './road'
-import { averagedHeight, shoulderWidth } from './terrain'
+import { averagedHeight, gridHeight, shoulderWidth } from './terrain'
+import { TUNNEL_WALL } from './tunnels'
 import { SURFACE_CODE, type TrackRuntime } from './types'
 
 const G = 9.81
@@ -195,6 +196,206 @@ export function cuttingSides(t: TrackRuntime): { slopeDeg: number; slopeAt: numb
     }
   }
   return sunk ? { slopeDeg, slopeAt, step, stepAt, metres: Math.round(sunk * S.ds) } : null
+}
+
+/** How far (metres past a bridge deck's edge) the `cutting` check looks at the ground round a bridge. */
+export const BRIDGE_SIDE_JUDGE = 25
+/** Ground this close (metres) past the edge of a road on the ground is that road's own lip: the `under` and `lowedge` checks judge it. */
+const ROAD_LIP = 0.5
+/** Ground under a bridge's deck within this much (metres) of its slab's underside is out of any car's reach (an underpass's short bridge keeps only 0.5 m). */
+const UNDER_SLAB = 1
+/** Ground the builder left within this much (metres) of the natural ground is the world's own hills, not judged here. */
+const NATURAL_SLACK = 0.05
+
+/**
+ * The ground round every bridge (every raised stretch of road, an underpass's short bridge
+ * included): walking across each raised sample, out to BRIDGE_SIDE_JUDGE metres past both
+ * edges of its deck, a ground point every half metre. The steepest the ground gets (degrees
+ * from flat), and the biggest change of its rise over one grid cell (3 m) across, along and
+ * both diagonals (a ledge, a cliff's top or foot, a sharp crest). Under the bridge too: a car
+ * on the road below drives there. Left out: ground under a road on the ground or within ROAD_LIP
+ * of its edge (that road's own lip), round a tunnel (its walls stand straight up on purpose),
+ * ground tucked within UNDER_SLAB of a bridge's slab (no car fits there), and the world's own
+ * natural ground where the builder didn't change it (Afterglow's steep hills).
+ * The builder used to leave cliffs here: its clearance cut stopped dead 3 m past the deck's edge,
+ * and a ramp's embankment carried on beside the bridge and ended in a sheer face (51-77 degrees,
+ * steps up to 5 m, at every bridge the editor builds and at Afterglow's). null when no road is raised.
+ */
+/** The ground round the bridges (bridgeSides): the steepest slope and the biggest step, where they are (s on the bridge, and x, z), and how much bridge. */
+export interface BridgeSides {
+  slopeDeg: number
+  slopeAt: number
+  slopeX: number
+  slopeZ: number
+  step: number
+  stepAt: number
+  stepX: number
+  stepZ: number
+  metres: number
+}
+export function bridgeSides(t: TrackRuntime): BridgeSides | null {
+  const S = t.samples
+  const x = trackInternals(t)
+  if (!x) return null
+  const raised: number[] = []
+  for (let i = 0; i < S.count; i++) if (S.surface[i] === SURFACE_CODE.road && S.grounded[i] !== 1) raised.push(i)
+  if (!raised.length) return null
+  const cell = t.terrain.cellSize
+  const nat = x.natGrid
+  const tunnelSlot = x.tunnels.slot
+  // Road samples, bucketed on a 16 m grid, so "is this ground out of reach under or by a road?" only looks nearby.
+  const CELL = 16
+  const key = (cx: number, cz: number) => cx * 100003 + cz
+  const cells = new Map<number, number[]>()
+  for (let i = 0; i < S.count; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    const k = key(Math.floor(S.px[i] / CELL), Math.floor(S.pz[i] / CELL))
+    const list = cells.get(k)
+    if (list) list.push(i)
+    else cells.set(k, [i])
+  }
+  const H = (px: number, pz: number) => t.terrainHeight(px, pz)
+  // Left out: under a road on the ground or its lip, round a tunnel, or tucked under a bridge's slab.
+  // How far past its middle each sample can leave ground out (across its road).
+  const reachOf = (j: number) => S.halfWidth[j] + (tunnelSlot[j] ? TUNNEL_WALL + cell + 1 : S.grounded[j] === 1 ? ROAD_LIP : 0)
+  /** Is (px, pz) left out by one of the samples in `near`? */
+  const leftOut = (px: number, pz: number, near: number[]): boolean => {
+    for (const j of near) {
+      const ex = px - S.px[j]
+      const ez = pz - S.pz[j]
+      if (Math.abs(ex * S.tx[j] + ez * S.tz[j]) > S.ds) continue
+      const rl = Math.hypot(S.rx[j], S.rz[j]) || 1
+      const lat = (ex * S.rx[j] + ez * S.rz[j]) / rl
+      if (Math.abs(lat) > reachOf(j)) continue
+      if (tunnelSlot[j] || S.grounded[j] === 1) return true
+      if (H(px, pz) >= S.py[j] + (S.ry[j] * lat) / rl - x.thickness[j] - UNDER_SLAB) return true
+    }
+    return false
+  }
+  let farthest = 0
+  for (let j = 0; j < S.count; j++) if (S.surface[j] === SURFACE_CODE.road) farthest = Math.max(farthest, Math.hypot(reachOf(j), S.ds * 1.25))
+  const changed = (px: number, pz: number) => Math.abs(H(px, pz) - gridHeight(nat, px, pz)) > NATURAL_SLACK
+  const STEP = 0.5
+  const e = 0.25
+  let slopeDeg = 0
+  let slopeAt = 0
+  let slopeX = 0
+  let slopeZ = 0
+  let step = 0
+  let stepAt = 0
+  let stepX = 0
+  let stepZ = 0
+  const near: number[] = []
+  for (const i of raised) {
+    const hw = S.halfWidth[i]
+    const rl = Math.hypot(S.rx[i], S.rz[i]) || 1
+    const ox = S.rx[i] / rl
+    const oz = S.rz[i] / rl
+    const tl = Math.hypot(S.tx[i], S.tz[i]) || 1
+    const ax = S.tx[i] / tl
+    const az = S.tz[i] / tl
+    // Every ground point this walk looks at is within a grid cell of the line across sample i, so
+    // only samples that close to it (plus how far each can reach) can leave one out: find them once
+    // (asking every sample nearby at each point took 70 ms on Afterglow, on every build in the editor).
+    const half = hw + BRIDGE_SIDE_JUDGE
+    const grow = farthest + cell + 0.01
+    near.length = 0
+    const x0 = Math.floor((S.px[i] - Math.abs(ox) * half - grow) / CELL)
+    const x1 = Math.floor((S.px[i] + Math.abs(ox) * half + grow) / CELL)
+    const z0 = Math.floor((S.pz[i] - Math.abs(oz) * half - grow) / CELL)
+    const z1 = Math.floor((S.pz[i] + Math.abs(oz) * half + grow) / CELL)
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        for (const j of cells.get(key(cx, cz)) ?? []) {
+          const ex = S.px[j] - S.px[i]
+          const ez = S.pz[j] - S.pz[i]
+          const along = Math.max(-half, Math.min(half, ex * ox + ez * oz))
+          if (Math.hypot(ex - ox * along, ez - oz * along) <= Math.hypot(reachOf(j), S.ds * 1.25) + cell + 0.01) near.push(j)
+        }
+      }
+    }
+    // Across the bridge, along it, and both diagonals.
+    const dirs = [
+      [ox, oz],
+      [ax, az],
+      [(ox + ax) * Math.SQRT1_2, (oz + az) * Math.SQRT1_2],
+      [(ox - ax) * Math.SQRT1_2, (oz - az) * Math.SQRT1_2],
+    ]
+    for (let d = -half; d <= half; d += STEP) {
+      const px = S.px[i] + ox * d
+      const pz = S.pz[i] + oz * d
+      if (leftOut(px, pz, near)) continue
+      const here = changed(px, pz)
+      const gx = (H(px + e, pz) - H(px - e, pz)) / (2 * e)
+      const gz = (H(px, pz + e) - H(px, pz - e)) / (2 * e)
+      if (here) {
+        const deg = (Math.atan(Math.hypot(gx, gz)) * 180) / Math.PI
+        if (deg > slopeDeg) {
+          slopeDeg = deg
+          slopeAt = i * S.ds
+          slopeX = px
+          slopeZ = pz
+        }
+      }
+      for (const [ux, uz] of dirs) {
+        const bx = px - ux * cell
+        const bz = pz - uz * cell
+        const fx = px + ux * cell
+        const fz = pz + uz * cell
+        if (!here && !changed(bx, bz) && !changed(fx, fz)) continue
+        if (leftOut(bx, bz, near) || leftOut(fx, fz, near)) continue
+        const dh = Math.abs(H(bx, bz) - 2 * H(px, pz) + H(fx, fz))
+        if (dh > step) {
+          step = dh
+          stepAt = i * S.ds
+          stepX = px
+          stepZ = pz
+        }
+      }
+    }
+  }
+  return { slopeDeg, slopeAt, slopeX, slopeZ, step, stepAt, stepX, stepZ, metres: Math.round(raised.length * S.ds) }
+}
+
+/** A bank this steep or more (degrees), set by hand in the file, is more than the auto-bank gives (10 by default)... */
+export const HAND_BANK_MIN = 15
+/** ...and counts as what put a cliff by a bridge when it is on road this near the cliff (metres past the road's edge). */
+const HAND_BANK_NEAR = 30
+
+/**
+ * When the ground by a bridge fails (bridgeSides), is it the track file's own doing? A bank set by
+ * hand lifts a road's high edge: where a steep one meets a bridge (a 45 degree bank lifting into
+ * the deck), the high side and the bank's runout stand in the slope the builder makes under the
+ * bridge, and no slope fits. Josh can fix that (less bank there, or the bridge somewhere else);
+ * it isn't a builder bug. Both must hold: road within HAND_BANK_NEAR of every failing spot has a
+ * hand-set bank of HAND_BANK_MIN or more, and the same file with every `bank` taken out builds
+ * with that ground passing. (On track6's hand-banked tracks it did, every time: 30 of 30.)
+ * Returns the steepest such bank (s on the road, degrees), or null.
+ */
+export function handBankCliff(t: TrackRuntime, bs: BridgeSides): { s: number; deg: number } | null {
+  const S = t.samples
+  const x = trackInternals(t)
+  if (!x) return null
+  const spots: [number, number][] = []
+  if (bs.slopeDeg > CUT_SLOPE_MAX_DEG) spots.push([bs.slopeX, bs.slopeZ])
+  if (bs.step > CUT_STEP_MAX) spots.push([bs.stepX, bs.stepZ])
+  let best: { s: number; deg: number } | null = null
+  for (const [sx, sz] of spots) {
+    let here: { s: number; deg: number } | null = null
+    for (let i = 0; i < S.count; i++) {
+      if (S.surface[i] !== SURFACE_CODE.road || x.overrideWeight[i] < 0.5) continue
+      if (Math.hypot(S.px[i] - sx, S.pz[i] - sz) > S.halfWidth[i] + HAND_BANK_NEAR) continue
+      const deg = (Math.asin(Math.min(1, Math.abs(S.ry[i]) / (Math.hypot(S.rx[i], S.ry[i], S.rz[i]) || 1))) * 180) / Math.PI
+      if (deg >= HAND_BANK_MIN && (!here || deg > here.deg)) here = { s: i * S.ds, deg }
+    }
+    if (!here) return null
+    if (!best || here.deg > best.deg) best = here
+  }
+  if (!best) return null
+  // Without the hand banks, is it a slope? (Built once, only when the check fails.)
+  const unbanked = { ...t.file, road: { ...t.file.road, points: t.file.road.points.map(({ bank: _bank, ...p }) => p) } }
+  const again = bridgeSides(buildTrack(unbanked, t.params, t))
+  return again && again.slopeDeg <= CUT_SLOPE_MAX_DEG && again.step <= CUT_STEP_MAX ? best : null
 }
 
 /**

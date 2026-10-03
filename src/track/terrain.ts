@@ -18,7 +18,8 @@
 //     first (no ditch), and under the high side it fills up the bank.
 //     Under a lifted road (a bridge) the ground stays natural, but is
 //     cut down if it would come within 5 m of the road's underside, so
-//     a car can drive underneath.
+//     a car can drive underneath. Round a bridge the ground is then a
+//     slope, never a cliff (easeBridgeSides).
 //
 //  The grid layout is the TerrainGrid contract (types.ts): row-major,
 //  heights[iz * (n + 1) + ix], x and z from -half to +half.
@@ -500,9 +501,12 @@ export const BRIDGE_CLEARANCE = 5
 /**
  * ...growing to that over this many metres from where the road leaves the ground, so the
  * embankment tapers in under the bridge's first metres rather than ending in a sheer
- * drop just under the road (a wall of ground right under the deck at the join).
+ * drop just under the road (a wall of ground right under the deck at the join). 16 m so the
+ * cut (5 m plus a slab, about 6 m) deepens no faster than BRIDGE_SIDE_GRADE anywhere along
+ * it: over 10 m it sank 0.9 m a metre beside the deck, and the ground beside the road on the
+ * ground just before the bridge had to come down to meet it.
  */
-const BRIDGE_TAPER = 10
+const BRIDGE_TAPER = 16
 /**
  * A road on the ground that becomes a short bridge over another road's cutting (road.ts,
  * "over a cutting") keeps only this much air under its slab: the cutting is already dug
@@ -535,6 +539,35 @@ const BRIDGE_JOIN_EASE = 4
  */
 const BRIDGE_JOIN_LIP = 0.5
 const BRIDGE_JOIN_LIP_RISE = 1.5
+/**
+ * Round a bridge the ground is never steeper than this (rise per metre: 0.6 is 31 degrees), so
+ * a car that leaves the road there drives or slides down a slope instead of hitting a wall.
+ * Three things used to leave cliffs beside and under bridges: the clearance cut stopped dead
+ * 3 m past the deck's edge (a wall where the ground beside it stood higher); the embankment
+ * under a ramp's last metres on the ground carried on beside the bridge and ended in a sheer
+ * face where the road below's own ground took over (up to 5 m high, 51-77 degrees, at every
+ * bridge the editor builds and at Afterglow's); and the two met in corners. The pass that
+ * keeps it (easeBridgeSides) only ever lowers ground, so a bridge keeps all its clearance.
+ * 0.6 because the `cutting` check's step limit (2 m of change of rise per 3 m grid cell) has
+ * to hold at the top and foot of the slope too: 0.6 x 3 m = 1.8 m. (road.ts spanTheDrop keeps a
+ * bridge raised until the ground can come down from it to the road below at this grade.)
+ */
+export const BRIDGE_SIDE_GRADE = 0.6
+/**
+ * ...and its rise from one 3 m grid cell to the next changes by no more than this (metres), so
+ * the top and foot of a slope, and a crest where two slopes meet, are rounded rather than sharp
+ * (the `cutting` check allows 2).
+ */
+const BRIDGE_SIDE_BEND = 1.2
+/** ...out to this far (metres) past the edge of a raised road's deck... */
+const BRIDGE_SIDE_CORE = 28
+/** ...loosening to no limit at all by this far, so the slope blends into the land round it. */
+const BRIDGE_SIDE_REACH = 40
+/**
+ * Ground under a road on the ground, or this close (metres) past its edge, is never lowered by
+ * that pass: it holds the road's lip, so the grass beside a road stays flush with its edge.
+ */
+const BRIDGE_SIDE_KEEP = 0.75
 
 /** Per-sample road info the flattener needs beyond TrackSamples. */
 export interface FlattenInput {
@@ -707,17 +740,35 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
   const skip = input.skip ?? null
   /** The ground a tunnel's stretch is dug through at vertex v (see FlattenInput.hill). */
   const hillAt = (v: number) => (input.hill ? input.hill[v] : nat[v])
+  // Round bridges (easeBridgeSides): how far each vertex is past the nearest raised deck's edge
+  // (Infinity when no raised road is within BRIDGE_SIDE_REACH), and the vertices that pass must
+  // leave alone (1: under or right beside a road on the ground, inside a tunnel's solid or a barrier box).
+  const nearBridge = new Float32Array(vcount).fill(Infinity)
+  const keep = new Uint8Array(vcount)
+  // ...the vertices a bridge's clearance cut lowered, and those beside a road on the ground (in
+  // its own cross-section, not past the end of the stretch: its shoulders, which stay as built).
+  const bridgeCut = new Uint8Array(vcount)
+  const roadside = new Uint8Array(vcount)
+  let anyRaised = false
 
-  // For each raised (not grounded) road sample: metres along the road to the nearest grounded one.
-  const toGround = new Float32Array(count).fill(Infinity)
-  for (let pass = 0; pass < 2; pass++) {
-    for (let k = 0; k < 2 * count; k++) {
-      const i = pass === 0 ? k % count : (2 * count - 1 - k) % count
-      const prev = pass === 0 ? (i - 1 + count) % count : (i + 1) % count
-      if (S.grounded[i] === 1 && S.surface[i] === SURFACE_CODE.road) toGround[i] = 0
-      else toGround[i] = Math.min(toGround[i], toGround[prev] + S.ds)
-    }
+  // For each raised (not grounded) road sample: how much of the bridge's clearance cut it gets, 0 where
+  // the road leaves the ground, growing to all of it BRIDGE_TAPER metres out. From both ends of the
+  // bridge at once (the two multiplied), so on a bridge shorter than two tapers the cut eases to its
+  // deepest in the middle: grown from the nearer end only, the two met there in a sharp V, a crease
+  // in the ground under a short bridge over a dip.
+  const behind = new Float32Array(count).fill(Infinity)
+  const ahead = new Float32Array(count).fill(Infinity)
+  const onGround = (i: number) => S.grounded[i] === 1 && S.surface[i] === SURFACE_CODE.road
+  for (let k = 0; k < 2 * count; k++) {
+    const i = k % count
+    behind[i] = onGround(i) ? 0 : behind[(i - 1 + count) % count] + S.ds
   }
+  for (let k = 2 * count - 1; k >= 0; k--) {
+    const i = k % count
+    ahead[i] = onGround(i) ? 0 : ahead[(i + 1) % count] + S.ds
+  }
+  const cutTaper = new Float32Array(count)
+  for (let i = 0; i < count; i++) cutTaper[i] = smoothstep(0, BRIDGE_TAPER, behind[i]) * smoothstep(0, BRIDGE_TAPER, ahead[i])
   // For each grounded road sample: metres along the road to the nearest raised one (a bridge).
   const toRaised = new Float32Array(count).fill(Infinity)
   for (let pass = 0; pass < 2; pass++) {
@@ -736,7 +787,10 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
     const cx = S.px[i]
     const cz = S.pz[i]
     const grounded = S.grounded[i] === 1
-    const reach = S.halfWidth[i] + (grounded ? SHOULDER_MAX : BRIDGE_CLEARANCE + 4)
+    // (A raised sample reaches out to BRIDGE_SIDE_REACH for easeBridgeSides; its clearance cut
+    // still only bites within 3 m of its deck, below.)
+    const reach = S.halfWidth[i] + (grounded ? SHOULDER_MAX : Math.max(BRIDGE_CLEARANCE + 4, BRIDGE_SIDE_REACH))
+    if (!grounded) anyRaised = true
     const inTunnel = bestT && bestTd && grounded && tunnels?.slot[i]
     const tunnelReach2 = (S.halfWidth[i] + TUNNEL_WALL + 1) ** 2
     const ix0 = Math.max(0, Math.floor((cx - reach + half) * inv))
@@ -760,6 +814,10 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
         if (d2 < bestD[v]) {
           bestD[v] = d2
           bestIdx[v] = i
+        }
+        if (!grounded) {
+          const past = Math.sqrt(d2) - S.halfWidth[i]
+          if (past < nearBridge[v]) nearBridge[v] = past
         }
         if (cutting && d2 < bestCd[v]) {
           bestCd[v] = d2
@@ -828,6 +886,14 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
       const latC = clamp(lat, lowSide < 0 ? -hw : -hw - runout, lowSide > 0 ? hw : hw + runout)
       const surfY = S.py[ig] + S.ry[ig] * latC + gradeY
       const beyond = Math.abs(lat) - hw
+      // Under this road or within its lip (a walled road: out past its barrier's foot), or anywhere
+      // across a tunnel's stretch (its walls and shoulders): easeBridgeSides leaves this ground be.
+      // Only beside the sample, though: past the end of a stretch on the ground (where a bridge
+      // starts straight out of a tunnel's ramp) its embankment runs on beside the bridge, and must
+      // slope like any other (kept, it stood 4 m over the ground the pass lowered beside it).
+      const alongG = Math.abs(dx * S.tx[ig] + dz * S.tz[ig])
+      if (alongG <= S.ds && (beyond <= (walls ? EDGE_REACH + 1 : BRIDGE_SIDE_KEEP) || tunnels?.slot[ig])) keep[v] = 1
+      if (alongG <= S.ds) roadside[v] = 1
       if (beyond <= 0) {
         underDeck = Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds
         if (walls) {
@@ -959,16 +1025,27 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
       const lat = rh2 > 1e-4 ? (dx * rxh + dz * rzh) / rh2 : 0
       const hw = S.halfWidth[ib]
       const along = Math.abs(dx * S.tx[ib] + dz * S.tz[ib])
-      // (Beside the deck too, except over a cutting: there the cutting's own sides run on beside it.)
-      if (Math.abs(lat) <= hw + (input.overCut?.[ib] ? 0 : 3) && along <= S.ds) {
+      const overCut = input.overCut?.[ib] === 1
+      if (along <= S.ds && (!overCut || Math.abs(lat) <= hw)) {
         const latC = clamp(lat, -hw, hw)
         const under = S.py[ib] + S.ry[ib] * latC - input.thickness[ib]
-        const clip = under - (input.overCut?.[ib] ? OVER_CUT_CLEARANCE : BRIDGE_CLEARANCE * smoothstep(0, BRIDGE_TAPER, toGround[ib]))
-        if (h > clip) h = clip
+        const taper = cutTaper[ib]
+        // Over a cutting only under the deck: there the cutting's own sides run on beside it.
+        let clip = under - (overCut ? OVER_CUT_CLEARANCE : BRIDGE_CLEARANCE * taper)
+        // More than 3 m past the deck's edge the cut doesn't stop dead (a wall wherever the ground
+        // beside it stood higher): its floor rises at BRIDGE_SIDE_GRADE, a slope (easeBridgeSides
+        // keeps the slopes round it no steeper).
+        if (!overCut) clip += BRIDGE_SIDE_GRADE * Math.max(0, (Math.abs(lat) - hw) * Math.sqrt(rh2) - 3)
+        if (h > clip) {
+          h = clip
+          bridgeCut[v] = 1
+        }
       }
     }
+    if (cover[v] || (bestT && bestT[v] >= 0) || (tunnelTop && !Number.isNaN(tunnelTop[v]))) keep[v] = 1
     out[v] = h
   }
+  if (anyRaised) easeBridgeSides(grid, out, nearBridge, keep, bridgeCut, roadside)
   keepUnderRoad(grid, out, S, skip)
   return { heights: out, covered: cover, tunnelTop, tunnelIn }
 }
@@ -989,6 +1066,136 @@ function cutThrough(S: TrackSamples, i: number, x: number, z: number, natural: n
   if (beyond <= 0) return surfY - HIDE_DEPTH
   const target = surfY - EDGE_DEPTH
   return target + (natural - target) * smoothstep(0, shoulderWidth(natural - target), beyond)
+}
+
+/**
+ * Round every bridge, turn any cliff in the ground into a slope a car can drive or slide down,
+ * by lowering the top of it (never raising anything, so a bridge keeps all of its clearance):
+ *
+ *   slope   no vertex stands higher above a neighbour than BRIDGE_SIDE_GRADE allows over the
+ *           distance between them, so a 5 m wall becomes an 8 m long slope;
+ *   ridge   no vertex stands more than half BRIDGE_SIDE_BEND above the middle of its two
+ *           neighbours either side (where two slopes meet in a sharp crest, it is rounded off);
+ *   valley  no vertex sits more than half BRIDGE_SIDE_BEND below the middle of its two
+ *           neighbours either side (a notch: the higher neighbour comes down, to no lower
+ *           than the other one).
+ *
+ * The limits hold BRIDGE_SIDE_CORE metres past a raised deck's edge and loosen to none by
+ * BRIDGE_SIDE_REACH, so the slopes blend into the land round them. Sweeps across the grid
+ * (forward, then backward), repeated until nothing moves, carry the limits any distance.
+ * Ground in `keep` (under or right beside a road on the ground, a tunnel's, a barrier box's)
+ * isn't touched. Natural ground only changes next to ground the road already shaped. Ridges
+ * and valleys are rounded only where the clearance cut (`cut`) or this pass lowered the ground,
+ * and ridges also where a road shaped it past the end of its own stretch (an embankment running
+ * on beside a bridge, `roadside` 0), so an ordinary road's shoulders and Afterglow's steep hills
+ * stay as they are.
+ * `near` is metres past the nearest raised deck's edge per vertex (Infinity: no bridge near).
+ */
+function easeBridgeSides(grid: NaturalGrid, h: Float32Array, near: Float32Array, keep: Uint8Array, cut: Uint8Array, roadside: Uint8Array): void {
+  const { n, cellSize } = grid
+  const nat = grid.heights
+  const stride = n + 1
+  // Only the box round the vertices near a bridge needs sweeping.
+  let x0 = n
+  let x1 = 0
+  let z0 = n
+  let z1 = 0
+  for (let v = 0; v < near.length; v++) {
+    if (!(near[v] < BRIDGE_SIDE_REACH)) continue
+    const ix = v % stride
+    const iz = (v - ix) / stride
+    if (ix < x0) x0 = ix
+    if (ix > x1) x1 = ix
+    if (iz < z0) z0 = iz
+    if (iz > z1) z1 = iz
+  }
+  if (x0 > x1) return
+  // Per vertex: how much it may rise per metre (Infinity: this pass leaves it be), and how much
+  // its grade may change per grid cell. Both loosen together from BRIDGE_SIDE_CORE out.
+  const rise = new Float32Array(near.length).fill(Infinity)
+  const bend = new Float32Array(near.length).fill(Infinity)
+  // Shaped by the road already (or lowered by this pass): only next to such ground does the slope limit apply.
+  const shaped = new Uint8Array(near.length)
+  // Cut by a bridge or lowered by this pass: only round such ground are ridges and valleys rounded
+  // (rounding every road's shoulders near a bridge lowered embankments right down to their road's lip).
+  const lowered = new Uint8Array(cut)
+  for (let iz = z0; iz <= z1; iz++) {
+    for (let ix = x0; ix <= x1; ix++) {
+      const v = iz * stride + ix
+      if (Math.abs(h[v] - nat[v]) > 0.01) shaped[v] = 1
+      if (keep[v] || !(near[v] < BRIDGE_SIDE_REACH)) continue
+      const loosen = 1 - smoothstep(BRIDGE_SIDE_CORE, BRIDGE_SIDE_REACH, near[v])
+      if (loosen <= 1e-3) continue
+      rise[v] = BRIDGE_SIDE_GRADE / loosen
+      bend[v] = BRIDGE_SIDE_BEND / loosen
+    }
+  }
+  const diag = cellSize * Math.SQRT2
+  // The four neighbours a forward sweep has already visited (left, and the row before); a backward sweep mirrors them.
+  const BEHIND = [
+    [-1, 0, cellSize],
+    [-1, -1, diag],
+    [0, -1, cellSize],
+    [1, -1, diag],
+  ] as const
+  // The four lines through a vertex (across, along, both diagonals), and how much more the rise
+  // may change over a diagonal's longer cells (at a crease, in step with their length).
+  const LINES = [
+    [1, 0, 1],
+    [0, 1, 1],
+    [1, 1, Math.SQRT2],
+    [1, -1, Math.SQRT2],
+  ] as const
+  const lower = (v: number, to: number): boolean => {
+    if (h[v] <= to + 1e-4) return false
+    h[v] = to
+    shaped[v] = 1
+    lowered[v] = 1
+    return true
+  }
+  for (let round = 0; round < 40; round++) {
+    let moved = 0
+    for (const dir of [1, -1]) {
+      for (let k = 0; k <= z1 - z0; k++) {
+        const iz = dir > 0 ? z0 + k : z1 - k
+        for (let m = 0; m <= x1 - x0; m++) {
+          const ix = dir > 0 ? x0 + m : x1 - m
+          const v = iz * stride + ix
+          if (rise[v] === Infinity) continue
+          // Slope: no higher above a neighbour than the grade allows.
+          for (const [ox, oz, d] of BEHIND) {
+            const jx = ix + ox * dir
+            const jz = iz + oz * dir
+            if (jx < 0 || jx > n || jz < 0 || jz > n) continue
+            const u = jz * stride + jx
+            if ((shaped[v] || shaped[u]) && lower(v, h[u] + rise[v] * d)) moved++
+          }
+          if (ix < 1 || ix >= n || iz < 1 || iz >= n) continue
+          for (const [ox, oz, scale] of LINES) {
+            const a = v - ox - oz * stride
+            const b = v + ox + oz * stride
+            const half = (bend[v] * scale) / 2
+            const mid = (h[a] + h[b]) / 2
+            // Ridge: round the crest off (where a bridge cut or this pass lowered the ground, or on
+            // ground a road shaped away from any road's own cross-section: an embankment's end).
+            if (lowered[a] || lowered[v] || lowered[b] || (shaped[v] && !roadside[v])) {
+              if (lower(v, mid + half)) {
+                moved++
+                continue
+              }
+            }
+            // Valley: bring the higher side down, never below the lower one (where the higher side
+            // may not move, a road's lip, the notch stays: digging the other side instead runs away).
+            if ((lowered[a] || lowered[v] || lowered[b]) && mid - h[v] > half + 1e-4) {
+              const [hi, lo] = h[a] > h[b] ? [a, b] : [b, a]
+              if (rise[hi] !== Infinity && lower(hi, Math.max(h[lo], 2 * (h[v] + half) - h[lo]))) moved++
+            }
+          }
+        }
+      }
+    }
+    if (moved === 0) break
+  }
 }
 
 /**

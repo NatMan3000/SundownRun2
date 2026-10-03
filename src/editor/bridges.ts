@@ -618,7 +618,8 @@ const RAMP_LADDER = [CLEANUP.bridgeRamp, CLEANUP.bridgeRamp + 40, CLEANUP.bridge
 
 /**
  * Checks whose failure is the game's own fault, never the track's (their fix line
- * says "builder bug"). A swap they refuse gets honest words: it isn't Josh's road.
+ * says "builder bug"), unless the row says the file did it (`byFile`: a steep hand bank
+ * at a bridge). A swap they refuse gets honest words: it isn't Josh's road.
  */
 const GAME_BUG_CHECKS = new Set(['winding', 'tracking', 'ground', 'under', 'surface', 'cutting', 'checks'])
 
@@ -790,7 +791,7 @@ function tryCrossing(d0: Draft, spot: P, chosen: 0 | 1, o: SwapOptions, kind: Cr
       continue
     }
     const title = (g: TrackGate) => gateItems([g], next, roadCurve(next.points)).find((it) => it.tone === 'bad')?.title ?? `The ${g.name} check fails that way.`
-    const track = fresh.find((g) => !GAME_BUG_CHECKS.has(g.name))
+    const track = fresh.find((g) => !GAME_BUG_CHECKS.has(g.name) || g.byFile)
     if (track || !built || !built.upperMatches || built.gap < BRIDGE_GAP) {
       const words = track ? title(track) : kind === 'bridge' ? 'A bridge is too low for a car to fit underneath.' : 'There would be too little room under the other road for a car.'
       firstReason = kind === 'bridge' ? `${cant}: the other road doesn't fit over here. ${words} Nothing changed.` : `${cant} here: ${lowerFirst(words)} Nothing changed.`

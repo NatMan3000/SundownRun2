@@ -35,7 +35,7 @@
 
 import type { ResolvedTrackFile, LoopPiece, WallRidePiece } from './schema'
 import { SURFACE_CODE, type TrackSamples } from './types'
-import { averagedHeight, shoulderHeight, type NaturalTerrain } from './terrain'
+import { BRIDGE_SIDE_GRADE, averagedHeight, shoulderHeight, type NaturalTerrain } from './terrain'
 import { arcLengthAtParam, nodeAtLength, sampleClosedSpline } from './spline'
 import { clamp, smoothstep } from './noise'
 import { shapeBankRolls } from './bankRolls'
@@ -783,6 +783,8 @@ function centerlineAfterTunnels(nat: NaturalTerrain, base: CenterlineBase, tunne
   const { overCut, underCut } = markOverCuttings(S, pivotLift, nat, tunnels.slot)
   for (let i = 0; i < count; i++) if (overCut[i]) S.grounded[i] = 0
   denoiseRuns(S.grounded, S.surface, Math.round(10 / ds))
+  // A bridge spans the drop down to the road it crosses (its embankment ends where the ground can slope down).
+  spanTheDrop(S, overCut, tunnels.slot)
 
   const thickness = new Float32Array(count)
   // (Over a tunnel's roof a road on the ground has a bridge's slab: the roof is under it, and the
@@ -1297,6 +1299,90 @@ export function limitPivotDip(lift: Float64Array, ds: number): void {
 }
 
 /** Flip short runs of grounded / not-grounded so the ground doesn't flicker along the road. */
+/** How much further out than the bare slope needs a bridge's embankment ends, for the top and foot of the slope to round off. */
+const SPAN_SLACK = 1.25
+/** The furthest (metres along the road) a bridge is carried out past where it crosses. */
+const SPAN_MAX = 120
+
+/**
+ * A bridge spans the drop down to the road under it. Where a raised stretch passes over another
+ * stretch of road (a car's height or more below it), the road on top stays raised, a bridge with
+ * the ground sloping away under it, as far out as its embankment would otherwise end too close
+ * to the road below for the ground to come down to it at BRIDGE_SIDE_GRADE (terrain.ts): the
+ * height between them over that grade, SPAN_SLACK times over. On a hilly world the editor's
+ * bridges stayed on their embankment (within FILL_MAX of the natural ground) until 10 m from the
+ * edge of a road in a natural cut 8 m below, and the ground fell 4.5 m in one 3 m grid cell
+ * there: a cliff. Underpasses' short bridges (`overCut`) and tunnels keep their own rules.
+ * Tracks whose embankments already end far enough out (every built-in) don't change.
+ */
+function spanTheDrop(S: TrackSamples, overCut: Uint8Array, tunnelSlot: Uint8Array): void {
+  const n = S.count
+  const same = Math.round(SAME_STRETCH / S.ds)
+  const isRoad = (i: number) => S.surface[i] === SURFACE_CODE.road && !tunnelSlot[i]
+  // Road samples bucketed on a coarse grid, so each raised sample only looks at its neighbours.
+  const CELL = 32
+  const key = (cx: number, cz: number) => cx * 100003 + cz
+  const cells = new Map<number, number[]>()
+  for (let i = 0; i < n; i++) {
+    if (!isRoad(i)) continue
+    const k = key(Math.floor(S.px[i] / CELL), Math.floor(S.pz[i] / CELL))
+    const list = cells.get(k)
+    if (list) list.push(i)
+    else cells.set(k, [i])
+  }
+  /** The nearest sample of another stretch (not within `same` of i) close below i in plan, or -1. */
+  const below = (i: number): number => {
+    const cx = Math.floor(S.px[i] / CELL)
+    const cz = Math.floor(S.pz[i] / CELL)
+    let best = -1
+    let bd = S.halfWidth[i]
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        for (const j of cells.get(key(cx + dx, cz + dz)) ?? []) {
+          const apart = Math.abs(i - j)
+          if (Math.min(apart, n - apart) < same || S.py[i] - S.py[j] < UNDERPASS_GAP) continue
+          const d = Math.hypot(S.px[i] - S.px[j], S.pz[i] - S.pz[j])
+          if (d < bd) {
+            bd = d
+            best = j
+          }
+        }
+      }
+    }
+    return best
+  }
+  const reach = Math.round(SPAN_MAX / S.ds)
+  const lower = Math.round(60 / S.ds)
+  const raise: number[] = []
+  for (let i = 0; i < n; i++) {
+    if (!isRoad(i) || S.grounded[i] === 1 || overCut[i]) continue
+    const j = below(i)
+    if (j < 0) continue
+    // Out from the crossing both ways: raise every sample whose edge is closer to the road below's
+    // edge than the slope from its height down to that road needs.
+    for (const dir of [-1, 1]) {
+      for (let m = 1; m <= reach; m++) {
+        const k = (((i + dir * m) % n) + n) % n
+        if (!isRoad(k) || overCut[k]) break
+        // The nearest sample of the road below (its stretch round j).
+        let gap = Infinity
+        let low = j
+        for (let q = -lower; q <= lower; q++) {
+          const jj = (((j + q) % n) + n) % n
+          const d = Math.hypot(S.px[k] - S.px[jj], S.pz[k] - S.pz[jj]) - S.halfWidth[k] - S.halfWidth[jj]
+          if (d < gap) {
+            gap = d
+            low = jj
+          }
+        }
+        if (gap >= ((S.py[k] - S.py[low]) / BRIDGE_SIDE_GRADE) * SPAN_SLACK) break
+        if (S.grounded[k] === 1) raise.push(k)
+      }
+    }
+  }
+  for (const k of raise) S.grounded[k] = 0
+}
+
 function denoiseRuns(flags: Uint8Array, surface: Uint8Array, minRun: number): void {
   const n = flags.length
   // Find a run boundary to start from so wrap-around runs are handled whole.

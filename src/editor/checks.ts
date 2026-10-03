@@ -60,7 +60,13 @@ const GATE_WORDS: Record<string, { title: string; label: string; how?: string }>
   smooth: { title: 'The road has a kink here.', label: 'KINK', how: 'Press Smooth the road, reshape it with Bend, or drag the points here further apart with Select and move.' },
   banking: { title: 'The road tips over too suddenly here.', label: 'SUDDEN TILT', how: 'Press Smooth the road (more than once if it needs it), Bend this stretch with a longer reach (mouse wheel while you drag), or set the bank by hand with the Bank tool.' },
   bridges: { title: 'A bridge is too low for a car to fit underneath.', label: 'LOW BRIDGE', how: 'Select the upper road with the Height tool and raise it (or the lower road and dig it down), or click the crossing and swap which road goes over.' },
-  cutting: { title: 'The side of a cutting is a cliff here.', label: 'GAME BUG' },
+  cutting: { title: 'The ground here is a cliff, beside a cutting or a bridge.', label: 'GAME BUG' },
+  // The same row when the track's own hand-set bank made the cliff (gates.ts `byFile`).
+  'cutting.file': {
+    title: 'The bank here lifts the road into the slope under the bridge, so the ground beside it is a cliff.',
+    label: 'TOO MUCH BANK',
+    how: 'Select the banked points with the Bank tool and set less bank, or drag the crossing away from the banked corner with Select and move.',
+  },
   dips: {
     title: 'A car takes off over the lip of this dip.',
     label: 'CAR TAKES OFF',
@@ -119,7 +125,7 @@ export function gateItems(gates: readonly TrackGate[], d: Draft, rc: RoadCurve):
   for (const level of ['fail', 'warn'] as const) {
     for (const g of gates) {
       if (g.level !== level) continue
-      const words = GATE_WORDS[g.name]
+      const words = (g.byFile ? GATE_WORDS[`${g.name}.file`] : undefined) ?? GATE_WORDS[g.name]
       const at = gateAt(g, d)
       const fix = [g.fix ? plainWords(g.fix) : '', words?.how ?? ''].filter(Boolean).join(' ')
       out.push({
