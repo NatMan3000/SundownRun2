@@ -59,3 +59,5 @@ Recommendation: A first, then B. Both keep one fact true: the grid is what a car
 3. **Editor and feel.** "Put this road in a tunnel" at crossings, a Tunnel toggle on a stretch, tunnels on the minimap and map, reflections dimmed inside (telemetry `environment` amendment), engine echo inside. Player gets: tunnels in one click that feel like tunnels.
 
 Decided 3 Oct 2026 (Nathan, "q7 yes"): go on stage 1 once track7, editor9 and editor10 have landed; a tunnel is an explicit choice, not automatic past a set depth.
+
+Stage 1 landed 3 Oct (f91f588). Nathan, 3 Oct ("q10 yes keep doing the tunnels. dont stop till they are done."): stages 2 and 3 go ahead back to back; tunnel2 started on stage 2.
