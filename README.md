@@ -62,6 +62,14 @@ Something broken, or got an idea? Pick **Report a problem** on the title screen 
 - To type, press **Enter** on a box or click it. While you type, your keys only go into the box, so nothing drives the car. **Esc** stops typing, **Tab** jumps to the next box, **Ctrl+Enter** sends. The controller does everything else, but typing needs a keyboard.
 - If it says **Saved on this computer**, nothing is lost: it sends by itself with a later report, once reporting is switched on and the internet works.
 
+### Share your tracks
+
+In the road editor, open **Library**. Every track of yours has a **Share** button: it puts the track on the game's GitHub page so anyone can download it. Before it goes, a box says what goes public and lets you set **Made by**, the name shown with it. That page is public, so use a nickname, not your real name. Share the same track again and it updates the same post instead of making a copy.
+
+**Shared tracks** (the Library's second tab) lists everybody's shared tracks, newest first, with a little map of each. **Download** puts a copy in your tracks: it's checked first like Import a track file, it never replaces a track you already have (a name that's taken gets a number), and a track changed on GitHub after it was shared, or cut off, is refused and it says why.
+
+Sharing uses the same key as reporting, so it works once reporting is switched on (below); until then a shared track waits on this computer and goes up by itself later. Shared tracks are issues labelled `track`. To take one down, close its issue on GitHub.
+
 ### Turn on reporting (for Dad)
 
 The game's own server posts the reports with a GitHub key that lives only on this computer (GitHub accounts start at 13, so Josh can't use one of his own). Until there's a key, reports wait in `reports/pending/`.

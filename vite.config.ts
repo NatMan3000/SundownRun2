@@ -6,7 +6,8 @@ import { reportPlugin } from './server/issues'
 // strictPort: if 5201 is busy we fail loudly instead of silently moving to another port,
 // because the multiplayer join links and the Windows launchers all point at 5201.
 // reportPlugin: the "Report a problem" screen posts to /api/report on this same server
-// (dev and preview), which files it on GitHub (server/issues.ts).
+// (dev and preview), which files it on GitHub (server/issues.ts). The road editor's
+// Share and Shared tracks use /api/tracks on the same plugin (server/trackShare.ts).
 export default defineConfig({
   plugins: [react(), reportPlugin()],
   server: { port: 5201, strictPort: true },

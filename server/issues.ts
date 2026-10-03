@@ -21,6 +21,11 @@
 //    GET  /api/report   is reporting switched on? version, commit, waiting reports
 //    POST /api/report   { kind, title, text, name, details } -> send it
 //
+//  The road editor's Share button and Shared tracks list use the same
+//  post office (the same key, the same waiting pile) at /api/tracks:
+//  server/trackShare.ts is that counter, and this file hands it what
+//  it needs.
+//
 //  The key: one line in github-token.txt in the game folder (gitignored,
 //  so it is never uploaded and the Update .bat leaves it alone), or the
 //  SR2_GITHUB_TOKEN environment variable. README "Turn on reporting".
@@ -43,6 +48,8 @@ import { isAbsolute, join, relative } from 'node:path'
 import type { Plugin } from 'vite'
 import { REPORT_ENDPOINT, REPORT_KINDS, REPORT_LIMITS, REPORT_REPO, scrubPrivate } from '../src/ui/report/protocol'
 import type { ReportDetails, ReportInfo, ReportKind, ReportRequest, ReportResult, SavedReason } from '../src/ui/report/protocol'
+import { TRACKS_ENDPOINT, type ShareSavedReason, type TrackIssue } from '../src/editor/share/protocol'
+import { type GithubResult, type SavedShare, createTrackShare } from './trackShare'
 
 // ---------------------------------------------------------------- settings
 
@@ -73,11 +80,12 @@ interface Issue {
   labels: string[]
 }
 
-/** One file in reports/pending/. */
+/** One file in reports/pending/: a report, or a shared track (`share` set). */
 interface PendingReport {
   savedAt: string
-  reason: SavedReason
+  reason: SavedReason | ShareSavedReason
   issue: Issue
+  share?: SavedShare
 }
 
 type PostResult = { ok: true; number: number; url: string } | { ok: false; reason: 'offline' | 'refused'; status: number; detail: string }
@@ -145,8 +153,32 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
   const startCheck = setTimeout(() => sendWaiting('the game server started'), 5000)
   startCheck.unref?.()
 
+  // The track sharing counter (server/trackShare.ts): the same key, the same waiting pile.
+  const shares = createTrackShare({
+    repo: REPORT_REPO,
+    log,
+    warn,
+    readToken,
+    github,
+    keep: keepShare,
+    dropWaiting: dropWaitingShares,
+    waitingCount: async () => (await listPending()).length,
+    sendWaiting,
+    callerProblem,
+    readBody,
+    reply,
+  })
+
   return (req, res, next) => {
     const path = (req.url ?? '').split('?')[0]
+    if (path === TRACKS_ENDPOINT) {
+      shares.handle(req, res).catch((err) => {
+        warn(`a track request failed inside the server: ${errText(err)}`)
+        if (!res.headersSent) reply(res, 500, { status: 'rejected', reason: 'invalid', message: 'The game server had a problem with that. Try again.' })
+        else res.end()
+      })
+      return
+    }
     if (path !== REPORT_ENDPOINT) {
       next()
       return
@@ -278,6 +310,38 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
     reply(res, 200, result)
   }
 
+  /** Keep a shared track on the waiting pile (null when the pile is full). */
+  async function keepShare(issue: TrackIssue, reason: ShareSavedReason, share: SavedShare): Promise<{ waiting: number } | null> {
+    const before = (await listPending()).length
+    if (before >= PENDING_MAX) return null
+    const file = await savePending({ savedAt: new Date().toISOString(), reason, issue, share })
+    log(`kept a shared track waiting as ${file}`)
+    return { waiting: before + 1 }
+  }
+
+  /** Take waiting shares with this share key off the pile (a newer share of the same track replaces them). */
+  async function dropWaitingShares(shareKey: string): Promise<number> {
+    let dropped = 0
+    for (const f of await listPending()) {
+      const full = join(pendingDir, f)
+      let saved: PendingReport | null = null
+      try {
+        saved = JSON.parse(await readFile(full, 'utf8')) as PendingReport
+      } catch {
+        // Unreadable (flushPending renames it to .broken and says so) or already gone: not this share.
+        continue
+      }
+      if (saved?.share?.shareKey !== shareKey) continue
+      try {
+        await unlink(full)
+        dropped++
+      } catch (err) {
+        warn(`could not take an older copy of a shared track off the waiting pile (${f}: ${errText(err)})`)
+      }
+    }
+    return dropped
+  }
+
   async function savePending(data: PendingReport): Promise<string> {
     await mkdir(pendingDir, { recursive: true })
     const stamp = data.savedAt.replace(/[:.]/g, '-')
@@ -316,6 +380,25 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
         if (!saved || !isIssue(saved.issue)) {
           if (saved) warn(`a waiting report has no issue in it (${f}); renamed it to ${f}.broken so it is skipped`)
           await rename(full, `${full}.broken`)
+          continue
+        }
+        if (saved.share) {
+          // A shared track: edit its old issue or make a new one (server/trackShare.ts).
+          const s = await shares.sendSaved(saved.issue, saved.share, token)
+          if (!s.ok && !s.takenDown) {
+            warn(`a waiting shared track did not send yet (${f}): ${s.detail}`)
+            break
+          }
+          if (!s.ok) warn(`a waiting shared track was not sent: its issue #${s.number} is closed (taken down)`)
+          try {
+            await unlink(full)
+          } catch (err) {
+            warn(`sent ${f}, but could not delete it (${errText(err)}). Delete it by hand.`)
+          }
+          if (s.ok) {
+            sent++
+            log(`sent a waiting shared track: issue #${s.number} ${s.url}`)
+          }
           continue
         }
         const r = await postIssue(saved.issue, token)
@@ -393,6 +476,49 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
     if (status === 403) return { ok: false, reason: 'refused', status, detail: `the key is not allowed to make issues (403${said}): it needs Issues: Read and write` }
     if (status === 404) return { ok: false, reason: 'refused', status, detail: `GitHub can't find ${REPORT_REPO} with this key (404${said}): the key needs that repository` }
     if (status === 410) return { ok: false, reason: 'refused', status, detail: `issues are switched off on ${REPORT_REPO} (410${said})` }
+    return { ok: false, reason: 'refused', status, detail: `GitHub said ${status}${said}` }
+  }
+
+  /** Any GitHub REST call, for the track counter. The key (if given) goes only in the Authorization header. */
+  async function github(method: string, path: string, token: string | null, body?: unknown): Promise<GithubResult> {
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'SundownRunII-share-a-track',
+      'X-GitHub-Api-Version': GITHUB_API_VERSION,
+    }
+    if (token) headers.Authorization = `Bearer ${token}`
+    if (body !== undefined) headers['Content-Type'] = 'application/json'
+    let res: Response
+    try {
+      res = await fetch(`${api}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+      })
+    } catch (err) {
+      return { ok: false, reason: 'offline', status: 0, detail: `could not reach GitHub (${errText(err)})` }
+    }
+    const text = await res.text()
+    let data: unknown = null
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      // GitHub answers in JSON; when it doesn't (a proxy page), the status code still says what happened.
+      data = null
+    }
+    const status = res.status
+    if (status >= 200 && status < 300) return { ok: true, status, data }
+    const msg = (data as { message?: unknown } | null)?.message
+    const said = typeof msg === 'string' ? `: ${msg.slice(0, 200)}` : ''
+    const outOfAsks = res.headers.get('x-ratelimit-remaining') === '0' || /rate limit/i.test(said)
+    if (status === 429 || ((status === 403 || status === 429) && outOfAsks)) {
+      return { ok: false, reason: 'busy', status, detail: `GitHub says the game has asked too many times for now (${status}${said})` }
+    }
+    if (status >= 500) return { ok: false, reason: 'offline', status, detail: `GitHub is having trouble (${status}${said})` }
+    if (status === 401) return { ok: false, reason: 'refused', status, detail: `GitHub turned the key down (401${said}): it may have run out or been copied wrong` }
+    if (status === 403) return { ok: false, reason: 'refused', status, detail: `the key is not allowed to do that (403${said}): it needs Issues: Read and write` }
+    if (status === 404) return { ok: false, reason: 'refused', status, detail: `GitHub can't find that on ${REPORT_REPO} (404${said})` }
     return { ok: false, reason: 'refused', status, detail: `GitHub said ${status}${said}` }
   }
 

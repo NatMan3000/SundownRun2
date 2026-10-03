@@ -1,0 +1,212 @@
+/* ============================================================
+   SHARE UI - the Library's tabs, the Share box, the Shared tracks list
+   ------------------------------------------------------------
+   Built on the editor's own pieces (editor.css: .sre-modal, .sre-confirm,
+   .sre-lib-row, .sre-btn) and its colour tokens (--accent, --good, --warn,
+   --bad, --dim, --line), which come from src/core/palette.ts.
+   ============================================================ */
+
+/* ---------------------------------------------------------------- Library tabs */
+
+.sr-lib-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+.sr-lib-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 14px;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.sr-lib-tab:hover {
+  color: var(--text);
+}
+.sr-lib-tab.is-on {
+  color: var(--text);
+  border-color: var(--line);
+  /* Selected, not active: a lifted surface and full-strength words, no accent colour. */
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+.sr-lib-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- the Share box */
+
+/* Over the Library (which is itself a modal). */
+.sr-share-modal {
+  z-index: 11;
+}
+.sr-share {
+  width: min(480px, calc(100vw - 80px));
+}
+.sr-share-public {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  line-height: 1.4;
+}
+.sr-share-by {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sr-share-card {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-solid) 40%, transparent);
+}
+.sr-share-thumb {
+  width: 120px;
+  height: 76px;
+}
+.sr-share-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sr-share-facts strong {
+  font-family: var(--font-display);
+  font-size: 1.1em;
+}
+.sr-share-facts span {
+  font-size: 0.88em;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.sr-share-about {
+  overflow-wrap: anywhere;
+}
+.sr-share-note {
+  font-size: 0.9em;
+  color: var(--dim);
+}
+.sr-share-note.is-good {
+  color: var(--good);
+}
+.sr-share-note.is-warn {
+  color: var(--warn);
+}
+.sr-share-note.is-bad {
+  color: var(--bad);
+}
+.sr-share-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sr-share-big {
+  font-family: var(--font-display);
+  font-size: 1.8em;
+}
+.sr-share-big.is-good {
+  color: var(--good);
+}
+.sr-share-big.is-warn {
+  color: var(--warn);
+}
+.sr-share-big.is-bad {
+  color: var(--bad);
+}
+.sr-share-link {
+  color: var(--accent);
+}
+.sre-confirm-acts.is-1 {
+  grid-template-columns: 1fr;
+}
+
+/* ---------------------------------------------------------------- Shared tracks */
+
+.sr-shared {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.sr-shared-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 20px 4px;
+}
+.sr-shared-line {
+  margin: 0;
+  padding: 14px 20px;
+  color: var(--dim);
+}
+.sr-shared-line.is-warn {
+  color: var(--warn);
+}
+/* What the last Download did, right above the list it happened in. */
+.sr-lib-notice {
+  margin: 6px 20px 2px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid;
+  line-height: 1.4;
+}
+.sr-lib-notice.is-good {
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 45%, transparent);
+  background: color-mix(in srgb, var(--good) 8%, transparent);
+}
+.sr-lib-notice.is-bad {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: color-mix(in srgb, var(--bad) 8%, transparent);
+}
+.sr-shared-row {
+  justify-content: flex-start;
+}
+/* A shared track that failed its checks has no map to draw: an empty dashed frame instead. */
+.sr-shared-thumb.thumb--empty {
+  border: 1px dashed color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: 8px;
+  color: var(--warn);
+}
+.sr-shared-thumb {
+  flex: none;
+  width: 96px;
+  height: 60px;
+}
+.sr-shared-name {
+  flex: 1;
+  min-width: 0;
+}
+.sr-shared-name span {
+  font-variant-numeric: tabular-nums;
+}
+.sr-shared-row.is-refused .sr-shared-name strong {
+  color: var(--dim);
+}
+.sr-shared-name .sr-shared-why {
+  color: var(--warn);
+}
+.sre-btn.is-refused {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+/* ---------------------------------------------------------------- the Share button on your tracks */
+
+.sr-lib-from {
+  color: var(--accent);
+}

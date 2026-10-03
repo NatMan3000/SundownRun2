@@ -15,7 +15,8 @@
     "probe": "bun scripts/probe.ts",
     "tracks:check": "bun scripts/check-tracks.ts",
     "mp:check": "bun server/mp-check.ts",
-    "test:relay": "bun test server/relay.test.ts"
+    "test:relay": "bun test server/relay.test.ts",
+    "test:share": "bun test server/trackShare.test.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

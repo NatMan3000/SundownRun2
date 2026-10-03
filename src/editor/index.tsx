@@ -31,6 +31,11 @@
 //    EditorUi.tsx   tool rail, piece palette, status line
 //    Panel.tsx      this track, the selected thing, checks, map key
 //    Library.tsx    open, new, copy, import, export
+//    importTrack.ts the one way in for a track file (Import, and Download)
+//    share/         Share a track on GitHub and the Shared tracks list:
+//                   protocol.ts (shared with server/trackShare.ts),
+//                   client.ts (talks to the server, checks tracks),
+//                   ShareUi.tsx (the Share box and the list)
 //    askFirst.ts    "Save it first?" before New track, the dice, opening
 //                   another track or leaving (AskFirstBox.tsx draws it)
 //    randomTrack.ts the dice: a random road that passes every check
