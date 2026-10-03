@@ -33,10 +33,11 @@
 //  so nothing floats.
 //
 //  A piece can also TAPER at its two side ends (the half pipe's
-//  walls do): over its last few metres sideways the whole side view
-//  shrinks down onto the real ground, so a wall grows out of the
-//  ground and eases up to its full height. A car coming at a wall's
-//  end rides up onto it instead of meeting a cliff of its profile.
+//  walls and the quarter pipes' sides do): over its last few metres
+//  sideways the whole side view shrinks down onto the real ground,
+//  so a wall grows out of the ground and eases up to its full
+//  height. A car coming at a wall's end rides up onto it instead of
+//  meeting a cliff of its profile.
 // ============================================================
 
 import { gridHeight } from '../../track/terrain'
@@ -131,6 +132,8 @@ const MAX_ACROSS = 2.5
 const CREASE_COS = Math.cos((28 * Math.PI) / 180)
 /** A tapered end's top starts this far under the real ground, so no edge of it stands proud. */
 const TAPER_BURY = 0.05
+/** A taper is cut into at least this many rows across, so its curve stays a smooth curve. */
+const TAPER_STEPS = 6
 
 // ---------------------------------------------------------------- the shared render mesh
 
@@ -359,14 +362,31 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
   const a0 = top[0].a
   const a1 = top[top.length - 1].a
   const strips = topStrips(top)
-  const nAcross = Math.max(1, Math.ceil((hw * 2) / MAX_ACROSS))
+  // The taper (a wall's ends): how far in from each side end the top grows from the ground to full height.
+  const taper = Math.max(0, Math.min(spec.taper ?? 0, hw))
+  // Where the rows of points across the piece are (l, left to right): evenly spaced, no more than
+  // MAX_ACROSS apart, and closer in a taper (at least TAPER_STEPS of them) so its curve is a curve
+  // and not one steep triangle.
+  const across: number[] = []
+  if (taper <= 0) {
+    const n = Math.max(1, Math.ceil((hw * 2) / MAX_ACROSS))
+    for (let k = 0; k <= n; k++) across.push(-hw + (2 * hw * k) / n)
+  } else {
+    const nT = Math.max(TAPER_STEPS, Math.ceil(taper / MAX_ACROSS))
+    const mid = hw - taper
+    const nM = mid > 0 ? Math.max(1, Math.ceil((mid * 2) / MAX_ACROSS)) : 0
+    for (let k = 0; k < nT; k++) across.push(-hw + (taper * k) / nT)
+    for (let k = 0; k < nM; k++) across.push(-mid + (2 * mid * k) / nM)
+    for (let k = 0; k <= nT; k++) across.push(mid + (taper * k) / nT)
+  }
+  const nAcross = across.length - 1
   const rx = -f.dz // right vector
   const rz = f.dx
   // Draping offsets per across-row (how far the real ground at the front / back edge is off the plane).
   const offF: number[] = []
   const offB: number[] = []
   for (let k = 0; k <= nAcross; k++) {
-    const l = -hw + (2 * hw * k) / nAcross
+    const l = across[k]
     offF.push(spec.drapeFront > 0 ? ground(wx(f, a0, l), wz(f, a0, l)) - baseY(f, a0, l) : 0)
     offB.push(spec.drapeBack > 0 ? ground(wx(f, a1, l), wz(f, a1, l)) - baseY(f, a1, l) : 0)
   }
@@ -380,7 +400,6 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
   // The taper (a half pipe's wall ends): how much of the full height stands at l, from 0 at a side
   // end to 1 once `taper` metres in, on a half cosine so the top eases out of the ground and eases
   // into its full height with no corner either way. growSlope is how fast that changes per metre of l.
-  const taper = Math.max(0, Math.min(spec.taper ?? 0, hw))
   if (taper > 0 && spec.sideRun > 0) throw new Error('[stunts] a tapered piece must have straight sides')
   const grow = (l: number): number => {
     const u = hw - Math.abs(l)
@@ -443,7 +462,7 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
       const lip = nearestMark(r.arc, spec.lips)
       const katch = nearestMark(r.arc, spec.catches)
       for (let k = 0; k <= nAcross; k++) {
-        const l = -hw + (2 * hw * k) / nAcross
+        const l = across[k]
         const edge = hw - Math.abs(l)
         const s = grow(l)
         if (s < 1) {
@@ -471,8 +490,8 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
     for (let j = 0; j < rows.length - 1; j++) {
       n3((rows[j].na + rows[j + 1].na) / 2, (rows[j].nh + rows[j + 1].nh) / 2, nv)
       for (let k = 0; k < nAcross; k++) {
-        const l0 = -hw + (2 * hw * k) / nAcross
-        const l1 = -hw + (2 * hw * (k + 1)) / nAcross
+        const l0 = across[k]
+        const l1 = across[k + 1]
         const r0 = rows[j]
         const r1 = rows[j + 1]
         const A = solid.point(wx(f, r0.a, l0), topY(r0.a, l0, r0.h, k), wz(f, r0.a, l0))
@@ -556,7 +575,7 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
     if (r.h + spec.sink < 0.02) continue
     const cols: P3[][] = []
     for (let k = 0; k <= nAcross; k++) {
-      const lt = -hw + (2 * hw * k) / nAcross
+      const lt = across[k]
       const lb = (lt / hw) * reach(r.h)
       const col: P3[] = [[wx(f, r.a, lt), topY(r.a, lt, r.h, k), wz(f, r.a, lt)]]
       bandsDown(col[0], [wx(f, r.a, lb), botY(r.a, lb), wz(f, r.a, lb)], col)
@@ -564,8 +583,8 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
     }
     // An end face's "arc" for the shader is its distance across (metres right of the centre), for its panel seams.
     for (let k = 0; k < nAcross; k++) {
-      const l0 = -hw + (2 * hw * k) / nAcross
-      const l1 = -hw + (2 * hw * (k + 1)) / nAcross
+      const l0 = across[k]
+      const l1 = across[k + 1]
       zipWall(cols[k], cols[k + 1], l0, l1, ox, 0, oz, ox, 0, oz, ROLE.end, mesh, solid, end === 1)
     }
   }
@@ -574,8 +593,8 @@ export function buildExtruded(spec: ExtrudeSpec, ground: GroundFn, mesh: ParkMes
   for (let j = 0; j < all.length - 1; j++) {
     if (all[j + 1].a - all[j].a < 1e-4) continue
     for (let k = 0; k < nAcross; k++) {
-      const t0 = -1 + (2 * k) / nAcross
-      const t1 = -1 + (2 * (k + 1)) / nAcross
+      const t0 = across[k] / hw
+      const t1 = across[k + 1] / hw
       const r0 = all[j]
       const r1 = all[j + 1]
       const P = (r: Row, t: number) => {

@@ -17,7 +17,7 @@
 //                  two rings in the air, a bullseye past it
 //    CANYON RUN    two named gap jumps (launch, empty gap, landing)
 //    KICKER ALLEY  three kickers with bullseyes and a ring, ending in
-//                  a quarter pipe
+//                  a quarter pipe (its sides slope down to the ground)
 //    HALF PIPE     two curved walls facing each other, each easing
 //                  up out of the ground at both ends
 //
@@ -176,6 +176,13 @@ interface PlanSolid {
   halfWidth: number
   /** Metres at each side end (inside halfWidth) where it grows out of the ground to full height (parkGeometry.ts). */
   taper: number
+  /**
+   * Half the width of the part that must stand on flat ground (missing = all of halfWidth). The
+   * half pipe's tapers were added beyond its old ends and follow the real ground, so only its
+   * old full-height part is tested; the quarter pipe's tapers sit inside its old width, so all of
+   * it still is, exactly as before.
+   */
+  flatHalfWidth?: number
   sideRun: number
   drapeFront: number
   drapeBack: number
@@ -369,6 +376,18 @@ function ringOn(f: FlightPath, lipA: number, frac: number, solidIndex: number, r
   return { a: lipA + f.a[i], l: 0, h: f.h[i], da, dh, solid: solidIndex, radius, designKmh: kmh }
 }
 
+/**
+ * How far (metres) in from each side a quarter pipe grows from the ground to its full height.
+ * Nathan picked this over moving any park: a car that hits a quarter pipe off to one side, half
+ * on it or brushing its side, used to meet a cliff of its profile there (and stopped dead, or
+ * flipped). Now its sides slope down to the ground, so that car rides onto a lower, gentler
+ * quarter pipe instead. The quarter pipe keeps its 16 m width and its spot in the lane, so its
+ * full-height face is 16 - 2 x QP_TAPER metres wide (8 m). At 3.5 m the slope across a side was
+ * still steep enough to flip a car at 120 km/h; 4 m and 5 m both rode clean, and 4 keeps the
+ * wider face.
+ */
+const QP_TAPER = 4
+
 function kickerPlan(short: boolean): LanePlan {
   const runIn = 45
   const solids: PlanSolid[] = []
@@ -404,7 +423,7 @@ function kickerPlan(short: boolean): LanePlan {
     solids[solids.length - 1].signPad = pads.length - 1
     a = t3 + 6.5 + 32
     const qp = pipeWall(7, 64, 1.5, 9, 24)
-    solids.push(solid({ kind: 'quarter', label: 'QUARTER PIPE', a0: a, top: qp.top, zones: qp.zones, halfWidth: 8, drapeFront: 3, drapeBack: 3, lips: [qp.coping], designKmh: 0, refA: a + 7, refH: qp.height }))
+    solids.push(solid({ kind: 'quarter', label: 'QUARTER PIPE', a0: a, top: qp.top, zones: qp.zones, halfWidth: 8, taper: QP_TAPER, drapeFront: 3, drapeBack: 3, lips: [qp.coping], designKmh: 0, refA: a + 7, refH: qp.height }))
     // Room behind it: a fast run flies over the deck and comes down well past the back.
     length = a + qp.length + 45
     count = 7
@@ -532,7 +551,7 @@ function megaPlan(height: number, name: string, runIn = 160): LanePlan {
 function quarterPlan(): LanePlan {
   const runIn = 45
   const qp = pipeWall(7, 64, 1.5, 9, 24)
-  const solids = [solid({ kind: 'quarter', label: 'QUARTER PIPE', a0: runIn, top: qp.top, zones: qp.zones, halfWidth: 8, drapeFront: 3, drapeBack: 3, lips: [qp.coping], refA: runIn + 7, refH: qp.height })]
+  const solids = [solid({ kind: 'quarter', label: 'QUARTER PIPE', a0: runIn, top: qp.top, zones: qp.zones, halfWidth: 8, taper: QP_TAPER, drapeFront: 3, drapeBack: 3, lips: [qp.coping], refA: runIn + 7, refH: qp.height })]
   return { kind: 'pipes', name: 'QUARTER PIPE', length: runIn + qp.length + 45, halfWidth: 10, runIn, solids, pads: [], rings: [], jumps: [], count: 1 }
 }
 
@@ -571,6 +590,7 @@ function pipesPlan(): LanePlan {
         zones: wall.zones,
         halfWidth: channel / 2 + PIPE_TAPER,
         taper: PIPE_TAPER,
+        flatHalfWidth: channel / 2,
         drapeFront: 3,
         drapeBack: 3,
         lips: [wall.coping],
@@ -753,9 +773,9 @@ function tryLane(c: PlaceContext, plan: LanePlan, x: number, z: number, dx: numb
     const len = s.top[s.top.length - 1].a
     let maxH = 0
     for (const p of s.top) maxH = Math.max(maxH, p.h)
-    // A tapered end follows the real ground (parkGeometry.ts), so only the full-height part needs
-    // flat ground under it.
-    const reach = s.halfWidth - s.taper + s.sideRun * maxH
+    // A tapered end follows the real ground (parkGeometry.ts), so a piece can say only part of it
+    // needs flat ground under it (the half pipe: its old full-height part).
+    const reach = (s.flatHalfWidth ?? s.halfWidth) + s.sideRun * maxH
     const samples: number[] = []
     for (let a = 0; a <= len + 1e-6; a += Math.max(1.5, len / 24)) {
       for (let l = -reach; l <= reach + 1e-6; l += Math.max(1.5, reach / 4)) {
