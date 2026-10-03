@@ -74,6 +74,8 @@ export function SliderField(p: {
   help?: string
   /** Optional "reset" link beside the value (e.g. back to automatic). */
   reset?: { label: string; onClick: () => void }
+  /** Greyed out and still (while its range is being worked out, or a change is being built). */
+  disabled?: boolean
 }) {
   const [v, setV] = useState(p.value)
   const dragging = useRef(false)
@@ -93,7 +95,7 @@ export function SliderField(p: {
         {p.label}
         <span className="sre-value">
           {p.reset && (
-            <button type="button" className="sre-link" onClick={p.reset.onClick}>
+            <button type="button" className="sre-link" onClick={p.reset.onClick} disabled={p.disabled}>
               {p.reset.label}
             </button>
           )}
@@ -108,6 +110,7 @@ export function SliderField(p: {
         max={p.max}
         step={p.step}
         value={v}
+        disabled={p.disabled}
         onPointerDown={() => (dragging.current = true)}
         onChange={(e) => {
           const next = Number(e.target.value)

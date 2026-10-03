@@ -5,13 +5,14 @@
 //    the name and a few numbers (length, pieces, bridges)
 //    SELECTED  settings for whatever you clicked on the map: a piece,
 //              a crash-prop pile, an energy core, a road point, a
-//              stretch of road (its height, bank and width), a crossing
+//              stretch of road (its height, bank or width: whichever of
+//              those three tools picked it), a crossing
 //              (which road goes over: the Swap button), or a problem
 //              from Checks (what's wrong, and Fix it or Show me)
 //    TRACK     width, world, time of day, edge lights, maker, blurb
 //    CHECKS    anything the game wants you to look at; click one to select
 //              it (and see where it is), or Fix all
-//    MAP KEY   what the marks on the map mean
+//    MAP KEY   what the marks on the map mean (and which ones to click)
 //    Save / Library / Test drive / Exit
 // ============================================================
 
@@ -43,15 +44,18 @@ import {
   updateCore,
   updatePiece,
   updateProp,
+  setTool,
   useEditor,
   applyCornerRadius,
   draftCrossings,
   pointGroundFor,
   swapBridge,
 } from './draft'
-import { type FixOffer, canWords, currentProblems, fixAll, fixOffer, fixProblem, fixSearchVersion, goToProblem, lastFixed, liveRuntime, raisePoint, raiseSection, selectProblem, subscribeFixSearch } from './fixActions'
+import { type FixOffer, canWords, currentProblems, fixAll, fixOffer, fixProblem, fixSearchVersion, goToProblem, lastFixed, raiseSection, selectProblem, subscribeFixSearch } from './fixActions'
 import { NO_NOTES, type Problem, problemByKey, problemsOf } from './problems'
-import { RAISE_MAX, heightRange, liftAt, stretchNow, stretchSpeed } from './raise'
+import { type HeightLimits, liftAt } from './raise'
+import { type StretchTool, heightsAboveGround, isStretchTool } from './stretchRuns'
+import { groundStretch, growStretch, heightLimitsNow, onHeightLimits, openHeightAtPoint } from './stretchTools'
 import './fixes.css'
 import { BRIDGE_GAP, bridgeCount, compassWord, crossingNear } from './bridges'
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
@@ -89,7 +93,7 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
           </div>
         </header>
         <div className="sre-body">
-          <Legend />
+          <Legend editing={false} />
         </div>
         <div className="sre-actions">
           <button type="button" className="sre-btn is-primary" onClick={props.onExit}>
@@ -151,7 +155,7 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
 
         <Problems />
         {/* Nothing on an empty map for the key to explain, so it waits for a road. */}
-        {!isEmptyDraft(draft) && <Legend />}
+        {!isEmptyDraft(draft) && <Legend editing />}
       </div>
 
       <div className="sre-actions">
@@ -214,6 +218,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
   // A problem picked from Checks (lower down) or a map pin: bring this box into view.
   const box = useRef<HTMLElement>(null)
   const problemKey = sel.kind === 'problem' ? sel.key : null
+  const tool = useEditor((s) => s.tool)
   useEffect(() => {
     if (problemKey) box.current?.scrollIntoView({ block: 'nearest' })
   }, [problemKey])
@@ -288,7 +293,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
       <>
         <p className="sre-help">Drag it on the map to reshape the road. Double-click the road to add a point.</p>
         <CornerField index={sel.index} draft={d} />
-        <PointHeight index={sel.index} draft={d} />
+        <PointHeightNote index={sel.index} draft={d} />
       </>
     )
   } else if (sel.kind === 'crossing') {
@@ -301,37 +306,27 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
     canDelete = false
     body = <ProblemFields problemKey={sel.key} />
   } else {
-    title = 'Stretch of road'
-    canDelete = false
-    const idx = sectionPoints(d.points.length, sel.from, sel.to)
-    const first = d.points[idx[0]]
+    // A stretch: the control of the tool that picked it (Height, Bank or Width), and the other two a click away.
     const metres = Math.round(metresBetween(rc, sel.from, sel.to))
+    title = isStretchTool(tool) ? STRETCH_TITLE[tool] : 'Stretch of road'
+    canDelete = false
     body = (
       <>
         <p className="sre-help">
-          {metres} m of road, {idx.length} point{idx.length === 1 ? '' : 's'}. Banking tilts the road into the corner; auto banks it from how tight the corner is.
+          {metres} m of road. {isStretchTool(tool) ? STRETCH_WHAT[tool] : 'Pick what to change on it.'}
         </p>
-        <StretchHeight from={sel.from} to={sel.to} draft={d} />
-        <SliderField
-          label="Bank"
-          value={first?.bank ?? 0}
-          min={-10}
-          max={45}
-          step={1}
-          format={(v) => (first?.bank === undefined ? 'Auto' : `${v}°`)}
-          reset={first?.bank !== undefined ? { label: 'Auto', onClick: () => setSectionBank(sel.from, sel.to, null) } : undefined}
-          onCommit={(v) => setSectionBank(sel.from, sel.to, v)}
-          help="Degrees into the corner. Negative tilts it the wrong way (off-camber)."
-        />
-        <SliderField
-          label="Width here"
-          value={first?.width ?? d.width}
-          min={10}
-          max={24}
-          step={1}
-          format={(v) => (first?.width === undefined ? `${d.width} m (track)` : `${v} m`)}
-          reset={first?.width !== undefined ? { label: 'Track width', onClick: () => setSectionWidth(sel.from, sel.to, null) } : undefined}
-          onCommit={(v) => setSectionWidth(sel.from, sel.to, v)}
+        {tool === 'height' && <HeightField from={sel.from} to={sel.to} draft={d} />}
+        {tool === 'bank' && <BankField from={sel.from} to={sel.to} draft={d} />}
+        {tool === 'width' && <WidthField from={sel.from} to={sel.to} draft={d} />}
+        <Segmented
+          label="Change this stretch's"
+          value={isStretchTool(tool) ? tool : ''}
+          options={[
+            { value: 'height', label: 'Height' },
+            { value: 'bank', label: 'Bank' },
+            { value: 'width', label: 'Width' },
+          ]}
+          onChange={(v) => setTool(v as StretchTool)}
         />
       </>
     )
@@ -419,75 +414,180 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
   )
 }
 
-/** Heights the panel shows: to the half metre, from the ground up to RAISE_MAX. */
-function sliderHeight(v: number): number {
-  return Math.max(0, Math.min(RAISE_MAX, Math.round(v * 2) / 2))
-}
-
 /** Without a known world (only before the ground can be worked out), heights are just the lifts. */
 const flatGround = () => 0
 
+/** "8 m", "2.5 m": a height in the panel's words. */
+function metresText(v: number): string {
+  const r = Math.round(v * 10) / 10
+  return `${Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1)} m`
+}
+
+/** The selected stretch's heading, by the tool that picked it. */
+const STRETCH_TITLE: Record<StretchTool, string> = {
+  height: 'Height of this stretch',
+  bank: 'Bank of this stretch',
+  width: 'Width of this stretch',
+}
+
+/** What the tool does to the stretch, in one line. */
+const STRETCH_WHAT: Record<StretchTool, string> = {
+  height: 'Raise it into a hill or a bridge: the road rises smoothly from each end of the stretch to its middle.',
+  bank: 'Tilt it into a corner. Auto lets the game bank it from how tight the corner is.',
+  width: 'Make the road wider or narrower here.',
+}
+
 /**
- * A road point's height above the ground. The road eases up to it and back
- * down over as much road either side as a car needs to stay on (fixActions.ts
- * raisePoint): a smooth hump, never a spike.
+ * A road point's height above the ground, and the way to change it: the
+ * Height tool, on a stretch around this point (the raised stretch it is on,
+ * or one sized for a bridge). There is one way to change heights, not two.
  */
-function PointHeight(p: { index: number; draft: Draft }) {
+function PointHeightNote(p: { index: number; draft: Draft }) {
   const ground = pointGroundFor(p.draft) ?? flatGround
-  const height = useMemo(() => liftAt(roadLine(p.draft.points), p.index, ground), [p.draft.points, p.index, ground])
-  const [, setBusy] = useState(false)
+  const h = useMemo(() => liftAt(roadLine(p.draft.points), p.index, ground), [p.draft.points, p.index, ground])
+  const words = Math.abs(h) < 0.25 ? 'This point is on the ground.' : h > 0 ? `This point is ${metresText(h)} above the ground.` : `This point is ${metresText(-h)} below the ground around it.`
   return (
-    <SliderField
-      label="Height above the ground"
-      value={sliderHeight(height)}
-      min={0}
-      max={RAISE_MAX}
-      step={0.5}
-      unit="m"
-      help="Raise the road here for a hump or a bridge. It eases up and back down over the road either side, so cars stay on it. 8 m or more clears a road underneath."
-      onCommit={(v) => soon(setBusy, () => raisePoint(p.index, v))}
-    />
+    <>
+      <p className="sre-help">{words}</p>
+      <button type="button" className="sre-btn" onClick={() => openHeightAtPoint(p.index)} data-testid="editor-point-height">
+        Change the height here
+      </button>
+    </>
   )
 }
 
 /**
- * The Stretch tool's Height: how high the MIDDLE of the stretch sits above the
- * ground. The road rises smoothly from each end of the stretch to the middle
- * (raise.ts). Below it, how high this stretch can go before a car at the speed
- * cars go there would take off over the top.
+ * The Height slider's ends for a stretch (stretchTools.ts heightLimitsNow):
+ * null while they are being worked out (a road build or two, between frames),
+ * once the live preview has caught up with the draft.
  */
-function StretchHeight(p: { from: number; to: number; draft: Draft }) {
-  const ground = pointGroundFor(p.draft) ?? flatGround
+function useHeightLimits(from: number, to: number): HeightLimits | 'failed' | null {
+  const draft = useEditor((s) => s.draft)
   const fresh = useEditor((s) => s.checkedDraft === s.draft && s.preview === 'built')
-  const info = useMemo(() => {
-    const now = stretchNow(p.draft.points, p.from, p.to, ground)
-    const v = stretchSpeed(fresh ? liveRuntime() : null, p.draft.points, p.from, p.to)
-    return { now, v, range: heightRange(now, v) }
-  }, [p.draft.points, p.from, p.to, ground, fresh])
-  const [, setBusy] = useState(false)
-  const metres = Math.round(info.now.metres)
-  const most = Math.floor(info.range.hi * 2) / 2
-  const kmh = Math.round((info.v * 3.6) / 10) * 10
+  const [lim, setLim] = useState<HeightLimits | 'failed' | null>(null)
+  useEffect(() => {
+    if (!fresh) {
+      setLim(null)
+      return
+    }
+    const read = () => setLim(heightLimitsNow(from, to))
+    read()
+    return onHeightLimits(read)
+  }, [draft, from, to, fresh])
+  return lim
+}
+
+/**
+ * The Height tool's one control: how high the MIDDLE of the stretch sits above
+ * the ground. It only offers heights that build: every half-metre step on it
+ * was built and checked (raise.ts heightLimitSteps), and it grows while that is
+ * being done. Under it, one line saying how high this stretch can go and, if it
+ * could go higher with more road, how much road that needs, with a button that
+ * makes the stretch that long.
+ */
+function HeightField(p: { from: number; to: number; draft: Draft }) {
+  const lim = useHeightLimits(p.from, p.to)
+  const [busy, setBusy] = useState(false)
+  const roadMetres = useMemo(() => roadLine(p.draft.points).length, [p.draft.points])
+  // Is any of this stretch up off the ground? Then "On the ground" can put it back down.
+  const raised = useMemo(() => {
+    const h = heightsAboveGround(p.draft.points, pointGroundFor(p.draft) ?? flatGround)
+    return sectionPoints(p.draft.points.length, p.from, p.to).some((i) => h[i] >= 0.3)
+  }, [p.draft, p.from, p.to])
+  if (lim === null || lim === 'failed') {
+    return (
+      <>
+        <SliderField label="Height in the middle" value={0} min={0} max={1} step={0.5} unit="m" disabled onCommit={() => {}} />
+        <p className="sre-help" data-testid="editor-height-limit">
+          {lim === 'failed' ? "Couldn't work out how high this stretch can go. Try picking a different stretch." : 'Working out how high this stretch can go...'}
+        </p>
+      </>
+    )
+  }
+  const m = Math.round(lim.metres)
+  // Below the slider's start (it can't go up just a little here), the thumb waits at the start and the value says where it is now.
+  const value = lim.jump ? lim.value : Math.max(lim.lo, Math.min(lim.hi, lim.value))
+  const jumpWords = lim.jump
+    ? `It can't go up just a little here: lower than ${metresText(lim.lo)} ${/take off/.test(lim.jump.reason) ? 'the road would dip between two bumps a car takes off over' : lim.jump.reason.replace(/\.$/, '')}, so the slider starts at ${metresText(lim.lo)}. `
+    : ''
+  const next = lim.next
+  const nextFits = !!next && next.metres <= roadMetres * 0.45
+  const takeOff = lim.why === 'speed' || (lim.why === 'checks' && /take off/.test(lim.reason ?? ''))
+  const needWords = next && takeOff ? (nextFits ? ` To go to ${next.height} m it needs about ${next.metres} m of road.` : ` This road isn't long enough here to go to ${next.height} m.`) : ''
+  const line = lim.checking
+    ? `Checking each height before the slider offers it: ${metresText(lim.lo)} to ${metresText(lim.hi)} so far...`
+    : lim.why === 'short'
+      ? `Pick at least 30 m of road to change its height (this is ${m} m).`
+      : lim.why === 'stop'
+        ? (lim.reason ?? 'Something on this stretch stops it changing height.')
+        : lim.why === 'top'
+          ? `${jumpWords}This ${m} m stretch can go all the way up to ${metresText(lim.hi)} in the middle.`
+          : lim.why === 'speed'
+            ? `${jumpWords}This ${m} m stretch can go up to ${metresText(lim.hi)} in the middle: any higher and a car at ${lim.kmh} km/h would take off over the top.${needWords}`
+            : `${jumpWords}It can go up to ${metresText(lim.hi)} here: any higher and ${lim.reason ?? 'one of the game checks says no.'}${needWords}`
   return (
     <>
       <SliderField
-        label="Height"
-        value={sliderHeight(info.now.middle)}
-        min={0}
-        max={RAISE_MAX}
+        label="Height in the middle"
+        value={value}
+        min={lim.lo}
+        max={Math.max(lim.hi, lim.lo + 0.5)}
         step={0.5}
-        unit="m"
+        disabled={busy || lim.hi <= lim.lo}
+        format={(v) => (lim.jump && v < lim.lo ? `${metresText(v)} now` : metresText(v))}
+        reset={raised ? { label: 'On the ground', onClick: () => soon(setBusy, () => groundStretch(p.from, p.to)) } : undefined}
         help="How high the middle of this stretch sits above the ground. The road rises smoothly from each end of the stretch to the middle."
         onCommit={(v) => soon(setBusy, () => raiseSection(p.from, p.to, v))}
       />
-      <p className="sre-help" data-testid="editor-stretch-most">
-        {metres < 30
-          ? 'Pick at least 30 m of road to raise it.'
-          : most >= RAISE_MAX
-            ? `This stretch is ${metres} m long: long enough to go all the way up to ${RAISE_MAX} m in the middle.`
-            : `This stretch is ${metres} m long: its middle can go up to about ${most} m before a car at ${kmh} km/h would take off over the top. Pick a longer stretch to go higher.`}
+      <p className="sre-help" data-testid="editor-height-limit" data-lo={lim.lo} data-hi={lim.hi}>
+        {busy ? 'Building it and running the checks...' : line}
       </p>
+      {!lim.checking && next && takeOff && nextFits && next.metres > lim.metres + 5 && (
+        <button type="button" className="sre-btn" onClick={() => growStretch(p.from, p.to, next.metres)} disabled={busy} data-testid="editor-height-longer">
+          Make the stretch {next.metres} m long
+        </button>
+      )}
     </>
+  )
+}
+
+/** The Bank tool's one control: the tilt in degrees, or Auto (the game banks it from the corner). */
+function BankField(p: { from: number; to: number; draft: Draft }) {
+  const idx = sectionPoints(p.draft.points.length, p.from, p.to)
+  const mid = p.draft.points[idx[Math.floor((idx.length - 1) / 2)]]
+  const set = mid?.bank !== undefined
+  return (
+    <SliderField
+      label="Bank (tilt)"
+      value={mid?.bank ?? 0}
+      min={-10}
+      max={45}
+      step={1}
+      format={(v) => (set ? `${v}°` : 'Auto')}
+      reset={set ? { label: 'Auto', onClick: () => setSectionBank(p.from, p.to, null) } : undefined}
+      onCommit={(v) => setSectionBank(p.from, p.to, v)}
+      help="Degrees into the corner. Negative tilts it the wrong way (off-camber)."
+    />
+  )
+}
+
+/** The Width tool's one control: the road's width here, or the track's own width. */
+function WidthField(p: { from: number; to: number; draft: Draft }) {
+  const idx = sectionPoints(p.draft.points.length, p.from, p.to)
+  const mid = p.draft.points[idx[Math.floor((idx.length - 1) / 2)]]
+  const set = mid?.width !== undefined
+  return (
+    <SliderField
+      label="Width here"
+      value={mid?.width ?? p.draft.width}
+      min={10}
+      max={24}
+      step={1}
+      format={(v) => (set ? `${v} m` : `${p.draft.width} m (track)`)}
+      reset={set ? { label: 'Track width', onClick: () => setSectionWidth(p.from, p.to, null) } : undefined}
+      onCommit={(v) => setSectionWidth(p.from, p.to, v)}
+      help="How wide the road is here, edge to edge."
+    />
   )
 }
 
@@ -784,47 +884,70 @@ function ProblemFields(p: { problemKey: string }) {
   )
 }
 
-function Legend() {
+/** One Map key row: the mark as the map draws it (a fixed column, so every description lines up), then what it means. */
+function KeyRow(p: { mark: ReactNode; children: ReactNode }) {
   return (
-    <section className="sre-section sre-legend" aria-label="Map key">
+    <li>
+      <span className="k-mark">{p.mark}</span>
+      <span>{p.children}</span>
+    </li>
+  )
+}
+
+/**
+ * The Map key: every mark the map draws, in Josh's words, and (in the editor)
+ * which ones a click changes. A label is shown as the map draws it: the words
+ * on a pill.
+ */
+function Legend(p: { editing: boolean }) {
+  const click = (words: string) => (p.editing ? ` ${words}` : '')
+  return (
+    <section className="sre-section sre-legend" aria-label="Map key" data-testid="editor-map-key">
       <span className="sre-section-title">Map key</span>
       <ul>
-        <li>
-          <i className="k-start" /> Start line
-        </li>
-        <li>
-          <i className="k-arrow" /> Driving direction
-        </li>
-        <li>
-          <i className="k-point" /> Road point
-        </li>
-        <li>
-          <i className="k-bridge" /> Bridge (click its label to pick which road goes over)
-        </li>
-        <li>
-          <i className="k-boost" /> Boost pad
-        </li>
-        <li>
-          <i className="k-ramp" /> Ramp
-        </li>
-        <li>
-          <i className="k-loop" /> Loop
-        </li>
-        <li>
-          <i className="k-wall" /> Wall ride
-        </li>
-        <li>
-          <i className="k-prop" /> Crash props
-        </li>
-        <li>
-          <i className="k-core" /> Energy core
-        </li>
-        <li>
-          <i className="k-bank" /> Bank set by hand
-        </li>
-        <li>
-          <i className="k-warn" /> Something to check
-        </li>
+        <KeyRow mark={<i className="k-start" />}>Start line</KeyRow>
+        <KeyRow mark={<i className="k-arrow" />}>Driving direction</KeyRow>
+        <KeyRow mark={<i className="k-point" />}>Road point (zoom in to see them)</KeyRow>
+        <KeyRow
+          mark={
+            <>
+              <i className="k-raised" />
+              <span className="k-pill is-raised">RAISED</span>
+            </>
+          }
+        >
+          Road raised above the ground: a hill or a bridge.{click('Click it to change its height.')}
+        </KeyRow>
+        <KeyRow
+          mark={
+            <>
+              <i className="k-bank" />
+              <span className="k-pill is-bank">BANK</span>
+            </>
+          }
+        >
+          A bank set by hand.{click('Click it to change it, or put it back to Auto.')}
+        </KeyRow>
+        <KeyRow
+          mark={
+            <>
+              <i className="k-width" />
+              <span className="k-pill is-width">WIDTH</span>
+            </>
+          }
+        >
+          A width set by hand.{click('Click it to change it.')}
+        </KeyRow>
+        <KeyRow mark={<span className="k-pill is-bridge">BRIDGE</span>}>Where the road crosses itself.{click('Click it to pick which road goes over.')}</KeyRow>
+        <KeyRow mark={<span className="k-pill is-low">LOW BRIDGE</span>}>Too low for a car to fit under (or ROADS MEET: two roads at the same height).{click('Click it to fix it.')}</KeyRow>
+        {p.editing && <KeyRow mark={<i className="k-section" />}>The stretch you picked with Height, Bank or Width</KeyRow>}
+        <KeyRow mark={<i className="k-boost" />}>Boost pad</KeyRow>
+        <KeyRow mark={<i className="k-ramp" />}>Ramp</KeyRow>
+        <KeyRow mark={<i className="k-loop" />}>Loop</KeyRow>
+        <KeyRow mark={<i className="k-wall" />}>Wall ride</KeyRow>
+        <KeyRow mark={<i className="k-prop" />}>Crash props</KeyRow>
+        <KeyRow mark={<i className="k-core" />}>Energy core</KeyRow>
+        <KeyRow mark={<i className="k-pin" />}>Something to check.{click('Click it to see what to do.')}</KeyRow>
       </ul>
     </section>
   )

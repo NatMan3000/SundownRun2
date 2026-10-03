@@ -4,7 +4,7 @@
 //  raise.ts and fixes.ts are pure maths (drafts in, drafts out). This
 //  file is what the panel's buttons and the map's pins call:
 //
-//    raiseSection   the Stretch tool's Height slider
+//    raiseSection   the Height tool's slider
 //    raisePoint     a road point's "Height above the ground" slider
 //                   (the same smooth bump, centred on the point)
 //    selectProblem  click a row in Checks, or its pin on the map
@@ -68,7 +68,7 @@ function checksNow(after: Judged): string {
 // ---------------------------------------------------------------- raising road
 
 /**
- * The Stretch tool's Height: the middle of the stretch from `from` to `to`
+ * The Height tool's slider: the middle of the stretch from `from` to `to`
  * goes to `height` metres above the ground, on smooth ramps (raise.ts). The
  * stretch stays selected on the new road.
  */

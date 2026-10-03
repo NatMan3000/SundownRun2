@@ -12,6 +12,9 @@
 //             a loop becomes the road.
 //             The steady hand (shape.ts SteadyPen) makes the line trail
 //             the pointer on a short string, so wobbles never reach it.
+//             Hold Shift while drawing for a dead straight line from where
+//             Shift went down to the pointer; let go of Shift and the line
+//             carries on freehand from there.
 //    Bend     grab the road and pull: the stretch near your hand comes
 //             along with a soft falloff. The wheel (while dragging) or
 //             [ and ] change how much road comes. One Undo step per drag.
@@ -27,19 +30,24 @@
 //             goes over (the panel's Swap button).
 //    Bridges  with any tool, a click on a BRIDGE label selects that
 //             crossing too.
+//    Changes  with any tool, a click on a RAISED, BANK or WIDTH label picks
+//             that whole stretch up in its own tool, its value showing.
 //    Problems with any tool, a click on a problem's pin (or its red
 //             tag) selects it: the panel says what's wrong and offers
 //             Fix it, or takes you to the right tool.
 //    Place    click to drop the chosen piece (a see-through preview
 //             follows the mouse and snaps to the road).
-//    Section  drag along the road to pick a stretch, then set its bank
-//             or width in the panel.
+//    Height   drag along the road to pick a stretch (or click: the raised
+//    Bank     stretch, bank or width already there, or a sensible stretch
+//    Width    around the click), then set it in the panel. With Select, a
+//             click on a raised stretch, an amber bank line or a width mark
+//             picks that stretch up too.
 //
 //  Everywhere, with every tool: right or middle drag (or Space + drag)
 //  pans, the wheel zooms where you point, WASD / arrows pan, F fits the
 //  track, + and - zoom, Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes.
 //  Number keys pick a piece to place; P pencil, G bend, L straight,
-//  C curve, V select, B section.
+//  C curve, V select, H height, B bank, N width.
 //
 //  On an empty map every tool but the pencil just pans, and a click says
 //  how to get a road (draw a loop, or press Random track).
@@ -87,9 +95,11 @@ import {
   useEditor,
 } from './draft'
 import { type P } from './geom'
-import { type MapExtras, type Pick, type ShapeView, crossingAtScreen, drawMap, pieceScreen, pointsVisible, problemAtScreen, roadGeometry } from './mapDraw'
+import { type MapExtras, type Pick, type ShapeView, crossingAtScreen, drawMap, markAtScreen, pieceScreen, pointsVisible, problemAtScreen, roadGeometry } from './mapDraw'
 import { selectProblem } from './fixActions'
-import { type RedrawPlan, type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, planRedraw, wrapAt } from './road'
+import { isStretchTool, runAt } from './stretchRuns'
+import { marksOf, pickStretchAt, selectRun, stretchHoverLabel, stretchToPick } from './stretchTools'
+import { type RedrawPlan, type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, planRedraw, straightPencilLine, wrapAt } from './road'
 import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
 import { view, panBy, screenToWorld, setView, worldToScreen, zoomAt, fitBox } from './view'
 import { look3dOn } from './look3d'
@@ -121,7 +131,7 @@ export function fitToDraft(): void {
   // the rail and the chosen tool's settings box beside it.
   const box = (sel: string) => (typeof document !== 'undefined' ? document.querySelector(sel)?.getBoundingClientRect() : undefined)
   const panel = box('.sre-panel')
-  const left = Math.max(90, (box('.sre-options') ?? box('.sre-palette'))?.right ?? 0)
+  const left = Math.max(90, box('.sre-tools')?.right ?? 0, (box('.sre-options') ?? box('.sre-palette'))?.right ?? 0)
   fitBox(minX - pad, minZ - pad, maxX + pad, maxZ + pad, left, panel ? panel.width + 24 : 380)
 }
 
@@ -205,12 +215,22 @@ export function Overlay() {
     // Pencil: the steady pen (the line trails it) and where the pointer really is.
     let pen: SteadyPen | null = null
     let penTo: P | null = null
+    // Pencil with Shift held: the line is straight from `shiftAt` (where it was when Shift went down)
+    // to the pointer; `shiftFrom` is how long the line was then. Null while drawing freehand.
+    let shiftFrom: number | null = null
+    let shiftAt: P | null = null
+    let shiftSaid = false
+    // Select: a press on empty road, so a click (not a drag) there can pick up a raised, banked or widened stretch.
+    let roadClick: { x: number; y: number } | null = null
     // What letting go of the pencil would do (road.ts planRedraw), worked out at most once a frame.
     let pencilPlan: RedrawPlan | 'new' | null = null
     let pencilDirty = false
     // Bend: the highlighted stretch (hovering or dragging).
     let bending = false
     let bendShown: BendView | null = null
+    // Height, Bank and Width, before a click: the stretch a click here would pick (worked out at most once a frame).
+    let stretchShown: MapExtras['stretchHover'] = null
+    let stretchDirty = false
     // Straight and Curve: the preview, worked out at most once a frame.
     let shapeShown: ShapeView | null = null
     let shapeDirty = false
@@ -244,7 +264,7 @@ export function Overlay() {
       else if (spaceHeld || s.mode === 'map' || (s.tool !== 'pencil' && mapIsEmpty())) canvas.style.cursor = 'grab'
       else if (s.tool === 'select') canvas.style.cursor = dragging ? 'grabbing' : hoverPick ? 'pointer' : 'default'
       else if (s.tool === 'bend') canvas.style.cursor = bending ? 'grabbing' : bendShown ? 'grab' : 'default'
-      else if (s.tool === 'place' || s.tool === 'section') canvas.style.cursor = 'copy'
+      else if (s.tool === 'place' || isStretchTool(s.tool)) canvas.style.cursor = 'copy'
       else canvas.style.cursor = 'crosshair'
     }
 
@@ -294,6 +314,25 @@ export function Overlay() {
       return hit.distance <= d.width / 2 + Math.max(4, 12 * view.mpp) ? hit : null
     }
 
+    /**
+     * Select: a click on the road where Josh changed something (a bank, a width,
+     * raised road) picks that whole stretch up in its own tool, its value showing.
+     * The amber bank line is the easiest to see, so it wins where they overlap.
+     */
+    const pickRunAt = (sx: number, sy: number) => {
+      const s = useEditor.getState()
+      if (s.tool !== 'select' || s.mode !== 'edit') return
+      const hit = roadHitAt(sx, sy)
+      if (!hit) return
+      const marks = marksOf(s.draft)
+      const n = s.draft.points.length
+      const run = runAt(marks, 'bank', hit.at, n) ?? runAt(marks, 'width', hit.at, n) ?? runAt(marks, 'height', hit.at, n)
+      if (run) {
+        selectRun(run)
+        needsDraw = true
+      }
+    }
+
     /** While bending: say once when it turns too tight, and once when it is fine again. */
     let bendTightSaid = false
     const bendWarn = () => {
@@ -302,6 +341,19 @@ export function Overlay() {
       bendTightSaid = tight
       if (tight) say('Too tight for a car there! Pull less, or roll the mouse wheel to bring more road along. If you let go now it gets opened out, or put back if it can\'t be.', 'warn')
       else say('Let go to keep the bend, or press Esc to put it back.', 'info')
+    }
+
+    /** Height, Bank or Width, before pressing: the stretch a click here would pick, with its length. */
+    const stretchHover = (): MapExtras['stretchHover'] => {
+      const s = useEditor.getState()
+      if (!isStretchTool(s.tool) || s.mode !== 'edit' || sectionAnchor !== null || mapIsEmpty()) return null
+      const hit = roadHitAt(pointer.x, pointer.y)
+      if (!hit) return null
+      const pick = stretchToPick(s.tool, s.draft, hit.at)
+      // Already the picked stretch: it is drawn (with its length) already.
+      const sel = s.selection
+      if (sel?.kind === 'section' && Math.abs(sel.from - pick.from) < 1e-3 && Math.abs(sel.to - pick.to) < 1e-3) return null
+      return { from: pick.from, to: pick.to, label: stretchHoverLabel(s.draft, pick) }
     }
 
     /** Bend, before pressing: light up the stretch that would come with your hand. */
@@ -366,6 +418,42 @@ export function Overlay() {
       else if (wasBad) say(okPrompt, 'info')
     }
 
+    /**
+     * The pencil and Shift. Shift down while drawing: the line from here on is
+     * straight, from where it was to the pointer (`to`). Shift up: it carries on
+     * freehand from the end of the straight bit. (sx, sy) is the pointer on screen.
+     */
+    const pencilShift = (shift: boolean, to: P, sx: number, sy: number) => {
+      if (!drawing) return
+      if (shift) {
+        if (shiftFrom === null) {
+          // Straight from exactly where the line is now: the pen (the pointer itself with the steady
+          // hand off). The line only gains a point every few pixels, so add this one if it is new.
+          const at = pen ? screenToWorld(pen.x, pen.y) : to
+          const last = stroke[stroke.length - 1]
+          if (!last || Math.hypot(at.x - last.x, at.z - last.z) > 0.05) stroke.push(at)
+          shiftFrom = stroke.length
+          shiftAt = at
+          if (!shiftSaid) {
+            shiftSaid = true
+            say('Straight line: let go of Shift to carry on drawing freehand.', 'info')
+          }
+        }
+        stroke.length = shiftFrom
+        if (shiftAt) stroke.push(...straightPencilLine(shiftAt, to, Math.max(0.5, PENCIL_STEP_PX * view.mpp)))
+        penTo = to
+        pencilDirty = true
+        needsDraw = true
+      } else if (shiftFrom !== null) {
+        // Freehand again, from the end of the straight bit (the pen starts again where the pointer is).
+        shiftFrom = null
+        shiftAt = null
+        pen?.start(sx, sy)
+        lastX = sx
+        lastY = sy
+      }
+    }
+
     // ---- pointer ----
     const onDown = (e: PointerEvent) => {
       // Clicking the map takes the keyboard back from any panel control.
@@ -404,8 +492,18 @@ export function Overlay() {
           return
         }
       }
+      // A RAISED, BANK or WIDTH label works with every tool: pick that stretch up in its own tool.
+      const mark = markAtScreen(e.clientX, e.clientY)
+      if (mark) {
+        selectRun(mark)
+        needsDraw = true
+        return
+      }
       if (s.tool === 'pencil') {
         drawing = true
+        shiftFrom = null
+        shiftAt = null
+        shiftSaid = false
         stroke = [q]
         // The steady hand: the line follows a pen that trails the pointer on a string.
         pen = new SteadyPen(STEADY_STRING[s.steady] ?? 0)
@@ -476,15 +574,16 @@ export function Overlay() {
         needsDraw = true
         return
       }
-      if (s.tool === 'section') {
+      if (isStretchTool(s.tool)) {
         const g = roadGeometry(s.draft.points, s.draft.width)
         const hit = nearestOnRoad(g.rc, q)
         if (hit.distance > s.draft.width / 2 + 14) {
           useEditor.setState({ selection: null })
-          say('Drag along the road to pick a stretch of it.', 'info')
+          say('Drag along the road to pick a stretch of it, or click the road.', 'info')
           return
         }
         sectionAnchor = hit.at
+        stretchShown = null
         useEditor.setState({ selection: { kind: 'section', from: hit.at, to: hit.at } })
         return
       }
@@ -511,6 +610,7 @@ export function Overlay() {
       } else {
         useEditor.setState({ selection: null })
         panning = true
+        roadClick = { x: e.clientX, y: e.clientY }
       }
       setCursor()
     }
@@ -525,7 +625,10 @@ export function Overlay() {
         lastY = e.clientY
         return
       }
-      if (drawing) {
+      if (drawing && (e.shiftKey || shiftFrom !== null)) pencilShift(e.shiftKey, q, e.clientX, e.clientY)
+      if (drawing && shiftFrom !== null) {
+        // Shift is held: the straight line already follows the pointer.
+      } else if (drawing) {
         // The line is drawn where the pen is; with the steady hand off, the pen IS the pointer.
         penTo = q
         if (pen) pen.follow(e.clientX, e.clientY)
@@ -547,6 +650,8 @@ export function Overlay() {
         setCursor()
       } else if (s.tool === 'straight' || s.tool === 'curve') {
         shapeDirty = true
+      } else if (isStretchTool(s.tool) && sectionAnchor === null) {
+        stretchDirty = true
       } else if (dragging) {
         dragTo(q)
       } else if (sectionAnchor !== null) {
@@ -576,6 +681,10 @@ export function Overlay() {
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
       if (panning) {
         panning = false
+        // Select: a click (not a drag) on a raised stretch, an amber bank line or a width mark picks that stretch up.
+        const click = roadClick
+        roadClick = null
+        if (click && Math.hypot(e.clientX - click.x, e.clientY - click.y) < 5) pickRunAt(e.clientX, e.clientY)
         // Straight or Curve: a click off the road (not a drag) gets a hint.
         if (hintOnClick && Math.hypot(e.clientX - hintOnClick.x, e.clientY - hintOnClick.y) < 5) {
           const tool = useEditor.getState().tool
@@ -625,12 +734,13 @@ export function Overlay() {
         const sel = s.selection
         if (sel?.kind === 'section') {
           const g = roadGeometry(s.draft.points, s.draft.width)
-          // A click without a drag picks 40 m either side of it.
-          if (metresBetween(g.rc, sel.from, sel.to) < 8) {
-            useEditor.setState({ selection: { kind: 'section', from: advanceAt(g.rc, sel.from, -40), to: advanceAt(g.rc, sel.from, 40) } })
-          }
+          // A click without a drag picks up the change already there, or a sensible stretch around it (stretchTools.ts).
+          const metres = metresBetween(g.rc, sel.from, sel.to)
+          if (metres < 8 && isStretchTool(s.tool)) pickStretchAt(s.tool, sel.from)
+          else say(`Picked ${Math.round(metres)} m of road. Now set its ${s.tool === 'bank' ? 'bank' : s.tool === 'width' ? 'width' : 'height'} in the panel.`, 'info')
         }
         sectionAnchor = null
+        stretchDirty = true
         return
       }
       if (!drawing) return
@@ -646,6 +756,8 @@ export function Overlay() {
       pen = null
       penTo = null
       pencilPlan = null
+      shiftFrom = null
+      shiftAt = null
       stroke = []
       needsDraw = true
       if (done.length < 4) {
@@ -683,17 +795,23 @@ export function Overlay() {
       ghost = null
       hover = null
       if (!bending) bendShown = null
+      stretchShown = null
       shapeDirty = true
       pointer = { x: -9999, y: -9999 }
       needsDraw = true
     }
 
     // ---- keyboard ----
-    const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyG: 'bend', KeyL: 'straight', KeyC: 'curve', KeyV: 'select', KeyB: 'section' }
+    const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyG: 'bend', KeyL: 'straight', KeyC: 'curve', KeyV: 'select', KeyH: 'height', KeyB: 'bank', KeyN: 'width' }
     const onKeyDown = (e: KeyboardEvent) => {
       if (typing(e)) return
       // The 3D view has its own keys (Look3dUi.tsx); the map's wait, so nothing is edited by accident.
       if (look3dOn()) return
+      // Shift while drawing: straight from here (the pointer may not move before it is let go).
+      if (e.key === 'Shift' && drawing) {
+        pencilShift(true, screenToWorld(pointer.x, pointer.y), pointer.x, pointer.y)
+        return
+      }
       const mod = e.ctrlKey || e.metaKey
       // Mid-bend, Undo would pull the road out from under your hand: let go first (or Esc).
       if (mod && bending && (e.code === 'KeyZ' || e.code === 'KeyY')) {
@@ -754,6 +872,7 @@ export function Overlay() {
     }
     const onKeyUp = (e: KeyboardEvent) => {
       held.delete(e.code)
+      if (e.key === 'Shift') pencilShift(false, screenToWorld(pointer.x, pointer.y), pointer.x, pointer.y)
       if (e.code === 'Space') {
         spaceHeld = false
         setCursor()
@@ -771,8 +890,11 @@ export function Overlay() {
         ghost = null
         bendShown = null
         shapeShown = null
+        stretchShown = null
         setCursor()
       }
+      // The road, the tool or the picked stretch changed: what a click would pick (and whether it is new) may be different now.
+      if (s.draft !== prev.draft || s.tool !== prev.tool || s.selection !== prev.selection) stretchDirty = true
       // The road or a half-made Straight / Curve changed: work the preview out again.
       if (s.draft !== prev.draft || s.shaping !== prev.shaping || s.tool !== prev.tool) {
         shapeDirty = true
@@ -874,6 +996,12 @@ export function Overlay() {
         pencilPlan = pencilPreview(stroke, penTo)
         needsDraw = true
       }
+      // Height, Bank and Width hover: once a frame at most (and again when the view moves under the pointer).
+      if (stretchDirty || (drawnVersion !== view.version && stretchShown)) {
+        stretchDirty = false
+        stretchShown = stretchHover()
+        needsDraw = true
+      }
       // Straight and Curve previews: once a frame at most, however fast the mouse moves.
       if (shapeDirty || (drawnVersion !== view.version && shapeShown)) {
         shapeDirty = false
@@ -894,6 +1022,8 @@ export function Overlay() {
           shape: shapeShown,
           pen: drawing && pen && pen.stringPx > 0 && penTo ? { at: screenToWorld(pen.x, pen.y), to: penTo } : null,
           pencil: drawing ? pencilPlan : null,
+          marks: marksOf(useEditor.getState().draft),
+          stretchHover: stretchShown,
         })
       }
       raf = requestAnimationFrame(loop)

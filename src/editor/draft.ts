@@ -35,6 +35,7 @@ import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from '
 import { checkBuiltTrack, gateItems } from './checks'
 import { crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
 import { keepBridgesClear } from './bankBridges'
+import { type StretchTool, isStretchTool } from './stretchRuns'
 import type { P } from './geom'
 import { type PlaceKind, makeCore, makeProp, makeRoadPiece, toolFor } from './pieces'
 import { atAfterDelete, atAfterInsert, frameAt, metresBetween, nearestLoopSpot, nearestOnRoad, planRedraw, reanchor, roadCurve, wrapAt, LOOP_RUN_IN } from './road'
@@ -136,7 +137,7 @@ export interface EditorState {
   tool: EditorTool
   /** What the place tool drops. */
   placeKind: PlaceKind
-  /** The thing selected on the map (select, place and section tools). */
+  /** The thing selected on the map (select and place, and the Height, Bank and Width tools' stretch). */
   selection: Selection | null
   /** 'edit' = the road editor; 'map' = the read-only world map. */
   mode: 'edit' | 'map'
@@ -148,7 +149,11 @@ export interface EditorState {
   shaping: Shaping | null
 }
 
-export type EditorTool = 'pencil' | 'bend' | 'straight' | 'curve' | 'select' | 'place' | 'section'
+/**
+ * The tools on the rail. Height, Bank and Width each change a stretch of road
+ * (a `section` selection), so switching between those three keeps the stretch.
+ */
+export type EditorTool = 'pencil' | 'bend' | 'straight' | 'curve' | 'select' | 'place' | StretchTool
 
 /** Straight or Curve, part way through: `a` is the first click, `b` the second (Curve only, then you pull). */
 export interface Shaping {
@@ -694,7 +699,9 @@ export function endGesture(): void {
 
 export function setTool(tool: EditorTool, placeKind?: PlaceKind): void {
   const s = useEditor.getState()
-  useEditor.setState({ tool, placeKind: placeKind ?? s.placeKind, selection: tool === s.tool ? s.selection : null, shaping: tool === s.tool ? s.shaping : null })
+  // From Height to Bank to Width the picked stretch stays picked: it is the same road, a different setting.
+  const keep = tool === s.tool || (isStretchTool(tool) && isStretchTool(s.tool) && s.selection?.kind === 'section')
+  useEditor.setState({ tool, placeKind: placeKind ?? s.placeKind, selection: keep ? s.selection : null, shaping: tool === s.tool ? s.shaping : null })
 }
 
 /** Drop the current place tool's thing at world point q. Returns true if something was placed. */

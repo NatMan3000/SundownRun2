@@ -62,6 +62,7 @@ import type { Draft } from './draft'
 import { BRIDGE_GAP, type GroundFn, buildAndCheck, builtGapAt, crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
 import { fixAndRaiseRows, setFixActions } from './selfTestFixes'
 import { look3dRows } from './selfTest3d'
+import { setStretchTools, toolRows } from './selfTestTools'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
 type EditorStore = typeof import('./draft')
@@ -1392,7 +1393,7 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
       ['Bend', () => (store.setTool('bend'), store.beginBend(0, { x: 0, z: 0 }), store.moveBend({ x: 30, z: 0 }), store.endBend())],
       ['Corner', () => (store.setTool('select'), store.applyCornerRadius(0, 80))],
       ['add a point', () => store.insertPointAt(0.5)],
-      ['Stretch (bank and width)', () => (store.setTool('section'), store.setSectionBank(0, 1, 10), store.setSectionWidth(0, 1, 16))],
+      ['Bank and Width', () => (store.setTool('bank'), store.setSectionBank(0, 1, 10), store.setTool('width'), store.setSectionWidth(0, 1, 16))],
       ['Smooth', () => store.smoothRoad()],
       ['Swap a bridge', () => store.swapBridge({ x: 0, z: 0 })],
       ['delete', () => store.deleteSelection()],
@@ -1586,6 +1587,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
 
   look3dRows(check)
 
+  // ---------------------------------------------------------------- Height, Bank, Width and the straight pencil (selfTestTools.ts)
+
+  toolRows(check, store, { opts })
+
   return results
 }
 
@@ -1654,6 +1659,9 @@ async function loadStoreForBun(): Promise<EditorStore | undefined> {
   // The raise and Fix it buttons' actions, for their Undo row (selfTestFixes.ts).
   const actionsPath = './fixActions.ts'
   setFixActions((await import(/* @vite-ignore */ actionsPath)) as typeof import('./fixActions'))
+  // The Height, Bank and Width tools' actions, for their re-edit row (selfTestTools.ts).
+  const toolsPath = './stretchTools.ts'
+  setStretchTools((await import(/* @vite-ignore */ toolsPath)) as typeof import('./stretchTools'))
   return store
 }
 

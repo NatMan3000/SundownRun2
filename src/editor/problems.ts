@@ -89,12 +89,8 @@ export interface ProblemSource {
 /** No clean-up notes (one shared empty list, so the list below is only worked out again when something changed). */
 export const NO_NOTES: readonly StrokeIssue[] = []
 
-/**
- * The tools that set a stretch's height and bank. editor9 is giving Height, Bank and
- * Width their own tools ('height', 'bank', 'width', each selecting a stretch the same
- * way); until that lands the Stretch tool ('section') does all three.
- */
-export const STRETCH_TOOL: Record<'height' | 'bank' | 'width', EditorTool> = { height: 'section', bank: 'section', width: 'section' }
+/** The tools that set a stretch's height, bank and width (each selects a stretch the same way). */
+export const STRETCH_TOOL: Record<'height' | 'bank' | 'width', EditorTool> = { height: 'height', bank: 'bank', width: 'width' }
 
 const GAME_WORDS = "This one is the game's fault, not your track, so there's nothing here for you to fix. If it showed up straight after a change, Undo takes the change back."
 

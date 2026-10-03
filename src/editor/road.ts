@@ -236,6 +236,18 @@ export function sectionRedraw(raw: readonly P[], points: readonly RoadPoint[], w
   return plan.kind === 'redraw' ? plan.loop : null
 }
 
+/**
+ * The pencil with Shift held: a dead straight line from `a` (where the line
+ * was when Shift went down) to `b` (the pointer), a point every `step` metres
+ * or less, `a` itself left out (it is already the end of the line) and `b` in.
+ */
+export function straightPencilLine(a: P, b: P, step: number): P[] {
+  const count = Math.max(1, Math.ceil(dist(a, b) / Math.max(0.1, step)))
+  const out: P[] = []
+  for (let i = 1; i <= count; i++) out.push({ x: a.x + ((b.x - a.x) * i) / count, z: a.z + ((b.z - a.z) * i) / count })
+  return out
+}
+
 /** Curve samples from at `from` forward to at `to`. */
 function sampleBetween(rc: RoadCurve, from: number, to: number): P[] {
   const n = rc.curve.length

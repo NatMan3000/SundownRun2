@@ -42,7 +42,7 @@
 //    __dev.editor('corner', [i, radius])   the corner road point i sits in: read it, or set its radius
 //    __dev.editor('screen', at | [x, z])   where a road spot (or a world point) is on screen,
 //                                          so a probe can click it with the real mouse
-//    __dev.editor('tool', name)            pick a tool: select pencil straight curve bend section place
+//    __dev.editor('tool', name)            pick a tool: select pencil straight curve bend height bank width place
 //    __dev.editor('steady', 0..3)          the pencil's steady hand (0 = off)
 //
 //  Bridges (which road goes over where the road crosses itself):
@@ -54,10 +54,16 @@
 //                                          returns ok, the status line and the crossings after
 //
 //  Height and problems (editor8):
-//    __dev.editor('stretch', [from, to])   select a stretch of road (the Stretch tool), as a drag does
+//    __dev.editor('stretch', [from, to, tool])  select a stretch of road with the Height, Bank or Width
+//                                          tool (Height if none), as a drag does
+//    __dev.editor('pickStretch', [tool, at])  a click on the road with that tool: the change already
+//                                          there, or a sensible stretch around it (editor9)
+//    __dev.editor('limits')                the Height slider's ends for the selected stretch, worked
+//                                          out straight away (lo, hi, why, the stretch a higher one needs)
+//    __dev.editor('marks')                 the RAISED, BANK and WIDTH labels on screen (to click them)
 //    __dev.editor('raise', [from, to, h])  set the middle of that stretch to h metres above the ground
-//                                          (the Stretch tool's Height slider); returns ok and the status line
-//    __dev.editor('raisePoint', [i, h])    a road point's "Height above the ground" slider
+//                                          (the Height tool's slider); returns ok and the status line
+//    __dev.editor('raisePoint', [i, h])    the same smooth hump centred on road point i (editor8's point slider)
 //    __dev.editor('problems')              the Checks list: each row's key, title, remedy, offer
 //    __dev.editor('findFixes')             finish looking for fixes now (no waiting), then the list
 //                                          (fix / go / game / none), its button and where it is
@@ -94,6 +100,7 @@ import {
   fileFromDraft,
   moveBend,
   newDraft,
+  pointGroundFor,
   previewNow,
   redo,
   replaceDraft,
@@ -107,7 +114,10 @@ import {
   useEditor,
 } from './draft'
 import { fitToDraft } from './Overlay'
-import { crossingScreens, pinScreens } from './mapDraw'
+import { crossingScreens, markScreens, pinScreens } from './mapDraw'
+import { heightLimits } from './raise'
+import { type StretchTool, isStretchTool } from './stretchRuns'
+import { pickStretchAt } from './stretchTools'
 import { currentProblems, findFixesNow, fixAll, fixOffer, fixProblem, raisePoint, raiseSection, selectProblem } from './fixActions'
 import { runEditorSelfTest } from './selfTest'
 import { checkVerdict } from './checks'
@@ -211,7 +221,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to] | raise [from,to,h] | raisePoint [i,h] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -313,9 +323,10 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     case 'checks':
       return checksSummary()
     case 'stretch': {
-      const [a, b] = Array.isArray(arg) ? arg.map(Number) : []
-      if (![a, b].every(Number.isFinite)) return 'stretch needs [fromAt, toAt]'
-      setTool('section')
+      const [a, b] = Array.isArray(arg) ? arg.slice(0, 2).map(Number) : []
+      if (![a, b].every(Number.isFinite)) return 'stretch needs [fromAt, toAt] (and optionally height, bank or width)'
+      const tool = Array.isArray(arg) && isStretchTool(String(arg[2])) ? (String(arg[2]) as StretchTool) : 'height'
+      setTool(tool)
       useEditor.setState({ selection: { kind: 'section', from: a, to: b } })
       return useEditor.getState().selection
     }
@@ -324,6 +335,22 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       if (![a, b, h].every(Number.isFinite)) return 'raise needs [fromAt, toAt, metres]'
       return { ok: raiseSection(a, b, h), message: useEditor.getState().message?.text ?? '', selection: useEditor.getState().selection }
     }
+    case 'pickStretch': {
+      const [tool, at] = Array.isArray(arg) ? [String(arg[0]), Number(arg[1])] : ['', NaN]
+      if (!isStretchTool(tool) || !Number.isFinite(at)) return 'pickStretch needs [height|bank|width, at]'
+      pickStretchAt(tool, at)
+      return { tool: useEditor.getState().tool, selection: useEditor.getState().selection, message: useEditor.getState().message?.text ?? '' }
+    }
+    case 'limits': {
+      const s = useEditor.getState()
+      const sel = s.selection
+      if (sel?.kind !== 'section') return 'select a stretch first'
+      const id = s.savedId ?? draftId(s.draft)
+      const t = getTrack()
+      return heightLimits(s.draft, sel.from, sel.to, { id, pointGround: pointGroundFor(s.draft), params: t && t.id === id ? { ...t.params } : {} })
+    }
+    case 'marks':
+      return markScreens()
     case 'raisePoint': {
       const [i, h] = Array.isArray(arg) ? arg.map(Number) : []
       if (![i, h].every(Number.isFinite)) return 'raisePoint needs [pointIndex, metres]'
@@ -387,7 +414,7 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       return { sx: Math.round(s.sx * 10) / 10, sy: Math.round(s.sy * 10) / 10, x: Math.round(w.x * 10) / 10, z: Math.round(w.z * 10) / 10 }
     }
     case 'tool': {
-      const tools = ['select', 'pencil', 'straight', 'curve', 'bend', 'section', 'place']
+      const tools = ['select', 'pencil', 'straight', 'curve', 'bend', 'height', 'bank', 'width', 'place']
       if (!tools.includes(String(arg))) return `tool must be one of ${tools.join(' ')}`
       setTool(String(arg) as EditorTool)
       return useEditor.getState().tool

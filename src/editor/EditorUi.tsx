@@ -14,11 +14,13 @@
 //                random track?")
 //
 //  The rail, top to bottom: the tools in the order Josh reaches for
-//  them (Select, Pencil, Straight, Curve, Bend, Stretch, Place
-//  pieces), then the whole-road buttons (Undo, Redo, Clear all, Random
-//  track), then the view (Zoom in, Zoom out, Fit track, Whole world),
-//  then the Library. There is no hand tool: the right mouse button
-//  drags the map with every tool (so do the middle button and Space).
+//  them (Select, Pencil, Straight, Curve, Bend, Height, Bank, Width,
+//  Place pieces), then the whole-road buttons (Undo, Redo, Clear all,
+//  Random track), then the view (Zoom in, Zoom out, Fit track, Whole
+//  world), then the Library. Every button shows its name in words, and
+//  hovering one shows straight away what it does and its key (RAIL).
+//  There is no hand tool: the right mouse button drags the map with
+//  every tool (so do the middle button and Space).
 //
 //  Esc (or the pad's Menu button): first closes a dialog, then goes back
 //  from the 3D view to the map, then stops a bend or a half-made Straight
@@ -29,7 +31,8 @@
 //  In 3D the rail waits, dimmed, until you go back to the map.
 //
 //  Beside the rail, the chosen tool's own settings (ToolOptions): the
-//  pencil's steady hand, Bend's reach, the steps of Straight and Curve.
+//  pencil's steady hand, Bend's reach, the steps of Straight and Curve,
+//  and how to pick a stretch for Height, Bank and Width.
 // ============================================================
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
@@ -47,7 +50,7 @@ import { setView, view, zoomAt } from './view'
 import { ClearAllDialog, askClearAll, askRandomTrack, clearAllTakesPause, setClearAllBlocked } from './ClearAll'
 import { Look3dUi } from './Look3dUi'
 import { closeLook3d, useLook3d } from './look3d'
-import { BendIcon, ClearIcon, CurveIcon, DiceIcon, FitIcon, GlobeIcon, LibraryIcon, MinusIcon, PencilIcon, PiecesIcon, PlusIcon, SectionIcon, SelectIcon, StraightIcon, UndoIcon } from './icons'
+import { BankIcon, BendIcon, ClearIcon, CurveIcon, DiceIcon, FitIcon, GlobeIcon, HeightIcon, LibraryIcon, MinusIcon, PencilIcon, PiecesIcon, PlusIcon, SelectIcon, StraightIcon, UndoIcon, WidthIcon } from './icons'
 import { getTrackFile } from '../track/registry'
 import { loadTrackById } from '../track/current'
 import { lastPlayedTrackId } from '../core/session'
@@ -81,14 +84,42 @@ const cssVars = {
   '--font-mono': FONTS.mono,
 } as CSSProperties
 
-/** What each tool does, said once when you pick it. */
+/**
+ * Every button on the rail: its name (shown on the rail), what it does in one
+ * line (shown the moment the mouse is over it), and its key. The tools say a
+ * longer line on the status line when picked (TOOL_TIPS).
+ */
+const RAIL = {
+  select: { name: 'Select', tip: 'Click a piece or a road point to pick it, then drag to move it.', key: 'V' },
+  pencil: { name: 'Pencil', tip: 'Draw a new bit of road: start on the road and end back on it. Hold Shift for a straight line.', key: 'P' },
+  straight: { name: 'Straight', tip: 'Click two spots on the road: the road between them goes dead straight.', key: 'L' },
+  curve: { name: 'Curve', tip: 'Click where a bend starts and where it ends, then pull: the road between becomes one even curve.', key: 'C' },
+  bend: { name: 'Bend', tip: 'Grab one spot on the road and pull it: the road around it follows. Mouse wheel: how much.', key: 'G' },
+  height: { name: 'Height', tip: 'Pick a stretch of road and raise it into a hill or a bridge, or bring it back down.', key: 'H' },
+  bank: { name: 'Bank', tip: 'Pick a stretch of road and tilt it, like a banked corner.', key: 'B' },
+  width: { name: 'Width', tip: 'Pick a stretch of road and make it wider or narrower.', key: 'N' },
+  place: { name: 'Place pieces', tip: 'Boost pads, ramps, loops, the start line and more: pick one, then click the road.', key: '1-0' },
+  undo: { name: 'Undo', tip: 'Take back the last change.', key: 'Ctrl+Z' },
+  redo: { name: 'Redo', tip: 'Put back what Undo took away.', key: 'Ctrl+Shift+Z' },
+  clear: { name: 'Clear all', tip: 'Wipe the map to start again. One Undo brings it all back.', key: 'pad B' },
+  random: { name: 'Random track', tip: 'Roll the dice for a whole new road that passes every check.', key: '' },
+  zoomIn: { name: 'Zoom in', tip: 'See the map closer up. The mouse wheel zooms too.', key: '+' },
+  zoomOut: { name: 'Zoom out', tip: 'See more of the map.', key: '-' },
+  fit: { name: 'Fit track', tip: 'Fit the whole track on the screen.', key: 'F' },
+  world: { name: 'Whole world', tip: 'Show the whole world, edge to edge.', key: '' },
+  library: { name: 'Library', tip: 'Open, copy, import or export your tracks.', key: '' },
+} as const
+
+/** What each tool does, said once on the status line when you pick it. */
 const TOOL_TIPS: Record<EditorTool, string> = {
-  pencil: 'Pencil: start on the road and end back on the road to redraw the bit in between. On an empty map, draw a loop.',
-  bend: 'Bend: grab the road and pull it. The mouse wheel (or [ and ]) changes how much road comes with it.',
+  pencil: 'Pencil: start on the road and end back on the road to redraw the bit in between. Hold Shift while you draw for a straight line. On an empty map, draw a loop.',
+  bend: 'Bend: grab one spot on the road and pull it, and the road around it follows. The mouse wheel (or [ and ]) changes how much road comes with it.',
   straight: 'Straight: click the road where the straight starts, then click where it ends.',
-  curve: 'Curve: click the road where the curve starts, then where it ends, then pull the middle out and click.',
+  curve: 'Curve: click the road where the curve starts, then where it ends, then pull the middle out and click. The road between becomes one even curve.',
   select: 'Select: click a piece or road point, drag to move it, Delete removes it. Double-click the road to add a point.',
-  section: 'Stretch: drag along the road to pick a stretch, then set its height, bank or width in the panel.',
+  height: 'Height: drag along the road to pick a stretch (or click the road), then set how high its middle goes in the panel.',
+  bank: 'Bank: drag along the road to pick a stretch (or click a corner, or a BANK label), then set its tilt in the panel.',
+  width: 'Width: drag along the road to pick a stretch (or click the road), then set how wide it is in the panel.',
   place: 'Place pieces: pick a piece, then click where it goes.',
 }
 
@@ -216,36 +247,45 @@ function Toolbar(props: { onLibrary: () => void }) {
     <nav className="sre-tools" aria-label="Editor tools">
       {editing && (
         <>
-          <ToolButton label="Select and move" keyHint="V" active={tool === 'select'} onClick={() => pickTool('select')} icon={<SelectIcon />} />
-          <ToolButton label="Pencil" keyHint="P" active={tool === 'pencil'} onClick={() => pickTool('pencil')} icon={<PencilIcon />} />
-          <ToolButton label="Straight: make a stretch dead straight" keyHint="L" active={tool === 'straight'} onClick={() => pickTool('straight')} icon={<StraightIcon />} />
-          <ToolButton label="Curve: make a stretch one smooth curve" keyHint="C" active={tool === 'curve'} onClick={() => pickTool('curve')} icon={<CurveIcon />} />
-          <ToolButton label="Bend: grab the road and pull" keyHint="G" active={tool === 'bend'} onClick={() => pickTool('bend')} icon={<BendIcon />} />
-          <ToolButton label="Stretch" keyHint="B" active={tool === 'section'} onClick={() => pickTool('section')} icon={<SectionIcon />} />
-          <ToolButton label="Place pieces: boosts, ramps, loops and more" keyHint="1-0" active={tool === 'place'} onClick={() => pickTool('place')} icon={<PiecesIcon />} />
+          <ToolButton id="select" active={tool === 'select'} onClick={() => pickTool('select')} icon={<SelectIcon />} />
+          <ToolButton id="pencil" active={tool === 'pencil'} onClick={() => pickTool('pencil')} icon={<PencilIcon />} />
+          <ToolButton id="straight" active={tool === 'straight'} onClick={() => pickTool('straight')} icon={<StraightIcon />} />
+          <ToolButton id="curve" active={tool === 'curve'} onClick={() => pickTool('curve')} icon={<CurveIcon />} />
+          <ToolButton id="bend" active={tool === 'bend'} onClick={() => pickTool('bend')} icon={<BendIcon />} />
+          <ToolButton id="height" active={tool === 'height'} onClick={() => pickTool('height')} icon={<HeightIcon />} />
+          <ToolButton id="bank" active={tool === 'bank'} onClick={() => pickTool('bank')} icon={<BankIcon />} />
+          <ToolButton id="width" active={tool === 'width'} onClick={() => pickTool('width')} icon={<WidthIcon />} />
+          <ToolButton id="place" active={tool === 'place'} onClick={() => pickTool('place')} icon={<PiecesIcon />} />
           <div className="sre-tools-gap" />
-          <ToolButton label="Undo" keyHint="Ctrl+Z" disabled={!canUndo} onClick={undo} icon={<UndoIcon />} />
-          <ToolButton label="Redo" keyHint="Ctrl+Shift+Z" disabled={!canRedo} onClick={redo} icon={<UndoIcon flip />} />
-          <ToolButton label="Clear all" keyHint="controller B" onClick={askClearAll} icon={<ClearIcon />} />
-          <ToolButton label="Random track" onClick={() => askRandomTrack()} icon={<DiceIcon />} />
+          <ToolButton id="undo" disabled={!canUndo} onClick={undo} icon={<UndoIcon />} />
+          <ToolButton id="redo" disabled={!canRedo} onClick={redo} icon={<UndoIcon flip />} />
+          <ToolButton id="clear" onClick={askClearAll} icon={<ClearIcon />} />
+          <ToolButton id="random" onClick={() => askRandomTrack()} icon={<DiceIcon />} />
           <div className="sre-tools-gap" />
         </>
       )}
-      <ToolButton label="Zoom in" keyHint="+" onClick={() => zoomAt(view.width / 2, view.height / 2, 1 / 1.4)} icon={<PlusIcon />} />
-      <ToolButton label="Zoom out" keyHint="-" onClick={() => zoomAt(view.width / 2, view.height / 2, 1.4)} icon={<MinusIcon />} />
-      <ToolButton label="Fit track" keyHint="F" onClick={fitToDraft} icon={<FitIcon />} />
-      <ToolButton label="Whole world" onClick={() => setView(0, 0, 1700 / Math.max(300, view.height - 120))} icon={<GlobeIcon />} />
+      <ToolButton id="zoomIn" onClick={() => zoomAt(view.width / 2, view.height / 2, 1 / 1.4)} icon={<PlusIcon />} />
+      <ToolButton id="zoomOut" onClick={() => zoomAt(view.width / 2, view.height / 2, 1.4)} icon={<MinusIcon />} />
+      <ToolButton id="fit" onClick={fitToDraft} icon={<FitIcon />} />
+      <ToolButton id="world" onClick={() => setView(0, 0, 1700 / Math.max(300, view.height - 120))} icon={<GlobeIcon />} />
       {editing && (
         <>
           <div className="sre-tools-gap" />
-          <ToolButton label="Track library" onClick={props.onLibrary} icon={<LibraryIcon />} />
+          <ToolButton id="library" onClick={props.onLibrary} icon={<LibraryIcon />} />
         </>
       )}
     </nav>
   )
 }
 
-function ToolButton(p: { label: string; keyHint?: string; active?: boolean; disabled?: boolean; onClick: () => void; icon: ReactNode }) {
+/**
+ * One rail button: its icon and its name in words, and a tip beside it that
+ * shows the moment the mouse is over it (or it has keyboard focus): what it
+ * does and its key. Drawn by the page, not the browser's slow `title` tooltip.
+ */
+function ToolButton(p: { id: keyof typeof RAIL; active?: boolean; disabled?: boolean; onClick: () => void; icon: ReactNode }) {
+  const r = RAIL[p.id]
+  const tipId = `sre-tip-${p.id}`
   return (
     <button
       type="button"
@@ -255,11 +295,16 @@ function ToolButton(p: { label: string; keyHint?: string; active?: boolean; disa
         audio.ui('move')
         p.onClick()
       }}
-      title={p.keyHint ? `${p.label} (${p.keyHint})` : p.label}
-      aria-label={p.label}
       aria-pressed={p.active}
+      aria-describedby={tipId}
+      data-rail={p.id}
     >
       {p.icon}
+      <span className="sre-tool-name">{r.name}</span>
+      <span className="sre-tip" role="tooltip" id={tipId}>
+        <span className="sre-tip-text">{r.tip}</span>
+        {r.key && <kbd>{r.key}</kbd>}
+      </span>
     </button>
   )
 }
@@ -333,6 +378,7 @@ function ToolOptions() {
         />
         <p className="sre-help">Your line trails a little behind the mouse, so a shaky hand still draws a smooth road. Turn it up for smoother, down for more control.</p>
         <p className="sre-help">To change the road: start on the road, draw the new bit, and end back on the road. The bit that goes lights up amber before you let go.</p>
+        <p className="sre-help">Hold Shift while you draw for a dead straight line. Let go of Shift to carry on freehand.</p>
       </div>
     )
   }
@@ -340,6 +386,7 @@ function ToolOptions() {
     return (
       <div className="sre-options" role="group" aria-label="Bend settings" data-testid="editor-tool-options">
         <span className="sre-options-title">Bend</span>
+        <p className="sre-help">Grab one spot on the road and pull it: the road around it follows. (To make a stretch one even curve between two spots, use Curve.)</p>
         <SliderField
           label="Reach"
           value={reach}
@@ -368,11 +415,50 @@ function ToolOptions() {
             </li>
           ))}
         </ol>
-        <p className="sre-help">{tool === 'straight' ? 'The ends ease into the road so there is no kink.' : 'The curve joins the road at both ends with no kink.'} Red means too tight for a car. Esc starts again.</p>
+        <p className="sre-help">{tool === 'straight' ? 'The ends ease into the road so there is no kink.' : 'The curve joins the road at both ends with no kink. (To pull one spot and let the road follow, use Bend.)'} Red means too tight for a car. Esc starts again.</p>
       </div>
     )
   }
+  if (tool === 'height' || tool === 'bank' || tool === 'width') return <StretchSteps tool={tool} />
   return null
+}
+
+/** What to say beside the rail for Height, Bank and Width: where the setting is, and how to change one again. */
+const STRETCH_STEPS: Record<'height' | 'bank' | 'width', { set: string; again: string }> = {
+  height: {
+    set: 'Set how high its middle goes, in the panel on the right.',
+    again: 'Violet dots on the road mean it is raised: click them to change that stretch again. Higher hills need longer stretches, and the panel says how much.',
+  },
+  bank: {
+    set: 'Set its tilt, in the panel on the right.',
+    again: 'An amber line with a BANK label is a bank you set: click it to change it, or press Auto in the panel to let the game bank it again.',
+  },
+  width: {
+    set: 'Set how wide it is, in the panel on the right.',
+    again: 'A WIDTH label is a width you set: click it to change it, or press Track width in the panel to put it back.',
+  },
+}
+
+/** The Height, Bank or Width tool's box: two steps (the one you are on lit up), and how to change one again. */
+function StretchSteps(p: { tool: 'height' | 'bank' | 'width' }) {
+  const picked = useEditor((s) => s.selection?.kind === 'section')
+  const words = STRETCH_STEPS[p.tool]
+  const steps = ['Drag along the road to pick a stretch, or click the road.', words.set]
+  const now = picked ? 1 : 0
+  return (
+    <div className="sre-options" role="group" aria-label={`${RAIL[p.tool].name} steps`} data-testid="editor-tool-options">
+      <span className="sre-options-title">{RAIL[p.tool].name}</span>
+      <ol className="sre-steps">
+        {steps.map((text, i) => (
+          <li key={text} className={i === now ? 'is-now' : i < now ? 'is-done' : undefined}>
+            <span className="sre-step-num">{i + 1}</span>
+            {text}
+          </li>
+        ))}
+      </ol>
+      <p className="sre-help">{words.again}</p>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------- status line

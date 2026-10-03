@@ -1,7 +1,7 @@
 // ============================================================
 //  RAISE - lift (or lower) a whole stretch of road on smooth ramps
 // ------------------------------------------------------------
-//  Josh picks a stretch of road (the Stretch tool) and sets how high
+//  Josh picks a stretch of road (the Height tool) and sets how high
 //  its MIDDLE sits above the ground. The road then rises smoothly
 //  from each end of the stretch to the middle and back down, in the
 //  same smooth shape as the clean-up's bridge ramps (half a cosine
@@ -375,6 +375,11 @@ export interface RaiseOptions {
   params?: Record<string, number>
   /** The draft as it is now, already built and checked (the live preview), if it is fresh. */
   before?: { runtime: TrackRuntime | null; gates: readonly TrackGate[] }
+  /**
+   * Exactly this height or nothing: no going part of the way. Used to prove the
+   * Height slider's ends (heightLimits): its top builds, one step past it doesn't.
+   */
+  exact?: boolean
 }
 
 export interface RaiseResult {
@@ -399,27 +404,89 @@ function metresWords(v: number): string {
   return `${Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1)} m`
 }
 
+/** Everything a raise of one stretch needs that doesn't depend on the height: worked out once, then each height is tried. */
+interface RaiseJob {
+  d: Draft
+  from: number
+  to: number
+  o: RaiseOptions
+  before: { runtime: TrackRuntime | null; gates: readonly TrackGate[] }
+  /** The speed a car is likely to be doing there, m/s, and in words (to the 10 km/h). */
+  v: number
+  kmh: number
+  now: StretchNow
+  half: number
+}
+
+function raiseJob(d: Draft, from: number, to: number, o: RaiseOptions): RaiseJob {
+  const before =
+    o.before ??
+    (() => {
+      const j = judgeDraft(d, o.id, o.params)
+      return { runtime: j.runtime, gates: j.gates }
+    })()
+  const v = stretchSpeed(before.runtime, d.points, from, to)
+  const now = stretchNow(d.points, from, to, o.pointGround ?? FLAT)
+  return { d, from, to, o, before, v, kmh: Math.round((v * 3.6) / 10) * 10, now, half: launchHalf(now.metres) }
+}
+
+type Attempt = { ok: true; draft: Draft; from: number; to: number } | { ok: false; stop?: boolean; reason: string }
+
+/** Build the stretch with its middle at h and judge it: the new draft, or why not (stop: no height would do). */
+function tryHeight(job: RaiseJob, h: number): Attempt {
+  const { d, from, to, o, before, v, kmh, half } = job
+  const plan = planRaise({ points: d.points, pieces: d.pieces, startAt: d.startAt, width: d.width, pointGround: o.pointGround }, from, to, h)
+  // A piece or the start grid in the way: no height fixes that.
+  if (!plan.ok) return { ok: false, stop: plan.why !== 'bridge', reason: plan.reason ?? '' }
+  const next: Draft = {
+    ...d,
+    points: plan.points,
+    pieces: d.pieces.map((p) => ({ ...p, at: Math.round(plan.mapAt(p.at) * 1000) / 1000 })),
+    startAt: Math.round(plan.mapAt(d.startAt) * 1000) / 1000,
+  }
+  const newFrom = plan.mapAt(from)
+  const newTo = plan.mapAt(to)
+  const after = judgeDraft(next, o.id, o.params, before.runtime)
+  if (!after.runtime) return { ok: false, reason: `the game couldn't build the road that way (${after.error}).` }
+  const fresh = newFailures(before.gates, after.gates)
+  if (fresh.length) {
+    const g = fresh.find((x) => !isGameBug(x)) ?? fresh[0]
+    return { ok: false, reason: isGameBug(g) ? `the game can't build it cleanly that far (${gateTitle(g, next)} That's the game's fault, not your track.)` : lowerFirst(gateTitle(g, next)) }
+  }
+  // A road that already had a lumpy crest there may keep it, but nowhere may the change make a car lighter than that.
+  const launch = launchOver(after.runtime, before.runtime, stretchSamples(after.runtime, newFrom, newTo, next.points.length, 30), v, half)
+  if (launch.over > 0) return { ok: false, reason: `a car at ${kmh} km/h would take off over the top.` }
+  return { ok: true, draft: next, from: newFrom, to: newTo }
+}
+
 /**
  * Set the middle of the stretch from `from` to `to` to `wanted` metres above
  * the ground. Built with the real builder and judged by the game's checks
  * (nothing that passed may fail) and the launch rule (a car stays on over the
  * top). If the stretch is too short for that height, the middle goes as high
- * as is safe and `done` says so. Never changes `d`.
+ * as is safe and `done` says so (unless `o.exact`: then exactly that height or
+ * nothing). Never changes `d`.
  */
 export function raiseDraft(d: Draft, from: number, to: number, wanted: number, o: RaiseOptions): RaiseResult {
-  const ground = o.pointGround ?? FLAT
-  const before = o.before ?? (() => {
-    const j = judgeDraft(d, o.id, o.params)
-    return { runtime: j.runtime, gates: j.gates }
-  })()
-  const v = stretchSpeed(before.runtime, d.points, from, to)
-  const kmh = Math.round((v * 3.6) / 10) * 10
-  const now = stretchNow(d.points, from, to, ground)
+  const job = raiseJob(d, from, to, o)
+  const { v, kmh, now } = job
   if (now.metres < RAISE_MIN_METRES) return { ok: false, reason: `That stretch is only ${Math.round(now.metres)} m long. Pick at least ${RAISE_MIN_METRES} m of road to raise.` }
   const want = Math.max(0, Math.min(RAISE_MAX, wanted))
   const range = heightRange(now, v)
   const target = Math.max(range.lo, Math.min(range.hi, want))
   const tooShort = Math.abs(target - want) > 0.05
+  if (o.exact) {
+    // Exactly `want`, or say why not and change nothing.
+    if (Math.abs(want - now.middle) < 0.05) return { ok: false, reason: `The middle of that stretch is already ${metresWords(now.middle)} above the ground.` }
+    if (tooShort) {
+      const need = Math.ceil(stretchFor(want - now.middle, v) / 10) * 10
+      return { ok: false, reason: `This stretch is ${Math.round(now.metres)} m long, so its middle can't go to ${metresWords(want)} without a car at ${kmh} km/h taking off over the top. Select about ${need} m of road for that.` }
+    }
+    const r = tryHeight(job, want)
+    if (!r.ok) return { ok: false, reason: `Can't make that stretch ${metresWords(want)} high: ${lowerFirst(r.reason)} Nothing changed.` }
+    const got = stretchNow(r.draft.points, r.from, r.to, o.pointGround ?? FLAT).middle
+    return { ok: true, draft: r.draft, height: got, limited: false, done: `Its middle is ${metresWords(got)} above the ground now.`, from: r.from, to: r.to }
+  }
   if (Math.abs(target - now.middle) < 0.05) {
     if (tooShort) {
       const need = Math.ceil(stretchFor(want - now.middle, v) / 10) * 10
@@ -427,37 +494,10 @@ export function raiseDraft(d: Draft, from: number, to: number, wanted: number, o
     }
     return { ok: false, reason: `The middle of that stretch is already ${metresWords(now.middle)} above the ground.` }
   }
-  const half = launchHalf(now.metres)
-
-  /** Build the stretch at height h and judge it: the new draft, or why not. */
-  const attempt = (h: number): { ok: true; draft: Draft; from: number; to: number } | { ok: false; stop?: boolean; reason: string } => {
-    const plan = planRaise({ points: d.points, pieces: d.pieces, startAt: d.startAt, width: d.width, pointGround: o.pointGround }, from, to, h)
-    // A piece or the start grid in the way: no height fixes that.
-    if (!plan.ok) return { ok: false, stop: plan.why !== 'bridge', reason: plan.reason ?? '' }
-    const next: Draft = {
-      ...d,
-      points: plan.points,
-      pieces: d.pieces.map((p) => ({ ...p, at: Math.round(plan.mapAt(p.at) * 1000) / 1000 })),
-      startAt: Math.round(plan.mapAt(d.startAt) * 1000) / 1000,
-    }
-    const newFrom = plan.mapAt(from)
-    const newTo = plan.mapAt(to)
-    const after = judgeDraft(next, o.id, o.params, before.runtime)
-    if (!after.runtime) return { ok: false, reason: `the game couldn't build the road that way (${after.error}).` }
-    const fresh = newFailures(before.gates, after.gates)
-    if (fresh.length) {
-      const g = fresh.find((x) => !isGameBug(x)) ?? fresh[0]
-      return { ok: false, reason: isGameBug(g) ? `the game can't build it cleanly that far (${gateTitle(g, next)} That's the game's fault, not your track.)` : lowerFirst(gateTitle(g, next)) }
-    }
-    // A road that already had a lumpy crest there may keep it, but nowhere may the change make a car lighter than that.
-    const launch = launchOver(after.runtime, before.runtime, stretchSamples(after.runtime, newFrom, newTo, next.points.length, 30), v, half)
-    if (launch.over > 0) return { ok: false, reason: `a car at ${kmh} km/h would take off over the top.` }
-    return { ok: true, draft: next, from: newFrom, to: newTo }
-  }
 
   // The height asked for (as far as the stretch's length allows) first. If the game says no,
   // halve the way back toward where the middle is now, five times, keeping the best that works.
-  let best = attempt(target)
+  let best = tryHeight(job, target)
   let bestH = target
   let why = ''
   if (!best.ok) {
@@ -468,7 +508,7 @@ export function raiseDraft(d: Draft, from: number, to: number, wanted: number, o
     for (let k = 0; k < 5; k++) {
       const h = Math.round(((good + bad) / 2) * 10) / 10
       if (Math.abs(h - now.middle) < 0.1 || Math.abs(h - bad) < 0.05) break
-      const r = attempt(h)
+      const r = tryHeight(job, h)
       if (r.ok) {
         best = r
         bestH = h
@@ -480,7 +520,7 @@ export function raiseDraft(d: Draft, from: number, to: number, wanted: number, o
     const way = target > now.middle ? 'higher' : 'lower'
     return { ok: false, reason: `Can't make that stretch any ${way}: ${lowerFirst(why)} Nothing changed.` }
   }
-  const got = stretchNow(best.draft.points, best.from, best.to, ground).middle
+  const got = stretchNow(best.draft.points, best.from, best.to, o.pointGround ?? FLAT).middle
   const lower = got < now.middle
   let done = got < 0.05 ? 'Brought that stretch down to the ground. Undo puts it back.' : `${lower ? 'Lowered' : 'Raised'} that stretch: its middle is ${metresWords(got)} above the ground now, ${lower ? 'easing down' : 'rising smoothly'} from each end. Undo puts it back.`
   // How long a stretch the height asked for needs (at least a little longer than this one).
@@ -492,6 +532,185 @@ export function raiseDraft(d: Draft, from: number, to: number, wanted: number, o
     done = `This stretch is ${Math.round(now.metres)} m long, so its middle can only go to ${metresWords(got)}: any further and a car at ${kmh} km/h would take off over the top. ${longer} Undo puts it back.`
   }
   return { ok: true, draft: best.draft, height: got, limited: tooShort || bestH !== target, done, from: best.from, to: best.to }
+}
+
+/**
+ * "On the ground": the stretch from `from` to `to` goes back down onto the
+ * ground, following it the way it did before it was raised (every point's
+ * `lift` taken off; a point with its own height `y` gets the ground's height).
+ * Built and judged by the game's checks (nothing that passed may fail); if one
+ * fails, the middle comes down to the ground on the smooth bump instead
+ * (raiseDraft to 0 m), and if that fails too, nothing changes. Never changes `d`.
+ */
+export function groundDraft(d: Draft, from: number, to: number, o: RaiseOptions): RaiseResult {
+  const job = raiseJob(d, from, to, o)
+  const ground = o.pointGround ?? FLAT
+  const n = d.points.length
+  const span = wrapAt(to - from, n)
+  let changed = 0
+  const points = d.points.map((p, i) => {
+    if (wrapAt(i - from, n) > span) return p
+    if (typeof p.y === 'number') {
+      const y = roundCm(ground(p.x, p.z))
+      if (Math.abs(y - p.y) < 0.01) return p
+      changed++
+      return { ...p, y }
+    }
+    if (p.lift === undefined) return p
+    changed++
+    const out = { ...p }
+    delete out.lift
+    return out
+  })
+  if (!changed) return { ok: false, reason: 'That stretch is already on the ground.' }
+  const next: Draft = { ...d, points }
+  // Judged by the game's own checks only. The take-off rule a raise must pass is for hills Josh
+  // makes; a road back on the ground follows the ground's own bumps, like every drawn road does.
+  const after = judgeDraft(next, o.id, o.params, job.before.runtime)
+  const fresh = after.runtime ? newFailures(job.before.gates, after.gates) : []
+  if (after.runtime && !fresh.length) {
+    return { ok: true, draft: next, height: 0, limited: false, done: 'Put that stretch back on the ground. Undo puts it back.', from, to }
+  }
+  // Following the ground exactly doesn't drive (or build): bring just the middle down, on the smooth bump.
+  return raiseDraft(d, from, to, 0, o)
+}
+
+// ---------------------------------------------------------------- the Height slider's ends
+
+/** The Height slider moves in half metres. */
+export const HEIGHT_STEP = 0.5
+
+/** What the Height slider offers for one stretch: only heights that build (see heightLimitSteps). */
+export interface HeightLimits {
+  /** The stretch's length, metres, and the speed a car is likely to be doing on it, km/h (to the 10). */
+  metres: number
+  kmh: number
+  /** Where the middle is now, on the slider's half-metre steps (never below 0). */
+  value: number
+  /** The slider's ends: the lowest and highest the middle can go, metres above the ground. Both were built and checked. */
+  lo: number
+  hi: number
+  /**
+   * Set when the middle can't go up just a little from where it is (`value`
+   * is below `lo`): low heights there make a dip with sharp shoulders a car
+   * takes off over, so the slider starts at the lowest height that works.
+   * `reason` is what goes wrong one step below `lo`.
+   */
+  jump?: { reason: string }
+  /**
+   * Why it can't go higher than `hi`:
+   *   top      it's at the highest any road goes (RAISE_MAX)
+   *   speed    a car would take off over the top: a longer stretch goes higher
+   *   checks   one of the game's checks says no (`reason` says which)
+   *   stop     no height works here: a piece or the start line is on it (`reason`)
+   *   short    the stretch is under RAISE_MIN_METRES long
+   */
+  why: 'top' | 'speed' | 'checks' | 'stop' | 'short'
+  reason?: string
+  /** How long a stretch would let the middle reach `height` (the next height worth having), or null at the top. */
+  next: { height: number; metres: number } | null
+  /** How many heights were built and checked to find these. */
+  builds: number
+  /** True while it is still being worked out: `lo` to `hi` are the heights checked so far (all of them build). */
+  checking?: boolean
+}
+
+const stepDown = (v: number) => Math.floor(v / HEIGHT_STEP + 1e-6) * HEIGHT_STEP
+const stepUp = (v: number) => Math.ceil(v / HEIGHT_STEP - 1e-6) * HEIGHT_STEP
+
+/**
+ * The Height slider's ends for a stretch, so every position on it builds.
+ * Every half-metre step is built and checked, one at a time (a generator that
+ * hands back what is known so far after each build, so the panel's slider
+ * grows while it works, and the editor never freezes); heightLimits runs it
+ * straight through.
+ *
+ * Up: from where the middle is now, a step at a time, as far as the editor's
+ * take-off rule allows for a stretch this long (mostRise), stopping at the
+ * first step that fails a check. A step can fail and a higher one work (a low
+ * raise on some ground makes a dip with sharp shoulders a car takes off over,
+ * a higher one is a smooth hill): then the slider starts at the first step
+ * that works (`jump`) and goes up from there. Down: the same, toward the
+ * ground. One step past either end is either refused by the take-off rule or
+ * was built and failed. (Checking only the ends is not enough: a builder check
+ * can fail at one height between two that pass.)
+ */
+export function* heightLimitSteps(d: Draft, from: number, to: number, o: RaiseOptions): Generator<HeightLimits, HeightLimits, void> {
+  const job = raiseJob(d, from, to, o)
+  const { v, kmh, now } = job
+  let builds = 0
+  const value = Math.max(0, Math.min(RAISE_MAX, Math.round(now.middle / HEIGHT_STEP) * HEIGHT_STEP))
+  const base = { metres: now.metres, kmh, value }
+  if (now.metres < RAISE_MIN_METRES) return { ...base, lo: value, hi: value, why: 'short', next: null, builds }
+  const range = heightRange(now, v)
+  const capHi = Math.max(value, Math.min(RAISE_MAX, stepDown(range.hi)))
+  const capLo = Math.min(value, Math.max(0, stepUp(range.lo)))
+  const attempt = (h: number): Attempt => {
+    if (Math.abs(h - now.middle) < 0.05) return { ok: true, draft: d, from, to }
+    builds++
+    return tryHeight(job, h)
+  }
+  let lo = value
+  let hi = value
+  let why: HeightLimits['why'] = capHi >= RAISE_MAX ? 'top' : 'speed'
+  let reason: string | undefined
+  let jump: HeightLimits['jump']
+  /** The next height worth having (8 m: a car fits under; then the most any road goes), and the stretch it needs. */
+  const nextFor = (top: number) => {
+    const h = why === 'stop' ? null : top < 8 - 1e-6 ? 8 : top < RAISE_MAX - 1e-6 ? RAISE_MAX : null
+    return h === null ? null : { height: h, metres: Math.ceil((stretchFor(h - now.middle, v) * 1.05) / 10) * 10 }
+  }
+  const sofar = (checking: boolean): HeightLimits => ({ ...base, lo, hi, jump, why, reason, next: nextFor(hi), builds, checking })
+
+  // Up, a step at a time.
+  let firstFail: string | undefined
+  let seenOk = false
+  for (let h = value + HEIGHT_STEP; h <= capHi + 1e-6; h += HEIGHT_STEP) {
+    const r = attempt(h)
+    if (r.ok) {
+      // The first step that works after some that didn't: the slider starts here.
+      if (!seenOk && firstFail !== undefined) {
+        lo = h
+        jump = { reason: firstFail }
+      }
+      seenOk = true
+      hi = h
+    } else if (r.stop) {
+      // A piece or the start line on the stretch: no height works.
+      why = 'stop'
+      reason = r.reason
+      break
+    } else if (seenOk) {
+      why = 'checks'
+      reason = r.reason
+      break
+    } else firstFail = firstFail ?? r.reason
+    yield sofar(true)
+  }
+  if (!seenOk && why !== 'stop' && firstFail !== undefined) {
+    why = 'checks'
+    reason = firstFail
+  }
+
+  // Down, a step at a time (unless the slider already starts above where it is now).
+  if (!jump && why !== 'stop') {
+    for (let h = value - HEIGHT_STEP; h >= capLo - 1e-6; h -= HEIGHT_STEP) {
+      const r = attempt(h)
+      if (!r.ok) break
+      lo = h
+      yield sofar(true)
+    }
+  }
+  return sofar(false)
+}
+
+/** heightLimitSteps, straight through (for the self-test and the dev commands). */
+export function heightLimits(d: Draft, from: number, to: number, o: RaiseOptions): HeightLimits {
+  const it = heightLimitSteps(d, from, to, o)
+  for (;;) {
+    const r = it.next()
+    if (r.done) return r.value
+  }
 }
 
 function lowerFirst(text: string): string {
