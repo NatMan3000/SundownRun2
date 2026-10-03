@@ -1,8 +1,11 @@
 // ============================================================
-//  RAISE - lift (or lower) a whole stretch of road on smooth ramps
+//  RAISE - lift (or lower, or dig) a whole stretch of road on smooth ramps
 // ------------------------------------------------------------
 //  Josh picks a stretch of road (the Height tool) and sets how high
-//  its MIDDLE sits above the ground. The road then rises smoothly
+//  its MIDDLE sits above the ground, from RAISE_FLOOR (10 m down: the
+//  ground is dug into a cutting for it) to RAISE_MAX (16 m up), so
+//  nobody digs through the map or drives into the sky (Nathan). The
+//  road then rises (or dips) smoothly
 //  from each end of the stretch to the middle and back down, in the
 //  same smooth shape as the clean-up's bridge ramps (half a cosine
 //  wave each side), so there is no kink where it leaves the ground.
@@ -35,6 +38,7 @@
 
 import { CREST_CHECK_KMH, CREST_LIMIT } from '../track/bankRolls'
 import { trackInternals } from '../track/build'
+import { WALL_REACH } from '../track/road'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
 import type { TrackGate } from '../track/gates'
 import { SURFACE_CODE, type NearestHit, type TrackRuntime } from '../track/types'
@@ -47,6 +51,8 @@ import { gateTitle, isGameBug, judgeDraft, newFailures } from './judge'
 
 /** The highest a stretch's middle can go above the ground, metres (the same as the point slider: no road into the sky). */
 export const RAISE_MAX = 16
+/** The deepest a stretch's middle can go below the ground, metres (negative): no digging all the way through the map. */
+export const RAISE_FLOOR = -10
 /** The shortest stretch that can be raised, metres. */
 export const RAISE_MIN_METRES = 30
 /** The planned bump asks at most this share of gravity's pull at its top; the built road is judged at CREST_LIMIT (80%). */
@@ -217,7 +223,7 @@ export function stretchNow(points: readonly RoadPoint[], from: number, to: numbe
 /** The lowest and highest the middle of a stretch can go, metres above the ground, for a car at `v` m/s. */
 export function heightRange(now: StretchNow, v: number): { lo: number; hi: number; most: number } {
   const most = mostRise(now.metres, v)
-  return { lo: Math.max(0, now.middle - most), hi: Math.min(RAISE_MAX, now.middle + most), most }
+  return { lo: Math.max(RAISE_FLOOR, now.middle - most), hi: Math.min(RAISE_MAX, now.middle + most), most }
 }
 
 // ---------------------------------------------------------------- the new heights
@@ -353,7 +359,7 @@ export function planRaise(input: RaiseInput, from: number, to: number, height: n
       piece.type === 'loop'
         ? [-(LOOP_RUN_IN + 10), LOOP_RUN_IN + 5 * (piece.radius ?? TRACK_DEFAULTS.loopRadius)]
         : piece.type === 'wallride'
-          ? [0, piece.length ?? TRACK_DEFAULTS.wallride.length]
+          ? [-WALL_REACH, (piece.length ?? TRACK_DEFAULTS.wallride.length) + WALL_REACH]
           : [-30, 30]
     if (changeAlong(piece.at, spanOf[0], spanOf[1]) > 0.3) {
       return refuse('pieces', `A ${word} is on this stretch (at ${markWords(line0, input.startAt, piece.at)}): the road under it would tip up or down. Move the ${word} off it first, or pick a stretch without it.`)
@@ -402,6 +408,12 @@ export interface RaiseResult {
 function metresWords(v: number): string {
   const r = Math.round(v * 10) / 10
   return `${Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1)} m`
+}
+
+/** "8 m above the ground", "6 m below the ground", "on the ground": where a stretch's middle is. */
+export function heightPhrase(v: number): string {
+  if (Math.abs(v) < 0.05) return 'on the ground'
+  return v > 0 ? `${metresWords(v)} above the ground` : `${metresWords(-v)} below the ground`
 }
 
 /** Everything a raise of one stretch needs that doesn't depend on the height: worked out once, then each height is tried. */
@@ -471,28 +483,31 @@ export function raiseDraft(d: Draft, from: number, to: number, wanted: number, o
   const job = raiseJob(d, from, to, o)
   const { v, kmh, now } = job
   if (now.metres < RAISE_MIN_METRES) return { ok: false, reason: `That stretch is only ${Math.round(now.metres)} m long. Pick at least ${RAISE_MIN_METRES} m of road to raise.` }
-  const want = Math.max(0, Math.min(RAISE_MAX, wanted))
+  if (o.exact && (wanted < RAISE_FLOOR - 1e-6 || wanted > RAISE_MAX + 1e-6)) {
+    return { ok: false, reason: wanted < RAISE_FLOOR ? `A road can't go deeper than ${metresWords(-RAISE_FLOOR)} below the ground. Nothing changed.` : `A road can't go higher than ${metresWords(RAISE_MAX)} above the ground. Nothing changed.` }
+  }
+  const want = Math.max(RAISE_FLOOR, Math.min(RAISE_MAX, wanted))
   const range = heightRange(now, v)
   const target = Math.max(range.lo, Math.min(range.hi, want))
   const tooShort = Math.abs(target - want) > 0.05
   if (o.exact) {
     // Exactly `want`, or say why not and change nothing.
-    if (Math.abs(want - now.middle) < 0.05) return { ok: false, reason: `The middle of that stretch is already ${metresWords(now.middle)} above the ground.` }
+    if (Math.abs(want - now.middle) < 0.05) return { ok: false, reason: `The middle of that stretch is already ${heightPhrase(now.middle)}.` }
     if (tooShort) {
       const need = Math.ceil(stretchFor(want - now.middle, v) / 10) * 10
-      return { ok: false, reason: `This stretch is ${Math.round(now.metres)} m long, so its middle can't go to ${metresWords(want)} without a car at ${kmh} km/h taking off over the top. Select about ${need} m of road for that.` }
+      return { ok: false, reason: `This stretch is ${Math.round(now.metres)} m long, so its middle can't go to ${heightPhrase(want)} without a car at ${kmh} km/h taking off over the top. Select about ${need} m of road for that.` }
     }
     const r = tryHeight(job, want)
-    if (!r.ok) return { ok: false, reason: `Can't make that stretch ${metresWords(want)} high: ${lowerFirst(r.reason)} Nothing changed.` }
+    if (!r.ok) return { ok: false, reason: `Can't put the middle of that stretch ${heightPhrase(want)}: ${lowerFirst(r.reason)} Nothing changed.` }
     const got = stretchNow(r.draft.points, r.from, r.to, o.pointGround ?? FLAT).middle
-    return { ok: true, draft: r.draft, height: got, limited: false, done: `Its middle is ${metresWords(got)} above the ground now.`, from: r.from, to: r.to }
+    return { ok: true, draft: r.draft, height: got, limited: false, done: `Its middle is ${heightPhrase(got)} now.`, from: r.from, to: r.to }
   }
   if (Math.abs(target - now.middle) < 0.05) {
     if (tooShort) {
       const need = Math.ceil(stretchFor(want - now.middle, v) / 10) * 10
-      return { ok: false, reason: `This stretch is ${Math.round(now.metres)} m long, so its middle can't go any ${want > now.middle ? 'higher' : 'lower'} without a car at ${kmh} km/h taking off over the top. Select about ${need} m of road to go to ${metresWords(want)}.` }
+      return { ok: false, reason: `This stretch is ${Math.round(now.metres)} m long, so its middle can't go any ${want > now.middle ? 'higher' : 'lower'} without a car at ${kmh} km/h taking off over the top. Select about ${need} m of road to go to ${heightPhrase(want)}.` }
     }
-    return { ok: false, reason: `The middle of that stretch is already ${metresWords(now.middle)} above the ground.` }
+    return { ok: false, reason: `The middle of that stretch is already ${heightPhrase(now.middle)}.` }
   }
 
   // The height asked for (as far as the stretch's length allows) first. If the game says no,
@@ -522,14 +537,19 @@ export function raiseDraft(d: Draft, from: number, to: number, wanted: number, o
   }
   const got = stretchNow(best.draft.points, best.from, best.to, o.pointGround ?? FLAT).middle
   const lower = got < now.middle
-  let done = got < 0.05 ? 'Brought that stretch down to the ground. Undo puts it back.' : `${lower ? 'Lowered' : 'Raised'} that stretch: its middle is ${metresWords(got)} above the ground now, ${lower ? 'easing down' : 'rising smoothly'} from each end. Undo puts it back.`
+  let done =
+    Math.abs(got) < 0.05
+      ? `Brought that stretch ${now.middle > 0 ? 'down' : 'back up'} to the ground. Undo puts it back.`
+      : got < 0 && lower
+        ? `Dug that stretch down: its middle is ${heightPhrase(got)} now, easing down from each end into a cutting. Undo puts it back.`
+        : `${lower ? 'Lowered' : 'Raised'} that stretch: its middle is ${heightPhrase(got)} now, ${lower ? 'easing down' : 'rising smoothly'} from each end. Undo puts it back.`
   // How long a stretch the height asked for needs (at least a little longer than this one).
   const need = Math.max(Math.ceil(stretchFor(want - now.middle, v) / 10) * 10, Math.ceil((now.metres * 1.2) / 10) * 10)
-  const longer = `Select about ${need} m of road to go to ${metresWords(want)}.`
+  const longer = `Select about ${need} m of road to go to ${heightPhrase(want)}.`
   if (bestH !== target) {
-    done = `Only ${metresWords(got)} fits there: any further and ${lowerFirst(why)} It's ${metresWords(got)} now.${/take off/.test(why) ? ` ${longer}` : ''} Undo puts it back.`
+    done = `Only ${heightPhrase(got)} fits there: any further and ${lowerFirst(why)} It's ${heightPhrase(got)} now.${/take off/.test(why) ? ` ${longer}` : ''} Undo puts it back.`
   } else if (tooShort) {
-    done = `This stretch is ${Math.round(now.metres)} m long, so its middle can only go to ${metresWords(got)}: any further and a car at ${kmh} km/h would take off over the top. ${longer} Undo puts it back.`
+    done = `This stretch is ${Math.round(now.metres)} m long, so its middle can only go to ${heightPhrase(got)}: any further and a car at ${kmh} km/h would take off over the top. ${longer} Undo puts it back.`
   }
   return { ok: true, draft: best.draft, height: got, limited: tooShort || bestH !== target, done, from: best.from, to: best.to }
 }
@@ -585,9 +605,9 @@ export interface HeightLimits {
   /** The stretch's length, metres, and the speed a car is likely to be doing on it, km/h (to the 10). */
   metres: number
   kmh: number
-  /** Where the middle is now, on the slider's half-metre steps (never below 0). */
+  /** Where the middle is now, on the slider's half-metre steps (never below RAISE_FLOOR). */
   value: number
-  /** The slider's ends: the lowest and highest the middle can go, metres above the ground. Both were built and checked. */
+  /** The slider's ends: the lowest and highest the middle can go, metres above the ground (negative: below it). Both were built and checked. */
   lo: number
   hi: number
   /**
@@ -639,12 +659,12 @@ export function* heightLimitSteps(d: Draft, from: number, to: number, o: RaiseOp
   const job = raiseJob(d, from, to, o)
   const { v, kmh, now } = job
   let builds = 0
-  const value = Math.max(0, Math.min(RAISE_MAX, Math.round(now.middle / HEIGHT_STEP) * HEIGHT_STEP))
+  const value = Math.max(RAISE_FLOOR, Math.min(RAISE_MAX, Math.round(now.middle / HEIGHT_STEP) * HEIGHT_STEP))
   const base = { metres: now.metres, kmh, value }
   if (now.metres < RAISE_MIN_METRES) return { ...base, lo: value, hi: value, why: 'short', next: null, builds }
   const range = heightRange(now, v)
   const capHi = Math.max(value, Math.min(RAISE_MAX, stepDown(range.hi)))
-  const capLo = Math.min(value, Math.max(0, stepUp(range.lo)))
+  const capLo = Math.min(value, Math.max(RAISE_FLOOR, stepUp(range.lo)))
   const attempt = (h: number): Attempt => {
     if (Math.abs(h - now.middle) < 0.05) return { ok: true, draft: d, from, to }
     builds++
@@ -725,7 +745,7 @@ function lowerFirst(text: string): string {
 export function pointStretch(points: readonly RoadPoint[], index: number, wanted: number, runtime: TrackRuntime | null, ground: GroundFn = FLAT): { from: number; to: number; metres: number } {
   const line = roadLine(points)
   const sc = sOfPoint(line, index)
-  const rise = Math.abs(Math.max(0, Math.min(RAISE_MAX, wanted)) - liftAt(line, index, ground))
+  const rise = Math.abs(Math.max(RAISE_FLOOR, Math.min(RAISE_MAX, wanted)) - liftAt(line, index, ground))
   let metres = 64
   for (let pass = 0; pass < 2; pass++) {
     const from = atOf(line, sc - metres / 2)

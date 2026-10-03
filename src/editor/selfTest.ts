@@ -68,6 +68,7 @@ import { setSmoothTools, smoothRows } from './selfTestSmooth'
 import { builderRows } from './selfTestBuilder'
 import { setTrackModules, trackRows } from './selfTestTracks'
 import { pieceRows } from './selfTestPieces'
+import { underpassRows } from './selfTestUnder'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
 type EditorStore = typeof import('./draft')
@@ -1191,7 +1192,14 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     const autoTop = c[0].passes[c[0].over].heading
     const otherTop = c[0].passes[c[0].over === 0 ? 1 : 0].heading
     // A crest set by hand far from the crossing (the point furthest away and its neighbours) must never change.
-    const far = d.points.reduce((best, p, i) => (dist(p, at) > dist(d.points[best], at) ? i : best), 0)
+    // (Clear of the start grid too, from 90 m behind the line to 40 m after it: the clean-up can put the line on the far lobe.)
+    const startLine = roadLine(d.points)
+    const sStart = sOf(startLine, d.startAt)
+    const clearOfGrid = (i: number) => {
+      const ds = (sOfPoint(startLine, i) - sStart + startLine.length) % startLine.length
+      return ds > 40 && ds < startLine.length - 90
+    }
+    const far = d.points.reduce((best, p, i) => (clearOfGrid(i) && (!clearOfGrid(best) || dist(p, at) > dist(d.points[best], at)) ? i : best), 0)
     d.points = d.points.map((p, i) => (Math.abs(i - far) <= 1 ? { ...p, lift: 3 } : p))
     const bad: string[] = []
     const gaps: string[] = []
@@ -1206,14 +1214,22 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     bad.push(...builtVerdict(two.draft, at, autoTop).map((b) => `swapped back: ${b}`))
     gaps.push(lastGap.toFixed(2))
     // Swapped back = the clean-up's own bridge again (the same ramps), and the hand-set crest untouched both times.
+    // (Or the same bridge on longer, gentler ramps, where the take-off rule asked for them: then every
+    // lift is at least the clean-up's, since a longer ramp is higher at every distance from the crossing.)
     let worst = 0
+    let lower = 0
     if (two.draft.points.length !== d.points.length) bad.push(`swapped back has ${two.draft.points.length} points, not ${d.points.length}`)
-    else two.draft.points.forEach((p, i) => (worst = Math.max(worst, Math.abs((p.lift ?? 0) - (d.points[i].lift ?? 0)))))
-    if (worst > 0.06) bad.push(`swapped back, a lift differs from the clean-up's by ${worst.toFixed(2)} m`)
+    else
+      two.draft.points.forEach((p, i) => {
+        const diff = (p.lift ?? 0) - (d.points[i].lift ?? 0)
+        worst = Math.max(worst, Math.abs(diff))
+        lower = Math.max(lower, -diff)
+      })
+    if (lower > 0.06) bad.push(`swapped back, a lift is ${lower.toFixed(2)} m lower than the clean-up's`)
     for (const r of [one.draft, two.draft]) {
       for (const i of [far - 1, far, far + 1]) if (r.points[i]?.lift !== 3) bad.push(`the hand-set crest at point ${i} changed to ${r.points[i]?.lift}`)
     }
-    info = `crossing at ${Math.round(c[0].angleDeg)} degrees; built gap ${gaps.join(' m, then ')} m (needs ${BRIDGE_GAP}); swapped back = the clean-up's lifts to ${(worst * 100).toFixed(0)} cm; hand-set crest untouched; "${one.done}"`
+    info = `crossing at ${Math.round(c[0].angleDeg)} degrees; built gap ${gaps.join(' m, then ')} m (needs ${BRIDGE_GAP}); swapped back = ${worst <= 0.06 ? `the clean-up's lifts to ${(worst * 100).toFixed(0)} cm` : `the clean-up's bridge on gentler ramps (up to ${worst.toFixed(1)} m higher on a ramp, never lower)`}; hand-set crest untouched; "${one.done}"`
     return bad
   })
 
@@ -1242,9 +1258,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
         else kept++
       }
     }
-    const setHeights = copy.points.filter((p) => p.y !== undefined).length
-    const keptSet = copy.points.filter((p) => p.y !== undefined && after.points.some((q) => q.x === p.x && q.z === p.z && q.y === p.y)).length
-    if (keptSet !== setHeights) bad.push(`only ${keptSet} of ${setHeights} hand-set heights kept`)
+    // (Hand-set heights within reach of the swap's 200 m ramps are the swap's to change.)
+    const setHeights = copy.points.filter((p) => p.y !== undefined && dist(p, c[0].at) > 200).length
+    const keptSet = copy.points.filter((p) => p.y !== undefined && dist(p, c[0].at) > 200 && after.points.some((q) => q.x === p.x && q.z === p.z && q.y === p.y)).length
+    if (keptSet !== setHeights) bad.push(`only ${keptSet} of ${setHeights} hand-set heights more than 200 m away kept`)
     // The pieces stay on the same spots of road.
     const was = roadCurve(copy.points)
     const now = roadCurve(after.points)
@@ -1252,7 +1269,7 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
       const moved = dist(frameAt(was, p.at).p, frameAt(now, after.pieces[i].at).p)
       if (moved > 0.5) bad.push(`the ${p.type} at ${p.at} moved ${moved.toFixed(2)} m`)
     })
-    info = `built gap ${lastGap.toFixed(2)} m; ${copy.points.length} -> ${after.points.length} points; ${kept} far points and all ${setHeights} hand-set heights exactly kept; pieces in place; every check passes`
+    info = `built gap ${lastGap.toFixed(2)} m; ${copy.points.length} -> ${after.points.length} points; ${kept} far points and all ${setHeights} hand-set heights more than 200 m away exactly kept; pieces in place; every check passes`
     return bad
   })
 
@@ -1330,7 +1347,13 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     const kept = sameWay(topHeading(redrawn.points, ground, at), want)
     const flippedWithout = !sameWay(topHeading(forgot.points, ground, at), want)
     if (!kept) bad.push('a pencil redraw of the far lobe flipped the bridge back')
-    if (!flippedWithout) bad.push('without remembering, the redraw keeps the swap anyway, so this proves nothing: pick a crossing the clean-up decides the other way')
+    // If the clean-up would pick the swapped road anyway, prove the memory the other way: told the
+    // other road was on top, the redraw must put that one on top instead.
+    const c1 = crossingNear(roadCrossings(pts, ground), at)?.crossing
+    const otherWay = c1 ? c1.passes.map((p) => p.heading).find((hd) => !sameWay(hd, want)) ?? null : null
+    const opposite = otherWay === null ? null : cleanStroke(loop, { ...opts, fairing: 0, keepOver: [{ at, heading: otherWay }] })
+    const obeysOtherWay = !!opposite?.ok && sameWay(topHeading(opposite.points, ground, at), otherWay)
+    if (!flippedWithout && !obeysOtherWay) bad.push('without remembering the redraw keeps the swap anyway, and told the other road was on top it does not obey either, so this proves nothing')
     if (redrawn.issues.some((i) => i.code === 'bridge-flipped')) bad.push('the redraw says it had to flip the bridge')
     const farMoved = nearestOnRoad(roadCurve(redrawn.points), frameAt(rc, far).p).distance
     if (farMoved < 15) bad.push(`the redraw only moved the far lobe ${farMoved.toFixed(0)} m`)
@@ -1338,7 +1361,7 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
       const v = builtVerdict({ ...sd, points: [...p], pieces: [], startAt: 0 }, at, want ?? 0)
       if (v.length) bad.push(`${label}: ${v.join('; ')}`)
     }
-    info = `kept through a Bend, a moved point and a redraw (the far lobe moved ${farMoved.toFixed(0)} m); without remembering, the redraw ${flippedWithout ? 'flips it back' : 'keeps it'}`
+    info = `kept through a Bend, a moved point and a redraw (the far lobe moved ${farMoved.toFixed(0)} m); without remembering, the redraw ${flippedWithout ? 'flips it back' : `keeps it, and told the other road was on top it puts that one on top${obeysOtherWay ? '' : ' (NOT)'}`}`
     return bad
   })
 
@@ -1611,6 +1634,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- placing pieces by their middle, and Auto bank's angle (selfTestPieces.ts)
 
   pieceRows(check, store)
+
+  // ---------------------------------------------------------------- underpasses and digging down (selfTestUnder.ts)
+
+  underpassRows(check, store, { shaky, opts })
 
   return results
 }

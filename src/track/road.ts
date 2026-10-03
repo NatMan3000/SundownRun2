@@ -35,7 +35,7 @@
 
 import type { ResolvedTrackFile, LoopPiece, WallRidePiece } from './schema'
 import { SURFACE_CODE, type TrackSamples } from './types'
-import { averagedHeight, type NaturalTerrain } from './terrain'
+import { averagedHeight, shoulderHeight, type NaturalTerrain } from './terrain'
 import { arcLengthAtParam, nodeAtLength, sampleClosedSpline } from './spline'
 import { clamp, smoothstep } from './noise'
 import { shapeBankRolls } from './bankRolls'
@@ -96,6 +96,22 @@ const BANK_DEADBAND = 1 / 3000
 export const SLAB_THICKNESS = 1.2
 /** ...and a grounded road's sides reach this far down into the fill. */
 export const SLAB_GROUNDED = 2.5
+/**
+ * An underpass: where another stretch of road passes at least this far (metres) below a
+ * road on the ground, through its cutting, the road on top is a short bridge over the
+ * cutting (markOverCuttings). The same room the `bridges` gate asks for: a slab plus a car.
+ */
+export const UNDERPASS_GAP = 6.2
+/**
+ * A road sitting at least this far (metres) below the natural ground is in a cutting dug
+ * for it (an underpass). Shallower, it follows a dip in the ground (Afterglow's road through
+ * its hills sits up to 2 m down), and a road on the ground beside it fills its bank as usual.
+ */
+const CUTTING_MIN_DEPTH = 3
+/** A dip under another road is dug through that road's shoulders from where it is this far (metres) below the ground. */
+const DIP_EDGE = 0.25
+/** Two samples closer than this along the road are the same stretch, never an underpass. */
+export const SAME_STRETCH = 80
 
 export interface LoopInfo {
   pieceIndex: number
@@ -158,6 +174,14 @@ export interface Centerline {
    * The middle minus this is where the road would sit unbanked.
    */
   pivotLift: Float32Array
+  /** Per sample, 1 where the road is a short bridge over another stretch's cutting (an underpass: markOverCuttings). */
+  overCut: Uint8Array
+  /**
+   * Per sample, 1 along a sunken stretch that passes under a road on the ground (its whole dip,
+   * from where it leaves the ground to where it comes back): that road's cutting is dug through
+   * the other road's shoulders (terrain.ts flattenToRoad).
+   */
+  underCut: Uint8Array
 }
 
 /** Shortest signed distance from a to b on a loop of length L. */
@@ -674,6 +698,9 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     const gap = S.py[i] - pivotLift[i] - nat.height(S.px[i], S.pz[i])
     S.grounded[i] = gap <= FILL_MAX ? 1 : 0
   }
+  // A road on the ground over another stretch's cutting is a bridge there (an underpass).
+  const { overCut, underCut } = markOverCuttings(S, pivotLift, nat)
+  for (let i = 0; i < count; i++) if (overCut[i]) S.grounded[i] = 0
   denoiseRuns(S.grounded, S.surface, Math.round(10 / ds))
 
   const thickness = new Float32Array(count)
@@ -770,7 +797,88 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
     }
   })
 
-  return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt, atOfS, overrideWeight, pivotLift }
+  return { samples: S, length, thickness, wallLeft, wallRight, wallRadius, loops, walls, sOfAt, atOfS, overrideWeight, pivotLift, overCut, underCut }
+}
+
+/**
+ * Over a cutting (an underpass). Where a road sunk into the ground (negative lift) passes
+ * under a road on the ground, the ground is dug out into a cutting with sloped sides for
+ * the road below. If the road on top stayed "grounded" there, the ground would be filled
+ * up under it (that's what grounded means), building a dam across the cutting with only
+ * a slot for the road below. So a road sample counts as a bridge wherever another
+ * stretch passes UNDERPASS_GAP metres or more below it, and the cutting's ground under its
+ * deck would sit lower than its slab (2.5 m under a grounded road): the cutting runs on
+ * under it and it crosses on its own short bridge. Returns 1 per sample where that is so
+ * (`overCut`), and 1 along every dip that passes under one (`underCut`). Tracks with no
+ * road below the ground get all zeros (and the same road as before).
+ */
+function markOverCuttings(S: TrackSamples, pivotLift: Float32Array, nat: NaturalTerrain): { overCut: Uint8Array; underCut: Uint8Array } {
+  const n = S.count
+  const out = new Uint8Array(n)
+  const under = new Uint8Array(n)
+  // Road samples in a cutting: where they would sit unbanked, and the natural ground there.
+  const sunk: number[] = []
+  const floorY = new Float32Array(n)
+  const natY = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    floorY[i] = S.py[i] - pivotLift[i]
+    natY[i] = nat.height(S.px[i], S.pz[i])
+    if (natY[i] - floorY[i] >= CUTTING_MIN_DEPTH) sunk.push(i)
+  }
+  if (!sunk.length) return { overCut: out, underCut: under }
+  // Bucket the sunken samples on a coarse grid, so each road sample only looks at its neighbours.
+  const CELL = 32
+  const key = (cx: number, cz: number) => cx * 100003 + cz
+  const cells = new Map<number, number[]>()
+  let widest = 0
+  for (const j of sunk) {
+    const k = key(Math.floor(S.px[j] / CELL), Math.floor(S.pz[j] / CELL))
+    const list = cells.get(k)
+    if (list) list.push(j)
+    else cells.set(k, [j])
+    widest = Math.max(widest, S.halfWidth[j])
+  }
+  const same = Math.round(SAME_STRETCH / S.ds)
+  for (let i = 0; i < n; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road || S.grounded[i] !== 1) continue
+    const top = floorY[i]
+    // A cutting reaches at most the widest road plus the widest shoulder (36 m) from its middle.
+    const reach = S.halfWidth[i] + widest + 36
+    const r = Math.ceil(reach / CELL)
+    const cx = Math.floor(S.px[i] / CELL)
+    const cz = Math.floor(S.pz[i] / CELL)
+    search: for (let dx = -r; dx <= r; dx++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (const j of cells.get(key(cx + dx, cz + dz)) ?? []) {
+          const apart = Math.abs(i - j)
+          if (Math.min(apart, n - apart) < same) continue
+          if (S.py[i] - S.py[j] < UNDERPASS_GAP) continue
+          // How far the near edge of this deck is from the edge of the road below, and how low its cutting is there.
+          const beyond = Math.hypot(S.px[i] - S.px[j], S.pz[i] - S.pz[j]) - S.halfWidth[i] - S.halfWidth[j]
+          const cut = beyond <= 0 ? floorY[j] : shoulderHeight(floorY[j], natY[i], beyond)
+          if (cut < top - SLAB_GROUNDED) {
+            out[i] = 1
+            under[j] = 1
+            break search
+          }
+        }
+      }
+    }
+  }
+  // Spread each passing-under mark over its whole dip: every sample below the ground either side.
+  for (let i = 0; i < n; i++) {
+    if (under[i] !== 1) continue
+    for (const dir of [-1, 1]) {
+      for (let k = 1; k < n; k++) {
+        const j = (((i + dir * k) % n) + n) % n
+        if (S.surface[j] !== SURFACE_CODE.road || natY[j] - floorY[j] < DIP_EDGE || under[j] === 1) break
+        under[j] = 2
+      }
+    }
+  }
+  for (let i = 0; i < n; i++) if (under[i]) under[i] = 1
+  return { overCut: out, underCut: under }
 }
 
 /**

@@ -41,7 +41,7 @@ import { circularSmooth } from '../track/road'
 import type { StrokeIssue } from './cleanup'
 import type { Draft } from './draft'
 import { roadBound } from './draftFile'
-import { BRIDGE_GAP, type GroundFn, crossingNear, roadCrossings, swapDraft, tryOneWay } from './bridges'
+import { BRIDGE_GAP, type GroundFn, crossingNear, roadCrossings, swapDraft, tryOneWay, underDraft } from './bridges'
 import { liftBridgeBy } from './bankBridges'
 import { type BankRegion, bankRegions, handBankNear, regionNear } from './handBanks'
 import { type P, circumradius, dist } from './geom'
@@ -512,6 +512,11 @@ function* bridgeAt(d: Draft, spot: P, ctx: FixContext): Generator<Candidate> {
   if (!hit) return
   const c = hit.crossing
   const o = { id: ctx.id, pointGround: ctx.world.pointGround, params: ctx.params, gatesBefore: ctx.before.gates }
+  if (c.over !== null && c.kind === 'underpass') {
+    // An underpass too shallow for a car: dig the lower road down to a full underpass first.
+    const r = underDraft(d, c.at, c.over === 0 ? 1 : 0, o)
+    if (r.ok && r.draft) yield { draft: r.draft, did: 'dug the lower road down into an 8 m cutting there so a car fits under the other road.' }
+  }
   if (c.over !== null) {
     const r = tryOneWay(d, c.at, c.over, o)
     if (r.ok && r.draft) yield { draft: r.draft, did: 'lifted the upper road there onto an 8 m bridge with smooth ramps.' }

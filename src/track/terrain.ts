@@ -481,6 +481,19 @@ export function requiredClearance(lateral: number, halfWidth: number): number {
 const BANK_RUNOUT = 4.5
 const SHOULDER_MIN = 12
 const SHOULDER_MAX = 36
+/**
+ * How wide (horizontal metres past the road's edge) the sloped shoulder is where the
+ * ground is cut down or filled up `depth` metres to meet the road: deep cuts and tall
+ * fills get a wider one, so the slope stays a slope. (road.ts uses it too, to see how
+ * far a sunken road's cutting reaches: "over a cutting".)
+ */
+export function shoulderWidth(depth: number): number {
+  return clamp(SHOULDER_MIN + 0.6 * Math.abs(depth), SHOULDER_MIN, SHOULDER_MAX)
+}
+/** Where the shoulder beside a road at `roadY` has blended `beyond` metres out toward natural ground at `naturalY`. */
+export function shoulderHeight(roadY: number, naturalY: number, beyond: number): number {
+  return roadY + (naturalY - roadY) * smoothstep(0, shoulderWidth(naturalY - roadY), beyond)
+}
 /** A bridge keeps at least this much air between its underside and the ground. */
 export const BRIDGE_CLEARANCE = 5
 /**
@@ -489,6 +502,13 @@ export const BRIDGE_CLEARANCE = 5
  * drop just under the road (a wall of ground right under the deck at the join).
  */
 const BRIDGE_TAPER = 10
+/**
+ * A road on the ground that becomes a short bridge over another road's cutting (road.ts,
+ * "over a cutting") keeps only this much air under its slab: the cutting is already dug
+ * deep under it, and the full bridge clearance would carve a trench into the cutting's
+ * sides under the deck.
+ */
+const OVER_CUT_CLEARANCE = 0.5
 /**
  * Where a road on the ground lifts off into a bridge (or comes down off one), the ground
  * under its last this-many metres stays hidden right to the edges instead of rising to
@@ -522,6 +542,12 @@ export interface FlattenInput {
   thickness: Float32Array
   /** Stadium barriers along both edges (road.barriers = 'walls'), this tall. 0 = none. */
   barrierHeight: number
+  /** Per sample, 1 where the road is a short bridge over another road's cutting (road.ts Centerline.overCut). */
+  overCut?: Uint8Array
+  /** Per sample, 1 along a dip that passes under another road (road.ts Centerline.underCut): its cutting wins. */
+  underCut?: Uint8Array
+  /** Samples closer than this along the road are one stretch (road.ts SAME_STRETCH), metres. */
+  sameStretch?: number
 }
 
 /** The cut-and-filled ground, plus where the physics ground isn't needed. */
@@ -571,6 +597,10 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
   const bestGd = new Float32Array(vcount).fill(Infinity)
   const bestB = new Int32Array(vcount).fill(-1)
   const bestBd = new Float32Array(vcount).fill(Infinity)
+  // An underpass's cutting (cutThrough): for each vertex, the nearest sample of a dip that passes under another road.
+  const underCut = input.underCut && input.underCut.includes(1) ? input.underCut : null
+  const bestC = underCut ? new Int32Array(vcount).fill(-1) : null
+  const bestCd = underCut ? new Float32Array(vcount).fill(Infinity) : null
 
   // For each raised (not grounded) road sample: metres along the road to the nearest grounded one.
   const toGround = new Float32Array(count).fill(Infinity)
@@ -608,6 +638,7 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
     const r2 = reach * reach
     const bestIdx = grounded ? bestG : bestB
     const bestD = grounded ? bestGd : bestBd
+    const cutting = bestC && bestCd && grounded && underCut?.[i] === 1
     for (let iz = iz0; iz <= iz1; iz++) {
       const dz = -half + iz * cellSize - cz
       const dz2 = dz * dz
@@ -622,9 +653,14 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
           bestD[v] = d2
           bestIdx[v] = i
         }
+        if (cutting && d2 < bestCd[v]) {
+          bestCd[v] = d2
+          bestC[v] = i
+        }
       }
     }
   }
+  const sameStretch = Math.round((input.sameStretch ?? 80) / S.ds)
 
   for (let v = 0; v < vcount; v++) {
     const ig = bestG[v]
@@ -723,7 +759,7 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
         // a cut's wall rising straight from the edge made a valley right at the edge, which the
         // 3 m ground triangles bridged above the road, and the safety pass then dug it out.
         const lowFlat = !walls && Math.sign(lat) === lowSide ? runout * smoothstep(0.02, 0.05, Math.abs(S.ry[ig])) : 0
-        const shoulder = clamp(SHOULDER_MIN + 0.6 * Math.abs(h - target), SHOULDER_MIN, SHOULDER_MAX)
+        const shoulder = shoulderWidth(h - target)
         const w = smoothstep(0, shoulder, walls ? Math.max(0, beyond * Math.sqrt(rh2) - EDGE_REACH) : Math.max(0, beyond - lowFlat))
         h = target + (h - target) * w
       }
@@ -743,6 +779,17 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
       }
     }
 
+    // An underpass's cutting is dug through the shoulders of the road on top (but never under its deck):
+    // where that road's nearer samples shaped this vertex, they built its bank from the natural ground,
+    // a wedge of ground standing in the cutting beside the deck.
+    const ic = bestC ? bestC[v] : -1
+    if (ic >= 0 && !underDeck && ic !== ig) {
+      const apart = ig >= 0 ? Math.abs(ig - ic) : count
+      // (Only where the cutting is dug below the natural ground: past its shoulder the other road's own bank stays.)
+      const cut = Math.min(apart, count - apart) >= sameStretch ? cutThrough(S, ic, x, z, nat[v]) : Infinity
+      if (cut < nat[v] - 0.01 && cut < h) h = cut
+    }
+
     if (ib >= 0 && !underDeck) {
       // A bridge overhead: keep clear air under its underside. Only under (or just
       // beside) the bridge itself: not under a grounded road's own deck, and not
@@ -758,10 +805,11 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
       const lat = rh2 > 1e-4 ? (dx * rxh + dz * rzh) / rh2 : 0
       const hw = S.halfWidth[ib]
       const along = Math.abs(dx * S.tx[ib] + dz * S.tz[ib])
-      if (Math.abs(lat) <= hw + 3 && along <= S.ds) {
+      // (Beside the deck too, except over a cutting: there the cutting's own sides run on beside it.)
+      if (Math.abs(lat) <= hw + (input.overCut?.[ib] ? 0 : 3) && along <= S.ds) {
         const latC = clamp(lat, -hw, hw)
         const under = S.py[ib] + S.ry[ib] * latC - input.thickness[ib]
-        const clip = under - BRIDGE_CLEARANCE * smoothstep(0, BRIDGE_TAPER, toGround[ib])
+        const clip = under - (input.overCut?.[ib] ? OVER_CUT_CLEARANCE : BRIDGE_CLEARANCE * smoothstep(0, BRIDGE_TAPER, toGround[ib]))
         if (h > clip) h = clip
       }
     }
@@ -769,6 +817,24 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
   }
   keepUnderRoad(grid, out, S)
   return { heights: out, covered: cover }
+}
+
+/**
+ * The ground an underpass's cutting wants at (x, z), from road sample `i` (an open road
+ * in the cutting): hidden under its deck, and past its edges the shoulder rising from the
+ * edge to the natural ground `natural` (the same shape flattenToRoad gives it).
+ */
+function cutThrough(S: TrackSamples, i: number, x: number, z: number, natural: number): number {
+  const dx = x - S.px[i]
+  const dz = z - S.pz[i]
+  const rh2 = S.rx[i] * S.rx[i] + S.rz[i] * S.rz[i]
+  const lat = rh2 > 1e-4 ? (dx * S.rx[i] + dz * S.rz[i]) / rh2 : 0
+  const hw = S.halfWidth[i]
+  const surfY = S.py[i] + S.ry[i] * clamp(lat, -hw, hw)
+  const beyond = Math.abs(lat) - hw
+  if (beyond <= 0) return surfY - HIDE_DEPTH
+  const target = surfY - EDGE_DEPTH
+  return target + (natural - target) * smoothstep(0, shoulderWidth(natural - target), beyond)
 }
 
 /**

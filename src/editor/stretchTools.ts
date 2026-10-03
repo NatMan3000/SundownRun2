@@ -43,6 +43,7 @@ export function marksOf(d: Draft): StretchMarks {
 function runWords(run: StretchRun): string {
   if (run.tool === 'bank') return `Picked the bank you set: ${Math.round(run.value)}°. Change it in the panel, or press Auto to let the game bank it again.`
   if (run.tool === 'width') return `Picked the width you set: ${Math.round(run.value)} m. Change it in the panel, or press Track width to put it back.`
+  if (run.value < 0) return `Picked the dug road: ${Math.round(-run.value * 10) / 10} m down at its deepest. Change its height in the panel, or press On the ground to put it back up.`
   return `Picked the raised road: ${Math.round(run.value * 10) / 10} m up at its highest. Change its height in the panel, or press On the ground to put it back down.`
 }
 
@@ -104,7 +105,7 @@ export function stretchHoverLabel(d: Draft, pick: { from: number; to: number; ru
   const metres = Math.round(stretchMetres(d.points, pick.from, pick.to))
   if (!pick.run) return `${metres} m`
   const r = pick.run
-  const what = r.tool === 'bank' ? `BANK ${Math.round(r.value)}°` : r.tool === 'width' ? `WIDTH ${Math.round(r.value)} m` : `RAISED ${Math.round(r.value * 2) / 2} m`
+  const what = r.tool === 'bank' ? `BANK ${Math.round(r.value)}°` : r.tool === 'width' ? `WIDTH ${Math.round(r.value)} m` : r.value < 0 ? `DUG ${Math.round(-r.value * 2) / 2} m` : `RAISED ${Math.round(r.value * 2) / 2} m`
   return `${what}, ${metres} m`
 }
 

@@ -62,6 +62,10 @@
 //    __dev.editor('selectCrossing', i)     select crossing i (as a click on its BRIDGE label does)
 //    __dev.editor('swap', i | [x, z])      press Swap on crossing i (or the one at a map spot);
 //                                          returns ok, the status line and the crossings after
+//    __dev.editor('under', [i, pass])      send pass 0 or 1 of crossing i under the other (an
+//                                          underpass; pass null: either, as "Make an underpass
+//                                          here" does); returns like swap
+//    __dev.editor('makeBridge', [i, pass]) make crossing i a bridge with that pass on top
 //
 //  Height and problems (editor8):
 //    __dev.editor('stretch', [from, to, tool])  select a stretch of road with the Height, Bank or Width
@@ -106,6 +110,8 @@ import {
   draftFromFile,
   selectCrossing,
   swapBridge,
+  sendUnder,
+  makeBridge,
   draftId,
   newTrack,
   saveAsNewTrack,
@@ -228,16 +234,17 @@ function crossingsSummary() {
     x: Math.round(c.at.x * 10) / 10,
     z: Math.round(c.at.z * 10) / 10,
     over: c.over,
+    kind: c.kind,
     gap: Math.round(c.gap * 100) / 100,
     angle: Math.round(c.angleDeg),
-    passes: c.passes.map((p) => ({ at: Math.round(p.at * 100) / 100, heading: Math.round(p.heading), height: Math.round(p.height * 100) / 100 })),
+    passes: c.passes.map((p) => ({ at: Math.round(p.at * 100) / 100, heading: Math.round(p.heading), height: Math.round(p.height * 100) / 100, lift: Math.round(p.lift * 100) / 100 })),
   }))
 }
 
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | under [i,pass] | makeBridge [i,pass] | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -345,6 +352,15 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       const spot = Array.isArray(arg) ? { x: Number(arg[0]), z: Number(arg[1]) } : draftCrossings()[Number(arg ?? 0)]?.at
       if (!spot) return `no crossing ${String(arg)}`
       const ok = swapBridge(spot)
+      return { ok, message: useEditor.getState().message?.text ?? '', crossings: crossingsSummary() }
+    }
+    case 'under':
+    case 'makeBridge': {
+      const [i, pass] = Array.isArray(arg) ? arg : [arg ?? 0, null]
+      const c = draftCrossings()[Number(i)]
+      if (!c) return `no crossing ${String(i)}`
+      const which = pass === null || pass === undefined ? null : Number(pass) === 1 ? 1 : 0
+      const ok = cmd === 'under' ? sendUnder(c.at, which) : makeBridge(c.at, which ?? (c.over ?? 0))
       return { ok, message: useEditor.getState().message?.text ?? '', crossings: crossingsSummary() }
     }
     case 'checks':

@@ -73,9 +73,23 @@ export const CLEANUP = {
    * and Ai speeds flow instead of twitching.
    */
   fairing: 12,
-  /** Bridges: how high the upper road goes, and how long each ramp up to it is, metres. */
+  /**
+   * Bridges: how high the upper road goes, and how long each ramp up to it is, metres
+   * (an underpass's dip goes as far down, on ramps as long). 200 m ramps are gentle enough
+   * that a car at 250 km/h, the fastest the game expects anywhere, stays on the road over
+   * the top of the ramp (the crest asks under 80% of gravity's pull, CREST_LIMIT: the same
+   * rule as the Height tool's and the dips check's), with room to spare for the hills the
+   * road rides on. The 80 m ramps they used to have threw cars into the air above about
+   * 130 km/h; 160 m was still too sharp on hilly worlds.
+   */
   bridgeLift: 8,
-  bridgeRamp: 80,
+  bridgeRamp: 200,
+  /**
+   * Where 200 m ramps don't fit (another crossing too close, or no straight left for the
+   * start grid clear of them, as on a small figure-eight), the bridges get ramps this long
+   * instead, and say so: gentler than the old 80 m, but a car flat out may go light.
+   */
+  bridgeRampShort: 160,
   /** Crossings flatter than this angle can't be bridged (the roads would overlap for too long). */
   minCrossDeg: 28,
   /** Gap kept between the edges of two bits of road that run side by side, metres. */
@@ -96,9 +110,10 @@ export type CleanupOptions = typeof CLEANUP & {
    * Which road goes over at crossings the road had before (bridges.ts
    * keepOverOf): a crossing found within 40 m of one, with a road heading the
    * same way, keeps that road on top instead of the automatic choice. Redrawing
-   * a stretch passes these in, so a swapped bridge stays swapped.
+   * a stretch passes these in, so a swapped bridge stays swapped. `under` marks
+   * an underpass: the other road dips under this one, which stays on the ground.
    */
-  keepOver?: readonly { at: P; heading: number }[]
+  keepOver?: readonly { at: P; heading: number; under?: boolean }[]
 }
 
 export type IssueLevel = 'error' | 'warning' | 'note'
@@ -118,6 +133,7 @@ export interface StrokeIssue {
     | 'shallow-crossing'
     | 'bridge-conflict'
     | 'bridge-flipped'
+    | 'steep-bridge'
     | 'too-tangled'
   message: string
   at?: P
@@ -238,12 +254,34 @@ function shapeRoad(smoothed: P[], drawnStart: P, o: CleanupOptions, limit: World
   let loop = relax(smoothed, o, limit, margin, work)
   if (o.fairing > 0) loop = resample(gaussianSmoothClosed(loop, o.fairing), o.fine, true)
 
-  // 5. crossings and bridges
-  const crossings = findCrossings(loop)
-  const spans = planBridges(loop, crossings, o, issues)
-
-  // 6. start line on a straight, then make it point 0
-  const startIndex = pickStart(loop, crossings, drawnStart, o)
+  // 5. crossings and bridges, on the gentlest ramps that fit, and
+  // 6. the start line on a straight clear of them (then it becomes point 0).
+  let crossings: Crossing[] = []
+  let spans: BridgeSpan[] = []
+  let startIndex = 0
+  let used = o
+  const ramps = [...new Set([o.bridgeRamp, Math.min(o.bridgeRamp, o.bridgeRampShort)])]
+  for (const ramp of ramps) {
+    used = { ...o, bridgeRamp: ramp }
+    const tryIssues: StrokeIssue[] = []
+    crossings = findCrossings(loop)
+    spans = planBridges(loop, crossings, used, tryIssues)
+    const start = pickStart(loop, crossings, drawnStart, used)
+    startIndex = start.index
+    const fits = start.straight && crossings.every((c) => c.over !== null || c.angleDeg < used.minCrossDeg)
+    if (fits || ramp === ramps[ramps.length - 1]) {
+      issues.push(...tryIssues)
+      if (ramp < o.bridgeRamp && spans.length) {
+        issues.push({
+          level: 'note',
+          code: 'steep-bridge',
+          message: `There's no room here for the gentlest bridge ramps, so they are ${ramp} m long instead of ${o.bridgeRamp} m: a car going flat out may go light over the top. Draw the road with more room either side of the crossing to make them gentler.`,
+          at: crossings.find((c) => c.over !== null)?.at,
+        })
+      }
+      break
+    }
+  }
   loop = [...loop.slice(startIndex), ...loop.slice(0, startIndex)]
   const length = polylineLength(loop, true)
   const shift = (s: number) => wrap(s - startIndex * (length / loop.length), length)
@@ -264,8 +302,8 @@ function shapeRoad(smoothed: P[], drawnStart: P, o: CleanupOptions, limit: World
     const s = (k * length) / count
     const p = pointAt(loop, s, true)
     const point: RoadPoint = { x: round1(p.x), z: round1(p.z) }
-    const lift = liftAt(s, spans, length, o)
-    if (lift > 0.05) point.lift = round1(lift)
+    const lift = liftAt(s, spans, length, used)
+    if (Math.abs(lift) > 0.05) point.lift = round1(lift)
     points.push(point)
   }
 
@@ -623,11 +661,13 @@ export function findCrossings(pts: readonly P[]): Crossing[] {
   return out
 }
 
-/** A raised stretch of road centred on s (metres along the road). */
+/** A raised stretch of road centred on s (metres along the road), or a dipped one (an underpass). */
 interface BridgeSpan {
   s: number
-  /** Metres either side of s held at full height (over the other road). */
+  /** Metres either side of s held at full height (over the other road), or full depth (under it). */
   flat: number
+  /** True when this stretch dips bridgeLift metres down under the other road instead of rising over it. */
+  dip?: boolean
 }
 
 /**
@@ -635,7 +675,9 @@ interface BridgeSpan {
  * lifted (a bridge on a bend is harder to drive), unless that clashes with
  * another crossing nearby where the same stretch has to stay low. A crossing
  * the road already had keeps the road it had on top (o.keepOver), and says so
- * if it can't. If neither way fits, the crossing is flagged for Josh to fix.
+ * if it can't; one that was an underpass stays one (the lower road dips down
+ * instead of the upper one rising). If neither way fits, the crossing is
+ * flagged for Josh to fix.
  */
 function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions, issues: StrokeIssue[]): BridgeSpan[] {
   const length = polylineLength(pts, true)
@@ -656,19 +698,27 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
     const bendA = maxCurvatureNear(pts, c.sA, reach, length)
     const bendB = maxCurvatureNear(pts, c.sB, reach, length)
     let order: ('A' | 'B')[] = bendA <= bendB ? ['A', 'B'] : ['B', 'A']
-    const kept = keptSide(pts, c, o.keepOver ?? [], length)
+    const keptChoice = keptSide(pts, c, o.keepOver ?? [], length)
+    const kept = keptChoice?.side ?? null
     if (kept) order = kept === 'A' ? ['A', 'B'] : ['B', 'A']
+    // An underpass stays an underpass: the road under it dips down, the one on top stays on the ground.
+    const dip = !!keptChoice?.under
     let chosen: 'A' | 'B' | null = null
     for (const side of order) {
       const upS = side === 'A' ? c.sA : c.sB
       const downS = side === 'A' ? c.sB : c.sA
-      const upClash = downs.some((d) => Math.abs(deltaS(upS, d.s, length)) < reach + d.flat)
-      const downClash = ups.some((u) => Math.abs(deltaS(downS, u.s, length)) < flat + u.flat + o.bridgeRamp)
-      const selfClash = Math.abs(deltaS(upS, downS, length)) < reach + flat
-      if (!upClash && !downClash && !selfClash) {
+      // The road whose heights change (the bridge, or the dip under the other road), and the one held on the ground.
+      const moveS = dip ? downS : upS
+      const holdS = dip ? upS : downS
+      const upClash = downs.some((d) => Math.abs(deltaS(moveS, d.s, length)) < reach + d.flat)
+      const downClash = ups.some((u) => Math.abs(deltaS(holdS, u.s, length)) < flat + u.flat + o.bridgeRamp)
+      const selfClash = Math.abs(deltaS(moveS, holdS, length)) < reach + flat
+      // A dip and a bridge can't share road.
+      const kindClash = ups.some((u) => !!u.dip !== dip && Math.abs(deltaS(moveS, u.s, length)) < reach + u.flat + o.bridgeRamp)
+      if (!upClash && !downClash && !selfClash && !kindClash) {
         chosen = side
-        ups.push({ s: upS, flat })
-        downs.push({ s: downS, flat })
+        ups.push({ s: moveS, flat, dip })
+        downs.push({ s: holdS, flat })
         break
       }
     }
@@ -677,9 +727,13 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
       issues.push({
         level: 'warning',
         code: 'bridge-flipped',
-        message: 'The road you put on top here has no room for its ramps any more, so the other road goes over now. Select the bridge to swap it back once there is room.',
+        message: dip
+          ? 'The road you sent under here has no room for its dip any more, so the other road goes under now. Select the crossing to swap it back once there is room.'
+          : 'The road you put on top here has no room for its ramps any more, so the other road goes over now. Select the bridge to swap it back once there is room.',
         at: c.at,
       })
+    } else if (chosen && dip) {
+      issues.push({ level: 'note', code: 'bridged', message: 'The road crosses itself here, and one side still goes under the other in a cutting.', at: c.at })
     } else if (chosen) {
       issues.push({ level: 'note', code: 'bridged', message: 'The road crosses itself here, so one side became a bridge.', at: c.at })
     } else {
@@ -696,10 +750,11 @@ function planBridges(pts: readonly P[], crossings: Crossing[], o: CleanupOptions
 
 /**
  * If this crossing was on the road before (a kept choice within 40 m), which
- * pass goes over: the one heading the same way as the road that was on top.
+ * pass goes over: the one heading the same way as the road that was on top,
+ * and whether it was an underpass.
  */
-function keptSide(pts: readonly P[], c: Crossing, keep: readonly { at: P; heading: number }[], length: number): 'A' | 'B' | null {
-  let best: { at: P; heading: number } | null = null
+function keptSide(pts: readonly P[], c: Crossing, keep: readonly { at: P; heading: number; under?: boolean }[], length: number): { side: 'A' | 'B'; under: boolean } | null {
+  let best: { at: P; heading: number; under?: boolean } | null = null
   for (const k of keep) if (dist(k.at, c.at) < 40 && (!best || dist(k.at, c.at) < dist(best.at, c.at))) best = k
   if (!best) return null
   const heading = (s: number) => {
@@ -711,21 +766,28 @@ function keptSide(pts: readonly P[], c: Crossing, keep: readonly { at: P; headin
   const offA = off(heading(c.sA))
   const offB = off(heading(c.sB))
   if (Math.min(offA, offB) > 60) return null
-  return offA <= offB ? 'A' : 'B'
+  return { side: offA <= offB ? 'A' : 'B', under: !!best.under }
 }
 
-/** Height of the road above the ground at s: full height over the crossing, eased ramps either side. */
+/**
+ * Height of the road above the ground at s: full height over the crossing, eased
+ * ramps either side (or as deep under it, for an underpass's dip: negative).
+ */
 function liftAt(s: number, spans: readonly BridgeSpan[], length: number, o: CleanupOptions): number {
   let lift = 0
+  let dip = 0
   for (const span of spans) {
     const d = Math.abs(deltaS(s, span.s, length))
-    if (d <= span.flat) lift = Math.max(lift, o.bridgeLift)
+    let w = 0
+    if (d <= span.flat) w = 1
     else if (d < span.flat + o.bridgeRamp) {
       const t = 1 - (d - span.flat) / o.bridgeRamp
-      lift = Math.max(lift, o.bridgeLift * (0.5 - 0.5 * Math.cos(Math.PI * t)))
+      w = 0.5 - 0.5 * Math.cos(Math.PI * t)
     }
+    if (span.dip) dip = Math.min(dip, -o.bridgeLift * w)
+    else lift = Math.max(lift, o.bridgeLift * w)
   }
-  return lift
+  return lift + dip
 }
 
 /** Sharpest bend (1 / radius) within `reach` metres either side of s. */
@@ -792,9 +854,9 @@ function findTooClose(pts: readonly P[], crossings: readonly Crossing[], o: Clea
  * The start line goes on a straight: the grid lines up behind it, so it
  * needs about 70 m of calm road behind and a bit in front. Of the straight
  * spots, the one nearest where Josh started drawing wins. Never on or under
- * a bridge.
+ * a bridge. Says whether it found a straight (else it is the calmest spot).
  */
-function pickStart(pts: readonly P[], crossings: readonly Crossing[], drawnStart: P, o: CleanupOptions): number {
+function pickStart(pts: readonly P[], crossings: readonly Crossing[], drawnStart: P, o: CleanupOptions): { index: number; straight: boolean } {
   const n = pts.length
   const length = polylineLength(pts, true)
   const h = length / n
@@ -827,7 +889,7 @@ function pickStart(pts: readonly P[], crossings: readonly Crossing[], drawnStart
       }
     }
   }
-  return bestStraight >= 0 ? bestStraight : bestAny
+  return bestStraight >= 0 ? { index: bestStraight, straight: true } : { index: bestAny, straight: false }
 }
 
 // ---------------------------------------------------------------- small helpers

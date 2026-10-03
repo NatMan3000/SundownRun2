@@ -34,7 +34,7 @@ import {
   type NaturalGrid,
   type NaturalTerrain,
 } from './terrain'
-import { buildCenterline, WALL_FULL_INSET, type LoopInfo } from './road'
+import { buildCenterline, SAME_STRETCH, WALL_FULL_INSET, type LoopInfo } from './road'
 import { SURFACE_CODE } from './types'
 import { buildRibbonMeshes } from './ribbon'
 import { buildRampMeshes, type RampSolid } from './ramps'
@@ -153,7 +153,7 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const L = c.length
 
   // ---- the ground, cut and filled to the road ----
-  const flat = flattenToRoad(natGrid, { samples: S, thickness: c.thickness, barrierHeight: file.road.barriers === 'walls' ? file.road.barrierHeight : 0 })
+  const flat = flattenToRoad(natGrid, { samples: S, thickness: c.thickness, barrierHeight: file.road.barriers === 'walls' ? file.road.barrierHeight : 0, overCut: c.overCut, underCut: c.underCut, sameStretch: SAME_STRETCH })
   const heights = flat.heights
   const terrain = makeTerrainGrid(natGrid, heights)
   const terrainHeight = (x: number, z: number) => gridHeight(terrain, x, z)

@@ -41,7 +41,7 @@ import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFromFile
 import { randomTrack } from './randomTrack'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
 import { checkBuiltTrack, gateItems } from './checks'
-import { crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
+import { type SwapResult, crossingNear, keepOverOf, roadCrossings, swapDraft, tryOneWay, underDraft, underEither } from './bridges'
 import { keepBridgesClear } from './bankBridges'
 import { type StretchTool, isStretchTool } from './stretchRuns'
 import type { P } from './geom'
@@ -1701,13 +1701,37 @@ export function selectCrossing(spot: P): boolean {
  * back. If it can't be done cleanly, nothing changes and Josh is told why.
  */
 export function swapBridge(spot: P): boolean {
+  return changeCrossing((d, o) => swapDraft(d, spot, o), "Can't swap this bridge.")
+}
+
+/**
+ * Send pass `under` (0 or 1, in driving order) of the crossing nearest `spot`
+ * under the other road (bridges.ts underDraft): it dips into a cutting and the
+ * other road crosses it on the ground. One commit, so one Undo puts it back.
+ * If it can't be done cleanly, nothing changes and Josh is told why.
+ */
+export function sendUnder(spot: P, under: 0 | 1 | null): boolean {
+  return changeCrossing((d, o) => (under === null ? underEither(d, spot, o) : underDraft(d, spot, under, o)), "Can't send this road under.")
+}
+
+/**
+ * Make the crossing nearest `spot` a bridge with pass `up` on top (an
+ * underpass's road on top goes up onto a bridge and the road in the cutting
+ * comes back up to the ground). One commit; nothing changes if it can't.
+ */
+export function makeBridge(spot: P, up: 0 | 1): boolean {
+  return changeCrossing((d, o) => tryOneWay(d, spot, up, o), "Can't make a bridge here.")
+}
+
+/** Run a crossing change (a swap or an underpass) on the draft as one commit, or say why not. */
+function changeCrossing(run: (d: Draft, o: Parameters<typeof swapDraft>[2]) => SwapResult, cant: string): boolean {
   const s = useEditor.getState()
   if (s.mode !== 'edit') return false
   const d = s.draft
   const id = s.savedId ?? draftId(d)
   const t = getTrack()
   const built = s.checkedDraft === d && s.preview === 'built' && !!s.gates && t?.id === id
-  const res = swapDraft(d, spot, {
+  const res = run(d, {
     id,
     pointGround: pointGroundFor(d),
     // The same live settings (a bank slider) the preview builds with.
@@ -1715,7 +1739,7 @@ export function swapBridge(spot: P): boolean {
     gatesBefore: built ? s.gates ?? undefined : undefined,
   })
   if (!res.ok || !res.draft) {
-    say(res.reason ?? "Can't swap this bridge.", 'warn')
+    say(res.reason ?? cant, 'warn')
     audio.ui('error')
     return false
   }

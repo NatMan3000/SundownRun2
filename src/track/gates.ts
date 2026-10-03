@@ -18,6 +18,9 @@
 //              car's body catches on it through the road)
 //    barriers  stadium barriers stand up as walls on a bank's low edge,
 //              with no ditch behind them
+//    cutting   the sides of a road dug into the ground are slopes,
+//              not cliffs (cuttings.ts)
+//    dips      a car stays on over the lip of a dip (cuttings.ts)
 //    tracking  "where am I on the road?" never jumps by mistake
 //    ground    the ground stays under the road
 //    ride      road riding the ground has no hilltop that throws a car
@@ -43,6 +46,7 @@ import { groundHoleAt } from './terrainTiles'
 import { barrierAxes, type BarrierAxes } from './ribbon'
 import { brakeOnSlope, carFullLockG, LINE_MAX_LAT_G } from './derived'
 import { CREST_CHECK_KMH, CREST_LANE_INSET, CREST_LIMIT, CREST_SPAN, LEAN_AHEAD_DEG, LEAN_SPEED_KMH } from './bankRolls'
+import { CUT_SLOPE_MAX_DEG, CUT_STEP_MAX, cuttingSides, dipLips } from './cuttings'
 
 const G = 9.81
 /** The banking gate's limit on leaning ahead of the bend: the builder's own rule plus a degree. */
@@ -1333,7 +1337,7 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
       'bridges',
       cross.gap >= BRIDGE_ROOM,
       `the road passes over itself with ${cross.gap.toFixed(1)} m between levels at the tightest, over any lane (${at(cross.s1)} over ${at(cross.s2)}; needs ${BRIDGE_ROOM} m: slab plus a car)`,
-      'give the upper road more `lift` at the crossing (8 m or more). A bank on the road underneath lifts its high lane toward the bridge: less bank there helps too.',
+      'give the upper road more `lift` at the crossing (8 m or more), or make it an underpass: the lower road dips 8 m into the ground there (`lift` -8) and the upper one stays on the ground. A bank on the road underneath lifts its high lane toward the bridge: less bank there helps too.',
     )
   }
   // Loops: room for a car everywhere on and around them, and a clean landing.
@@ -1423,6 +1427,35 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
           ? bad.join('; ')
           : `every bank keeps its low edge where the road would sit unbanked (at most ${(dd.sink * 100).toFixed(0)} cm below, limit ${(LOW_SINK_MAX * 100).toFixed(0)}), and beside it (${dd.banked} m of banked road on the ground) the ground stays level with the edge or falls away: no ditch deeper than ${(dd.depth * 100).toFixed(0)} cm (limit ${(LOW_DITCH_MAX * 100).toFixed(0)})${dd.lowBridge ? `; ${dd.lowBridge} m by a bridge too low for a car not judged (the bridges row)` : ''}`,
         'this is a builder bug, not your file: report it.',
+      )
+    }
+  }
+  // Road dug into the ground: a cutting's sides are slopes, not cliffs, and a car stays on over the lip of a dip.
+  {
+    const cs = cuttingSides(t)
+    if (cs) {
+      const bad: string[] = []
+      if (cs.slopeDeg > CUT_SLOPE_MAX_DEG) bad.push(`the side of the cutting at ${at(cs.slopeAt)} is ${cs.slopeDeg.toFixed(0)} deg steep (limit ${CUT_SLOPE_MAX_DEG})`)
+      if (cs.step > CUT_STEP_MAX) bad.push(`the side of the cutting at ${at(cs.stepAt)} steps ${cs.step.toFixed(1)} m in one grid cell (limit ${CUT_STEP_MAX} m)`)
+      gate(
+        'cutting',
+        bad.length === 0,
+        bad.length
+          ? `${bad.join('; ')}: a cliff, not a slope a car can drive down`
+          : `beside the ${cs.metres} m of road below the ground, the cutting's sides are slopes: at most ${cs.slopeDeg.toFixed(0)} deg steep (limit ${CUT_SLOPE_MAX_DEG}) and at most ${cs.step.toFixed(1)} m of change per grid cell (limit ${CUT_STEP_MAX})`,
+        'this is a builder bug, not your file: report it.',
+      )
+    }
+    const dl = dipLips(t)
+    if (dl) {
+      const pct = (x: number) => `${Math.max(0, x * 100).toFixed(0)}%`
+      gate(
+        'dips',
+        dl.worst <= CREST_LIMIT,
+        dl.worst <= CREST_LIMIT
+          ? `${dl.dips} dip${dl.dips === 1 ? '' : 's'} below the ground: over every lip a car stays on (the worst asks ${pct(dl.worst)} of gravity's pull at ${dl.kmh.toFixed(0)} km/h, limit ${pct(CREST_LIMIT)})`
+          : `a car at ${dl.kmh.toFixed(0)} km/h takes off over the lip of the dip at ${at(dl.at)}: the road falls away from it there asking ${pct(dl.worst)} of gravity's pull (limit ${pct(CREST_LIMIT)})`,
+        'the road tips down into the dip too sharply for the speed cars arrive at. Make the ramp down longer (the dipped stretch longer), or the dip shallower.',
       )
     }
   }

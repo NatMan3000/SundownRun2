@@ -39,6 +39,8 @@ const HEX = /^#[0-9a-fA-F]{6}$/
 const PURE_PRIMARIES = ['#ff0000', '#00ff00', '#0000ff', '#ff00ff', '#00ffff']
 const MOOD_BPM = { cruise: 92, drive: 108, race: 122, hyper: 132 } as const
 const MIN_RADIUS = 25
+/** The deepest a `lift` goes without a warning, metres: the road editor's Height tool digs no deeper (editor/raise.ts RAISE_FLOOR). */
+const DIG_LIMIT = -10
 
 class Issues {
   errors: TrackIssue[] = []
@@ -184,6 +186,7 @@ export function validateTrack(json: unknown): ValidationResult {
         if (p.lift !== undefined) {
           pt.lift = I.num(p, 'lift', path, 0, -30, 200)
           if (p.y !== undefined) I.warn(`${path}.lift`, 'ignored because y is given')
+          else if (pt.lift < DIG_LIMIT) I.warn(`${path}.lift`, `${-pt.lift} m below the ground is deeper than the road editor digs (${-DIG_LIMIT} m): the cutting's sides get very tall`)
         }
         if (p.width !== undefined) pt.width = I.num(p, 'width', path, width, 4, 80)
         if (p.bank !== undefined) pt.bank = I.num(p, 'bank', path, 0, -60, 85)

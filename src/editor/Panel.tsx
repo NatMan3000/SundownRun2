@@ -51,15 +51,17 @@ import {
   draftCrossings,
   pointGroundFor,
   swapBridge,
+  sendUnder,
+  makeBridge,
 } from './draft'
 import { type FixOffer, canWords, currentProblems, fixAll, fixOffer, fixProblem, fixSearchVersion, goToProblem, lastFixed, raiseSection, selectProblem, subscribeFixSearch } from './fixActions'
 import { NO_NOTES, type Problem, problemByKey, problemsOf } from './problems'
-import { type HeightLimits, liftAt } from './raise'
+import { type HeightLimits, RAISE_FLOOR, liftAt } from './raise'
 import { type StretchTool, heightsAboveGround, isStretchTool } from './stretchRuns'
 import { groundStretch, growStretch, heightLimitsNow, onHeightLimits, openHeightAtPoint } from './stretchTools'
 import { SmoothField } from './SmoothField'
 import './fixes.css'
-import { BRIDGE_GAP, bridgeCount, compassWord, crossingNear } from './bridges'
+import { BRIDGE_GAP, UNDER_DEPTH, bridgeCount, compassWord, crossingNear } from './bridges'
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
 import { issueLocation, roadGeometry } from './mapDraw'
 import { checkVerdict } from './checks'
@@ -376,9 +378,13 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
 
 /**
  * A crossing: which road goes over, in plain words (the map lights the one
- * that GOES OVER in violet and the one that GOES UNDER in cyan), and the
- * button that swaps them (draft.ts swapBridge). If the swap can't be done,
- * the status line says why and nothing changes.
+ * that GOES OVER in violet and the one that GOES UNDER in cyan), and two
+ * buttons: Swap (the other road on top, the same kind of crossing) and the
+ * other kind of crossing (a bridge becomes an underpass: the road underneath
+ * dips into a cutting and the one on top comes down to the ground; an
+ * underpass becomes a bridge). Where the roads meet: make a bridge or an
+ * underpass. If a change can't be done, the status line says why and
+ * nothing changes.
  */
 function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
   const d = p.draft
@@ -396,24 +402,48 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
   if (c.over === null) {
     return (
       <>
-        <p className="sre-help">These two roads meet at the same height here, so cars would crash into each other. Make one of them a bridge over the other.</p>
+        <p className="sre-help">These two roads meet at the same height here, so cars would crash into each other. Make one of them a bridge over the other, or send one under the other.</p>
         <button type="button" className="sre-btn is-primary" onClick={swap}>
           Make a bridge here
+        </button>
+        <button type="button" className="sre-btn" onClick={() => sendUnder(p.spot, null)} data-testid="editor-make-underpass">
+          Make an underpass here
         </button>
       </>
     )
   }
-  const under = c.over === 0 ? 1 : 0
+  const over = c.over
+  const under = over === 0 ? 1 : 0
   const low = c.gap < BRIDGE_GAP
+  const between = `${Math.round(c.gap * 10) / 10} m between them${low ? ', too low for a car to fit under' : ''}.`
+  if (c.kind === 'underpass') {
+    return (
+      <>
+        <p className="sre-help">
+          Going over, on the ground: {road(over)}. Going under, in a cutting {metresText(-c.passes[under].lift)} down: {road(under)}. {between}
+        </p>
+        <button type="button" className="sre-btn is-primary" onClick={() => sendUnder(p.spot, over)} data-testid="editor-swap-bridge">
+          Swap: send the other road under
+        </button>
+        <button type="button" className="sre-btn" onClick={() => makeBridge(p.spot, over)} data-testid="editor-make-bridge">
+          Make it a bridge instead
+        </button>
+        <p className="sre-help">Swap: the road in the cutting comes back up to the ground, and the other one dips under it. A bridge: the road on top goes up over the other on smooth ramps, and the road in the cutting comes back up to the ground. Undo puts either back.</p>
+      </>
+    )
+  }
   return (
     <>
       <p className="sre-help">
-        Going over: {road(c.over)}. Going under: {road(under)}. {Math.round(c.gap * 10) / 10} m between them{low ? ', too low for a car to fit under' : ''}.
+        Going over: {road(over)}. Going under: {road(under)}. {between}
       </p>
       <button type="button" className="sre-btn is-primary" onClick={swap} data-testid="editor-swap-bridge">
         Swap: put the other road on top
       </button>
-      <p className="sre-help">The road on top comes down to the ground here, and the other one goes up over it on smooth ramps. Undo puts it back.</p>
+      <button type="button" className="sre-btn" onClick={() => sendUnder(p.spot, under)} data-testid="editor-send-under">
+        Send the road heading {compassWord(c.passes[under].heading)} under
+      </button>
+      <p className="sre-help">Swap: the road on top comes down to the ground, and the other one goes up over it on smooth ramps. Send under: the road underneath dips {UNDER_DEPTH} m into a cutting, and the road on top comes down to the ground and crosses it on a short bridge. Undo puts either back.</p>
     </>
   )
 }
@@ -436,7 +466,7 @@ const STRETCH_TITLE: Record<StretchTool, string> = {
 
 /** What the tool does to the stretch, in one line. */
 const STRETCH_WHAT: Record<StretchTool, string> = {
-  height: 'Raise it into a hill or a bridge: the road rises smoothly from each end of the stretch to its middle.',
+  height: 'Raise it into a hill or a bridge, or dig it down into the ground: the road rises (or dips) smoothly from each end of the stretch to its middle.',
   bank: 'Tilt it into a corner. Auto lets the game bank it from how tight the corner is.',
   width: 'Make the road wider or narrower here.',
 }
@@ -493,10 +523,10 @@ function HeightField(p: { from: number; to: number; draft: Draft }) {
   const lim = useHeightLimits(p.from, p.to)
   const [busy, setBusy] = useState(false)
   const roadMetres = useMemo(() => roadLine(p.draft.points).length, [p.draft.points])
-  // Is any of this stretch up off the ground? Then "On the ground" can put it back down.
+  // Is any of this stretch up off the ground (or dug into it)? Then "On the ground" can put it back.
   const raised = useMemo(() => {
     const h = heightsAboveGround(p.draft.points, pointGroundFor(p.draft) ?? flatGround)
-    return sectionPoints(p.draft.points.length, p.from, p.to).some((i) => h[i] >= 0.3)
+    return sectionPoints(p.draft.points.length, p.from, p.to).some((i) => Math.abs(h[i]) >= 0.3)
   }, [p.draft, p.from, p.to])
   if (lim === null || lim === 'failed') {
     return (
@@ -519,6 +549,10 @@ function HeightField(p: { from: number; to: number; draft: Draft }) {
   const nextFits = !!next && next.metres <= roadMetres * 0.45
   const takeOff = lim.why === 'speed' || (lim.why === 'checks' && /take off/.test(lim.reason ?? ''))
   const needWords = next && takeOff ? (nextFits ? ` To go to ${next.height} m it needs about ${next.metres} m of road.` : ` This road isn't long enough here to go to ${next.height} m.`) : ''
+  // How high it can go: a height, or (for a stretch dug down that can't come all the way back up) how far below the ground.
+  const upTo = lim.hi < -0.25 ? `${metresText(-lim.hi)} below the ground` : metresText(lim.hi)
+  // How far down it can be dug (the slider's other end), when that's below the ground.
+  const down = lim.lo < -0.25 ? ` It can be dug down to ${metresText(-lim.lo)} below the ground${lim.lo <= RAISE_FLOOR + 1e-6 ? ', the deepest any road goes' : ''}.` : ''
   const line = lim.checking
     ? `Checking each height before the slider offers it: ${metresText(lim.lo)} to ${metresText(lim.hi)} so far...`
     : lim.why === 'short'
@@ -526,10 +560,10 @@ function HeightField(p: { from: number; to: number; draft: Draft }) {
       : lim.why === 'stop'
         ? (lim.reason ?? 'Something on this stretch stops it changing height.')
         : lim.why === 'top'
-          ? `${jumpWords}This ${m} m stretch can go all the way up to ${metresText(lim.hi)} in the middle.`
+          ? `${jumpWords}This ${m} m stretch can go all the way up to ${metresText(lim.hi)} in the middle.${down}`
           : lim.why === 'speed'
-            ? `${jumpWords}This ${m} m stretch can go up to ${metresText(lim.hi)} in the middle: any higher and a car at ${lim.kmh} km/h would take off over the top.${needWords}`
-            : `${jumpWords}It can go up to ${metresText(lim.hi)} here: any higher and ${lim.reason ?? 'one of the game checks says no.'}${needWords}`
+            ? `${jumpWords}This ${m} m stretch can go up to ${upTo} in the middle: any higher and a car at ${lim.kmh} km/h would take off over the top.${needWords}${down}`
+            : `${jumpWords}It can go up to ${upTo} here: any higher and ${lim.reason ?? 'one of the game checks says no.'}${needWords}${down}`
   return (
     <>
       <SliderField
@@ -541,7 +575,7 @@ function HeightField(p: { from: number; to: number; draft: Draft }) {
         disabled={busy || lim.hi <= lim.lo}
         format={(v) => (lim.jump && v < lim.lo ? `${metresText(v)} now` : metresText(v))}
         reset={raised ? { label: 'On the ground', onClick: () => soon(setBusy, () => groundStretch(p.from, p.to)) } : undefined}
-        help="How high the middle of this stretch sits above the ground. The road rises smoothly from each end of the stretch to the middle."
+        help={`How high the middle of this stretch sits above the ground. The road rises smoothly from each end of the stretch to the middle. Below 0 it dips into the ground, as far as ${metresText(-RAISE_FLOOR)} down.`}
         onCommit={(v) => soon(setBusy, () => raiseSection(p.from, p.to, v))}
       />
       <p className="sre-help" data-testid="editor-height-limit" data-lo={lim.lo} data-hi={lim.hi}>
@@ -939,7 +973,7 @@ function Legend(p: { editing: boolean }) {
             </>
           }
         >
-          Road raised above the ground: a hill or a bridge.{click('Click it to change its height.')}
+          Road raised above the ground: a hill or a bridge (DUG: road dug down into the ground).{click('Click it to change its height.')}
         </KeyRow>
         <KeyRow
           mark={
@@ -962,6 +996,7 @@ function Legend(p: { editing: boolean }) {
           A width set by hand.{click('Click it to change it.')}
         </KeyRow>
         <KeyRow mark={<span className="k-pill is-bridge">BRIDGE</span>}>Where the road crosses itself.{click('Click it to pick which road goes over.')}</KeyRow>
+        <KeyRow mark={<span className="k-pill is-bridge">UNDERPASS</span>}>A crossing where one road dips into the ground under the other.{click('Click it to pick which road goes under.')}</KeyRow>
         <KeyRow mark={<span className="k-pill is-low">LOW BRIDGE</span>}>Too low for a car to fit under (or ROADS MEET: two roads at the same height).{click('Click it to fix it.')}</KeyRow>
         {p.editing && <KeyRow mark={<i className="k-section" />}>The stretch you picked with Height, Bank or Width</KeyRow>}
         <KeyRow mark={<i className="k-boost" />}>Boost pad</KeyRow>

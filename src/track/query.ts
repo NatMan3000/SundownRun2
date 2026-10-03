@@ -185,14 +185,20 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
     return qx * qx + qy * qy + qz * qz
   }
 
-  /** Scan one hash cell, keeping the closest sample in 3D. */
+  /** Scan one hash cell, keeping the closest sample in 3D (skipping the gSkipHalf samples either side of gSkip). */
   let gBest = -1
   let gBestD2 = Infinity
+  let gSkip = -1
+  let gSkipHalf = 0
   const scanCell = (gx: number, gz: number, x: number, y: number, z: number): void => {
     if (gx < 0 || gz < 0 || gx >= hash.nx || gz >= hash.nz) return
     const c = gz * hash.nx + gx
     for (let k = hash.start[c], e = hash.start[c + 1]; k < e; k++) {
       const i = hash.items[k]
+      if (gSkip >= 0) {
+        const apart = i > gSkip ? i - gSkip : gSkip - i
+        if (apart <= gSkipHalf || count - apart <= gSkipHalf) continue
+      }
       const dx = S.px[i] - x
       const dy = (S.py[i] - y) * Y_WEIGHT
       const dz = S.pz[i] - z
@@ -204,12 +210,17 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
     }
   }
 
-  /** Closest sample in 3D, searching outward ring by ring from (x, z)'s cell. */
-  const globalBest = (x: number, y: number, z: number): number => {
+  /**
+   * Closest sample in 3D, searching outward ring by ring from (x, z)'s cell. With `skip`,
+   * the road within HINT_WINDOW of that sample is left out (-1 if nothing else is found).
+   */
+  const globalBest = (x: number, y: number, z: number, skip = -1): number => {
     const cx = Math.floor((x - hash.minX) / hash.cell)
     const cz = Math.floor((z - hash.minZ) / hash.cell)
     gBest = -1
     gBestD2 = Infinity
+    gSkip = skip
+    gSkipHalf = Math.ceil(HINT_WINDOW * invDs)
     // Rings beyond this cover the whole grid from anywhere.
     const far = Math.max(Math.abs(cx), Math.abs(cz), Math.abs(cx - hash.nx), Math.abs(cz - hash.nz)) + 1
     for (let ring = 0; ring <= far; ring++) {
@@ -230,7 +241,7 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
         scanCell(cx + ring, gz, x, y, z)
       }
     }
-    return gBest < 0 ? 0 : gBest
+    return gBest < 0 ? (skip < 0 ? 0 : -1) : gBest
   }
 
   const tmpFrame: TrackFrame = {
@@ -269,6 +280,17 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
     return out
   }
 
+  /** Copy one hit into another (no allocation). */
+  const copyHit = (from: NearestHit, to: NearestHit): NearestHit => {
+    to.s = from.s
+    to.index = from.index
+    to.lateral = from.lateral
+    to.height = from.height
+    to.distance = from.distance
+    to.onRoad = from.onRoad
+    return to
+  }
+
   // Scratch for a second candidate (another level), so nearest() never allocates.
   const other: NearestHit = { s: 0, index: 0, lateral: 0, height: 0, distance: 0, onRoad: false }
 
@@ -301,16 +323,20 @@ export function makeRoadQueries(S: TrackSamples, length: number, hash: SampleHas
     // is nearer the other. Flying above the hinted road, or driving on the grass beside it,
     // keeps the hint.
     resolve(globalBest(x, y, z), x, y, z, other)
-    if (Math.abs(deltaS(out.s, other.s)) <= HINT_WINDOW) return out
-    const fell = out.height < -FELL_BELOW && Math.abs(other.height) < Math.abs(out.height)
-    if (other.onRoad || fell) {
-      out.s = other.s
-      out.index = other.index
-      out.lateral = other.lateral
-      out.height = other.height
-      out.distance = other.distance
-      out.onRoad = other.onRoad
+    if (Math.abs(deltaS(out.s, other.s)) <= HINT_WINDOW) {
+      // Well below the hinted road (fallen off a bridge), but the nearest road is still that one:
+      // the nearest other road, if the car isn't under it and is near enough to be beside it.
+      // (Beside a road sunk into a cutting under a bridge, the cutting's side climbs toward the
+      // bridge, and a car on it can be nearer the bridge it is under than the road beside it.)
+      if (out.height >= -FELL_BELOW) return out
+      const another = globalBest(x, y, z, out.index)
+      if (another < 0) return out
+      resolve(another, x, y, z, other)
+      if (other.height < -FELL_BELOW || Math.abs(other.lateral) > S.halfWidth[other.index] + HINT_GIVE_UP) return out
+      return copyHit(other, out)
     }
+    const fell = out.height < -FELL_BELOW && Math.abs(other.height) < Math.abs(out.height)
+    if (other.onRoad || fell) copyHit(other, out)
     return out
   }
 

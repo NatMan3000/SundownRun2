@@ -641,7 +641,8 @@ function headingDir(heading: number): P {
 /**
  * Bridges. Every crossing gets a marker where the roads cross and a label in
  * the gap between them: "BRIDGE 8 m" (violet) when one road goes over with
- * room for a car, "LOW BRIDGE" or "ROADS MEET" (amber) when not. Click either
+ * room for a car ("UNDERPASS 8 m" when the road underneath dips into a
+ * cutting instead), "LOW BRIDGE" or "ROADS MEET" (amber) when not. Click either
  * to select it. The selected crossing lights up both roads: the one that
  * GOES OVER in violet, the one that GOES UNDER in cyan. Road raised by hand
  * away from any crossing has its own RAISED label (drawRaisedRuns).
@@ -687,7 +688,7 @@ function drawBridges(
     const ul = Math.hypot(ux, uz) || 1
     ux /= ul
     uz /= ul
-    const text = good ? `BRIDGE ${Math.round(c.gap)} m` : c.over !== null ? `LOW BRIDGE ${c.gap.toFixed(1)} m` : 'ROADS MEET'
+    const text = good ? `${c.kind === 'underpass' ? 'UNDERPASS' : 'BRIDGE'} ${Math.round(c.gap)} m` : c.over !== null ? `LOW BRIDGE ${c.gap.toFixed(1)} m` : 'ROADS MEET'
     const box = placePill(ctx, text, sx + ux * 46, sy + uz * 46, [0, 24, -24, 48], isSel ? PALETTE.uiText : colour)
     crossingTargets.push({ spot: c.at, sx, sy, box })
   }
@@ -817,7 +818,7 @@ function drawRaisedRuns(ctx: CanvasRenderingContext2D, rc: RoadCurve, runs: read
   for (const run of runs) {
     const top = rc.points[run.labelPoint]
     if (crossings.some((c) => c.over !== null && Math.hypot(c.at.x - top.x, c.at.z - top.z) < 150)) continue
-    runLabel(ctx, rc, run, `RAISED ${heightWords(run.value)}`, PALETTE.wallRide, 1, clickable)
+    runLabel(ctx, rc, run, run.value < 0 ? `DUG ${heightWords(-run.value)}` : `RAISED ${heightWords(run.value)}`, PALETTE.wallRide, 1, clickable)
   }
 }
 

@@ -11,7 +11,9 @@
 //    bank runs     points next to each other with a bank set by hand
 //    width runs    points next to each other with a width set by hand
 //    raised runs   road a metre or more above the ground, plus the
-//                  ramps either side of it down to the ground
+//                  ramps either side of it down to the ground (and
+//                  road dug a metre or more below it, the same way:
+//                  its value is negative)
 //
 //  It also picks "a sensible stretch" around a spot Josh clicks
 //  with one of those tools when there is no run there yet: for
@@ -27,6 +29,7 @@ import type { TrackRuntime } from '../track/types'
 import type { GroundFn } from './bridges'
 import { atOf, dirOf, pointHeight, roadLine, sOf, wrapS, type RoadLine } from './shape'
 import { LOOP_RUN_IN, wrapAt } from './road'
+import { WALL_REACH } from '../track/road'
 import { liftAt, stretchFor, stretchSpeed } from './raise'
 
 /** The three tools that change a stretch of road (draft.ts EditorTool). */
@@ -45,7 +48,7 @@ export interface StretchRun {
   /** The first and last road point in it (indices; `last` may be smaller when it wraps past point 0). */
   first: number
   last: number
-  /** Its value: degrees of bank, metres of width, or metres above the ground at its highest. */
+  /** Its value: degrees of bank, metres of width, or metres above the ground at its highest (below it at its deepest, negative, for a dug run). */
   value: number
   /** The road point its label sits beside (the middle, or the top of a raised run). */
   labelPoint: number
@@ -126,11 +129,19 @@ export function heightsAboveGround(points: readonly RoadPoint[], ground: GroundF
  * ramps either side down to the ground (so selecting one picks up the whole
  * hill or bridge, the same stretch the Height tool raised). Each ramp runs
  * outward while the road keeps coming down, and ends at the first point back
- * on the ground (under 3 cm up).
+ * on the ground (under 3 cm up). Road dug a metre or more below the ground
+ * (a dip, an underpass's road) makes runs the same way, upside down: their
+ * value is how deep they go, negative.
  */
 export function raisedRuns(points: readonly RoadPoint[], ground: GroundFn): StretchRun[] {
-  const n = points.length
-  const h = heightsAboveGround(points, ground)
+  const above = heightsAboveGround(points, ground)
+  return [...signedRuns(above, 1), ...signedRuns(above, -1)]
+}
+
+/** raisedRuns for road above the ground (sign 1) or below it (sign -1). */
+function signedRuns(above: readonly number[], sign: 1 | -1): StretchRun[] {
+  const n = above.length
+  const h = above.map((v) => v * sign)
   const hAt = (i: number) => h[((i % n) + n) % n]
   const core = runsWhere(n, (i) => h[i] >= RAISED_MIN)
   return core.map(({ first, last }) => {
@@ -138,7 +149,7 @@ export function raisedRuns(points: readonly RoadPoint[], ground: GroundFn): Stre
       // The whole road is up: nothing to ramp down to.
       let top = 0
       for (let i = 0; i < n; i++) if (h[i] > h[top]) top = i
-      return { tool: 'height' as const, first, last, from: 0, to: wrapAt(n - 1.01, n), value: h[top], labelPoint: top }
+      return { tool: 'height' as const, first, last, from: 0, to: wrapAt(n - 1.01, n), value: sign * h[top], labelPoint: top }
     }
     // Walk down each ramp: outward while the road keeps coming down, to the first point on the ground.
     let a = first
@@ -156,7 +167,7 @@ export function raisedRuns(points: readonly RoadPoint[], ground: GroundFn): Stre
     for (let i = first; i <= (first <= last ? last : last + n); i++) if (hAt(i) > hAt(top)) top = i
     const fa = ((a % n) + n) % n
     const fb = ((b % n) + n) % n
-    return { tool: 'height' as const, first: fa, last: fb, from: fa, to: fb, value: hAt(top), labelPoint: ((top % n) + n) % n }
+    return { tool: 'height' as const, first: fa, last: fb, from: fa, to: fb, value: sign * hAt(top), labelPoint: ((top % n) + n) % n }
   })
 }
 
@@ -203,7 +214,7 @@ function keepOuts(pieces: readonly Piece[], startAt: number): { at: number; befo
   const out = [{ at: startAt, before: 75, after: 30 }]
   for (const p of pieces) {
     if (p.type === 'loop') out.push({ at: p.at, before: LOOP_RUN_IN + 15, after: LOOP_RUN_IN + 5 * (p.radius ?? TRACK_DEFAULTS.loopRadius) + 5 })
-    else if (p.type === 'wallride') out.push({ at: p.at, before: 5, after: (p.length ?? TRACK_DEFAULTS.wallride.length) + 5 })
+    else if (p.type === 'wallride') out.push({ at: p.at, before: WALL_REACH + 5, after: (p.length ?? TRACK_DEFAULTS.wallride.length) + WALL_REACH + 5 })
     else if (p.type === 'ramp') out.push({ at: p.at, before: 35, after: 35 })
   }
   return out

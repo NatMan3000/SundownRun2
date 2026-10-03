@@ -32,6 +32,7 @@ import { CLEANUP } from './cleanup'
 import type { P } from './geom'
 import { handBankNear } from './handBanks'
 import { LOOP_RUN_IN } from './road'
+import { WALL_REACH } from '../track/road'
 import { alongRoad, densify, pointHeight, roadLine, sOf, sOfPoint } from './shape'
 
 /**
@@ -62,9 +63,17 @@ export interface LiftResult {
  * (in proportion to the new height, so they are no steeper than before). Each
  * point keeps its kind of height (`y` stays `y`, `lift` stays `lift`). Refuses
  * when the ramps would reach a loop, ramp or wall ride, the start grid, or the
- * lower road of this or another crossing.
+ * lower road of this or another crossing. Ramps scaled from the clean-up's gentle
+ * 200 m ones first; where those don't fit, from its shorter ones (as the clean-up does).
  */
 export function liftBridgeBy(points: readonly RoadPoint[], pieces: readonly Piece[], startAt: number, width: number, spot: P, extra: number, ground: GroundFn): LiftResult {
+  const first = liftBridgeOn(points, pieces, startAt, width, spot, extra, ground, CLEANUP.bridgeRamp)
+  if (first.ok || CLEANUP.bridgeRampShort >= CLEANUP.bridgeRamp) return first
+  const short = liftBridgeOn(points, pieces, startAt, width, spot, extra, ground, CLEANUP.bridgeRampShort)
+  return short.ok ? short : first
+}
+
+function liftBridgeOn(points: readonly RoadPoint[], pieces: readonly Piece[], startAt: number, width: number, spot: P, extra: number, ground: GroundFn, baseRamp: number): LiftResult {
   const refuse = (reason: string): LiftResult => ({ ok: false, points: points.map((p) => ({ ...p })), mapAt: (a) => a, reason })
   const found = crossingNear(roadCrossings(points, ground), spot, 60)
   if (!found || found.crossing.over === null) return refuse("there's no bridge there")
@@ -77,7 +86,7 @@ export function liftBridgeBy(points: readonly RoadPoint[], pieces: readonly Piec
   const upS = c.passes[c.over].s
   const downS = c.passes[c.over === 0 ? 1 : 0].s
   const { flat, lift } = bridgeShape(c.angleDeg, width)
-  const ramp = CLEANUP.bridgeRamp * Math.max(1, (lift + extra) / lift)
+  const ramp = baseRamp * Math.max(1, (lift + extra) / lift)
   const reach = flat + ramp
   const weight = (s: number) => {
     const d = alongRoad(s, upS, L)
@@ -95,7 +104,7 @@ export function liftBridgeBy(points: readonly RoadPoint[], pieces: readonly Piec
   for (const piece of pieces) {
     if (piece.type !== 'loop' && piece.type !== 'ramp' && piece.type !== 'wallride') continue
     const s = sOf(line, even.mapAt(piece.at))
-    const room = piece.type === 'loop' ? LOOP_RUN_IN + 5 * (piece.radius ?? TRACK_DEFAULTS.loopRadius) : piece.type === 'wallride' ? (piece.length ?? TRACK_DEFAULTS.wallride.length) : 30
+    const room = piece.type === 'loop' ? LOOP_RUN_IN + 5 * (piece.radius ?? TRACK_DEFAULTS.loopRadius) : piece.type === 'wallride' ? (piece.length ?? TRACK_DEFAULTS.wallride.length) + WALL_REACH : 30
     if (alongRoad(s, upS, L) < reach + room) return refuse(`a ${piece.type === 'wallride' ? 'wall ride' : piece.type} is too close to the bridge`)
   }
   if (alongRoad(sOf(line, even.mapAt(startAt)), upS, L) < reach + 70) return refuse('the start line is too close to the bridge')
