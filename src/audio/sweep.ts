@@ -12,6 +12,9 @@
 //  long drifts, a big one, a small slide and a slide on the grass.
 //  speedInput() is a third, all about going fast: every gear up to
 //  250 km/h, held there, a boost pad, then a lift.
+//  shiftsInput() is a fourth, all about gear changes: the turbo's
+//  "pssh" on every upshift, and none on a downshift.
+//  liftoffInput() is a fifth: full load, then a lift (the blow-off).
 // ============================================================
 
 import type { EngineInput } from './engine'
@@ -339,11 +342,153 @@ export function speedInput(s: number, out: EngineInput): void {
   out.rpm = gearRpm(6, out.speedKmh)
 }
 
-/** The scripted drives, by name: the engine, the tyres, and top speed. */
+// ============================================================
+//  GEAR CHANGE TEST DRIVE - 14.5 seconds of shifting, for the turbo
+// ------------------------------------------------------------
+//  __dev.audio('render', 'shifts', 'rally') records it. On a turbo
+//  car every upshift lets the boost go with a "pssh" (the blow-off),
+//  sized by how much boost was built, and the turbo spools back up
+//  in the new gear. This drive tries each kind of gear change:
+//  flat-out shifts, two quick ones on a boost pad, a gentle
+//  part-throttle one, a lift right after a shift, a lift and a
+//  shift at the same moment, and downshifts (which never go "pssh").
+// ============================================================
+
+/** How long the gear change test drive lasts, seconds. */
+export const SHIFTS_SECONDS = 14.5
+
+/** Where each part of the gear change drive starts (seconds). */
+export const SHIFTS_MARKS = {
+  pull: 0.4, //       full throttle from a standstill: 1st, 2nd, 3rd, 4th
+  pad: 2.3, //        a boost pad late in 2nd: 3rd only lasts 0.6 s (two quick pssh, both heard)
+  gentle: 3.2, //     4th at part throttle, then a gentle shift to 5th (a small pssh)
+  kick: 6.1, //       floor it in 5th (the turbo builds again)
+  shiftLift: 8.0, //  up to 6th flat out, then lift 0.15 s later (one pssh, not two)
+  coast: 8.15, //     coasting in 6th, then a downshift to 5th (no pssh)
+  floor: 9.6, //      floor it in 5th
+  liftShift: 11.4, // lift and change up in the same moment (one pssh)
+  hill: 12.6, //      full throttle up a hill in 6th, the speed sags and it drops to 5th (no pssh)
+} as const
+
+/** Seconds in 1st, 2nd and 3rd on the pull (the boost pad makes 3rd quick). */
+const SHIFTS_PULL_TIME = [1.0, 1.2, 0.6]
+/** Moment the coasting car drops from 6th to 5th (the gearbox's downshift speed). */
+const SHIFTS_COAST_DOWN = 9.0
+/** Moment the car climbing the hill drops from 6th to 5th. */
+const SHIFTS_HILL_DOWN = 13.2
+
+/**
+ * The gear change test drive, as a function of seconds since start.
+ * Writes into `out` (no allocation). See SHIFTS_MARKS for the timeline.
+ */
+export function shiftsInput(s: number, out: EngineInput): void {
+  const M = SHIFTS_MARKS
+  out.airborne = false
+  out.onRoad = true
+  out.offRoad = false
+  out.magStrength = 0
+  out.boost = 0
+  out.slip = 0
+  out.drifting = false
+  // How far through a stretch of the drive we are (0..1).
+  const along = (a: number, b: number) => Math.min(1, Math.max(0, (s - a) / (b - a)))
+  if (s < M.pull) {
+    out.gear = 1
+    out.speedKmh = 0
+    out.throttle = 0
+    out.rpm = 0.1
+    return
+  }
+  if (s < M.gentle) {
+    // Flat out through 1st, 2nd and 3rd, each gear from its bottom speed to its top.
+    // A boost pad late in 2nd kicks the car through 3rd in 0.6 s.
+    let u = s - M.pull
+    let gear = 1
+    while (gear < 4 && u >= SHIFTS_PULL_TIME[gear - 1]) {
+      u -= SHIFTS_PULL_TIME[gear - 1]
+      gear++
+    }
+    const lo = gear === 1 ? 0 : GEAR_TOP[gear - 2]
+    out.gear = gear
+    out.throttle = 1
+    out.speedKmh = lo + (GEAR_TOP[gear - 1] - lo) * Math.min(1, u / SHIFTS_PULL_TIME[gear - 1])
+    if (s >= M.pad) out.boost = 1 - along(M.pad, M.gentle)
+  } else if (s < M.kick) {
+    // 4th at part throttle: not much boost builds, so the shift to 5th is a small pssh.
+    out.gear = 4
+    out.throttle = 0.4
+    out.speedKmh = 138 + 40 * along(M.gentle, M.kick)
+  } else if (s < M.shiftLift) {
+    out.gear = 5
+    out.throttle = 1
+    out.speedKmh = 178 + 40 * along(M.kick, M.shiftLift)
+  } else if (s < M.floor) {
+    // Up to 6th flat out, lift 0.15 s later and coast; at 196 km/h it drops back to 5th.
+    out.gear = s < SHIFTS_COAST_DOWN ? 6 : 5
+    out.throttle = s < M.coast ? 1 : 0
+    out.speedKmh = 218 - 28 * along(M.shiftLift, M.floor)
+  } else if (s < M.liftShift) {
+    out.gear = 5
+    out.throttle = 1
+    out.speedKmh = 190 + 28 * along(M.floor, M.liftShift)
+  } else if (s < M.hill) {
+    // The lift and the shift to 6th land on the same frame, then a coast.
+    out.gear = 6
+    out.throttle = s < M.liftShift + 0.1 ? 0.22 : 0
+    out.speedKmh = 218 - 18 * along(M.liftShift, M.hill)
+  } else {
+    // Full throttle, but a hill pulls the speed down until the gearbox drops to 5th.
+    out.gear = s < SHIFTS_HILL_DOWN ? 6 : 5
+    out.throttle = 1
+    out.speedKmh = s < SHIFTS_HILL_DOWN ? 200 - 6 * along(M.hill, SHIFTS_HILL_DOWN) : 194 + 11 * along(SHIFTS_HILL_DOWN, SHIFTS_SECONDS)
+  }
+  out.rpm = gearRpm(out.gear, out.speedKmh)
+}
+
+// ============================================================
+//  LIFT-OFF TEST DRIVE - 6 seconds: full load, then off the throttle
+// ------------------------------------------------------------
+//  __dev.audio('render', 'liftoff', 'rally') records it: flat out
+//  in 4th up to the top of the gear (the turbo fully built), then
+//  a lift at LIFTOFF_AT and a coast. On a turbo car that lift is
+//  the blow-off ("pssh"); every upshift should sound like it.
+// ============================================================
+
+/** How long the lift-off test drive lasts, seconds. */
+export const LIFTOFF_SECONDS = 6
+/** The moment the throttle is lifted, seconds. */
+export const LIFTOFF_AT = 2.5
+
+/**
+ * The lift-off test drive, as a function of seconds since start.
+ * Writes into `out` (no allocation).
+ */
+export function liftoffInput(s: number, out: EngineInput): void {
+  out.airborne = false
+  out.onRoad = true
+  out.offRoad = false
+  out.magStrength = 0
+  out.boost = 0
+  out.slip = 0
+  out.drifting = false
+  out.gear = 4
+  if (s < LIFTOFF_AT) {
+    out.throttle = 1
+    out.speedKmh = 140 + 35 * (s / LIFTOFF_AT)
+  } else {
+    out.throttle = 0
+    out.speedKmh = 175 - 4 * (s - LIFTOFF_AT)
+  }
+  out.rpm = gearRpm(4, out.speedKmh)
+}
+
+/** The scripted drives, by name: the engine, the tyres, top speed, gear changes and a lift-off. */
 export const TEST_DRIVES = {
   sweep: { seconds: SWEEP_SECONDS, input: sweepInput },
   drift: { seconds: DRIFT_SECONDS, input: driftInput },
   speed: { seconds: SPEED_SECONDS, input: speedInput },
+  shifts: { seconds: SHIFTS_SECONDS, input: shiftsInput },
+  liftoff: { seconds: LIFTOFF_SECONDS, input: liftoffInput },
 } as const
 
 export type TestDriveId = keyof typeof TEST_DRIVES

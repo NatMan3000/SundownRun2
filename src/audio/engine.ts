@@ -18,7 +18,8 @@
 //    THE LAYERS AROUND IT:
 //      turbo spool     a soft whoosh-tone that builds with boost and load
 //      intake whoosh   air rushing in under load (dark: under about 800 Hz)
-//      blow-off        the "pssh" (or "stu-tu-tu") when you lift off a spooled turbo
+//      blow-off        the "pssh" (or "stu-tu-tu") when you lift off a spooled turbo,
+//                      and on every upshift (sized by how much boost was built)
 //      jet turbine     the hover-jet's smooth tone, a fifth above the motor
 //      boost jet       a low "whoomp" of air while a boost pad's kick lasts
 //      wind            a low rush of air that swells and buffets, louder with speed
@@ -86,8 +87,44 @@ const SPOOL_UP_S = 0.6
 const SPOOL_DOWN_S = 0.3
 /** Overrun pops keep coming for this long after you lift off (seconds). */
 const CRACKLE_S = 1.6
-/** Shortest gap between two blow-offs (seconds). */
+/**
+ * Shortest gap between two blow-offs (seconds). This is also what stops them doubling
+ * up: a lift just after an upshift (or an upshift just after a lift) is one "pssh", not two.
+ */
 const BLOWOFF_GAP_S = 0.8
+/**
+ * Shortest gap between two upshift blow-offs (seconds): about how long one lasts, so a
+ * new one never starts on top of the last. Shorter than BLOWOFF_GAP_S because a quick
+ * car can change up again 0.7 s later, and that shift should go "pssh" too.
+ */
+const BLOWOFF_SHIFT_GAP_S = 0.4
+/** Least turbo boost (spool, 0..1) that gives a blow-off when you lift off. */
+const BLOWOFF_LIFT_MIN = 0.45
+/**
+ * Least boost that gives a blow-off on an upshift. Lower than a lift's on purpose: every
+ * upshift on a turbo car goes "pssh", and a gentle one (part throttle, or early in 1st
+ * before the turbo has built much) should still give a small one.
+ */
+const BLOWOFF_SHIFT_MIN = 0.15
+/** How much boost is left after the valve dumps it (the turbo then spools back up). */
+const BLOWOFF_KEEP = 0.35
+/**
+ * Boost at an upshift that counts as a full blow-off. The valve dumps the boost at every
+ * shift and the turbo only rebuilds part of it in the next gear, so a flat-out shift has
+ * about 0.55-0.8 of full boost; measured against this it plays as big as a lift-off after
+ * full load. (Played smaller, it was masked by the motor and sounded like wind.)
+ */
+const BLOWOFF_SHIFT_FULL = 0.7
+/** The biggest an upshift's blow-off gets: about a lift-off's after a full-load pull (0.84). */
+const BLOWOFF_SHIFT_MAX = 0.85
+/** After an upshift's lift, how long the throttle takes to open again (seconds). */
+const SHIFT_REOPEN_S = 0.1
+/**
+ * How far the driver comes off the throttle for an upshift (1 = right off). Right off, the
+ * revs are so low in the new gear that the motor all but vanished and the blow-off stood
+ * out far more than on a real lift-off; at 0.6 it sits over the motor as it does then.
+ */
+const SHIFT_LIFT_DEPTH = 0.6
 
 /**
  * The tyres. All noise, never a note: a note up high is what made the old
@@ -161,6 +198,8 @@ export interface EngineReadout {
   boostJet: number
   shifts: number
   blowOffs: number
+  /** How big the last blow-off was (0..1): a lift after full load or a flat-out upshift is about 0.8-0.9, a gentle upshift about 0.5. */
+  blowOffSize: number
   /** Tyre barks so far (grip breaking or catching). */
   tyreBarks: number
 }
@@ -194,6 +233,10 @@ export class EngineVoice {
   private lifted = true
   private liftAt = -100
   private lastBlowOff = -100
+  /** Was the last blow-off from a lift (true) or an upshift (false)? */
+  private lastBlowWasLift = false
+  /** When the last upshift lifted the throttle (see LayerSpec.shiftLiftS). */
+  private shiftLiftAt = -100
   private readonly blowGain: GainNode
   private readonly blowBand: BiquadFilterNode
   /** The tyres: are they sliding, the biggest slide since grip broke, the last bark. */
@@ -253,6 +296,7 @@ export class EngineVoice {
       boostJet: 0,
       shifts: 0,
       blowOffs: 0,
+      blowOffSize: 0,
       tyreBarks: 0,
     }
     const t0 = ctx.currentTime
@@ -590,6 +634,8 @@ export class EngineVoice {
     const v = this.voicing
     const L = v.layers
     const dt = this.lastT >= 0 ? Math.min(0.1, Math.max(0, t - this.lastT)) : 0
+    // The first frame isn't a gear change: start in whatever gear the car is in.
+    if (this.lastT < 0) this.lastGear = e.gear
     this.lastT = t
     const grounded = !e.airborne
     const speed = e.speedKmh < 0 ? -e.speedKmh : e.speedKmh
@@ -608,6 +654,26 @@ export class EngineVoice {
       liftNow = true
     }
 
+    // ---------- gear shifts ----------
+    // (Worked out before the motor: on a turbo car an upshift lifts the throttle for a moment.)
+    let upshift = false
+    if (e.gear !== this.lastGear) {
+      if (grounded && e.gear > this.lastGear && e.gear > 1 && throttle > 0.2) {
+        this.shift(t, 0.45, 0.075, 0.85)
+        upshift = true
+        if (L.shiftLiftS > 0) this.shiftLiftAt = t
+      } else if (grounded && e.gear < this.lastGear && e.gear >= 1) this.shift(t, 0.7, 0.05, 0.4)
+      this.lastGear = e.gear
+    }
+    // The throttle the SOUND hears: the pedal, except that through an upshift on a voicing
+    // with shiftLiftS the driver eases off it (by SHIFT_LIFT_DEPTH for shiftLiftS, then back
+    // on over SHIFT_REOPEN_S). The motor, the turbo and the intake all hear this one, so the
+    // blow-off sits over a quieter motor, as it does when you lift off.
+    const sinceShiftLift = t - this.shiftLiftAt
+    const shut =
+      sinceShiftLift < 0 ? 0 : sinceShiftLift < L.shiftLiftS ? 1 : 1 - clamp01((sinceShiftLift - L.shiftLiftS) / SHIFT_REOPEN_S)
+    const load = throttle * (1 - SHIFT_LIFT_DEPTH * shut)
+
     // ---------- the motor: pitch honest to rpm, tone from the throttle ----------
     const hz = firingHz(v.motor, rpm)
     const sinceLift = t - this.liftAt
@@ -616,41 +682,45 @@ export class EngineVoice {
     const wk = this.workletKnobs
     if (wk) {
       wk.fireHz.to(hz, t)
-      wk.throttle.to(throttle, t)
+      wk.throttle.to(load, t)
       wk.crackle.to(crackle, t)
     } else if (this.nodeMotor) {
-      this.nodeMotor.update(hz, throttle, t)
+      this.nodeMotor.update(hz, load, t)
     }
 
     // ---------- motor level: idle is quiet but never silent, full throttle is big ----------
-    const level = 0.035 + 0.25 * throttle + 0.125 * rpm + 0.04 * Math.min(speedN, 1)
+    const level = 0.035 + 0.25 * load + 0.125 * rpm + 0.04 * Math.min(speedN, 1)
     k.motor.to(level * MOTOR_GAIN, t)
 
-    // ---------- gear shifts ----------
-    if (e.gear !== this.lastGear) {
-      if (grounded && e.gear > this.lastGear && e.gear > 1 && throttle > 0.2) this.shift(t, 0.45, 0.075, 0.85)
-      else if (grounded && e.gear < this.lastGear && e.gear >= 1) this.shift(t, 0.7, 0.05, 0.4)
-      this.lastGear = e.gear
-    }
-
     // ---------- turbo: builds with load (and boost pads), lets go when you lift ----------
-    const spoolTarget = Math.max(throttle * smoothstep(0.3, 0.85, rpm), boostNow)
+    const spoolTarget = Math.max(load * smoothstep(0.3, 0.85, rpm), boostNow)
     const tau = spoolTarget > this.spool ? SPOOL_UP_S : SPOOL_DOWN_S
     if (dt > 0) this.spool += (spoolTarget - this.spool) * (1 - Math.exp(-dt / tau))
-    if (liftNow && L.blowOff > 0 && this.spool > 0.45 && t - this.lastBlowOff > BLOWOFF_GAP_S) {
-      this.blowOff(t, this.spool)
-      this.spool *= 0.35 // the valve dumps the pressure
+    // The blow-off valve opens whenever the throttle snaps shut on a spooled turbo: when you
+    // lift off, and on every upshift (a real driver lifts for a moment to change gear).
+    // Downshifts don't open it. If a lift and an upshift land together, or one right after
+    // the other, BLOWOFF_GAP_S makes it one "pssh". Only two upshifts in a row may come
+    // closer together (BLOWOFF_SHIFT_GAP_S). A lift's size is the boost built; an upshift's
+    // is measured against BLOWOFF_SHIFT_FULL (up to BLOWOFF_SHIFT_MAX), so a flat-out shift
+    // is as big as a lift-off after full load, and only a gentle shift is smaller.
+    const liftBlow = liftNow && this.spool > BLOWOFF_LIFT_MIN
+    const shiftBlow = upshift && this.spool > BLOWOFF_SHIFT_MIN
+    const gap = liftBlow || this.lastBlowWasLift ? BLOWOFF_GAP_S : BLOWOFF_SHIFT_GAP_S
+    if ((liftBlow || shiftBlow) && L.blowOff > 0 && t - this.lastBlowOff > gap) {
+      this.blowOff(t, liftBlow ? this.spool : Math.min(BLOWOFF_SHIFT_MAX, this.spool / BLOWOFF_SHIFT_FULL))
+      this.lastBlowWasLift = liftBlow
+      this.spool *= BLOWOFF_KEEP // the valve dumps the pressure; it spools back up in the new gear
     }
     const sp = this.spool
     k.spoolHz.to(L.spoolHz[0] + (L.spoolHz[1] - L.spoolHz[0]) * sp, t)
     // (Filtered noise is far quieter than a tone at the same gain: a narrow band of it
     // keeps only a sliver of the noise, hence the big numbers.)
-    k.spool.to(1.1 * L.spool * sp * sp * (0.4 + 0.6 * throttle), t)
+    k.spool.to(1.1 * L.spool * sp * sp * (0.4 + 0.6 * load), t)
     // The whoosh opens up with the turbo and the throttle, but never past about 800 Hz (dark air, not hiss).
-    const whooshHz = 260 + 400 * sp + 140 * throttle
+    const whooshHz = 260 + 400 * sp + 140 * load
     k.whooshHz.to(whooshHz, t)
     k.whooshHz2.to(whooshHz, t)
-    k.whoosh.to(0.63 * L.whoosh * (0.3 * throttle + 0.7 * sp) * (0.35 + 0.65 * rpm), t)
+    k.whoosh.to(0.63 * L.whoosh * (0.3 * load + 0.7 * sp) * (0.35 + 0.65 * rpm), t)
 
     // ---------- jet turbine (hover): a fifth above the motor, lagging behind it ----------
     const jetHz = hz * L.jetRatio
@@ -733,7 +803,10 @@ export class EngineVoice {
     this.readout.shifts++
   }
 
-  /** The blow-off valve: a short hiss as you lift, or a stutter ("stu-tu-tu") on a flutter valve. */
+  /**
+   * The blow-off valve: a short hiss as you lift or change up, or a stutter ("stu-tu-tu")
+   * on a flutter valve. `amount` is the boost let go (0..1): it sets how loud.
+   */
   private blowOff(t: number, amount: number): void {
     const L = this.voicing.layers
     const g = this.blowGain.gain
@@ -757,6 +830,7 @@ export class EngineVoice {
     }
     this.lastBlowOff = t
     this.readout.blowOffs++
+    this.readout.blowOffSize = amount
   }
 
   /**

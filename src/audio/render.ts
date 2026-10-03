@@ -95,6 +95,10 @@ export interface EngineRenderLog {
   motorReason: string
   shifts: number
   blowOffs: number
+  /** When each gear change happened (seconds into the drive). */
+  shiftAt: number[]
+  /** Each blow-off: [seconds into the drive, boost let go 0..1]. */
+  blowOffAt: [number, number][]
   /** Highest overrun-pop chance asked of the motor (0..1). */
   maxCrackle: number
   /** Highest turbo spool reached (0..1). */
@@ -128,10 +132,17 @@ export async function renderEngineSweep(
   let airStart = 0
   let maxCrackle = 0
   let maxSpool = 0
+  const shiftAt: number[] = []
+  const blowOffAt: [number, number][] = []
+  const r3 = (x: number) => Math.round(x * 1000) / 1000
   for (let f = 0; f <= run.seconds * 60; f++) {
     const t = f / 60
     run.input(t, input)
+    const shifts = engine.readout.shifts
+    const blows = engine.readout.blowOffs
     engine.update(input, t)
+    if (engine.readout.shifts !== shifts) shiftAt.push(r3(t))
+    if (engine.readout.blowOffs !== blows) blowOffAt.push([r3(t), r3(engine.readout.blowOffSize)])
     maxCrackle = Math.max(maxCrackle, engine.readout.crackle)
     maxSpool = Math.max(maxSpool, engine.readout.spool)
     if (input.airborne && !wasAir) airStart = t
@@ -151,6 +162,8 @@ export async function renderEngineSweep(
     motorReason: engine.motorReason,
     shifts: engine.readout.shifts,
     blowOffs: engine.readout.blowOffs,
+    shiftAt,
+    blowOffAt,
     maxCrackle: Math.round(maxCrackle * 1000) / 1000,
     maxSpool: Math.round(maxSpool * 1000) / 1000,
     tyreBarks: engine.readout.tyreBarks,

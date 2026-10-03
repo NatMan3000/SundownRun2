@@ -9,7 +9,8 @@
 //
 //    muscle   a deep V8 muscle car: lumpy idle, big low growl
 //    rally    a turbo five-cylinder rally car: raspy, revs high,
-//             turbo whoosh and a "pssh" when you lift off
+//             turbo whoosh and a "pssh" when you lift off or
+//             change up a gear
 //    hover    a futuristic hover-jet: a smooth deep motor with a
 //             jet turbine humming on top
 //
@@ -86,10 +87,15 @@ export interface LayerSpec {
   spoolHz: [number, number]
   /** Intake and air rush under load (0 = none). */
   whoosh: number
-  /** The "pssh" when you lift off a spooled turbo (0 = none). */
+  /** The "pssh" when you lift off a spooled turbo, and on every upshift (0 = none). */
   blowOff: number
   /** The blow-off stutters ("stu-tu-tu") instead of one hiss. */
   flutter: boolean
+  /**
+   * How long the driver comes off the throttle for an upshift, seconds (0 = keeps it pinned).
+   * While off, the motor goes quiet like a lift-off, so the turbo's blow-off is heard clearly.
+   */
+  shiftLiftS: number
   /** Hover jet turbine: a smooth tone that follows the motor (0 = none). */
   jet: number
   /** Turbine pitch, as a multiple of the motor's firing note (1.5 = a fifth above, so it blends in). */
@@ -162,6 +168,7 @@ const MUSCLE: EngineVoicing = {
     whoosh: 0,
     blowOff: 0,
     flutter: false,
+    shiftLiftS: 0,
     jet: 0,
     jetRatio: 1.5,
     tyres: 1,
@@ -212,6 +219,7 @@ const RALLY: EngineVoicing = {
     whoosh: 0.45,
     blowOff: 1,
     flutter: true,
+    shiftLiftS: 0.25,
     jet: 0,
     jetRatio: 1.5,
     tyres: 1.8,
@@ -262,6 +270,7 @@ const HOVER: EngineVoicing = {
     whoosh: 0.4,
     blowOff: 0,
     flutter: false,
+    shiftLiftS: 0,
     jet: 1,
     jetRatio: 1.5,
     tyres: 1.25,
