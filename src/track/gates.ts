@@ -20,6 +20,8 @@
 //              with no ditch behind them
 //    tracking  "where am I on the road?" never jumps by mistake
 //    ground    the ground stays under the road
+//    ride      road riding the ground has no hilltop that throws a car
+//              off below 200 km/h (a warning: a jump on purpose is fine)
 //    + warnings (start grid on a bend, fewer billboards than asked)
 //
 //  The SAME function feeds `bun run tracks:check` (scripts/
@@ -1066,6 +1068,64 @@ export function bankCrests(t: TrackRuntime): {
 }
 
 /**
+ * A road that rides the ground (no `y`, no `lift`) should never throw a car off a crest
+ * below this speed. Its points sit on the ground smoothed over about 60 m (averagedHeight,
+ * terrain.ts), which keeps every crest on the editor's hilly worlds gentle enough for about
+ * 240 km/h and more; sitting on the ground averaged over only 12 m, drawn roads went light
+ * over bumps from about 105 km/h.
+ */
+export const RIDE_KMH = 200
+
+/**
+ * The tightest hilltop on road whose height comes from the ground alone: where the four
+ * control points the spline uses all have no `y` and no `lift` (a crest made with them is
+ * the track's design). Measured on where the road sits unbanked (the bank's pivot lift is
+ * taken off), from the change of pitch over 10 m. `radius` is Infinity with no hilltop;
+ * `metres` is how much road was judged.
+ */
+export function groundCrest(t: TrackRuntime): { radius: number; at: number; metres: number } {
+  const S = t.samples
+  const n = S.count
+  const x = trackInternals(t)
+  if (!x) return { radius: Infinity, at: 0, metres: 0 }
+  const pts = t.file.road.points
+  const np = pts.length
+  const free = (k: number) => {
+    const p = pts[((k % np) + np) % np]
+    return typeof p.y !== 'number' && !p.lift
+  }
+  const judged = new Uint8Array(n)
+  let metres = 0
+  for (let i = 0; i < n; i++) {
+    if (S.surface[i] !== SURFACE_CODE.road) continue
+    const k = Math.floor(x.atOfS(i * S.ds))
+    if (free(k - 1) && free(k) && free(k + 1) && free(k + 2)) {
+      judged[i] = 1
+      metres += S.ds
+    }
+  }
+  const h = Math.max(1, Math.round(5 / S.ds))
+  const y = (i: number) => S.py[i] - x.pivotLift[i]
+  const flat = (a: number, b: number) => Math.hypot(S.px[b] - S.px[a], S.pz[b] - S.pz[a]) || 1e-6
+  let worst = 0
+  let at = 0
+  for (let i = 0; i < n; i++) {
+    const a = (i - h + n) % n
+    const b = (i + h) % n
+    if (!judged[a] || !judged[i] || !judged[b]) continue
+    const da = flat(a, i)
+    const db = flat(i, b)
+    // + = the road tips down more steeply ahead than behind: a hilltop.
+    const k = (Math.atan2(y(i) - y(a), da) - Math.atan2(y(b) - y(i), db)) / ((da + db) / 2)
+    if (k > worst) {
+      worst = k
+      at = i * S.ds
+    }
+  }
+  return { radius: worst > 0 ? 1 / worst : Infinity, at, metres }
+}
+
+/**
  * Run every non-physics gate on a built track. `t.file` is the resolved track the
  * runtime was built from; tracks with an adjustable bank are rebuilt at the slider's
  * ends (reusing `t`'s ground) so the bank and ground gates hold at every setting.
@@ -1295,6 +1355,30 @@ export function runTrackGates(t: TrackRuntime): TrackGate[] {
       `${b === null ? '' : `bank ${b} deg: `}the ground stays under the road everywhere (closest ${(g.worst * 100).toFixed(1)} cm past the allowed clearance at ${at(g.s)}, lateral ${g.lateral.toFixed(1)}; limit 3 cm); just outside the edge it sits ${(g.edgeStep * 100).toFixed(0)} cm below the lip (median, limit 10)`,
       bridgeLow ? 'the bridge above is too low: under a bridge the ground is cut away to make room, which can dig under the road below. Fix the bridges row first.' : 'this is a builder bug, not your file: report it.',
     )
+  }
+  // A road riding the ground rides its hills, not every bump: no hilltop on it throws a car
+  // off below RIDE_KMH. A warning, not a failure: a road drawn over a sharp hill on purpose
+  // (a big-air run's kicker) is allowed to jump.
+  {
+    const r = groundCrest(t)
+    const light = Math.sqrt(G * r.radius) * 3.6
+    const need = ((RIDE_KMH / 3.6) ** 2 / G).toFixed(0)
+    if (r.metres < 1) gates.push({ name: 'ride', ok: true, level: 'ok', message: 'no road rides the ground alone (every stretch has a set height or lift)' })
+    else if (light >= RIDE_KMH)
+      gates.push({
+        name: 'ride',
+        ok: true,
+        level: 'ok',
+        message: `on the ${r.metres.toFixed(0)} m of road that rides the ground, ${Number.isFinite(r.radius) ? `the tightest hilltop (${r.radius.toFixed(0)} m vertical radius, at ${at(r.at)}) keeps a car on the road up to ${light.toFixed(0)} km/h` : 'there is no hilltop at all'} (limit ${RIDE_KMH} km/h: ${need} m)`,
+      })
+    else
+      gates.push({
+        name: 'ride',
+        ok: true,
+        level: 'warn',
+        message: `the road rides over a bump in the ground at ${at(r.at)} so sharp (${r.radius.toFixed(0)} m vertical radius) that a car leaves the road above ${light.toFixed(0)} km/h (want ${RIDE_KMH} km/h or more: ${need} m; the road surface is smoothed over ${file.road.surfaceSmoothing} m)`,
+        fix: 'smooth the road surface more (a bigger road.surfaceSmoothing: the Road surface slider), route the road round the sharp hill, or give the points there a set `y` (or a `lift`) so the road runs level over it. Jumping it on purpose is fine.',
+      })
   }
   // Warnings: it works, but check it.
   {

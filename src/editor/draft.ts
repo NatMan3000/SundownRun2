@@ -27,6 +27,7 @@ import { getCurrentTrackFile, getTrack, setTrackFromFile } from '../track/curren
 import type { TrackGate } from '../track/gates'
 import { freeTrackId, getTrackSource, listDrawnTracks, saveDrawnTrack } from '../track/registry'
 import { validateTrack } from '../track/validate'
+import { ROAD_SMOOTHING_MAX, ROAD_SMOOTHING_MIN } from '../track/terrain'
 import { startSession } from '../core/session'
 import { audio } from '../core/api'
 import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFromFile, emptyWorldFile, fileOfDraft, isBlankDraft, isEmptyDraft, pointGroundOf, roadBound, worldForCopy } from './draftFile'
@@ -541,6 +542,22 @@ export function setWidth(width: number): void {
     d.width = Math.round(Math.min(24, Math.max(10, width)))
   })
 }
+/**
+ * How smooth the road's ups and downs are: the track's road.surfaceSmoothing (metres the
+ * ground under the road is averaged over, see averagedHeight in src/track/terrain.ts). The
+ * default value is left out of the file, so a track that never moved the slider keeps
+ * following the game's default.
+ */
+export function setSurfaceSmoothing(metres: number): void {
+  commit((d) => {
+    const v = Math.round(Math.min(ROAD_SMOOTHING_MAX, Math.max(ROAD_SMOOTHING_MIN, metres)))
+    const rs: RoadSettings = { ...(d.roadSettings ?? {}) }
+    if (v === TRACK_DEFAULTS.surfaceSmoothing) delete rs.surfaceSmoothing
+    else rs.surfaceSmoothing = v
+    if (Object.keys(rs).length) d.roadSettings = rs
+    else delete d.roadSettings
+  })
+}
 export function setBaseWorld(id: string): void {
   const base = BASE_WORLDS.find((b) => b.id === id)
   if (!base) return
@@ -929,7 +946,7 @@ export function pointGroundFor(d: Draft): ((x: number, z: number) => number) | u
   // commit (a new name) or by saving, which keeps the id the preview already used.
   const memo = groundMemo.get(d.environment)
   if (memo) return memo.ground
-  const ground = pointGroundOf(d.environment, useEditor.getState().savedId ?? draftId(d))
+  const ground = pointGroundOf(d.environment, useEditor.getState().savedId ?? draftId(d), d.roadSettings?.surfaceSmoothing)
   groundMemo.set(d.environment, { ground })
   return ground
 }

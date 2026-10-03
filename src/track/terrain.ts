@@ -24,7 +24,7 @@
 //  heights[iz * (n + 1) + ix], x and z from -half to +half.
 // ============================================================
 
-import type { ResolvedTrackFile, TerrainFeature } from './schema'
+import { TRACK_DEFAULTS, type ResolvedTrackFile, type TerrainFeature } from './schema'
 import { SURFACE_CODE, type TerrainGrid, type TrackSamples } from './types'
 import { clamp, fbm, makeNoise2D, smoothstep } from './noise'
 import { BARRIER_BELOW, BARRIER_DEPTH, barrierAxes, type BarrierAxes } from './ribbon'
@@ -34,6 +34,8 @@ type Env = ResolvedTrackFile['environment']
 /** The natural (un-flattened) ground, as a function plus the edge geometry. */
 export interface NaturalTerrain {
   height: (x: number, z: number) => number
+  /** The same ground without the world-edge mountains: height = inland + the ridge's rise. */
+  inland: (x: number, z: number) => number
   edge: 'ridge' | 'wall'
   size: number
   half: number
@@ -323,7 +325,7 @@ export function makeNaturalTerrain(env: Env): NaturalTerrain {
     return riseHere * ridgeShape(tt) + gully
   }
 
-  const height = (x: number, z: number): number => {
+  const inland = (x: number, z: number): number => {
     let h = base
     let feat = 0
     // A big-air run is a designed shape: the rolling hills fade out under it, or their
@@ -338,13 +340,13 @@ export function makeNaturalTerrain(env: Env): NaturalTerrain {
       if (f.type === 'bigAir') calm = Math.max(calm, bigAirCalm(f, dx, dz))
     }
     if (relief > 0) h += relief * 0.8 * fbm(hills, x * invScale + 0.37, z * invScale - 0.71, 4) * (1 - calm)
-    h += feat
-    if (edge === 'ridge') h += ridgeAt(x, z)
-    return h
+    return h + feat
   }
+  const height = edge === 'ridge' ? (x: number, z: number): number => inland(x, z) + ridgeAt(x, z) : inland
 
   return {
     height,
+    inland,
     edge,
     size,
     half,
@@ -362,19 +364,77 @@ export function makeNaturalTerrain(env: Env): NaturalTerrain {
   }
 }
 
-/** Average natural height over a ~12 m disc: where a control point without y sits. */
-export function averagedHeight(nat: NaturalTerrain, x: number, z: number): number {
-  let sum = nat.height(x, z) * 2
-  let w = 2
-  for (let ring = 1; ring <= 2; ring++) {
-    const r = ring * 6
-    for (let k = 0; k < 8; k++) {
-      const a = (k / 8) * Math.PI * 2 + ring * 0.39
-      sum += nat.height(x + Math.cos(a) * r, z + Math.sin(a) * r)
-      w++
+/**
+ * How widely the ground a road rides on is smoothed by default, metres: the spread (sigma)
+ * of the bell-shaped average in averagedHeight. A track sets its own with
+ * `road.surfaceSmoothing` (the editor's Road surface slider). Chosen by measuring drawn
+ * roads on the hilly worlds (track7): road points 16 m apart that each sat on the ground
+ * averaged over only 12 m followed every bump, so a car at 180 km/h felt up to 1.3 g of
+ * up-and-down (95th percentile) and went light over crests for 70-210 m of every lap.
+ * Averaged over this much, bumps shorter than about 160 m are more than halved and ones
+ * under 100 m all but vanish, while the hills' big swells (400 m and more) keep nearly all
+ * their height: at 180 km/h the ride is about 0.3 g at the bumpiest, no rougher than the
+ * hand-made Afterglow, and no ground crest lifts the car.
+ */
+export const ROAD_GROUND_SIGMA: number = TRACK_DEFAULTS.surfaceSmoothing
+/** The least smoothing a track can ask for: about the old 12 m average, every bump followed. */
+export const ROAD_SMOOTHING_MIN = 5
+/**
+ * The most: the road still rides the big hills (a swell 500 m long keeps four fifths of its
+ * height, a 300 m one over half) but glides over everything smaller.
+ */
+export const ROAD_SMOOTHING_MAX = 50
+
+interface GroundStencil {
+  dx: Float64Array
+  dz: Float64Array
+  w: Float64Array
+}
+const stencils = new Map<number, GroundStencil>()
+
+/**
+ * The averaging pattern for a smoothing length (sigma, metres): spots on a square grid half a
+ * sigma apart, out to 3 sigma, each weighted by the bell curve. The pattern moves with the
+ * point, so the average changes smoothly as the point moves (no spot ever pops in or out).
+ * The weights sum to 1. Made once per length and kept.
+ */
+function groundStencil(sigma: number): GroundStencil {
+  let st = stencils.get(sigma)
+  if (st) return st
+  const step = sigma / 2
+  const reach = 6 // steps: 3 sigma
+  const dx: number[] = []
+  const dz: number[] = []
+  const w: number[] = []
+  for (let i = -reach; i <= reach; i++) {
+    for (let j = -reach; j <= reach; j++) {
+      if (i * i + j * j > reach * reach) continue
+      dx.push(i * step)
+      dz.push(j * step)
+      w.push(Math.exp(-((i * i + j * j) * step * step) / (2 * sigma * sigma)))
     }
   }
-  return sum / w
+  const sum = w.reduce((a, b) => a + b, 0)
+  st = { dx: Float64Array.from(dx), dz: Float64Array.from(dz), w: Float64Array.from(w, (v) => v / sum) }
+  stencils.set(sigma, st)
+  return st
+}
+
+/**
+ * Where a control point without y sits: the natural ground smoothed over about 2 x `sigma`
+ * around it (a bell-shaped average; 30 m by default, so about 60 m), so a road follows the
+ * hills and valleys but irons out the little bumps (the terrain is then cut and filled to
+ * meet it). Only the inland ground is smoothed; the world-edge mountains are added as they
+ * are at the point itself (roads stay clear of them, but a 60 m average would reach their
+ * foothills and lift a road near the edge onto an embankment).
+ * A function of the point's own position only, so the editor's tools (which add and move
+ * points) work out exactly the same heights as the game (src/editor/shape.ts).
+ */
+export function averagedHeight(nat: NaturalTerrain, x: number, z: number, sigma: number = ROAD_GROUND_SIGMA): number {
+  const { dx, dz, w } = groundStencil(Math.min(ROAD_SMOOTHING_MAX, Math.max(ROAD_SMOOTHING_MIN, sigma)))
+  let sum = 0
+  for (let k = 0; k < w.length; k++) sum += w[k] * nat.inland(x + dx[k], z + dz[k])
+  return sum + (nat.height(x, z) - nat.inland(x, z))
 }
 
 /** The natural heights sampled on the terrain grid (reused by live rebuilds). */

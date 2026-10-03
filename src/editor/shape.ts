@@ -50,7 +50,7 @@ export interface ShapeWorld {
   playRadius: number
   /**
    * The ground a road point with no `y` sits on, worked out exactly the way the
-   * game does it (the natural ground averaged over about 12 m: averagedHeight in
+   * game does it (the natural ground smoothed over about 60 m: averagedHeight in
    * src/track/terrain.ts). With it, every point a tool adds keeps the road at
    * exactly the height it had (see newPointHeight). Without it (the self-test's
    * flat-world maths) new points simply sit on the ground.

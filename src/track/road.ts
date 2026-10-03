@@ -4,8 +4,9 @@
 //  This is where a list of dots in the track file becomes a road:
 //
 //   1. Each control point gets a height: its own y, or the natural
-//      ground averaged over ~12 m plus its lift. That is where the
-//      road sits unbanked.
+//      ground smoothed over ~60 m (averagedHeight in terrain.ts) plus
+//      its lift. That is where the road sits unbanked: it rides the
+//      hills, but not every little bump on them.
 //   2. A smooth closed spline runs through the points (spline.ts).
 //   3. It is re-sampled every ~1 m, starting at the start line, so
 //      s = 0 is the line by construction.
@@ -61,8 +62,23 @@ export const LOOP_RUN_IN = 80
 const LOOP_LANE_GAP = 1
 /** A bend's bank rolls out to flat over this many metres before a loop's run-in (and back in after it lands). */
 const LOOP_BANK_EASE = 40
-/** A wall ride ramps its wall in and out over this many metres at each end. */
-export const WALL_RAMP = 15
+/**
+ * A wall ride's wall grows in and fades out over this many metres at each end (an even S
+ * from nothing to full height). Over 15 m the wall stood up in about half a car's length a
+ * second at speed, so a car drifting toward it there met its rising end instead of riding up
+ * onto it (Nathan: "you end up hitting the edge of them"): driven at it at 120-200 km/h with
+ * the nose turned 6 degrees toward it, cars that reached the edge in the wall's first metres
+ * crashed into it (body hits up to 14 kN s); over 40 m every one of those rides up it.
+ */
+export const WALL_RAMP = 40
+/**
+ * The wall stays at full height where it always did, from this far after a wall ride's `at` to
+ * this far before its end (the ramps used to be 15 m and sit inside the piece), so the longer
+ * ramps reach out WALL_RAMP - WALL_FULL_INSET metres before `at` and past the end.
+ */
+export const WALL_FULL_INSET = 15
+/** How far a wall ride's wall reaches beyond the stretch its file gives (`at` to `at + length`), at each end. */
+export const WALL_REACH = WALL_RAMP - WALL_FULL_INSET
 /** How far round a wall ride's wall curls at full height (degrees past flat). */
 export const WALL_SWEEP_DEG = 100
 /**
@@ -210,7 +226,7 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   const ctrl = pts.map((p) => ({
     x: p.x,
     z: p.z,
-    y: typeof p.y === 'number' ? p.y : averagedHeight(nat, p.x, p.z) + (p.lift ?? 0),
+    y: typeof p.y === 'number' ? p.y : averagedHeight(nat, p.x, p.z, road.surfaceSmoothing) + (p.lift ?? 0),
   }))
 
   // ---- 2. the spline ----
@@ -733,9 +749,11 @@ export function buildCenterline(file: ResolvedTrackFile, bankMaxDeg: number, nat
   pieces.forEach((p, idx) => {
     if (p.type !== 'wallride') return
     const w = p as WallRidePiece
-    const len = w.length ?? 120
+    // The wall reaches WALL_REACH metres past both ends of the file's stretch, so its longer
+    // ramps leave the full-height part where it was (see WALL_FULL_INSET).
+    const len = (w.length ?? 120) + 2 * WALL_REACH
     const radius = w.height ?? 9
-    const s0 = sOfAt(w.at)
+    const s0 = sOfAt(w.at) - WALL_REACH
     walls.push({ pieceIndex: idx, s0, s1: s0 + len, side: w.side, radius })
     const maxSweep = (WALL_SWEEP_DEG * Math.PI) / 180
     const i0 = Math.floor(s0 / ds)

@@ -18,7 +18,7 @@
 import { roadBound as trackRoadBound, validateTrack } from '../track/validate'
 import { averagedHeight, makeNaturalTerrain } from '../track/terrain'
 import { hashString } from '../track/noise'
-import { TRACK_FORMAT, TRACK_VERSION, type EnvironmentSpec, type HuntSpec, type Piece, type PropSpot, type CoreSpot, type RoadPoint, type TrackFile } from '../track/schema'
+import { TRACK_DEFAULTS, TRACK_FORMAT, TRACK_VERSION, type EnvironmentSpec, type HuntSpec, type Piece, type PropSpot, type CoreSpot, type RoadPoint, type TrackFile } from '../track/schema'
 import type { Draft, RoadSettings } from './draft'
 
 export interface BaseWorld {
@@ -224,20 +224,23 @@ let groundMemo: { key: string; ground: (x: number, z: number) => number } | null
 /**
  * The ground a road point with no `y` sits on, in this world, for a track
  * with this id, worked out exactly the way the game does it (the natural
- * ground averaged over about 12 m: averagedHeight in src/track/terrain.ts).
- * undefined if the world itself is not valid. Only the world and the id
- * matter (a world with no `seed` takes its hills from the id), so it is
- * checked with the starter road: a half-finished draft still gets it.
+ * ground smoothed over about 60 m: averagedHeight in src/track/terrain.ts).
+ * undefined if the world itself is not valid. Only the world, the id and the
+ * road's `surfaceSmoothing` matter (a world with no `seed` takes its hills
+ * from the id), so the world is checked with the starter road: a
+ * half-finished draft still gets it.
  */
-export function pointGroundOf(environment: EnvironmentSpec, id: string): ((x: number, z: number) => number) | undefined {
+export function pointGroundOf(environment: EnvironmentSpec, id: string, surfaceSmoothing?: number): ((x: number, z: number) => number) | undefined {
   const v = validateTrack(draftFile({ id, name: 'Ground', points: starterRoad(environment), environment }))
   const env = v.track?.environment
   if (!env) return undefined
-  // What the game's natural ground depends on (the envKey in src/track/build.ts).
-  const key = JSON.stringify([env.seed, env.size, env.terrain, env.sky.sunAzimuthDeg])
+  // What the game's natural ground depends on (the envKey in src/track/build.ts), and how far
+  // the road smooths it (the track's road.surfaceSmoothing, as the game reads it).
+  const sigma = surfaceSmoothing ?? TRACK_DEFAULTS.surfaceSmoothing
+  const key = JSON.stringify([env.seed, env.size, env.terrain, env.sky.sunAzimuthDeg, sigma])
   if (groundMemo?.key !== key) {
     const nat = makeNaturalTerrain(env)
-    groundMemo = { key, ground: (x, z) => averagedHeight(nat, x, z) }
+    groundMemo = { key, ground: (x, z) => averagedHeight(nat, x, z, sigma) }
   }
   return groundMemo.ground
 }

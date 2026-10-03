@@ -34,7 +34,7 @@ import {
   type NaturalGrid,
   type NaturalTerrain,
 } from './terrain'
-import { buildCenterline, WALL_RAMP, type LoopInfo } from './road'
+import { buildCenterline, WALL_FULL_INSET, type LoopInfo } from './road'
 import { SURFACE_CODE } from './types'
 import { buildRibbonMeshes } from './ribbon'
 import { buildRampMeshes, type RampSolid } from './ramps'
@@ -71,8 +71,15 @@ import { hashString } from './noise'
  *      off over the 100-200 m into and out of a banked corner, so the bank rolls themselves are
  *      unchanged. The ground beside an open road follows its grade between samples. Roads with
  *      barriers (the Hyperdrome) still bank about their middle and keep their geometry.
+ *  10: a road point with no `y` sits on the ground smoothed over about 60 m (a bell-shaped
+ *      average, ROAD_GROUND_SIGMA = 30 m in terrain.ts) instead of 12 m, so a road follows the
+ *      hills but not every little bump (Nathan: "the road needs to sort of smooth out what's
+ *      underneath it"); the terrain is cut and filled to meet it. Points with a `y` keep it.
+ *      A track can set its own smoothing (road.surfaceSmoothing, 5-50 m). A wall ride's wall
+ *      grows in and fades out over 40 m (was 15), reaching 25 m past both ends of its stretch,
+ *      so its full-height part stays where it was.
  */
-export const BUILDER_VERSION = 9
+export const BUILDER_VERSION = 10
 
 /** Grid slots: the first row this far behind the line, then a row every GRID_ROW metres. */
 const GRID_FIRST = 7
@@ -305,7 +312,8 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
   const noPosts: { s0: number; s1: number }[] = []
   // Round a loop: nothing beside the mouth or under the way out (the loop's legs stand there).
   for (const l of c.loops) noPosts.push({ s0: q.wrapS(l.s0 - 40), s1: q.wrapS(l.s1 + 40) })
-  for (const w of c.walls) noPosts.push({ s0: q.wrapS(w.s0 - WALL_RAMP), s1: q.wrapS(w.s1 + WALL_RAMP) })
+  // A wall ride's wall (its ramps included) and 15 m either side of it.
+  for (const w of c.walls) noPosts.push({ s0: q.wrapS(w.s0 - WALL_FULL_INSET), s1: q.wrapS(w.s1 + WALL_FULL_INSET) })
   for (const r of rampSpots) noPosts.push({ s0: q.wrapS(r.s - 25), s1: q.wrapS(r.s + 25) })
   // Keep the start grid clear too.
   noPosts.push({ s0: q.wrapS(-GRID_FIRST - GRID_ROW * 7), s1: 12 })

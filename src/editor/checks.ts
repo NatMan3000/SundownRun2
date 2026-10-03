@@ -70,6 +70,7 @@ const GATE_WORDS: Record<string, { title: string; label: string; how?: string }>
     label: 'CAR GOES LIGHT',
     how: 'Spread the points out beside the banked corner with Select and move, or set less bank there with the Bank tool.',
   },
+  ride: { title: 'The road is so bumpy here that a fast car takes off.', label: 'BUMPY ROAD', how: 'Slide Road surface (in the Track section) toward smooth.' },
   'start.at': { title: 'The start grid sits on a bend.', label: 'START ON A BEND', how: 'Pick Start line in Place pieces, then click a straight bit of road.' },
   'environment.roadside.billboards': { title: 'Fewer billboards fit beside this road than the world asks for.', label: 'BILLBOARDS' },
   checks: { title: "The game couldn't finish checking this track.", label: 'NOT CHECKED' },

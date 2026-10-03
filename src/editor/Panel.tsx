@@ -21,6 +21,7 @@ import { PALETTE } from '../core/palette'
 import { audio } from '../core/api'
 import { listTracks } from '../track/registry'
 import { TRACK_DEFAULTS, type Piece } from '../track/schema'
+import { ROAD_SMOOTHING_MAX, ROAD_SMOOTHING_MIN } from '../track/terrain'
 import { BASE_WORLDS, isEmptyDraft } from './draftFile'
 import {
   type Draft,
@@ -37,6 +38,7 @@ import {
   setName,
   setSectionBank,
   setSectionWidth,
+  setSurfaceSmoothing,
   setTimeOfDay,
   setWidth,
   smoothRoad,
@@ -125,6 +127,16 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
         <section className="sre-section" aria-label="Track">
           <span className="sre-section-title">Track</span>
           <SliderField label="Road width" value={draft.width} min={10} max={24} step={1} unit="m" onCommit={setWidth} help="How wide the road is, edge to edge." />
+          <SliderField
+            label="Road surface"
+            value={draft.roadSettings?.surfaceSmoothing ?? TRACK_DEFAULTS.surfaceSmoothing}
+            min={ROAD_SMOOTHING_MIN}
+            max={ROAD_SMOOTHING_MAX}
+            step={5}
+            format={(v) => (v <= 10 ? 'Follows every bump' : v < 30 ? 'A bit bumpy' : v < 40 ? 'Smooth' : 'Extra smooth')}
+            onCommit={setSurfaceSmoothing}
+            help="How the road sits on the ground. Slide left and it follows every little bump; slide right and it irons the bumps out, so it only goes up and down with the hills."
+          />
           <WorldField draft={draft} />
           <SliderField
             label="Time of day"

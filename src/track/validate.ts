@@ -28,7 +28,8 @@ import {
 import { PALETTE } from '../core/palette'
 import { hashString } from './noise'
 import { sampleClosedSpline, arcLengthAtParam } from './spline'
-import { LOOP_RUN_IN, loopShape } from './road'
+import { LOOP_RUN_IN, loopShape, WALL_REACH } from './road'
+import { ROAD_SMOOTHING_MAX, ROAD_SMOOTHING_MIN } from './terrain'
 
 type Obj = Record<string, unknown>
 
@@ -123,11 +124,12 @@ export function validateTrack(json: unknown): ValidationResult {
   const r = f.road
   if (!isObj(r)) I.err('road', 'is required')
   else {
-    I.unknown(r, 'road', ['points', 'width', 'banking', 'barriers', 'barrierHeight'])
+    I.unknown(r, 'road', ['points', 'width', 'banking', 'barriers', 'barrierHeight', 'surfaceSmoothing'])
     const width = I.num(r, 'width', 'road', TRACK_DEFAULTS.roadWidth, 4, 80)
     if (width < 8 || width > 40) I.warn('road.width', `${width} m is unusual (most roads are 10-24 m)`)
     const barriers = I.oneOf(r, 'barriers', 'road', ['none', 'walls'] as const, 'none')
     const barrierHeight = I.num(r, 'barrierHeight', 'road', TRACK_DEFAULTS.barrierHeight, 0.5, 12)
+    const surfaceSmoothing = I.num(r, 'surfaceSmoothing', 'road', TRACK_DEFAULTS.surfaceSmoothing, ROAD_SMOOTHING_MIN, ROAD_SMOOTHING_MAX)
     let banking: ResolvedTrackFile['road']['banking'] = {
       auto: true,
       maxDeg: TRACK_DEFAULTS.bankMaxDeg,
@@ -193,7 +195,7 @@ export function validateTrack(json: unknown): ValidationResult {
         if (points.length >= 2 && Math.hypot(b.x - a.x, b.z - a.z) < 2) I.err(`road.points[${(i + 1) % points.length}]`, `is within 2 m of point ${i}; spread them out`)
       }
     }
-    roadOut = { points, width, barriers, barrierHeight, banking }
+    roadOut = { points, width, barriers, barrierHeight, surfaceSmoothing, banking }
   }
 
   // ---------------------------------------------------------------- pieces
@@ -613,7 +615,8 @@ function geometryWarnings(I: Issues, t: ResolvedTrackFile): void {
   t.pieces.forEach((p, i) => {
     const s = sOfAt(p.at)
     if (p.type === 'loop') spans.push({ i, type: p.type, s0: s - LOOP_RUN_IN, s1: s + loopShape(p.radius ?? TRACK_DEFAULTS.loopRadius).advance + 20 })
-    else if (p.type === 'wallride') spans.push({ i, type: p.type, s0: s, s1: s + (p.length ?? 120) })
+    // A wall ride's wall grows in WALL_REACH metres before `at` and fades out as far past its end.
+    else if (p.type === 'wallride') spans.push({ i, type: p.type, s0: s - WALL_REACH, s1: s + (p.length ?? 120) + WALL_REACH })
     else if (p.type === 'ramp') spans.push({ i, type: p.type, s0: s - (p.length ?? 12) / 2 - 5, s1: s + (p.length ?? 12) / 2 + 5 })
   })
   for (let a = 0; a < spans.length; a++) {

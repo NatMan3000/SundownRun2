@@ -57,6 +57,13 @@ export interface RoadSpec {
   barriers?: 'none' | 'walls'
   /** Barrier wall height in metres (default 2.2). */
   barrierHeight?: number
+  /**
+   * How smooth the road's ups and downs are, metres (default 30, 5 to 50). A point with no
+   * `y` sits on the ground averaged over about twice this far around it, so the road rides
+   * the hills but irons out bumps shorter than about 5 x this. 5 follows nearly every bump;
+   * 50 glides over everything but the big hills.
+   */
+  surfaceSmoothing?: number
 }
 
 export interface RoadPoint {
@@ -290,7 +297,7 @@ export interface ValidationResult {
 export type ResolvedTrackFile = Omit<TrackFile, 'laps'> & {
   /** null when the file doesn't set laps (use the player's raceLaps setting). */
   laps: number | null
-  road: Required<Pick<RoadSpec, 'points' | 'width' | 'barriers' | 'barrierHeight'>> & {
+  road: Required<Pick<RoadSpec, 'points' | 'width' | 'barriers' | 'barrierHeight' | 'surfaceSmoothing'>> & {
     banking: Required<Omit<BankingSpec, 'adjustable'>> & Pick<BankingSpec, 'adjustable'>
   }
   pieces: Piece[]
@@ -314,6 +321,7 @@ export type ResolvedTrackFile = Omit<TrackFile, 'laps'> & {
 export const TRACK_DEFAULTS = {
   roadWidth: 14,
   barrierHeight: 2.2,
+  surfaceSmoothing: 30,
   bankMaxDeg: 10,
   bankDesignSpeedKmh: 120,
   worldSize: 1600,
