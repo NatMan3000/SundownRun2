@@ -143,7 +143,7 @@ export interface ParkLayout {
   enclosed: boolean
   zones: ParkZone[]
   items: ParkItem[]
-  /** Solid pieces (each also a physics solid), and the target pads. */
+  /** Solid pieces (each also a physics solid), and the bullseyes (paint on the ground: no physics). */
   solids: (ExtrudeSpec & { item: number })[]
   pads: (PadSpec & { item: number })[]
   rings: ParkRing[]
@@ -572,6 +572,8 @@ const CLEAR_RUNIN = 7
 /** How far (metres) a solid's ground may stray from its fitted plane, and a pad's. */
 const FLAT_SOLID = 0.3
 const FLAT_PAD = 0.12
+/** How far (metres) a bullseye's dark disc reaches past its outer ring. */
+const PAD_MARGIN = 0.45
 /** Steepest base plane, along and across (rise per metre). */
 const MAX_SLOPE = 0.08
 const CANDIDATES = 260
@@ -778,7 +780,9 @@ function tryLane(c: PlaceContext, plan: LanePlan, x: number, z: number, dx: numb
     for (let i = 0; i < samples.length; i += 3) {
       if (Math.abs(samples[i + 2] - (pl.c + pl.sa * samples[i] + pl.sl * samples[i + 1])) > FLAT_PAD) return null
     }
-    pads.push({ frame: { ox, oz, dx, dz, y0: pl.c, sa: pl.sa, sl: pl.sl }, radius: p.radius, inner: p.inner, height: 0.18, bevel: 1.6, sink: 0.5 })
+    // The bullseye is paint on this ground (parkGeometry.ts buildPadDecal): a landing on it touches
+    // down on the ground itself, so its height is the ground's at the middle.
+    pads.push({ frame: { ox, oz, dx, dz, y0: pl.c, sa: pl.sa, sl: pl.sl }, radius: p.radius, inner: p.inner, margin: PAD_MARGIN, centreY: t.terrainHeight(ox, oz) })
   }
   return { solids, pads }
 }
@@ -1000,7 +1004,7 @@ function emitLane(out: ParkLayout, plan: LanePlan, placed: PlacedLane): void {
     const spec = placed.pads[i]
     const item = out.items.length
     const [px, pz] = W(p.a, p.l)
-    const y = spec.frame.y0 + spec.height
+    const y = spec.centreY
     out.items.push({ id: item, kind: 'target', zone: zoneId, label: 'BULLSEYE', runX: x, runZ: z, dx, dz, runIn: p.a, designKmh: p.designKmh, signKmh: 0, x: px, y, z: pz })
     out.pads.push({ ...spec, item })
     out.targets.push({ id: out.targets.length, item, zone: zoneId, x: px, y, z: pz, outer: p.radius, inner: p.inner })
@@ -1086,7 +1090,7 @@ function fitSigns(out: ParkLayout, plan: LanePlan, placed: PlacedLane, solidItem
     let kmh = s.signKmh
     if (s.signPad >= 0) {
       const pad = placed.pads[s.signPad]
-      kmh = lipSpeedFor(fwd(pad.frame.ox, pad.frame.oz), slope + KICKER_POP, lipY - (pad.frame.y0 + pad.height)) * 3.6
+      kmh = lipSpeedFor(fwd(pad.frame.ox, pad.frame.oz), slope + KICKER_POP, lipY - pad.centreY) * 3.6
     } else {
       const targets: FlightTarget[] = []
       for (let k = 0; k < plan.rings.length; k++) {

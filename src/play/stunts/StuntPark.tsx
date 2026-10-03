@@ -15,9 +15,11 @@
 //  What this component does:
 //    - builds the park's one render mesh (parkGeometry.ts) with its
 //      neon material (stuntMaterial.ts): one draw call for every
-//      ramp and pad, one more for all the rings
-//    - gives every piece its own solid triangle-mesh collider,
-//      tagged 'ramp' (the car treats it like the road's kickers)
+//      ramp and bullseye, one more for all the rings
+//    - gives every ramp, table and pipe its own solid triangle-mesh
+//      collider, tagged 'ramp' (the car treats it like the road's
+//      kickers). The bullseyes have none: they are paint on the
+//      ground, so driving over one is driving on the ground
 //    - draws the rings, and their explosion, countdown and comeback
 //      (ringFx.ts), and runs their clock once per physics step
 //      (ringComeback.ts: Josh's ringComebackSeconds knob)
@@ -48,7 +50,7 @@ import type { ColliderSet } from '../../track/colliders'
 import type { TrackRuntime } from '../../track/types'
 import { featuresFor } from '../modes'
 import { registerPlayInspector } from '../inspect'
-import { buildExtruded, buildPad, ParkMeshBuilder } from './parkGeometry'
+import { buildExtruded, buildPadDecal, ParkMeshBuilder } from './parkGeometry'
 import type { SolidMesh } from './parkGeometry'
 import { buildParkLayout } from './parkLayout'
 import type { ParkLayout } from './parkLayout'
@@ -105,7 +107,8 @@ function ParkField({ track }: { track: TrackRuntime }) {
     const mb = new ParkMeshBuilder()
     const solids: SolidMesh[] = []
     for (const s of layout.solids) solids.push(buildExtruded(s, track.terrainHeight, mb))
-    for (const p of layout.pads) solids.push(buildPad(p, mb))
+    // The bullseyes are paint on the ground: drawn with everything else, nothing for the physics.
+    for (const p of layout.pads) buildPadDecal(p, track.terrain, mb)
     const g = mb.build()
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(g.positions, 3))
@@ -278,6 +281,41 @@ function ParkField({ track }: { track: TrackRuntime }) {
           return name
         }) as never,
         "parkShot(zone, view = 'side' | 'run' | 'top'): point the camera at a stunt-park zone ( __dev.cam('free') to go back)",
+      ),
+      registerDev(
+        'padRun',
+        ((target: number, kmh = 60, offset = 0, angleDeg = 90, back = 40) => {
+          const tg = layout.targets[Number(target)]
+          const pad = layout.pads[Number(target)]
+          const car = getCar('player')
+          if (!tg || !pad || !car?.api) return `no target ${target} (0..${layout.targets.length - 1})`
+          // The path: a straight line through the bullseye's middle (or `offset` metres to its right),
+          // turned angleDeg right of its lane (90 = straight across the lane, clear of the lane's ramps).
+          const turn = ((Number(angleDeg) || 0) * Math.PI) / 180
+          const fx = pad.frame.dx * Math.cos(turn) - pad.frame.dz * Math.sin(turn)
+          const fz = pad.frame.dz * Math.cos(turn) + pad.frame.dx * Math.sin(turn)
+          const rx = -fz
+          const rz = fx
+          const b = Number(back) || 40
+          const off = Number(offset) || 0
+          const x = tg.x - fx * b + rx * off
+          const z = tg.z - fz * b + rz * off
+          _p.set(x, track.terrainHeight(x, z) + SPAWN_LIFT, z)
+          _fwd.set(fx, 0, fz).normalize()
+          _left.crossVectors(_up, _fwd).normalize()
+          _basis.makeBasis(_left, _up, _fwd)
+          _q.setFromRotationMatrix(_basis)
+          car.api.teleport(_p, _q)
+          const k = Number(kmh) || 0
+          const dev = (window as unknown as { __dev?: Record<string, (v: number) => unknown> }).__dev
+          if (k > 0) dev?.setSpeed?.(k)
+          // The ground's own shape along the path (metres along it from the start, ground height), so a
+          // test can tell a bump the bullseye adds from the hill it sits on.
+          const ground: number[] = []
+          for (let d = 0; d <= b * 2 + 1e-6; d += 0.5) ground.push(+track.terrainHeight(x + fx * d, z + fz * d).toFixed(3))
+          return { target: tg.id, start: [x, z], dir: [fx, fz], centre: [tg.x, tg.y, tg.z], outer: tg.outer, inner: tg.inner, kmh: k, ground }
+        }) as never,
+        'padRun(target, kmh = 60, offset = 0, angleDeg = 90, back = 40): put the player `back` m before bullseye `target` (park().items of kind target, in order), on a straight line through its middle (`offset` m to the right of it) turned angleDeg right of its lane, moving at kmh; returns the ground heights every 0.5 m along that line',
       ),
       registerDev(
         'parkLook',

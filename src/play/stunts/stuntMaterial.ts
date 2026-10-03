@@ -45,6 +45,17 @@ const vertexMain = /* glsl */ `
 vPark = aPark;
 vPark2 = aPark2;
 vPark3 = aPark3;
+{
+  // A bullseye is paint on the ground (parkGeometry.ts buildPadDecal), so it must stay just above
+  // the ground's drawn surface without ever flickering into it. Separated geometrically (never
+  // with polygonOffset: CLAUDE.md): lifted a little, more with distance, because the depth buffer
+  // gets coarser with the square of the distance and the terrain is drawn coarser far away
+  // (its mid and far levels can stand up to about 0.35 m above the paint's ground). At 10 m that
+  // is 2 cm, at 230 m 0.2 m, at 720 m about 1 m: always about a pixel or less on screen.
+  float sr2Pad = step(3.5, aPark.x);
+  float sr2Dist = length((modelMatrix * vec4(transformed, 1.0)).xyz - cameraPosition);
+  transformed.y += sr2Pad * (0.015 + 0.0006 * sr2Dist + 1.2e-6 * sr2Dist * sr2Dist);
+}
 `
 
 const fragmentPars = /* glsl */ `
@@ -214,7 +225,9 @@ const fragmentEmissive = /* glsl */ `
   float fillIn = 1.0 - smoothstep(rIn - wE, rIn + wE, r);
   // a slow ripple of light running outward
   float qR = r / 1.2 - uTime * 0.5;
-  float ripple = sr2Line(abs(fract(qR) - 0.5) - 0.5, 0.04, max(fwidth(qR), 1e-4)) * near * (1.0 - smoothstep(rOut - 0.5, rOut, r));
+  // (a pad's own distance-fade: its 'arc' is a constant radius, so the shared one never fades)
+  float nearPad = 1.0 - smoothstep(0.25, 1.2, wE);
+  float ripple = sr2Line(abs(fract(qR) - 0.5) - 0.5, 0.04, max(fwidth(qR), 1e-4)) * nearPad * (1.0 - smoothstep(rOut - 0.5, rOut, r));
   glow += isPad * uGuide * (outerRing * uGlowT1 + innerRing * uGlowT2 * 0.8 + dot0 * uGlowT2 + fillOut * uGlowT0 * 0.08 + fillIn * uGlowT0 * 0.22 + ripple * uGlowT0 * 0.4);
 
   totalEmissiveRadiance += glow;
@@ -250,7 +263,7 @@ export function makeParkMaterial(time: { value: number }, opts: ParkMaterialOpti
       .replace('#include <emissivemap_fragment>', fragmentEmissive)
       .replace('#include <opaque_fragment>', fragmentClamp)
   }
-  mat.customProgramCacheKey = () => 'sr2-stunt-park-v6'
+  mat.customProgramCacheKey = () => 'sr2-stunt-park-v7'
   return mat
 }
 

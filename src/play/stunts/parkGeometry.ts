@@ -1,5 +1,5 @@
 // ============================================================
-//  STUNT PARK GEOMETRY - ramps, tables, pipes and pads as solids
+//  STUNT PARK GEOMETRY - ramps, tables and pipes as solids, bullseyes as paint
 // ------------------------------------------------------------
 //  Every drivable thing in the stunt park is built here from a
 //  few numbers, as plain arrays (no three.js), so the game and a
@@ -10,8 +10,10 @@
 //  then stretch that line sideways to the piece's width and close
 //  it into a solid block down into the ground. A kicker, a big
 //  table, a gap's landing and a quarter pipe are all just different
-//  side views. The target pads are a different idea: a side view
-//  spun round in a circle (a flat puck with a sloped rim).
+//  side views. The bullseye targets are a different idea: they are
+//  paint on the ground (a disc laid over the ground's real shape,
+//  with no solid of their own), so driving over one is driving on
+//  the ground.
 //
 //  Each solid comes out twice:
 //    - into the park's ONE shared render mesh (top, sides and end
@@ -30,6 +32,9 @@
 //  without a bump; its block reaches below the ground everywhere,
 //  so nothing floats.
 // ============================================================
+
+import { gridHeight } from '../../track/terrain'
+import type { TerrainGrid } from '../../track/types'
 
 /** One point of a piece's side view: `a` metres along its axis, `h` metres above its base plane. */
 export interface ProfilePoint {
@@ -85,15 +90,16 @@ export interface ExtrudeSpec {
 }
 
 export interface PadSpec {
+  /** Where the bullseye's middle is (ox, oz) and which way its lane runs (the plane it was fitted with). */
   frame: PieceFrame
-  /** Radius of the flat top (the outer x2 ring's edge). */
+  /** Radius of the outer x2 ring's edge. */
   radius: number
   /** Radius of the inner x3 ring. */
   inner: number
-  /** Height of the top above the base plane, and the bevel run round the edge. */
-  height: number
-  bevel: number
-  sink: number
+  /** How far (metres) the dark disc reaches past the outer ring. */
+  margin: number
+  /** The ground's height at the middle (where a landing on it touches down). */
+  centreY: number
 }
 
 /** A closed solid for the physics: welded corners, every face wound outward. */
@@ -567,88 +573,93 @@ function zipWall(L: P3[], R: P3[], arcL: number, arcR: number, nx: number, ny: n
   }
 }
 
-// ---------------------------------------------------------------- target pads
+// ---------------------------------------------------------------- bullseye targets
+
+/** Spokes round a bullseye's disc (5 degrees apart: about 0.7 m between them at its edge). */
+const PAD_SPOKES = 72
+/** Furthest apart (metres) two rings of a bullseye's vertices are, from its middle outward. */
+const PAD_RING_STEP = 0.75
 
 /**
- * A bullseye pad: a flat round top `height` above its plane, a sloped rim (`bevel` wide) down
- * into the ground, so wheels roll up onto it from any side. Rings of the top are cut at the
- * inner (x3) and outer (x2) radii so the shader's ring lines sit on vertices.
+ * Height of the ground at x, z as the terrain's middle level of detail draws it: every 2nd height
+ * of the grid, cut into the same two triangles per cell as the full grid (src/world/
+ * terrainGeometry.ts). Which heights are "every 2nd" depends on where each terrain chunk starts,
+ * so `ox` and `oz` (0 or 1) pick one of the four ways that coarser grid can line up.
  */
-export function buildPad(spec: PadSpec, mesh: ParkMeshBuilder): SolidMesh {
+function latticeHeight(g: TerrainGrid, x: number, z: number, ox: number, oz: number): number {
+  const n = g.n
+  const fx = Math.max(0, Math.min(n, (x + g.half) / g.cellSize))
+  const fz = Math.max(0, Math.min(n, (z + g.half) / g.cellSize))
+  const ix = Math.max(0, Math.min(n - 2, ox + Math.floor((fx - ox) / 2) * 2))
+  const iz = Math.max(0, Math.min(n - 2, oz + Math.floor((fz - oz) / 2) * 2))
+  const tx = Math.max(0, Math.min(1, (fx - ix) / 2))
+  const tz = Math.max(0, Math.min(1, (fz - iz) / 2))
+  const h = g.heights
+  const row = n + 1
+  const ha = h[iz * row + ix]
+  const hb = h[iz * row + ix + 2]
+  const hc = h[(iz + 2) * row + ix]
+  if (tx + tz <= 1) return ha + (hb - ha) * tx + (hc - ha) * tz
+  const hd = h[(iz + 2) * row + ix + 2]
+  return hd + (hc - hd) * (1 - tx) + (hb - hd) * (1 - tz)
+}
+
+/**
+ * The height a bullseye's paint sits at, at x, z: the ground the wheels touch (the full grid), or
+ * the terrain's coarser drawing of it where that stands higher (by a few centimetres at most, on
+ * the near-flat spots bullseyes are placed on), so the paint is never under ground you can see.
+ * Further away, where the terrain is drawn coarser still, the park's shader lifts the paint a
+ * little more (stuntMaterial.ts).
+ */
+export function padSurfaceY(g: TerrainGrid, x: number, z: number): number {
+  let y = gridHeight(g, x, z)
+  for (let k = 0; k < 4; k++) y = Math.max(y, latticeHeight(g, x, z, k & 1, k >> 1))
+  return y
+}
+
+/**
+ * A bullseye: paint on the ground, not a thing standing on it. A round disc of the park's dark
+ * wet surface with the cyan target drawn on it (stuntMaterial.ts), laid over the ground's real
+ * shape vertex by vertex, and nothing for the physics at all: you drive over it on the ground
+ * itself, at any speed, and a landing is judged by where you touch down (parkScoring.ts), not by
+ * hitting a solid. The disc reaches `margin` metres past the outer ring, so the ring has dark on
+ * both sides.
+ *
+ * Rings of vertices run from the middle outward, no more than PAD_RING_STEP apart, so the paint
+ * follows the ground's creases closely. Each vertex carries its distance from the middle (exact
+ * along a spoke), and the shader draws the rings from it.
+ */
+export function buildPadDecal(spec: PadSpec, g: TerrainGrid, mesh: ParkMeshBuilder): void {
   const f = spec.frame
-  const R = spec.radius
-  const SEG = 36
-  // Radii of the rings of vertices, centre outward, then the rim's foot.
-  const radii: number[] = [0, spec.inner * 0.5, spec.inner, (spec.inner + R) / 2, R, R + spec.bevel]
-  const heights: number[] = [spec.height, spec.height, spec.height, spec.height, spec.height, -0.15]
-  const solid = new SolidBuilder()
-  const point = (r: number, ang: number, h: number): [number, number, number] => {
-    const a = Math.cos(ang) * r
-    const l = Math.sin(ang) * r
-    return [wx(f, a, l), baseY(f, a, l) + h, wz(f, a, l)]
+  const radii: number[] = [0]
+  let r0 = 0
+  for (const stop of [spec.inner, spec.radius, spec.radius + spec.margin]) {
+    const k = Math.max(1, Math.ceil((stop - r0) / PAD_RING_STEP))
+    for (let j = 1; j <= k; j++) radii.push(r0 + ((stop - r0) * j) / k)
+    r0 = stop
   }
-  // Render: top rings + rim, one vertex per ring per spoke.
   const base = mesh.vertexCount
-  const rimSlope = (spec.height + 0.15) / spec.bevel
+  const e = 1.5 // metres each way for the ground's slope (half a grid cell)
   for (let i = 0; i < radii.length; i++) {
-    for (let s = 0; s <= SEG; s++) {
-      const ang = (s / SEG) * Math.PI * 2
-      const p = point(radii[i], ang, heights[i])
-      // Normal: straight up on the top, tilted outward on the rim.
-      let nx = 0
-      let ny = 1
-      let nz = 0
-      if (i === radii.length - 1) {
-        const a = Math.cos(ang)
-        const l = Math.sin(ang)
-        const ox = f.dx * a - f.dz * l
-        const oz = f.dz * a + f.dx * l
-        const L = Math.hypot(rimSlope, 1)
-        nx = (ox * rimSlope) / L
-        ny = 1 / L
-        nz = (oz * rimSlope) / L
-      }
-      mesh.vertex(p[0], p[1], p[2], nx, ny, nz, ROLE.pad, radii[i], R, spec.inner, 0, 1e4)
+    const r = radii[i]
+    // The middle is one vertex; every other ring has one per spoke (the last repeats the first).
+    const count = i === 0 ? 1 : PAD_SPOKES + 1
+    for (let s = 0; s < count; s++) {
+      const ang = (s / PAD_SPOKES) * Math.PI * 2
+      const x = wx(f, Math.cos(ang) * r, Math.sin(ang) * r)
+      const z = wz(f, Math.cos(ang) * r, Math.sin(ang) * r)
+      // A smooth normal from the ground's slope here, so the paint is lit like the ground under it.
+      const dhdx = (gridHeight(g, x + e, z) - gridHeight(g, x - e, z)) / (2 * e)
+      const dhdz = (gridHeight(g, x, z + e) - gridHeight(g, x, z - e)) / (2 * e)
+      const inv = 1 / Math.sqrt(dhdx * dhdx + 1 + dhdz * dhdz)
+      mesh.vertex(x, padSurfaceY(g, x, z), z, -dhdx * inv, inv, -dhdz * inv, ROLE.pad, r, spec.radius, spec.inner, 0, 1e4)
     }
   }
-  for (let i = 0; i < radii.length - 1; i++) {
-    for (let s = 0; s < SEG; s++) {
-      const A = base + i * (SEG + 1) + s
-      const B = A + 1
-      const C = A + SEG + 2
-      const D = A + SEG + 1
-      mesh.quad(A, B, C, D, 0, 1, 0)
-    }
-  }
-  // Physics: top fan, rings, rim, and a flat bottom at -sink (a short skirt from the rim's foot).
-  const ring = (i: number, s: number) => {
-    const ang = ((s % SEG) / SEG) * Math.PI * 2
-    return solid.point(...point(radii[i], ang, heights[i]))
-  }
-  const bottom = (s: number) => {
-    const ang = ((s % SEG) / SEG) * Math.PI * 2
-    return solid.point(...point(radii[radii.length - 1], ang, -spec.sink))
-  }
-  const centre = solid.point(...point(0, 0, spec.height))
-  const below = solid.point(...point(0, 0, -spec.sink))
-  for (let s = 0; s < SEG; s++) solid.tri(centre, ring(1, s), ring(1, s + 1), 0, 1, 0)
+  // The middle fan, then a band of quads between each pair of rings, all facing up.
+  for (let s = 0; s < PAD_SPOKES; s++) mesh.tri(base, base + 1 + s, base + 2 + s, 0, 1, 0)
   for (let i = 1; i < radii.length - 1; i++) {
-    for (let s = 0; s < SEG; s++) {
-      const ang = ((s + 0.5) / SEG) * Math.PI * 2
-      // Up for the flat rings; outward-and-up for the rim.
-      const o = i === radii.length - 2 ? 0.4 : 0
-      const dxw = (f.dx * Math.cos(ang) - f.dz * Math.sin(ang)) * o
-      const dzw = (f.dz * Math.cos(ang) + f.dx * Math.sin(ang)) * o
-      solid.quad(ring(i, s), ring(i, s + 1), ring(i + 1, s + 1), ring(i + 1, s), dxw, 1, dzw)
-    }
+    const inner = base + 1 + (i - 1) * (PAD_SPOKES + 1)
+    const outer = inner + PAD_SPOKES + 1
+    for (let s = 0; s < PAD_SPOKES; s++) mesh.quad(inner + s, inner + s + 1, outer + s + 1, outer + s, 0, 1, 0)
   }
-  const last = radii.length - 1
-  for (let s = 0; s < SEG; s++) {
-    const ang = ((s + 0.5) / SEG) * Math.PI * 2
-    const ox = f.dx * Math.cos(ang) - f.dz * Math.sin(ang)
-    const oz = f.dz * Math.cos(ang) + f.dx * Math.sin(ang)
-    solid.quad(ring(last, s), ring(last, s + 1), bottom(s + 1), bottom(s), ox, 0, oz)
-    solid.tri(below, bottom(s), bottom(s + 1), 0, -1, 0)
-  }
-  return solid.build()
 }
