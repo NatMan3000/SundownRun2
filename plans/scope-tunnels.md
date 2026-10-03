@@ -3,7 +3,7 @@ type: plan
 title: Tunnels scope (GitHub #9 part 3)
 description: What a tunnel can be on the tile-mesh ground, what the track file, builder, editor and gates need, the risks, and three stages (underpass first).
 created: 2026-10-03
-status: draft
+status: approved
 ---
 
 # Tunnels (GitHub #9 part 3): scope
@@ -58,4 +58,4 @@ Recommendation: A first, then B. Both keep one fact true: the grid is what a car
 2. **Tunnel.** The tunnel piece, tube, retaining walls, holes, interior light and fog, the `tunnel` gate and physics cases, a Tunnel piece in Place pieces. Player gets: real covered tunnels through hills, lit inside, a drivable hill above.
 3. **Editor and feel.** "Put this road in a tunnel" at crossings, a Tunnel toggle on a stretch, tunnels on the minimap and map, reflections dimmed inside (telemetry `environment` amendment), engine echo inside. Player gets: tunnels in one click that feel like tunnels.
 
-Open decision for Nathan: a tunnel as an explicit choice (recommended), or automatic past a set depth the way a road more than 6 m up becomes a bridge?
+Decided 3 Oct 2026 (Nathan, "q7 yes"): go on stage 1 once track7, editor9 and editor10 have landed; a tunnel is an explicit choice, not automatic past a set depth.
