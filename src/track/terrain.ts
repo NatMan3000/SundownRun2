@@ -427,6 +427,17 @@ export const BRIDGE_CLEARANCE = 5
  * drop just under the road (a wall of ground right under the deck at the join).
  */
 const BRIDGE_TAPER = 10
+/**
+ * Where a road on the ground lifts off into a bridge (or comes down off one), the ground
+ * under its last this-many metres stays hidden right to the edges instead of rising to
+ * meet the lip, easing back over BRIDGE_JOIN_EASE more. A grid cell on, under the bridge,
+ * the ground drops away; a cell reaching from ground just under the lip down to ground
+ * metres below cut steeply up under the middle of the road, within a car's reach of the
+ * deck (the editor's drawn figure-eight bridges failed the `under` check on some worlds and
+ * rotations). More than a cell's diagonal (3 m cells: 4.2 m).
+ */
+const BRIDGE_JOIN_FLAT = 6
+const BRIDGE_JOIN_EASE = 4
 
 /** Per-sample road info the flattener needs beyond TrackSamples. */
 export interface FlattenInput {
@@ -493,6 +504,16 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
       const prev = pass === 0 ? (i - 1 + count) % count : (i + 1) % count
       if (S.grounded[i] === 1 && S.surface[i] === SURFACE_CODE.road) toGround[i] = 0
       else toGround[i] = Math.min(toGround[i], toGround[prev] + S.ds)
+    }
+  }
+  // For each grounded road sample: metres along the road to the nearest raised one (a bridge).
+  const toRaised = new Float32Array(count).fill(Infinity)
+  for (let pass = 0; pass < 2; pass++) {
+    for (let k = 0; k < 2 * count; k++) {
+      const i = pass === 0 ? k % count : (2 * count - 1 - k) % count
+      const prev = pass === 0 ? (i - 1 + count) % count : (i + 1) % count
+      if (S.grounded[i] !== 1 && S.surface[i] === SURFACE_CODE.road) toRaised[i] = 0
+      else toRaised[i] = Math.min(toRaised[i], toRaised[prev] + S.ds)
     }
   }
 
@@ -583,7 +604,9 @@ export function flattenToRoad(grid: NaturalGrid, input: FlattenInput): FlattenRe
         } else {
           // Under the road: hidden, rising to just under the lip over the last metre
           // (so driving back on from the grass is smooth).
-          h = surfY - EDGE_DEPTH - (HIDE_DEPTH - EDGE_DEPTH) * (1 - smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond))
+          // (Not by a bridge's end: see BRIDGE_JOIN_FLAT.)
+          const lipRise = smoothstep(-EDGE_BAND - 2, -EDGE_BAND, beyond) * smoothstep(BRIDGE_JOIN_FLAT, BRIDGE_JOIN_FLAT + BRIDGE_JOIN_EASE, toRaised[ig])
+          h = surfY - EDGE_DEPTH - (HIDE_DEPTH - EDGE_DEPTH) * (1 - lipRise)
         }
         // Under the deck. (Right to the edge on a road with barriers: their boxes cover beyond it.)
         if (Math.abs(lat) <= hw - (walls ? 0 : COVER_MARGIN) && Math.abs(dx * S.tx[ig] + dz * S.tz[ig]) <= S.ds) cover[v] = 1
