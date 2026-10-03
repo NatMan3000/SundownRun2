@@ -427,16 +427,19 @@
   border-color: color-mix(in srgb, var(--bad) 40%, transparent);
   background: none;
 }
-.sre-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
+/* A button that can't be pressed right now: no fill, no glow, a dashed outline and dim text,
+   whatever kind of button it is (a primary one loses its cyan block, a danger one its red), and
+   hovering it changes nothing. The panel says why it is off next to it. */
+.sre-btn:disabled,
+.sre-btn:disabled:hover,
+.sre-btn.is-primary:disabled,
+.sre-btn.is-danger:disabled {
+  color: color-mix(in srgb, var(--dim) 75%, transparent);
+  background: none;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--text) 16%, transparent);
   box-shadow: none;
-}
-.sre-btn:disabled:hover {
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-}
-.sre-btn.is-primary:disabled:hover {
-  background: var(--accent);
+  cursor: not-allowed;
 }
 /* Why Save and Test drive are off (the empty map): one line across the top of the buttons. */
 .sre-actions-why {
@@ -451,12 +454,16 @@
 
 .sre-status {
   position: absolute;
-  /* Centred over the map (the window less the panel), never under the panel, and never so wide
-     that it covers the scale bar in the map's bottom-left corner (a long line wraps instead). */
-  left: calc((100% - var(--panel-w) - 32px) / 2 + 40px);
+  /* Centred in the strip of map between the scale bar and the panel, and never wider than that
+     strip (a long line wraps instead). The scale bar (mapDraw.ts drawScaleBar) starts 96 px from
+     the left and, with its label, reaches at most about 350 px; the panel takes --panel-w plus
+     its 16 px margin on the right. Left, right, a fitted width and auto margins centre it. */
+  left: 364px;
+  right: calc(var(--panel-w) + 32px);
+  width: fit-content;
+  margin-inline: auto;
   bottom: 24px;
-  transform: translate(-50%, 12px);
-  max-width: calc(100% - var(--panel-w) - 532px);
+  transform: translateY(12px);
   box-sizing: border-box;
   text-align: center;
   padding: 10px 18px;
@@ -470,7 +477,7 @@
 }
 .sre-status.is-on {
   opacity: 1;
-  transform: translate(-50%, 0);
+  transform: translateY(0);
 }
 .sre-status.is-good {
   border-color: color-mix(in srgb, var(--good) 55%, transparent);

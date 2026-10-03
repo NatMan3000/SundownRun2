@@ -118,6 +118,7 @@ export interface StrokeIssue {
     | 'shallow-crossing'
     | 'bridge-conflict'
     | 'bridge-flipped'
+    | 'too-tangled'
   message: string
   at?: P
 }
@@ -198,13 +199,23 @@ export function cleanStroke(raw: readonly P[], options: Partial<CleanupOptions> 
   }
 
   // 4-7, with a wider corner margin if the built road still comes out too tight.
-  let shaped = shapeRoad(smoothed, pts[0], o, limit, o.cornerMargin)
-  for (let attempt = 1; attempt <= 3 && shaped.tight.radius < o.minRadius; attempt++) {
-    const wider = shapeRoad(smoothed, pts[0], o, limit, o.cornerMargin + 0.2 * attempt)
+  // All the tries share one work budget (see RELAX_WORK), so a tangled drawing can't freeze the editor.
+  const work: RelaxWork = { left: RELAX_WORK, ranOut: false }
+  let shaped = shapeRoad(smoothed, pts[0], o, limit, o.cornerMargin, work)
+  for (let attempt = 1; attempt <= 3 && shaped.tight.radius < o.minRadius && !work.ranOut; attempt++) {
+    const wider = shapeRoad(smoothed, pts[0], o, limit, o.cornerMargin + 0.2 * attempt, work)
     if (wider.tight.radius > shaped.tight.radius) shaped = wider
   }
   const { loop, points, crossings, length, tight } = shaped
   issues.push(...shaped.issues)
+  if (work.ranOut) {
+    issues.push({
+      level: 'warning',
+      code: 'too-tangled',
+      message: 'This drawing is too tangled to tidy up all the way, so some of it may be messy. Try a simpler loop that does not go back over itself.',
+      at: pts[0],
+    })
+  }
   if (tight.radius < o.minRadius) {
     issues.push({
       level: 'warning',
@@ -220,11 +231,11 @@ export function cleanStroke(raw: readonly P[], options: Partial<CleanupOptions> 
 }
 
 /** Steps 4 to 7 on the smoothed loop, with corners opened to `margin` x minRadius. */
-function shapeRoad(smoothed: P[], drawnStart: P, o: CleanupOptions, limit: WorldLimit, margin: number) {
+function shapeRoad(smoothed: P[], drawnStart: P, o: CleanupOptions, limit: WorldLimit, margin: number, work: RelaxWork) {
   const issues: StrokeIssue[] = []
 
   // 4. relax corners, spacing and the world edge, then even out the bends
-  let loop = relax(smoothed, o, limit, margin)
+  let loop = relax(smoothed, o, limit, margin, work)
   if (o.fairing > 0) loop = resample(gaussianSmoothClosed(loop, o.fairing), o.fine, true)
 
   // 5. crossings and bridges
@@ -338,7 +349,27 @@ export function worldLimit(o: Pick<CleanupOptions, 'bound' | 'playRadius' | 'wid
  */
 export function relaxLoop(loop: readonly P[], options: Partial<CleanupOptions>, margin = CLEANUP.cornerMargin): P[] {
   const o: CleanupOptions = { ...CLEANUP, width: 14, bound: Infinity, playRadius: Infinity, ...options }
-  return relax(loop.map((p) => ({ x: p.x, z: p.z })), o, worldLimit(o), margin)
+  return relax(loop.map((p) => ({ x: p.x, z: p.z })), o, worldLimit(o), margin, { left: RELAX_WORK, ranOut: false })
+}
+
+/**
+ * How much work the relax step may do for one clean-up, counted in pairs of
+ * road points the spacing rule looks at. An ordinary drawing settles using
+ * one to six million. The self-test's hardest fixture (a hairpin that never
+ * quite settles and runs all 2000 passes) uses about 60 million, so this
+ * leaves it plenty of room and it comes out exactly as before. A drawing that
+ * goes back over itself can keep pushing its doubled road apart without ever
+ * settling: that used to take 20 to 55 seconds and froze the editor. Now it
+ * stops here, in about a second at worst, and says so (the 'too-tangled'
+ * warning). The self-test times one (its "tangled drawing" row).
+ */
+export const RELAX_WORK = 150_000_000
+
+/** The relax step's work budget, shared by every try in one clean-up. */
+export interface RelaxWork {
+  left: number
+  /** True once the budget ran out (the road was left as it was then). */
+  ranOut: boolean
 }
 
 /** Pull any point past the world edge back inside it. Returns the furthest a point moved. */
@@ -377,7 +408,7 @@ export function keepInside(pts: P[], limit: WorldLimit): number {
  *
  * Every point is also kept inside the world.
  */
-function relax(input: P[], o: CleanupOptions, limit: WorldLimit, margin: number): P[] {
+function relax(input: P[], o: CleanupOptions, limit: WorldLimit, margin: number, work: RelaxWork): P[] {
   let pts = resample(input, o.fine, true)
   // Aim wider than the minimum (see CLEANUP.cornerMargin).
   const R = o.minRadius * margin
@@ -385,6 +416,10 @@ function relax(input: P[], o: CleanupOptions, limit: WorldLimit, margin: number)
   const startLength = polylineLength(pts, true)
   const MAX_ITERS = 2000
   for (let iter = 0; iter < MAX_ITERS; iter++) {
+    if (work.left <= 0) {
+      work.ranOut = true
+      break
+    }
     const n = pts.length
     // Corner rule.
     let worstTurn = 0
@@ -399,7 +434,7 @@ function relax(input: P[], o: CleanupOptions, limit: WorldLimit, margin: number)
     }
     pts = next
     // Spacing rule.
-    const pushed = separate(pts, R, o.width + o.clearance)
+    const pushed = separate(pts, R, o.width + o.clearance, work)
     keepInside(pts, limit)
     if (iter % 4 === 3) pts = resample(pts, o.fine, true)
     if (polylineLength(pts, true) > startLength * 3) break // runaway guard: the issues report what is left
@@ -426,9 +461,14 @@ function relax(input: P[], o: CleanupOptions, limit: WorldLimit, margin: number)
  *    bridge). A crossing flatter than 35 degrees counts as side by side,
  *    so the push swings the roads round until they cross more squarely.
  *
- * Returns the biggest push made.
+ * Returns the biggest push made, and takes the pairs it looked at off `work`.
+ *
+ * Speed (it runs up to 2000 times per clean-up): each point's direction is
+ * worked out once per pass, not once per pair, and a pair further apart than
+ * any rule can ask for is skipped before anything else is worked out. Both
+ * give exactly the same pushes as checking every pair in full.
  */
-function separate(pts: P[], R: number, gap: number): number {
+function separate(pts: P[], R: number, gap: number, work: RelaxWork): number {
   const n = pts.length
   const h = polylineLength(pts, true) / n
   const halfCircle = Math.PI * R
@@ -443,26 +483,40 @@ function separate(pts: P[], R: number, gap: number): number {
   }
   const cosParallel = Math.cos((35 * Math.PI) / 180)
   const cosUTurn = Math.cos((107 * Math.PI) / 180)
+  // No rule below ever asks for more room than 2R (2R x sin(...) <= 2R, and gap is far less than 2R for
+  // any real road). If gap were ever bigger, nothing is skipped.
+  const furthest = gap <= 2 * R ? 2 * R : Infinity
+  const furthest2 = furthest * furthest
+  const tx = new Float64Array(n)
+  const tz = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    const t = tangent(pts, i)
+    tx[i] = t.x
+    tz[i] = t.z
+  }
   const moves = new Float64Array(n * 2)
   let biggest = 0
+  let looked = 0
   for (let i = 0; i < n; i++) {
     const p = pts[i]
     const cx = Math.floor(p.x / cell)
     const cz = Math.floor(p.z / cell)
-    const ti = tangent(pts, i)
     for (let dx = -1; dx <= 1; dx++) {
       for (let dz = -1; dz <= 1; dz++) {
         const list = grid.get(`${cx + dx},${cz + dz}`)
         if (!list) continue
+        looked += list.length
         for (const j of list) {
           if (j <= i) continue
           const sep = Math.min(j - i, n - (j - i)) * h
           if (sep < 2.5 * h) continue
           const q = pts[j]
+          const ex = p.x - q.x
+          const ez = p.z - q.z
+          if (ex * ex + ez * ez >= furthest2) continue
           const d = dist(p, q)
           if (d < 0.5) continue
-          const tj = tangent(pts, j)
-          const dot = ti.x * tj.x + ti.z * tj.z
+          const dot = tx[i] * tx[j] + tz[i] * tz[j]
           let need: number
           if (sep < halfCircle) {
             if (dot > cosUTurn) continue
@@ -483,6 +537,7 @@ function separate(pts: P[], R: number, gap: number): number {
       }
     }
   }
+  work.left -= looked
   if (biggest > 0) {
     // Cap any one point's move per pass so many small pushes can't fling it.
     for (let i = 0; i < n; i++) {

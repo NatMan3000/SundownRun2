@@ -150,7 +150,8 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
         </section>
 
         <Problems />
-        <Legend />
+        {/* Nothing on an empty map for the key to explain, so it waits for a road. */}
+        {!isEmptyDraft(draft) && <Legend />}
       </div>
 
       <div className="sre-actions">

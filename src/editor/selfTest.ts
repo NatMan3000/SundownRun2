@@ -318,6 +318,45 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     return bad
   })
 
+  check('a tangled drawing (a polygon that goes back over its first side) is cleaned up in about a second, not 20+', () => {
+    // A 4-8 corner polygon drawn once round and then all along its first side again: the doubled
+    // road gets pushed apart pass after pass and never settles. Before the relax step had a work
+    // budget (cleanup.ts RELAX_WORK) these took 20-55 seconds each and froze the editor.
+    const tangled = (seed: number): P[] => {
+      const roll = rng(seed)
+      const n = 4 + Math.floor(roll() * 5)
+      const corners: P[] = []
+      for (let k = 0; k < n; k++) {
+        const a = ((k + (roll() - 0.5) * 0.5) / n) * TAU
+        const r = 0.55 + roll() * 0.45
+        corners.push({ x: Math.cos(a) * r, z: Math.sin(a) * r })
+      }
+      const out: P[] = []
+      for (let k = 0; k <= n; k++) {
+        const a = corners[k % n]
+        const b = corners[(k + 1) % n]
+        for (let i = 0; i < 40; i++) out.push({ x: a.x + ((b.x - a.x) * i) / 40, z: a.z + ((b.z - a.z) * i) / 40 })
+      }
+      const R = 150 + roll() * 350
+      const turn = roll() * TAU
+      return out.map((p) => ({ x: (p.x * Math.cos(turn) - p.z * Math.sin(turn)) * R, z: (p.x * Math.sin(turn) + p.z * Math.cos(turn)) * R }))
+    }
+    const bad: string[] = []
+    const times: string[] = []
+    // Seed 16 took 56 s before the budget, seed 3 took 32 s.
+    for (const seed of [16, 3]) {
+      const t0 = performance.now()
+      const res = cleanStroke(tangled(seed), { ...opts, smoothing: 8, fairing: 12 })
+      const ms = performance.now() - t0
+      times.push(`seed ${seed} ${ms.toFixed(0)} ms`)
+      if (ms > 4000) bad.push(`seed ${seed} took ${(ms / 1000).toFixed(1)} s (the budget should stop it in about 1 s)`)
+      if (!res.issues.some((i) => i.code === 'too-tangled')) bad.push(`seed ${seed}: no "too tangled" warning, so the work budget never stopped it`)
+      if (!res.points.length) bad.push(`seed ${seed}: no road came out`)
+    }
+    info = `${times.join(', ')}; each stopped by the work budget and says so`
+    return bad
+  })
+
   check('too-short stroke is refused in plain words', () => {
     const res = cleanStroke([{ x: 0, z: 0 }, { x: 40, z: 0 }, { x: 40, z: 40 }], opts)
     if (res.ok) return ['accepted a 80 m road']
