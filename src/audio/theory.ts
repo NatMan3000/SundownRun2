@@ -27,6 +27,17 @@ export type ScaleName = keyof typeof SCALES
 export const PENTA_MINOR = [0, 3, 5, 7, 10] as const
 export const PENTA_MAJOR = [0, 2, 4, 7, 9] as const
 
+/** Note names, C first (MIDI 60 is a C, so note % 12 indexes this). */
+export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
+
+/** What each scale is called in a song's key ("A minor", "D dorian"). */
+const SCALE_WORDS: Record<ScaleName, string> = { aeolian: 'minor', dorian: 'dorian', phrygian: 'phrygian' }
+
+/** A key in words: root note plus scale, e.g. keyName(45, 'aeolian') = "A minor". */
+export function keyName(root: number, scale: ScaleName): string {
+  return `${NOTE_NAMES[((root % 12) + 12) % 12]} ${SCALE_WORDS[scale]}`
+}
+
 /** The key the music is in right now (written by the music system). */
 export const musicKey = {
   /** MIDI root, e.g. 57 = A3. */

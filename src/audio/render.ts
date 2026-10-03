@@ -16,6 +16,11 @@
 //    renderMix(stem)       everything together on a 32 s scripted drive
 //                          (engine, race music, effects), or one stem of it,
 //                          for checking the balance between them
+//    renderReactions()     race music answering the driving: a big
+//                          landing (cymbal + chord stab), a small hop
+//                          (no answer), a huge flip, a best lap (the
+//                          band's fanfare), the final lap's key lift
+//                          and a race win
 //    renderRewind(stem)    a cruise with rewind held from 2 s to 5 s: the
 //                          rewind sound, the music muffle and the engine dip
 //                          (rewindNumbers() measures it: levels, how much is
@@ -41,6 +46,7 @@ import { SWEEP_SECONDS, TEST_DRIVES, sweepInput } from './sweep'
 import type { TestDriveId } from './sweep'
 import { MusicSystem, LOOKAHEAD_S } from './music'
 import { MOODS, TITLE_BPM } from './music/score'
+import type { MusicStyle } from './music/style'
 import type { MoodId } from './music/score'
 
 const RATE = 48000
@@ -248,9 +254,11 @@ export interface MusicRenderLog {
 
 /**
  * Render a mood through the scripted drive (24 bars), or the title
- * arrangement (mood 'title', 10 bars). night 0..1 darkens it.
+ * arrangement (mood 'title', 10 bars). night 0..1 darkens it. style picks
+ * the band for the drive (classic or house; default: config.ts musicStyle);
+ * the title is always the house band.
  */
-export async function renderMusic(mood: MoodId | 'title', night = 0, seed = hashString(mood)): Promise<{ buf: AudioBuffer; log: MusicRenderLog }> {
+export async function renderMusic(mood: MoodId | 'title', night = 0, seed = hashString(mood), style?: MusicStyle): Promise<{ buf: AudioBuffer; log: MusicRenderLog }> {
   const title = mood === 'title'
   const m = title ? MOODS.drive : MOODS[mood]
   const bars = title ? 10 : 24
@@ -259,6 +267,7 @@ export async function renderMusic(mood: MoodId | 'title', night = 0, seed = hash
   const ctx = new OfflineAudioContext(2, Math.ceil(RATE * seconds), RATE)
   const mix = buildMix(ctx)
   const music = new MusicSystem(ctx, mix.music, makeNoiseBuffer(ctx))
+  if (style) music.setStyle(style)
   updateMix(mix, fullMix(), 0)
   music.scene.phase = title ? 'title' : 'playing'
   music.scene.night = night
@@ -275,6 +284,65 @@ export async function renderMusic(mood: MoodId | 'title', night = 0, seed = hash
   })
   log.key = music.readout.key
   log.progression = music.readout.progression
+  music.dispose()
+  return { buf, log }
+}
+
+// ---------------------------------------------------------------- the band answering the driving
+
+/** The reactions reel's moments: [seconds, event type or 'finalLap', payload]. */
+const REACTIONS: [number, GameEventType | 'finalLap', Record<string, unknown>][] = [
+  [6.0, 'trick.land', { tricks: [{ name: 'bigAir', label: 'BIG AIR', points: 79 }], airTimeS: 1.2, combo: 1, points: 79, clean: true }],
+  [9.5, 'trick.land', { tricks: [{ name: 'spin', label: '180 SPIN', points: 100 }], airTimeS: 0.5, combo: 1, points: 100, clean: true }],
+  [12.5, 'trick.land', { tricks: [{ name: 'hugeAir', label: 'HUGE AIR', points: 220 }, { name: 'flip', label: 'BACKFLIP', points: 500 }], airTimeS: 2, combo: 2, points: 900, clean: true }],
+  [16.5, 'lap.complete', { lap: 2, ms: 59000, dirty: false, best: true, previousBestMs: 60000 }],
+  [20.0, 'finalLap', {}],
+  [29.0, 'race.finish', { position: 1, of: 4, ms: 180000, results: [] }],
+]
+
+export const REACTIONS_SECONDS = 33
+
+/**
+ * Race music on a steady drive, with the moments the band answers fired
+ * through the real effects (so the bell stingers and the music's answers
+ * play together, as in the game): a big landing at 6 s, a small hop at
+ * 9.5 s (no answer: not every hop), a huge flip at 12.5 s, a best lap at
+ * 16.5 s, the final lap from 20 s (the key lift at the next phrase line)
+ * and a race win at 29 s. log lists what the band did. style picks the
+ * band (default: config.ts musicStyle).
+ */
+export async function renderReactions(seed = hashString('reactions'), style?: MusicStyle): Promise<{ buf: AudioBuffer; log: Record<string, unknown> }> {
+  const ctx = new OfflineAudioContext(2, Math.ceil(RATE * REACTIONS_SECONDS), RATE)
+  const mix = buildMix(ctx)
+  const noise = makeNoiseBuffer(ctx)
+  const effects = new Effects(makeKit(ctx, mix.fx, noise), makeKit(ctx, mix.ui, noise), (d, h) => duck(mix, d, h, ctx.currentTime))
+  const music = new MusicSystem(ctx, mix.music, noise)
+  if (style) music.setStyle(style)
+  effects.answers = {
+    landing: (size) => music.answerLanding(ctx.currentTime, size),
+    fanfare: (size) => music.answerFanfare(ctx.currentTime, size),
+  }
+  music.scene.phase = 'playing'
+  music.scene.raceState = 'running'
+  music.newSession('race', undefined, seed)
+  updateMix(mix, fullMix(), 0)
+  let next = 0
+  const keys: [number, string][] = []
+  let lastKey = ''
+  const buf = await stepRender(ctx, LOOKAHEAD_S / 3, (t) => {
+    while (next < REACTIONS.length && REACTIONS[next][0] <= t) {
+      const [, type, payload] = REACTIONS[next++]
+      if (type === 'finalLap') music.scene.finalLap = true
+      else effects.handleEvent({ type, t: 0, ...payload } as unknown as AnyGameEvent)
+    }
+    music.scene.intensity = 0.7
+    music.tick(t)
+    if (music.readout.key !== lastKey) {
+      lastKey = music.readout.key
+      keys.push([Math.round(t * 100) / 100, lastKey])
+    }
+  })
+  const log = { answers: { ...music.readout.answers }, stabs: music.readout.stabs, keys, effects: { ...effects.counts } }
   music.dispose()
   return { buf, log }
 }

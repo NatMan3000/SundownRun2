@@ -4,7 +4,9 @@
 //  Corners only, so nothing covers the road ahead:
 //    top-left      race position / stunt / tag panel, then the lap
 //                  panel (lap, clock, last, best, sector ticks, the
-//                  off-road marker), then the energy-core hunt
+//                  off-road marker), then the energy-core hunt,
+//                  then for a few seconds when a song starts, its
+//                  name (NowPlaying.tsx)
 //    top-right     minimap
 //    bottom-left   the trick feed and trick score
 //    bottom-right  speed trap readout, speed, gear, rpm arc, boost glow
@@ -38,6 +40,7 @@ import { installFeed } from './feed'
 import { gpuInfo } from '../gpu'
 import { getRaceOrder } from '../../net'
 import { SoundHint } from '../SoundHint'
+import { NowPlaying } from './NowPlaying'
 import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
 import { RewindMeter, RewindRefused, RewindScreen, resetRewindShown, writeRewind } from './Rewind'
@@ -425,6 +428,7 @@ export function Hud() {
         {!panels.stunt && !panels.tag && <LapPanel />}
         {panels.hunt && <HuntPanel />}
         {visible && <SoundHint variant="chip" />}
+        {visible && <NowPlaying />}
       </div>
       {hasTrack && <MinimapPanel />}
       <div className="hud-stack hud-stack--bl">

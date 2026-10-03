@@ -218,6 +218,7 @@ const PAD_HINTS: [string, string][] = [
   ['LB', 'Rewind'],
   ['Y', 'Reset'],
   ['VIEW', 'Restart'],
+  ['B', 'Next song'],
   ['MENU', 'Menu'],
 ]
 
@@ -228,6 +229,7 @@ const KEY_HINTS: [string, string][] = [
   ['Backspace', 'Rewind'],
   ['R', 'Reset'],
   ['Shift+R', 'Restart'],
+  ['N', 'Next song'],
   ['Esc', 'Menu'],
 ]
 

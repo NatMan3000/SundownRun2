@@ -1,11 +1,28 @@
 // ============================================================
-//  MUSIC INSTRUMENTS - the synth band
+//  MUSIC INSTRUMENTS - the classic synth band
 // ------------------------------------------------------------
+//  The game has TWO bands. They play exactly the same songs (the
+//  arranger in music/index.ts tells them what to play); they just
+//  sound different:
+//
+//    the classic band (this file)   the original synthwave band.
+//                                   It plays every drive (the
+//                                   default: config.ts musicStyle
+//                                   'classic').
+//    the house band (houseBand.ts)  80s studio and French house
+//                                   (Daft Punk). It always plays the
+//                                   calm title-screen music, and it
+//                                   plays everything when musicStyle
+//                                   is 'house'.
+//
 //  Every instrument here is built ONCE and then "played" by
 //  scheduling envelopes on its knobs: a note is a volume rise and
 //  fall, a pitch change and a filter sweep at an exact time on the
 //  audio clock. So the music makes no new audio nodes per note at
-//  all, which keeps it cheap enough to never cost a frame.
+//  all, which keeps it cheap enough to never cost a frame. (The one
+//  exception is Stab, the chord hit that answers your driving: it
+//  plays a few times a lap, not a few times a beat, so it makes its
+//  oscillators when it plays and they tidy themselves up after.)
 //
 //    Kick        sine with a fast pitch drop + a click; also "pumps"
 //                the bass, pads and arp (sidechain feel)
@@ -19,6 +36,12 @@
 //                chorus and reverb: the warm wash under everything
 //    Lead        singing saw with vibrato and glide, for the hook
 //    Riser       noise sweeping up through a build
+//    Stab        a warm chord hit with the bass under it: the
+//                band's answer to a big landing, a fanfare, the
+//                final lap's key change
+//
+//  Env, the node helpers (BandBase), Hats, Crash and Riser are
+//  shared: the house band uses these same ones.
 //
 //  Env is the trick that makes retriggering clean: it remembers its
 //  own last note so it can always say what level it is at RIGHT NOW,
@@ -91,94 +114,23 @@ export class Env {
   }
 }
 
-// ---------------------------------------------------------------- shared music buses
+// ---------------------------------------------------------------- what every band has
 
-/** The rooms and wires every instrument plugs into. */
-export class Band {
-  readonly ctx: BaseAudioContext
-  readonly noise: AudioBuffer
-  /** Drums go here. */
-  readonly drums: GainNode
-  /** Bass, pads and arp go here: this bus "pumps" with the kick. */
-  readonly pumped: GainNode
-  /** Lead and fx go here (not pumped). */
-  readonly direct: GainNode
-  /** Sends: big hall reverb, gated snare reverb, ping-pong echo. */
-  readonly reverb: GainNode
-  readonly gated: GainNode
-  readonly echo: GainNode
-  readonly pump: Env
-  /** Drum bus level (night pulls the drums back). */
-  readonly drumLevel: Knob
+/**
+ * The small helpers every instrument uses to make nodes. The band
+ * remembers each node and oscillator it makes, so dispose() can stop and
+ * unplug them all. Both bands are built on this.
+ */
+export class BandBase {
   /** Every oscillator / noise loop this band started (for dispose and the voice count). */
   readonly sources: AudioScheduledSourceNode[] = []
   private readonly nodes: AudioNode[] = []
-  private readonly echoL: DelayNode
-  private readonly echoR: DelayNode
 
-  constructor(ctx: BaseAudioContext, out: AudioNode, noise: AudioBuffer) {
-    this.ctx = ctx
-    this.noise = noise
-    this.drums = this.gain(0.9)
-    this.pumped = this.gain(1)
-    this.direct = this.gain(1)
-    this.drums.connect(out)
-    this.pumped.connect(out)
-    this.direct.connect(out)
-    this.pump = new Env(this.pumped.gain, 1)
-    this.drumLevel = new Knob(this.drums.gain, 1.5, 0.005)
+  constructor(
+    readonly ctx: BaseAudioContext,
+    readonly noise: AudioBuffer,
+  ) {}
 
-    // hall reverb: a 2.8 s smooth tail
-    this.reverb = this.gain(1)
-    const hall = this.node(ctx.createConvolver())
-    hall.buffer = makeReverbImpulse(ctx, 2.8, 3.2, false, 0xa11)
-    const hallOut = this.gain(0.32)
-    const hallHp = this.filter('highpass', 220, 0.7)
-    this.reverb.connect(hallHp)
-    hallHp.connect(hall)
-    hall.connect(hallOut)
-    hallOut.connect(out)
-
-    // gated reverb: big, then stops dead
-    this.gated = this.gain(1)
-    const gate = this.node(ctx.createConvolver())
-    gate.buffer = makeReverbImpulse(ctx, 0.32, 1, true, 0x6a7ed)
-    const gateOut = this.gain(0.4)
-    this.gated.connect(gate)
-    gate.connect(gateOut)
-    gateOut.connect(this.drums)
-
-    // ping-pong echo: left, then right, then left... darker each repeat
-    this.echo = this.gain(1)
-    this.echoL = this.node(ctx.createDelay(2))
-    this.echoR = this.node(ctx.createDelay(2))
-    const fb = this.gain(0.38)
-    const tone = this.filter('lowpass', 2600, 0.5)
-    const panL = this.node(ctx.createStereoPanner())
-    panL.pan.value = -0.75
-    const panR = this.node(ctx.createStereoPanner())
-    panR.pan.value = 0.75
-    const echoOut = this.gain(0.42)
-    this.echo.connect(this.echoL)
-    this.echoL.connect(this.echoR)
-    this.echoR.connect(tone)
-    tone.connect(fb)
-    fb.connect(this.echoL)
-    this.echoL.connect(panL)
-    this.echoR.connect(panR)
-    panL.connect(echoOut)
-    panR.connect(echoOut)
-    echoOut.connect(out)
-  }
-
-  /** Echo time follows the tempo: a dotted eighth, the classic synthwave echo. */
-  setTempo(beatS: number, t: number): void {
-    const d = beatS * 0.75
-    this.echoL.delayTime.setTargetAtTime(d, t, 0.05)
-    this.echoR.delayTime.setTargetAtTime(d, t, 0.05)
-  }
-
-  // small helpers every instrument uses
   gain(v: number): GainNode {
     const g = this.node(this.ctx.createGain())
     g.gain.value = v
@@ -231,6 +183,112 @@ export class Band {
     for (const n of this.nodes) n.disconnect()
     this.sources.length = 0
     this.nodes.length = 0
+  }
+}
+
+/** What the shared instruments (Hats, Crash, Riser) plug into: both bands have these. */
+export interface Wiring extends BandBase {
+  /** Drums go here. */
+  readonly drums: GainNode
+  /** Lead and fx go here (not pumped). */
+  readonly direct: GainNode
+  /** The big hall reverb's send. */
+  readonly reverb: GainNode
+}
+
+// ---------------------------------------------------------------- shared music buses
+
+/** The rooms and wires every instrument plugs into. */
+export class Band extends BandBase implements Wiring {
+  /** Drums go here. */
+  readonly drums: GainNode
+  /** Bass, pads and arp go here: this bus "pumps" with the kick. */
+  readonly pumped: GainNode
+  /** Lead and fx go here (not pumped). */
+  readonly direct: GainNode
+  /** The answer stabs go here (never pumped, never stepped back). */
+  readonly answers: GainNode
+  /** Sends: big hall reverb, gated snare reverb, ping-pong echo. */
+  readonly reverb: GainNode
+  readonly gated: GainNode
+  readonly echo: GainNode
+  readonly pump: Env
+  /** Drum bus level (night pulls the drums back). */
+  readonly drumLevel: Knob
+  private readonly echoL: DelayNode
+  private readonly echoR: DelayNode
+  /** The pumped and direct buses go through this, so the band can step back under a fanfare. */
+  private readonly bed: Env
+
+  constructor(ctx: BaseAudioContext, out: AudioNode, noise: AudioBuffer) {
+    super(ctx, noise)
+    this.drums = this.gain(0.9)
+    this.pumped = this.gain(1)
+    this.direct = this.gain(1)
+    const bed = this.gain(1)
+    this.drums.connect(out)
+    this.pumped.connect(bed)
+    this.direct.connect(bed)
+    bed.connect(out)
+    this.answers = this.gain(1)
+    this.answers.connect(out)
+    this.pump = new Env(this.pumped.gain, 1)
+    this.bed = new Env(bed.gain, 1)
+    this.drumLevel = new Knob(this.drums.gain, 1.5, 0.005)
+
+    // hall reverb: a 2.8 s smooth tail
+    this.reverb = this.gain(1)
+    const hall = this.node(ctx.createConvolver())
+    hall.buffer = makeReverbImpulse(ctx, 2.8, 3.2, false, 0xa11)
+    const hallOut = this.gain(0.32)
+    const hallHp = this.filter('highpass', 220, 0.7)
+    this.reverb.connect(hallHp)
+    hallHp.connect(hall)
+    hall.connect(hallOut)
+    hallOut.connect(out)
+
+    // gated reverb: big, then stops dead
+    this.gated = this.gain(1)
+    const gate = this.node(ctx.createConvolver())
+    gate.buffer = makeReverbImpulse(ctx, 0.32, 1, true, 0x6a7ed)
+    const gateOut = this.gain(0.4)
+    this.gated.connect(gate)
+    gate.connect(gateOut)
+    gateOut.connect(this.drums)
+
+    // ping-pong echo: left, then right, then left... darker each repeat
+    this.echo = this.gain(1)
+    this.echoL = this.node(ctx.createDelay(2))
+    this.echoR = this.node(ctx.createDelay(2))
+    const fb = this.gain(0.38)
+    const tone = this.filter('lowpass', 2600, 0.5)
+    const panL = this.node(ctx.createStereoPanner())
+    panL.pan.value = -0.75
+    const panR = this.node(ctx.createStereoPanner())
+    panR.pan.value = 0.75
+    const echoOut = this.gain(0.42)
+    this.echo.connect(this.echoL)
+    this.echoL.connect(this.echoR)
+    this.echoR.connect(tone)
+    tone.connect(fb)
+    fb.connect(this.echoL)
+    this.echoL.connect(panL)
+    this.echoR.connect(panR)
+    panL.connect(echoOut)
+    panR.connect(echoOut)
+    echoOut.connect(out)
+  }
+
+  /** Echo time follows the tempo: a dotted eighth, the classic synthwave echo. */
+  setTempo(beatS: number, t: number): void {
+    const d = beatS * 0.75
+    this.echoL.delayTime.setTargetAtTime(d, t, 0.05)
+    this.echoR.delayTime.setTargetAtTime(d, t, 0.05)
+  }
+
+  /** Step the band back (pads, bass, arp, lead; not the drums) under a fanfare: down to `level` for `dur` seconds. */
+  dipBed(t: number, level: number, dur: number): void {
+    this.bed.note(t, level, 0.03, 10, level, dur, 0.35)
   }
 }
 
@@ -334,7 +392,7 @@ export class Hats {
   private readonly amp: Env
   private readonly tone: AudioParam
 
-  constructor(b: Band) {
+  constructor(b: Wiring) {
     const n = b.noiseLoop(1.1)
     const hp = b.filter('highpass', 7200, 0.8)
     const pk = b.filter('peaking', 10500, 1.2)
@@ -359,7 +417,7 @@ export class Hats {
 export class Crash {
   private readonly amp: Env
 
-  constructor(b: Band) {
+  constructor(b: Wiring) {
     const n = b.noiseLoop(1.6)
     const hp = b.filter('highpass', 4200, 0.6)
     const g = b.gain(0)
@@ -605,7 +663,7 @@ export class Riser {
   private readonly amp: Env
   private readonly band: AudioParam
 
-  constructor(b: Band) {
+  constructor(b: Wiring) {
     const n = b.noiseLoop(0.33)
     const bp = b.filter('bandpass', 400, 1.8)
     this.band = bp.frequency
@@ -625,5 +683,143 @@ export class Riser {
     this.band.setValueAtTime(350, t)
     this.band.exponentialRampToValueAtTime(7000, t + dur)
     this.amp.note(t, 0.09 * level, dur, 10, 0.09 * level, dur, 0.015)
+  }
+
+  /** Fade a sweep still going out from t (its band stopped playing mid-build). */
+  release(t: number): void {
+    this.amp.note(t, Math.max(SILENT, this.amp.valueAt(t)), 0.005, 0.2, 0, 0.01, 0.2)
+  }
+}
+
+// ---------------------------------------------------------------- stab (the band answering the driving)
+
+/**
+ * How the answer stab sounds. It is made of the band's own sounds, so it
+ * sits in the band instead of on top of it: the chord is the pad's two
+ * detuned saws, played short and hard through a warm filter; under it,
+ * the bass plays the chord's root (a saw through its own low-pass, and a
+ * sine an octave below: the low end you feel).
+ */
+const STAB = {
+  /** The two saws of each chord note, this far apart (cents), like the pad. */
+  detune: 8,
+  /** Each saw's level. */
+  saw: 0.15,
+  /** Where the chord's filter flicks to on the hit (plus brightHz when the moment is big), and where it settles. */
+  openHz: 1400,
+  brightHz: 1600,
+  restHz: 650,
+  q: 1.3,
+  /** The bass under it: the saw's level and filter (open enough for a laptop speaker to carry it), and the sub (an octave below). */
+  bass: 0.3,
+  bassHz: 640,
+  sub: 0.27,
+  /** How much of the chord goes into the hall reverb and the echo (the bass stays dry). */
+  reverb: 0.45,
+  echo: 0.16,
+} as const
+
+/**
+ * The band's answer: a chord hit with the bass under it. It plays when
+ * the music answers the driving (music/index.ts), a few times a lap at
+ * most, so it makes its oscillators when it plays, and they stop and
+ * unplug themselves when it ends. Two stabs close together overlap a
+ * little, like a horn section.
+ */
+export class Stab {
+  /** The chord's way out: to the answers bus, the reverb and the echo. */
+  private readonly chordBus: GainNode
+  /** The bass's way out (dry, straight to the answers bus). */
+  private readonly bassBus: GainNode
+
+  constructor(private readonly b: Band) {
+    this.chordBus = b.gain(1)
+    this.chordBus.connect(b.answers)
+    const verb = b.gain(STAB.reverb)
+    this.chordBus.connect(verb)
+    verb.connect(b.reverb)
+    const echo = b.gain(STAB.echo)
+    this.chordBus.connect(echo)
+    echo.connect(b.echo)
+    this.bassBus = b.gain(1)
+    this.bassBus.connect(b.answers)
+  }
+
+  /**
+   * Play a chord (MIDI notes) at t for len seconds, with `bass` (a MIDI
+   * note in the bass register) under it. bright 0..1 = how far the filter
+   * flicks open; vel 0..1 = how loud.
+   */
+  play(t: number, midis: readonly number[], len: number, bright: number, vel: number, bass: number): void {
+    const ctx = this.b.ctx
+    const oscs: OscillatorNode[] = []
+    const made: AudioNode[] = []
+    const make = <T extends AudioNode>(n: T): T => {
+      made.push(n)
+      return n
+    }
+    const saw = (hz: number, cents: number, into: AudioNode): void => {
+      const o = ctx.createOscillator()
+      o.type = 'sawtooth'
+      o.frequency.value = hz
+      o.detune.value = cents
+      o.connect(into)
+      oscs.push(o)
+    }
+
+    // the chord: two saws per note, one warm filter that flicks open and settles, one volume
+    const lp = make(ctx.createBiquadFilter())
+    lp.type = 'lowpass'
+    lp.Q.value = STAB.q
+    lp.frequency.setValueAtTime(STAB.openHz + STAB.brightHz * bright, t)
+    lp.frequency.setTargetAtTime(STAB.restHz + 500 * bright, t + 0.006, 0.13)
+    const amp = make(ctx.createGain())
+    const peak = STAB.saw * vel
+    amp.gain.setValueAtTime(0, t)
+    amp.gain.linearRampToValueAtTime(peak, t + 0.005)
+    amp.gain.setTargetAtTime(peak * 0.55, t + 0.005, 0.2)
+    amp.gain.setTargetAtTime(0, t + len, 0.09)
+    lp.connect(amp)
+    amp.connect(this.chordBus)
+    for (const midi of midis) {
+      saw(midiToHz(midi), -STAB.detune, lp)
+      saw(midiToHz(midi), STAB.detune, lp)
+    }
+
+    // the bass: a saw through its own low-pass, plus the sub an octave below, sharing one volume
+    const bassHz = midiToHz(bass)
+    const bAmp = make(ctx.createGain())
+    bAmp.gain.setValueAtTime(0, t)
+    bAmp.gain.linearRampToValueAtTime(vel, t + 0.004)
+    bAmp.gain.setTargetAtTime(vel * 0.6, t + 0.004, Math.max(0.12, len * 0.6))
+    bAmp.gain.setTargetAtTime(0, t + len, 0.07)
+    bAmp.connect(this.bassBus)
+    const bassLp = make(ctx.createBiquadFilter())
+    bassLp.type = 'lowpass'
+    bassLp.frequency.value = STAB.bassHz
+    bassLp.Q.value = 0.9
+    const bassG = make(ctx.createGain())
+    bassG.gain.value = STAB.bass
+    bassLp.connect(bassG)
+    bassG.connect(bAmp)
+    saw(bassHz, 0, bassLp)
+    const sub = ctx.createOscillator()
+    sub.frequency.value = bassHz / 2
+    const subG = make(ctx.createGain())
+    subG.gain.value = STAB.sub
+    sub.connect(subG)
+    subG.connect(bAmp)
+    oscs.push(sub)
+
+    const end = t + len + 0.6
+    for (const o of oscs) {
+      o.start(t)
+      o.stop(end)
+    }
+    // the last oscillator to end tidies the stab away
+    oscs[oscs.length - 1].onended = () => {
+      for (const o of oscs) o.disconnect()
+      for (const n of made) n.disconnect()
+    }
   }
 }

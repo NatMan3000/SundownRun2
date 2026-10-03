@@ -1750,3 +1750,27 @@ textarea.field__input { min-height: 6.5em; }
 @media (prefers-reduced-motion: reduce) {
   .report-sent, .report-done__big { animation: none !important; }
 }
+
+/* ---------------------------------------------------------------- now playing (HUD, top-left) and the pause menu's music rows */
+
+/* the song's name for a few seconds when it starts (hud/NowPlaying.tsx); the fade starts 400 ms before it unmounts */
+.hud-song {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12em;
+  padding: 0.55em 0.95em 0.6em;
+  animation: song-in 260ms var(--ease) both, song-out 320ms ease-in 4100ms forwards;
+}
+.hud-song__eyebrow { display: flex; align-items: center; gap: 0.45em; font-family: var(--font-display); font-size: 0.72em; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: var(--accent); }
+.hud-song__note { width: 1em; height: 1em; fill: currentColor; }
+.hud-song__name { font-family: var(--font-display); font-size: 1.12em; font-weight: 700; line-height: 1.15; letter-spacing: 0.05em; text-transform: uppercase; }
+.hud-song__key { font-size: 0.82em; color: var(--dim); }
+@keyframes song-in { from { opacity: 0; transform: translateX(-0.6em); } to { opacity: 1; transform: none; } }
+@keyframes song-out { to { opacity: 0; transform: translateX(-0.4em); } }
+
+/* the pause menu's Save song / Play rows (SongRows.tsx): keep each choice on one line */
+.pause-music .choice__opt { white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-song { animation: song-out 1ms linear 4100ms forwards; }
+}

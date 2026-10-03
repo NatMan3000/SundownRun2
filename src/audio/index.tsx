@@ -12,6 +12,8 @@
 //    window.__game.get('audio')        live state: context, faders,
 //                                      engine readout, sounds played
 //    window.__dev.audio('help')        list the test commands
+//    N / pad B while driving           next song (the pause menu has
+//                                      Next song, Save, and All / Favourites)
 //    ?nomusic=1                        mute the music
 //    ?engine=muscle|rally|hover        pick the engine sound for this visit
 //    ?motor=nodes                      force the node motor (what a LAN guest hears)
@@ -26,12 +28,14 @@ import type { AnyGameEvent, GameEventType } from '../core/events'
 import { createRig, destroyRig } from './system'
 import type { AudioRig } from './system'
 import type { EngineInput } from './engine'
-import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMix, renderMusic, renderRewind, rewindNumbers, toBase64 } from './render'
+import { encodeWav, measure, renderEffectsReel, renderEngineSweep, renderMix, renderMusic, renderReactions, renderRewind, rewindNumbers, toBase64 } from './render'
 import type { MixStem, MotorChoice } from './render'
 import { ENGINE_SOUND_IDS, isEngineSound, resolveEngineSound } from './engineVoicings'
 import { isTestDrive } from './sweep'
 import type { TestDriveId } from './sweep'
 import type { MoodId } from './music/score'
+import { MUSIC_STYLES } from './music/style'
+import type { MusicStyle } from './music/style'
 
 const DEV_HELP = [
   "audio('start')                      start sound (the probe has no real gesture)",
@@ -42,11 +46,17 @@ const DEV_HELP = [
   "audio('engine', 'live')             back to live telemetry",
   "audio('mood', m)                   switch the music mood (fresh seed) from the next bar: cruise drive race hyper",
   "audio('section', s)                hold a music section: title intro groove build drop breakdown, or 'auto'",
+  "audio('song')                       the song playing: name, key, seed, favourite",
+  "audio('next-song')                  skip to another song (as N / pad B / the pause menu)",
+  "audio('favourite')                  save the song playing, or take it out; returns whether it is saved",
+  "audio('songs', 'all'|'favourites')  pick from every song or only the favourites (no arg: show the choice)",
+  "audio('lift')                       lift the song a key at the next phrase line (the final-lap key change)",
+  "audio('style', s)                  which band plays the drive, from the next bar: classic | house, or 'auto' (back to config.ts musicStyle); no arg: show it",
   "audio('engine-sound', id)          play another engine now: muscle rally hover, or 'auto' (back to ?engine= / config.ts)",
   "audio('sweep')                      18 s scripted test drive: idle, blips, gears, cruise, lift-off, jump (free-rev), landing, drift, boost, off-road, mag grip",
   "audio('sweep', 'drift')             19 s tyre test drive: a long drift at 60 km/h, a big one at 120, a small slide, a slide on the grass",
   "audio('sweep', 'speed')             19 s top speed test drive: every gear to 250 km/h, held, a boost pad, a lift",
-  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed (the engine, tyre or top speed test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1) | mix (arg: all | engine | music | fx) | rewind (rewind held 2-5 s over a cruise: adds the rewind sound's numbers)",
+  "audio('render', what, arg?)        record offline, resolves to { wav (base64), peakDb, rmsDb, seconds, log }. what: engine | drift | speed (the engine, tyre or top speed test drive), arg: muscle | rally | hover (add ':nodes' for the node motor) | effects | title | cruise | drive | race | hyper (arg: night 0..1 and/or a style, e.g. 0.6, 'house' or 'house:0.6') | mix (arg: all | engine | music | fx) | rewind (rewind held 2-5 s over a cruise: adds the rewind sound's numbers) | reactions (race music answering a big landing, a hop, a flip, a best lap, the final lap's key lift and a race win; arg: a style)",
 ].join('\n')
 
 export function AudioSystem() {
@@ -59,6 +69,11 @@ export function AudioSystem() {
       ui: (kind: UiSound) => rig.ui(kind),
       unlock: () => rig.unlock(),
       isRunning: () => rig.isRunning(),
+      song: () => rig.song(),
+      nextSong: () => rig.nextSong(),
+      toggleFavourite: () => rig.toggleFavourite(),
+      songList: () => rig.songList(),
+      setSongList: (list) => rig.setSongList(list),
     })
     const offInspector = registerInspector('audio', () => rig.inspect())
     const offDev = registerDev(
@@ -112,6 +127,20 @@ function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unkn
       return rig.setMood(String(a))
     case 'section':
       return rig.setSection(String(a))
+    case 'song':
+      return rig.song()
+    case 'next-song':
+      rig.nextSong()
+      return rig.song()
+    case 'favourite':
+      return rig.toggleFavourite()
+    case 'songs':
+      if (a === 'all' || a === 'favourites') rig.setSongList(a)
+      return rig.songList()
+    case 'lift':
+      return rig.liftKey()
+    case 'style':
+      return rig.setMusicStyle(a === undefined ? undefined : String(a))
     case 'render':
       return renderToWav(a as string, b)
     default:
@@ -121,8 +150,18 @@ function devCommand(rig: AudioRig, cmd?: string, a?: unknown, b?: unknown): unkn
 
 const MUSIC_RENDERS = ['title', 'cruise', 'drive', 'race', 'hyper']
 
+/** A music render's arg: a night (0..1) and/or a style, in any order: 0.6, 'house', 'house:0.6'. */
+function musicArg(arg: unknown): { night: number; style: MusicStyle | undefined } {
+  let night = 0
+  let style: MusicStyle | undefined
+  for (const part of String(arg ?? '').split(':')) {
+    if ((MUSIC_STYLES as readonly string[]).includes(part)) style = part as MusicStyle
+    else if (part !== '' && Number.isFinite(Number(part))) night = Number(part)
+  }
+  return { night, style }
+}
+
 async function renderToWav(what: string, arg: unknown): Promise<unknown> {
-  const night = Number(arg ?? 0)
   if (what === 'mix') {
     const stem = (['all', 'engine', 'music', 'fx'].includes(String(arg)) ? arg : 'all') as MixStem
     const buf = await renderMix(stem)
@@ -136,15 +175,20 @@ async function renderToWav(what: string, arg: unknown): Promise<unknown> {
     const fx = await renderRewind('fx')
     return { ...measure(all), ...rewindNumbers(all, fx), wav: toBase64(encodeWav(all)) }
   }
+  if (what === 'reactions') {
+    const { buf, log } = await renderReactions(undefined, musicArg(arg).style)
+    return { ...measure(buf), log, wav: toBase64(encodeWav(buf)) }
+  }
   if (what === 'effects') {
     const buf = await renderEffectsReel()
     return { ...measure(buf), wav: toBase64(encodeWav(buf)) }
   }
   if (MUSIC_RENDERS.includes(what)) {
-    const { buf, log } = await renderMusic(what as MoodId | 'title', Number.isFinite(night) ? night : 0)
+    const { night, style } = musicArg(arg)
+    const { buf, log } = await renderMusic(what as MoodId | 'title', night, undefined, style)
     return { ...measure(buf), log, wav: toBase64(encodeWav(buf)) }
   }
-  return `unknown render "${what}" (engine | drift | speed | effects | mix | rewind | ${MUSIC_RENDERS.join(' | ')})`
+  return `unknown render "${what}" (engine | drift | speed | effects | mix | rewind | reactions | ${MUSIC_RENDERS.join(' | ')})`
 }
 
 /** Record one of the scripted drives through the engine. arg: 'rally' or 'rally:nodes'. */

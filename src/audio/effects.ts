@@ -13,6 +13,13 @@
 //  Loudness guide (peak gain): menu ticks ~0.05, pickups ~0.2,
 //  big crashes up to ~0.6. The limiter in mixer.ts catches pile-ups.
 //
+//  The band can answer the biggest moments itself (music/index.ts):
+//  a big landing gets a cymbal and chord stab on the beat on top of
+//  the bell run (which then doesn't duck the music), and a best lap
+//  or race win gets the band's own fanfare INSTEAD of the bell one,
+//  so two fanfares never pile up. When the music is off or quiet the
+//  bell fanfare plays as before.
+//
 //  Rewind (rewindStart / rewindStop) is low and short on purpose: a
 //  swoop, a reversed whoosh and a flutter that dies away, then a soft
 //  clunk on letting go. The mixer muffles the music while it is held.
@@ -29,6 +36,19 @@ import type { VoiceKit } from './voices'
 
 /** Called when a crash is big enough that the music should get out of the way. */
 export type DuckFn = (depth: number, holdS: number) => void
+
+/** The band answering a moment itself. Each returns true if the band has it (playing it, or already playing an answer it joins); false: no music or too quiet. */
+export interface MusicAnswers {
+  /** A big landing; size 0..1. */
+  landing: (size: number) => boolean
+  /** A best lap or a race win; size 0..1. */
+  fanfare: (size: number) => boolean
+}
+
+/** Tricks that make a landing big enough for the band to answer (with BIG_AIR_S of air on its own). */
+const BIG_TRICKS = new Set(['bigAir', 'hugeAir', 'flip', 'roll', 'ring', 'gap', 'target'])
+/** Air time (s) that is a big landing on its own: the BIG AIR trick tier in vehicle/tricks.ts. */
+const BIG_AIR_S = 1.1
 
 /** A short gap on the audio clock between parts of one sound (seconds). */
 const LEAD_IN = 0.004
@@ -51,6 +71,10 @@ export class Effects {
   private abortedBus: GainNode | null = null
   /** The rewind flutter while it is still sounding (null when it isn't): its sources and its level. */
   private rewindVoice: { noise: AudioBufferSourceNode; flutter: OscillatorNode; amp: GainNode; nodes: AudioNode[] } | null = null
+  /** The band's answers, plugged in by the audio rig (null while there is no music). */
+  answers: MusicAnswers | null = null
+  /** Audio time of the last stunt-park gap or bullseye: the landing right after it is a big one. */
+  private stuntMarkAt = -10
 
   constructor(
     private readonly fx: VoiceKit,
@@ -178,7 +202,12 @@ export class Effects {
         this.fanfare(k, t, e.best ? 1 : 0.6)
         break
       case 'trick.land':
-        if (e.points > 0) this.stinger(k, t, e.points, e.combo)
+        if (e.points > 0) this.stinger(k, t, e.points, e.combo, this.answerLanding(e.tricks, e.airTimeS, e.points))
+        break
+      case 'stunt.gap':
+      case 'stunt.target':
+        // No sound of their own: they come just before the landing's trick.land, which the band answers big.
+        this.stuntMarkAt = k.ctx.currentTime
         break
       case 'trick.wipeout':
         this.wipeout(k, t)
@@ -188,8 +217,11 @@ export class Effects {
         break
       case 'lap.complete':
         if (e.dirty) this.mutedLap(k, t)
-        else if (e.best) this.fanfare(k, t, 0.85)
-        else this.lapTriad(k, t)
+        else if (e.best && e.previousBestMs !== null) {
+          // a new record: the fanfare (the band's when it can be heard). The first clean lap of a
+          // session is always a "best" with nothing to beat, so it gets the plain lap chime.
+          if (!this.answers?.fanfare(0.85)) this.fanfare(k, t, 0.85)
+        } else this.lapTriad(k, t)
         break
       case 'lap.void':
         this.shrug(k, t)
@@ -221,8 +253,9 @@ export class Effects {
         }
         break
       case 'race.finish':
-        if (e.position === 1) this.fanfare(k, t, 1)
-        else if (e.position <= 3) this.lapTriad(k, t, true)
+        if (e.position === 1) {
+          if (!this.answers?.fanfare(1)) this.fanfare(k, t, 1)
+        } else if (e.position <= 3) this.lapTriad(k, t, true)
         else this.cadence(k, t)
         break
       case 'stunt.start':
@@ -416,10 +449,25 @@ export class Effects {
     if (found === total) bell(k, hz * 2, t + 0.12, 0.08, 0.9, 1.4)
   }
 
+  /**
+   * Ask the band to answer a landing if it was a big one: real air, a flip
+   * or roll, or a stunt-park ring, gap or bullseye (not every kerb hop).
+   * Returns true if the band played its cymbal and stab.
+   */
+  private answerLanding(tricks: readonly { name: string }[], airS: number, points: number): boolean {
+    if (!this.answers) return false
+    const stunt = this.fx.ctx.currentTime - this.stuntMarkAt < 0.25
+    let named = false
+    for (let i = 0; i < tricks.length; i++) if (BIG_TRICKS.has(tricks[i].name)) named = true
+    if (!stunt && !named && airS < BIG_AIR_S) return false
+    return this.answers.landing(clamp01(0.25 + points / 1200))
+  }
+
   /** Trick landed: an ascending run, longer and fuller for bigger points, pitched up by the combo. */
-  private stinger(k: VoiceKit, t: number, points: number, combo: number): void {
+  private stinger(k: VoiceKit, t: number, points: number, combo: number, bandAnswered: boolean): void {
     const big = clamp01(points / 600)
-    if (big > 0.3) this.duck(0.2 + 0.15 * big, 0.25)
+    // When the band hits its own stab for this landing, ducking the music would duck that too.
+    if (big > 0.3 && !bandAnswered) this.duck(0.2 + 0.15 * big, 0.25)
     const notes = 2 + Math.round(big * 4)
     const lift = Math.min(4, Math.max(0, combo - 1))
     for (let n = 0; n < notes; n++) {
