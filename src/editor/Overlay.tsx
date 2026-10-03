@@ -27,6 +27,9 @@
 //             goes over (the panel's Swap button).
 //    Bridges  with any tool, a click on a BRIDGE label selects that
 //             crossing too.
+//    Problems with any tool, a click on a problem's pin (or its red
+//             tag) selects it: the panel says what's wrong and offers
+//             Fix it, or takes you to the right tool.
 //    Place    click to drop the chosen piece (a see-through preview
 //             follows the mouse and snaps to the road).
 //    Section  drag along the road to pick a stretch, then set its bank
@@ -84,7 +87,8 @@ import {
   useEditor,
 } from './draft'
 import { type P } from './geom'
-import { type MapExtras, type Pick, type ShapeView, crossingAtScreen, drawMap, pieceScreen, pointsVisible, roadGeometry } from './mapDraw'
+import { type MapExtras, type Pick, type ShapeView, crossingAtScreen, drawMap, pieceScreen, pointsVisible, problemAtScreen, roadGeometry } from './mapDraw'
+import { selectProblem } from './fixActions'
 import { type RedrawPlan, type RoadHit, advanceAt, frameAt, metresBetween, nearestOnRoad, planRedraw, wrapAt } from './road'
 import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
 import { view, panBy, screenToWorld, setView, worldToScreen, zoomAt, fitBox } from './view'
@@ -378,6 +382,12 @@ export function Overlay() {
         return
       }
       if (e.button !== 0) return
+      // A problem's pin (or its tag) works with every tool: select that problem (the panel shows what to do).
+      const pin = problemAtScreen(e.clientX, e.clientY)
+      if (pin && selectProblem(pin, false)) {
+        needsDraw = true
+        return
+      }
       if (s.tool !== 'pencil' && mapIsEmpty()) {
         // No road for this tool to work on: drag the map, and a click says how to get a road.
         panning = true

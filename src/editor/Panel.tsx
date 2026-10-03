@@ -5,15 +5,17 @@
 //    the name and a few numbers (length, pieces, bridges)
 //    SELECTED  settings for whatever you clicked on the map: a piece,
 //              a crash-prop pile, an energy core, a road point, a
-//              stretch of road (its bank and width), or a crossing
-//              (which road goes over: the Swap button)
+//              stretch of road (its height, bank and width), a crossing
+//              (which road goes over: the Swap button), or a problem
+//              from Checks (what's wrong, and Fix it or Show me)
 //    TRACK     width, world, time of day, edge lights, maker, blurb
-//    CHECKS    anything the game wants you to look at; click to go there
+//    CHECKS    anything the game wants you to look at; click one to select
+//              it (and see where it is), or Fix all
 //    MAP KEY   what the marks on the map mean
 //    Save / Library / Test drive / Exit
 // ============================================================
 
-import { useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { PALETTE } from '../core/palette'
 import { audio } from '../core/api'
 import { listTracks } from '../track/registry'
@@ -42,19 +44,23 @@ import {
   updatePiece,
   updateProp,
   useEditor,
-  commit,
   applyCornerRadius,
   draftCrossings,
+  pointGroundFor,
   swapBridge,
 } from './draft'
+import { currentProblems, fixAll, fixProblem, goToProblem, lastFixed, liveRuntime, raisePoint, raiseSection, selectProblem } from './fixActions'
+import { NO_NOTES, type Problem, problemByKey, problemsOf } from './problems'
+import { RAISE_MAX, heightRange, liftAt, stretchNow, stretchSpeed } from './raise'
+import './fixes.css'
 import { BRIDGE_GAP, bridgeCount, compassWord, crossingNear } from './bridges'
 import { ColourField, Segmented, SelectField, SliderField, TextField } from './fields'
 import { issueLocation, roadGeometry } from './mapDraw'
-import { type CheckItem, checkVerdict, gateItems, plainWords } from './checks'
+import { checkVerdict } from './checks'
 import { pieceLabel } from './pieces'
 import { startDriveToDraw } from './driveToDraw'
 import { metresBetween, roadLength } from './road'
-import { cornerAt } from './shape'
+import { cornerAt, roadLine } from './shape'
 import { setView, view } from './view'
 
 /** Edge-strip colours a track can pick (the road's light strips). */
@@ -204,6 +210,12 @@ function WorldField(p: { draft: Draft }) {
 
 function Inspector(p: { selection: Selection; draft: Draft }) {
   const sel = p.selection
+  // A problem picked from Checks (lower down) or a map pin: bring this box into view.
+  const box = useRef<HTMLElement>(null)
+  const problemKey = sel.kind === 'problem' ? sel.key : null
+  useEffect(() => {
+    if (problemKey) box.current?.scrollIntoView({ block: 'nearest' })
+  }, [problemKey])
   const d = p.draft
   const rc = roadGeometry(d.points, d.width).rc
   let title = ''
@@ -275,27 +287,18 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
       <>
         <p className="sre-help">Drag it on the map to reshape the road. Double-click the road to add a point.</p>
         <CornerField index={sel.index} draft={d} />
-        <SliderField
-          label="Height above the ground"
-          value={point.lift ?? 0}
-          min={0}
-          max={16}
-          step={0.5}
-          unit="m"
-          help="Raise the road here for a crest or a bridge. 8 m or more clears a road underneath."
-          onCommit={(v) =>
-            commit((x) => {
-              if (v > 0) x.points[sel.index].lift = v
-              else delete x.points[sel.index].lift
-            })
-          }
-        />
+        <PointHeight index={sel.index} draft={d} />
       </>
     )
   } else if (sel.kind === 'crossing') {
     title = 'Where the road crosses itself'
     canDelete = false
     body = <CrossingFields spot={sel} draft={d} />
+  } else if (sel.kind === 'problem') {
+    const tone = problemByKey(currentProblems(), sel.key)?.tone
+    title = tone === 'warn' ? 'Worth a look' : tone === 'note' ? 'Note' : 'Problem'
+    canDelete = false
+    body = <ProblemFields problemKey={sel.key} />
   } else {
     title = 'Stretch of road'
     canDelete = false
@@ -307,6 +310,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
         <p className="sre-help">
           {metres} m of road, {idx.length} point{idx.length === 1 ? '' : 's'}. Banking tilts the road into the corner; auto banks it from how tight the corner is.
         </p>
+        <StretchHeight from={sel.from} to={sel.to} draft={d} />
         <SliderField
           label="Bank"
           value={first?.bank ?? 0}
@@ -337,6 +341,11 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
       setView(sel.x, sel.z, Math.min(view.mpp, 0.6))
       return
     }
+    if (sel.kind === 'problem') {
+      const p = problemByKey(currentProblems(), sel.key)
+      if (p?.at) setView(p.at.x, p.at.z, Math.min(view.mpp, 0.6))
+      return
+    }
     const at =
       sel.kind === 'section'
         ? issueLocation(`road.points[${sectionPoints(d.points.length, sel.from, sel.to)[0]}]`, d, rc)
@@ -345,7 +354,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
   }
 
   return (
-    <section className="sre-section sre-inspector" aria-label="Selected">
+    <section ref={box} className="sre-section sre-inspector" aria-label="Selected">
       <span className="sre-section-title">
         Selected
         <button type="button" className="sre-link" onClick={() => useEditor.setState({ selection: null })}>
@@ -405,6 +414,78 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
         Swap: put the other road on top
       </button>
       <p className="sre-help">The road on top comes down to the ground here, and the other one goes up over it on smooth ramps. Undo puts it back.</p>
+    </>
+  )
+}
+
+/** Heights the panel shows: to the half metre, from the ground up to RAISE_MAX. */
+function sliderHeight(v: number): number {
+  return Math.max(0, Math.min(RAISE_MAX, Math.round(v * 2) / 2))
+}
+
+/** Without a known world (only before the ground can be worked out), heights are just the lifts. */
+const flatGround = () => 0
+
+/**
+ * A road point's height above the ground. The road eases up to it and back
+ * down over as much road either side as a car needs to stay on (fixActions.ts
+ * raisePoint): a smooth hump, never a spike.
+ */
+function PointHeight(p: { index: number; draft: Draft }) {
+  const ground = pointGroundFor(p.draft) ?? flatGround
+  const height = useMemo(() => liftAt(roadLine(p.draft.points), p.index, ground), [p.draft.points, p.index, ground])
+  const [, setBusy] = useState(false)
+  return (
+    <SliderField
+      label="Height above the ground"
+      value={sliderHeight(height)}
+      min={0}
+      max={RAISE_MAX}
+      step={0.5}
+      unit="m"
+      help="Raise the road here for a hump or a bridge. It eases up and back down over the road either side, so cars stay on it. 8 m or more clears a road underneath."
+      onCommit={(v) => soon(setBusy, () => raisePoint(p.index, v))}
+    />
+  )
+}
+
+/**
+ * The Stretch tool's Height: how high the MIDDLE of the stretch sits above the
+ * ground. The road rises smoothly from each end of the stretch to the middle
+ * (raise.ts). Below it, how high this stretch can go before a car at the speed
+ * cars go there would take off over the top.
+ */
+function StretchHeight(p: { from: number; to: number; draft: Draft }) {
+  const ground = pointGroundFor(p.draft) ?? flatGround
+  const fresh = useEditor((s) => s.checkedDraft === s.draft && s.preview === 'built')
+  const info = useMemo(() => {
+    const now = stretchNow(p.draft.points, p.from, p.to, ground)
+    const v = stretchSpeed(fresh ? liveRuntime() : null, p.draft.points, p.from, p.to)
+    return { now, v, range: heightRange(now, v) }
+  }, [p.draft.points, p.from, p.to, ground, fresh])
+  const [, setBusy] = useState(false)
+  const metres = Math.round(info.now.metres)
+  const most = Math.floor(info.range.hi * 2) / 2
+  const kmh = Math.round((info.v * 3.6) / 10) * 10
+  return (
+    <>
+      <SliderField
+        label="Height"
+        value={sliderHeight(info.now.middle)}
+        min={0}
+        max={RAISE_MAX}
+        step={0.5}
+        unit="m"
+        help="How high the middle of this stretch sits above the ground. The road rises smoothly from each end of the stretch to the middle."
+        onCommit={(v) => soon(setBusy, () => raiseSection(p.from, p.to, v))}
+      />
+      <p className="sre-help" data-testid="editor-stretch-most">
+        {metres < 30
+          ? 'Pick at least 30 m of road to raise it.'
+          : most >= RAISE_MAX
+            ? `This stretch is ${metres} m long: long enough to go all the way up to ${RAISE_MAX} m in the middle.`
+            : `This stretch is ${metres} m long: its middle can go up to about ${most} m before a car at ${kmh} km/h would take off over the top. Pick a longer stretch to go higher.`}
+      </p>
     </>
   )
 }
@@ -522,16 +603,17 @@ const CHECKS_SHOWN = 10
  */
 function Problems() {
   const errors = useEditor((s) => s.errors)
-  const warnings = useEditor((s) => s.warnings)
   const gates = useEditor((s) => s.gates)
   const checkedDraft = useEditor((s) => s.checkedDraft)
   const preview = useEditor((s) => s.preview)
   const notes = useEditor((s) => s.notes)
   const draft = useEditor((s) => s.draft)
-  const rc = useMemo(() => roadGeometry(draft.points, draft.width).rc, [draft.points, draft.width])
+  const selected = useEditor((s) => (s.selection?.kind === 'problem' ? s.selection.key : null))
+  const items = useProblems()
   const fresh = checkedDraft === draft && preview !== 'pending'
   const cleanup = notes?.issues ?? []
   const verdict = checkVerdict({ fresh, errors, gates, cleanupErrors: cleanup.filter((i) => i.level === 'error').length })
+  const [busy, setBusy] = useState(false)
   if (isEmptyDraft(draft)) {
     // Nothing to check until there is a road.
     return (
@@ -543,42 +625,51 @@ function Problems() {
       </section>
     )
   }
-  const fromGates = fresh && gates ? gateItems(gates, draft, rc) : []
-  const fromValidator = (list: typeof errors, tone: 'bad' | 'warn'): CheckItem[] => list.map((e) => ({ tone, ...plainIssue(e.path, e.message), at: issueLocation(e.path, draft, rc) }))
-  const fromCleanup = (level: 'error' | 'warning' | 'info', tone: CheckItem['tone']): CheckItem[] => cleanup.filter((i) => i.level === level).map((i) => ({ tone, title: i.message, at: i.at ?? null }))
-  // Worst first: things that stop the track working, then things worth a look, then notes.
-  const items: CheckItem[] = [
-    ...fromValidator(errors, 'bad'),
-    ...fromGates.filter((it) => it.tone === 'bad'),
-    ...fromCleanup('error', 'bad'),
-    ...fromGates.filter((it) => it.tone === 'warn'),
-    ...fromValidator(warnings, 'warn'),
-    ...fromCleanup('warning', 'warn'),
-    ...fromCleanup('info', 'note'),
-  ]
   const bad = items.filter((it) => it.tone === 'bad').length
+  const fixable = fresh ? items.filter((it) => it.remedy.kind === 'fix').length : 0
   const headline =
     verdict === 'pass'
       ? 'All good: this track builds and drives.'
       : verdict === 'fail'
-        ? `Not ready yet: ${bad === 1 ? 'one problem stops' : `${bad} problems stop`} this track working. Fix the red ${bad === 1 ? 'one' : 'ones'} first.`
+        ? `Not ready yet: ${bad === 1 ? 'one problem stops' : `${bad} problems stop`} this track working. Fix the red ${bad === 1 ? 'one' : 'ones'} first: click one to see how.`
         : 'Checking the road...'
   return (
     <section className="sre-section sre-problems" aria-label="Checks" data-verdict={verdict}>
-      <span className="sre-section-title">Checks</span>
+      <span className="sre-section-title">
+        Checks
+        {fixable > 0 && (
+          <button
+            type="button"
+            className="sre-link"
+            disabled={busy}
+            onClick={() => soon(setBusy, fixAll)}
+            title="Mends every problem that has a Fix it button, one after another, each built and checked first. One Undo puts them all back."
+            data-testid="editor-fix-all"
+          >
+            {busy ? 'Fixing...' : `Fix all (${fixable})`}
+          </button>
+        )}
+      </span>
       <p className={`sre-verdict is-${verdict}`} role="status">
         {headline}
         {verdict === 'pass' && items.some((it) => it.tone === 'warn') ? ' A few things are worth a look:' : ''}
       </p>
       {items.length > 0 && (
         <ul>
-          {items.slice(0, CHECKS_SHOWN).map((it, i) => (
-            <li key={i}>
-              <button type="button" className={`sre-issue is-${it.tone}`} disabled={!it.at} onClick={() => it.at && setView(it.at.x, it.at.z, Math.min(view.mpp, 0.6))} title={it.at ? 'Show it on the map' : undefined}>
+          {items.slice(0, CHECKS_SHOWN).map((it) => (
+            <li key={it.key}>
+              <button
+                type="button"
+                className={`sre-issue is-${it.tone}${it.key === selected ? ' is-selected' : ''}`}
+                aria-pressed={it.key === selected}
+                onClick={() => selectProblem(it.key)}
+                title={it.remedy.kind === 'fix' ? 'Select it: Fix it can mend it' : 'Select it to see what to do'}
+              >
                 <span className="sre-issue-text">
                   <span className="sre-issue-title">{it.title}</span>
                   {it.detail && <span className="sre-issue-detail">{it.detail}</span>}
                   {it.fix && <span className="sre-issue-fix">Fix: {it.fix}</span>}
+                  {it.remedy.kind === 'fix' && <span className="sre-issue-can">Fix it can mend this</span>}
                 </span>
               </button>
             </li>
@@ -590,17 +681,78 @@ function Problems() {
   )
 }
 
+/** The Checks list as the panel shows it (problems.ts), kept up to date with the editor. */
+function useProblems(): Problem[] {
+  const errors = useEditor((s) => s.errors)
+  const warnings = useEditor((s) => s.warnings)
+  const gates = useEditor((s) => s.gates)
+  const checkedDraft = useEditor((s) => s.checkedDraft)
+  const preview = useEditor((s) => s.preview)
+  const notes = useEditor((s) => s.notes)
+  const draft = useEditor((s) => s.draft)
+  const fresh = checkedDraft === draft && preview !== 'pending'
+  return problemsOf({ draft, gates: fresh ? gates : null, errors, warnings, notes: notes?.issues ?? NO_NOTES })
+}
+
 /**
- * The validator talks about "road.points[3]" or "pieces[2]"; Josh doesn't need the path.
- * Its messages are "what; what to do", so the first part is the title and the rest the
- * detail (the same shape as the gate rows), in the same plain words.
+ * Run a change that builds and checks the road (a few tenths of a second, or
+ * more on a big track) after the button has had a chance to say it's busy.
  */
-function plainIssue(path: string, message: string): { title: string; detail?: string } {
-  const cut = message.indexOf('; ')
-  const title = plainWords(cut > 0 ? message.slice(0, cut) : message)
-  const detail = cut > 0 ? plainWords(message.slice(cut + 2)) : undefined
-  if (/^(road\.points|pieces|props|cores)/.test(path) || !path) return { title, detail }
-  return { title: `${path}: ${title}`, detail }
+function soon(setBusy: (b: boolean) => void, work: () => unknown): void {
+  setBusy(true)
+  setTimeout(() => {
+    try {
+      work()
+    } finally {
+      setBusy(false)
+    }
+  }, 30)
+}
+
+/**
+ * A problem picked from Checks or the map: what's wrong, then what to do.
+ * Fix it (when the editor can mend it by itself), "Show me" (the right tool,
+ * with the right bit of road selected), or, for the game's own bugs, says so.
+ */
+function ProblemFields(p: { problemKey: string }) {
+  const list = useProblems()
+  const pending = useEditor((s) => s.preview === 'pending' || s.checkedDraft !== s.draft)
+  const [busy, setBusy] = useState(false)
+  const prob = problemByKey(list, p.problemKey)
+  if (!prob) {
+    if (pending) return <p className="sre-help">Checking the road again...</p>
+    const fixed = lastFixed?.key === p.problemKey ? lastFixed : null
+    return <p className="sre-problem-do">{fixed ? `Fixed: ${fixed.did} That problem has gone.` : 'That problem has gone. Pick another one in Checks.'}</p>
+  }
+  const r = prob.remedy
+  return (
+    <>
+      <p className={`sre-problem is-${prob.tone}`}>{prob.title}</p>
+      {prob.detail && <p className="sre-help">{prob.detail}</p>}
+      {r.kind === 'fix' && (
+        <>
+          <button type="button" className="sre-btn is-primary" disabled={busy || pending} onClick={() => soon(setBusy, () => fixProblem(prob.key))} data-testid="editor-fix-it">
+            {busy ? 'Fixing...' : 'Fix it'}
+          </button>
+          <p className="sre-help">{r.does} It's built and checked before it lands, and Undo puts it back.</p>
+          {r.go && (
+            <button type="button" className="sre-btn" onClick={() => goToProblem(prob.key)}>
+              {r.go.button}
+            </button>
+          )}
+        </>
+      )}
+      {r.kind === 'go' && (
+        <>
+          <p className="sre-problem-do">{r.does}</p>
+          <button type="button" className="sre-btn is-primary" onClick={() => goToProblem(prob.key)} data-testid="editor-show-me">
+            {r.go.button}
+          </button>
+        </>
+      )}
+      {(r.kind === 'game' || r.kind === 'none') && <p className="sre-problem-do">{r.does}</p>}
+    </>
+  )
 }
 
 function Legend() {

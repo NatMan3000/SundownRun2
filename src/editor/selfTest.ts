@@ -60,6 +60,7 @@ import type { Piece, RoadPoint, TrackFile } from '../track/schema'
 import { checkBuiltTrack, checkVerdict, gateItems } from './checks'
 import type { Draft } from './draft'
 import { BRIDGE_GAP, type GroundFn, buildAndCheck, builtGapAt, crossingNear, keepOverOf, roadCrossings, swapDraft } from './bridges'
+import { fixAndRaiseRows, setFixActions } from './selfTestFixes'
 
 /** The editor's store (draft.ts), for the row that needs the real Undo. Bun loads it in the main block below. */
 type EditorStore = typeof import('./draft')
@@ -1522,6 +1523,10 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
     return bad
   })
 
+  // ---------------------------------------------------------------- raising a stretch, and Fix it (selfTestFixes.ts)
+
+  fixAndRaiseRows(check, store, { shaky, opts })
+
   return results
 }
 
@@ -1586,7 +1591,11 @@ async function loadStoreForBun(): Promise<EditorStore | undefined> {
   }
   // A path in a variable, so the game's bundler leaves this Bun-only import alone (the game has the store already).
   const storePath = './draft.ts'
-  return (await import(/* @vite-ignore */ storePath)) as EditorStore
+  const store = (await import(/* @vite-ignore */ storePath)) as EditorStore
+  // The raise and Fix it buttons' actions, for their Undo row (selfTestFixes.ts).
+  const actionsPath = './fixActions.ts'
+  setFixActions((await import(/* @vite-ignore */ actionsPath)) as typeof import('./fixActions'))
+  return store
 }
 
 function printTable(results: CheckResult[]): void {

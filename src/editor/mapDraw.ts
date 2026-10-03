@@ -8,8 +8,9 @@
 //  goes over),
 //  every piece as an icon, props and cores, the stunt park's zones
 //  (world map only), what is selected, and
-//  pins on anything the game wants you to check (its track checks
-//  come from checks.ts; a failing one gets a red tag by its pin).
+//  pins on anything the game wants you to check (the Checks list's
+//  rows, problems.ts; a failing one gets a red tag by its pin, and a
+//  click on a pin or its tag selects that problem).
 //  The shaping tools draw their previews here too: the stretch Bend
 //  will move (brightest at your hand), and Straight or Curve's new road
 //  before the last click (cyan when it works, red when too tight). So
@@ -27,7 +28,7 @@ import { cars, telemetry } from '../core/telemetry'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
 import type { BendView, EditorState } from './draft'
 import { BRIDGE_GAP, type RoadCrossing, bridgeShape, raisedTops } from './bridges'
-import { gateItems } from './checks'
+import { NO_NOTES, problemsOf } from './problems'
 import { type P } from './geom'
 import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type PlaceKind } from './pieces'
 import { type RedrawPlan, type RoadCurve, PER, advanceAt, frameAt, roadCurve, wrapAt } from './road'
@@ -1001,40 +1002,42 @@ function drawGhost(ctx: CanvasRenderingContext2D, ghost: NonNullable<MapExtras['
  * that point at a place. A failing check also gets a short red tag beside its pin.
  */
 function drawPins(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve): void {
-  const pins: { at: P; tone: 'warn' | 'bad' | 'note'; label?: string }[] = []
-  // Only while the checks are about the road on screen (not mid-drag, not the world map).
-  if (s.gates && s.checkedDraft === s.draft && s.preview !== 'pending') {
-    for (const it of gateItems(s.gates, s.draft, rc)) {
-      if (it.at && it.tone !== 'note') pins.push({ at: it.at, tone: it.tone, label: it.label })
-    }
-  }
-  for (const issue of s.notes?.issues ?? []) {
-    if (issue.at && issue.code !== 'bridged') pins.push({ at: issue.at, tone: issue.level === 'warning' ? 'warn' : issue.level === 'error' ? 'bad' : 'note' })
-  }
-  for (const w of s.warnings) {
-    const at = issueLocation(w.path, s.draft, rc)
-    if (at) pins.push({ at, tone: 'warn' })
-  }
-  for (const e of s.errors) {
-    const at = issueLocation(e.path, s.draft, rc)
-    if (at) pins.push({ at, tone: 'bad' })
-  }
-  // The most serious on top: a red pin must never hide under an amber one at the same spot.
+  pinTargets = []
+  if (!rc.curve.length) return
+  // The same rows the Checks list shows (problems.ts). The game's checks only count while they
+  // are about the road on screen (not mid-drag, not before the rebuild after a change).
+  const fresh = s.checkedDraft === s.draft && s.preview !== 'pending'
+  const selected = s.selection?.kind === 'problem' ? s.selection.key : null
+  const pins = problemsOf({ draft: s.draft, gates: fresh ? s.gates : null, errors: s.errors, warnings: s.warnings, notes: s.notes?.issues ?? NO_NOTES })
+    .filter((p) => p.at)
+    .map((p) => ({ at: p.at as P, tone: p.tone, label: p.label, key: p.key }))
+  // The most serious on top (a red pin never hides under an amber one at the same spot), the selected one above all.
   const rank = { note: 0, warn: 1, bad: 2 }
-  pins.sort((a, b) => rank[a.tone] - rank[b.tone])
+  pins.sort((a, b) => (a.key === selected ? 3 : rank[a.tone]) - (b.key === selected ? 3 : rank[b.tone]))
   ctx.save()
   for (const pin of pins) {
     const { sx, sy } = worldToScreen(pin.at.x, pin.at.z)
     const colour = pin.tone === 'bad' ? PALETTE.uiBad : pin.tone === 'warn' ? PALETTE.uiWarn : PALETTE.uiDim
+    const isSel = pin.key === selected
     // Offset up-right so the pin never hides the thing it is about.
     const px = pin.tone === 'note' ? sx : sx + 16
     const py = pin.tone === 'note' ? sy : sy - 16
+    if (isSel) {
+      // The selected problem: a ring on the road where it is, joined to its pin.
+      ctx.strokeStyle = PALETTE.uiText
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(sx, sy, 14, 0, Math.PI * 2)
+      ctx.moveTo(sx + 10, sy - 10)
+      ctx.lineTo(px - 7, py + 7)
+      ctx.stroke()
+    }
     ctx.beginPath()
-    ctx.arc(px, py, pin.tone === 'note' ? 5 : 9, 0, Math.PI * 2)
+    ctx.arc(px, py, pin.tone === 'note' ? 5 : isSel ? 11 : 9, 0, Math.PI * 2)
     ctx.fillStyle = PALETTE.uiPanelSolid
     ctx.fill()
-    ctx.lineWidth = 2
-    ctx.strokeStyle = colour
+    ctx.lineWidth = isSel ? 3 : 2
+    ctx.strokeStyle = isSel ? PALETTE.uiText : colour
     ctx.stroke()
     if (pin.tone !== 'note') {
       ctx.fillStyle = colour
@@ -1043,14 +1046,40 @@ function drawPins(ctx: CanvasRenderingContext2D, s: EditorState, rc: RoadCurve):
       ctx.textBaseline = 'middle'
       ctx.fillText('!', px, py + 0.5)
     }
+    pinTargets.push({ key: pin.key, sx: px, sy: py, box: null })
   }
   ctx.restore()
-  // Tags after every pin, so each one can step around the others.
+  // Tags after every pin, so each one can step around the others. A tag can be clicked too.
   for (const pin of pins) {
     if (!pin.label) continue
     const { sx, sy } = worldToScreen(pin.at.x, pin.at.z)
-    placePill(ctx, pin.label, sx + 16, sy - 16, [-24, 24, -48, 48], PALETTE.uiBad)
+    const box = placePill(ctx, pin.label, sx + 16, sy - 16, [-24, 24, -48, 48], pin.key === selected ? PALETTE.uiText : PALETTE.uiBad)
+    const t = pinTargets.find((x) => x.key === pin.key)
+    if (t) t.box = box
   }
+}
+
+/** Where each problem's pin (and its tag) was drawn last frame, screen pixels. See problemAtScreen. */
+let pinTargets: { key: string; sx: number; sy: number; box: { x0: number; y0: number; x1: number; y1: number } | null }[] = []
+
+/** The problem whose pin (within 12 px) or tag is under screen point (sx, sy), as drawn last frame. */
+export function problemAtScreen(sx: number, sy: number): string | null {
+  let best: string | null = null
+  let bestD = 12
+  for (const t of pinTargets) {
+    const inBox = !!t.box && sx >= t.box.x0 && sx <= t.box.x1 && sy >= t.box.y0 && sy <= t.box.y1
+    const d = inBox ? 0 : Math.hypot(sx - t.sx, sy - t.sy)
+    if (d <= bestD) {
+      bestD = d
+      best = t.key
+    }
+  }
+  return best
+}
+
+/** Every problem pin as drawn last frame (so a probe can click one with the real mouse). */
+export function pinScreens(): { key: string; pin: { sx: number; sy: number }; tag: { sx: number; sy: number } | null }[] {
+  return pinTargets.map((t) => ({ key: t.key, pin: { sx: t.sx, sy: t.sy }, tag: t.box ? { sx: (t.box.x0 + t.box.x1) / 2, sy: (t.box.y0 + t.box.y1) / 2 } : null }))
 }
 
 /** Where on the map a validator message is about ("road.points[3]", "pieces[2]", "props[0]"...). */

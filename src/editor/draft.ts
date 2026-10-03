@@ -161,6 +161,7 @@ export interface Shaping {
  * forward (both are `at` values). A crossing (where the road goes over or
  * under itself) is remembered by its spot on the map: swapping which road is
  * on top changes heights, not where the roads cross, so the spot stays good.
+ * A problem from the Checks list is remembered by its key.
  */
 export type Selection =
   | { kind: 'piece'; index: number }
@@ -169,6 +170,8 @@ export type Selection =
   | { kind: 'core'; index: number }
   | { kind: 'section'; from: number; to: number }
   | { kind: 'crossing'; x: number; z: number }
+  /** A row of the Checks list (or its pin on the map), by its key (problems.ts). */
+  | { kind: 'problem'; key: string }
 
 const WORKING_KEY = 'sr2.editor.working.v1'
 const HISTORY_MAX = 120
@@ -767,7 +770,7 @@ export function deleteSelection(): void {
     deletePoint(sel.index)
     return
   }
-  if (sel.kind === 'section' || sel.kind === 'crossing') return
+  if (sel.kind === 'section' || sel.kind === 'crossing' || sel.kind === 'problem') return
   commit((d) => {
     if (sel.kind === 'piece') d.pieces.splice(sel.index, 1)
     if (sel.kind === 'prop') d.props.splice(sel.index, 1)
@@ -935,7 +938,7 @@ function round3(v: number): number {
  * moves: each one within 40 m of the old road keeps its distance from the
  * same spot on the new road. `mapAt` says where each old spot went.
  */
-function carryAlongside(d: Draft, oldPoints: RoadPoint[], mapAt: (at: number) => number): void {
+export function carryAlongside(d: Draft, oldPoints: RoadPoint[], mapAt: (at: number) => number): void {
   const oldRc = roadCurve(oldPoints)
   const newRc = roadCurve(d.points)
   const move = (spot: { x: number; z: number }) => {

@@ -53,6 +53,18 @@
 //    __dev.editor('swap', i | [x, z])      press Swap on crossing i (or the one at a map spot);
 //                                          returns ok, the status line and the crossings after
 //
+//  Height and problems (editor8):
+//    __dev.editor('stretch', [from, to])   select a stretch of road (the Stretch tool), as a drag does
+//    __dev.editor('raise', [from, to, h])  set the middle of that stretch to h metres above the ground
+//                                          (the Stretch tool's Height slider); returns ok and the status line
+//    __dev.editor('raisePoint', [i, h])    a road point's "Height above the ground" slider
+//    __dev.editor('problems')              the Checks list: each row's key, title, remedy
+//                                          (fix / go / game / none), its button and where it is
+//    __dev.editor('selectProblem', key | i)   select a problem (as a click on its row or pin does)
+//    __dev.editor('fix', key | i)          press Fix it on that problem; returns ok and the status line
+//    __dev.editor('fixAll')                press Fix all
+//    __dev.editor('pins')                  where each problem's pin and tag are on screen (to click them)
+//
 //  Inspector: __game.get('editor') - a summary of the draft.
 //  URL switch: ?editor=1 opens the editor straight away.
 // ============================================================
@@ -94,7 +106,8 @@ import {
   useEditor,
 } from './draft'
 import { fitToDraft } from './Overlay'
-import { crossingScreens } from './mapDraw'
+import { crossingScreens, pinScreens } from './mapDraw'
+import { currentProblems, fixAll, fixProblem, raisePoint, raiseSection, selectProblem } from './fixActions'
 import { runEditorSelfTest } from './selfTest'
 import { checkVerdict } from './checks'
 import { cancelDriveToDraw, clearLaidRoad, driveRecorder, finishDriveToDraw, startDriveToDraw } from './driveToDraw'
@@ -197,7 +210,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z]'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | testDrive | new [baseWorld] | open id | undo | redo | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | stretch [from,to] | raise [from,to,h] | raisePoint [i,h] | problems | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -298,6 +311,33 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     }
     case 'checks':
       return checksSummary()
+    case 'stretch': {
+      const [a, b] = Array.isArray(arg) ? arg.map(Number) : []
+      if (![a, b].every(Number.isFinite)) return 'stretch needs [fromAt, toAt]'
+      setTool('section')
+      useEditor.setState({ selection: { kind: 'section', from: a, to: b } })
+      return useEditor.getState().selection
+    }
+    case 'raise': {
+      const [a, b, h] = Array.isArray(arg) ? arg.map(Number) : []
+      if (![a, b, h].every(Number.isFinite)) return 'raise needs [fromAt, toAt, metres]'
+      return { ok: raiseSection(a, b, h), message: useEditor.getState().message?.text ?? '', selection: useEditor.getState().selection }
+    }
+    case 'raisePoint': {
+      const [i, h] = Array.isArray(arg) ? arg.map(Number) : []
+      if (![i, h].every(Number.isFinite)) return 'raisePoint needs [pointIndex, metres]'
+      return { ok: raisePoint(i, h), message: useEditor.getState().message?.text ?? '', selection: useEditor.getState().selection }
+    }
+    case 'problems':
+      return problemsSummary()
+    case 'selectProblem':
+      return selectProblem(problemKey(arg))
+    case 'fix':
+      return { ok: fixProblem(problemKey(arg)), message: useEditor.getState().message?.text ?? '', problems: problemsSummary() }
+    case 'fixAll':
+      return { ok: fixAll(), message: useEditor.getState().message?.text ?? '', problems: problemsSummary() }
+    case 'pins':
+      return pinScreens()
     case 'smooth':
       return smoothRoad()
     case 'roughness':
@@ -356,6 +396,25 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
     default:
       return `unknown editor command "${cmd}" - try __dev.editor('help')`
   }
+}
+
+/** The Checks list in short: key, how bad, title, what can be done, and where. */
+function problemsSummary() {
+  return currentProblems().map((p) => ({
+    key: p.key,
+    tone: p.tone,
+    title: p.title,
+    remedy: p.remedy.kind,
+    button: p.remedy.kind === 'fix' ? 'Fix it' : p.remedy.kind === 'go' ? p.remedy.go.button : null,
+    at: p.at ? { x: Math.round(p.at.x), z: Math.round(p.at.z) } : null,
+    roadAt: p.roadAt === null ? null : Math.round(p.roadAt * 100) / 100,
+  }))
+}
+
+/** A problem by its key, or by its place in the Checks list. */
+function problemKey(arg: unknown): string {
+  if (typeof arg === 'number') return currentProblems()[arg]?.key ?? ''
+  return String(arg ?? '')
 }
 
 /** How wobbly the draft is: shape.ts's measure, and the same on the built preview's own samples. */

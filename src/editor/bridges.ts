@@ -433,7 +433,8 @@ const RAMP_LADDER = [CLEANUP.bridgeRamp, 100, 120]
  */
 const GAME_BUG_CHECKS = new Set(['winding', 'tracking', 'ground', 'under', 'surface', 'checks'])
 
-function tryOneWay(d: Draft, spot: P, up: 0 | 1, o: SwapOptions): SwapResult {
+/** Put pass `up` of the crossing at `spot` on top (fixes.ts uses it to raise a low bridge's upper road). */
+export function tryOneWay(d: Draft, spot: P, up: 0 | 1, o: SwapOptions): SwapResult {
   let before: readonly TrackGate[] | null = o.gatesBefore ?? null
   let firstReason = ''
   for (const ramp of RAMP_LADDER) {

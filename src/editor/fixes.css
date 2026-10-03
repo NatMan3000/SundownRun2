@@ -1,0 +1,61 @@
+/* ============================================================
+   FIX STYLES - a problem picked from Checks, and its buttons
+   ------------------------------------------------------------
+   The Selected box for a problem (Panel.tsx ProblemFields) and the
+   Checks list's selected row. Colours come ONLY from the CSS
+   variables EditorUi.tsx sets from src/core/palette.ts, like
+   editor.css. A selected row is "selected", not "active": a lifted
+   surface and full-strength ink, no accent colour.
+   ============================================================ */
+
+/* The row picked in Checks. */
+.sre-issue.is-selected {
+  border-color: color-mix(in srgb, var(--text) 55%, transparent);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+/* "Fix it can mend this", under a row the editor can mend by itself. */
+.sre-issue-can {
+  font-size: 0.8em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+/* The problem's title in the Selected box, with the same dot as its row. */
+.sre-problem {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  align-items: baseline;
+  gap: 9px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.sre-problem::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+  transform: translateY(-1px);
+}
+.sre-problem.is-bad::before {
+  background: var(--bad);
+}
+.sre-problem.is-warn::before {
+  background: var(--warn);
+}
+
+/* What to do about it (or why there's nothing to do), in full-strength ink. */
+.sre-problem-do {
+  margin: 0;
+  line-height: 1.35;
+}
+
+/* Busy buttons (Fix it, Fix all) while the road is being built and checked. */
+.sre-btn:disabled,
+.sre-link:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
