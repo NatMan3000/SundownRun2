@@ -2,10 +2,10 @@
 type: auto
 session_id: c88f4344-3259-45dc-b607-6c9a9a8390b0
 project: SundownRun2
-date: 2026-10-03
+date: 2026-10-03..05
 topic: 3 Oct playtest round - editor tools, tunnels, brakes, blow-off audio, track sharing
-duration: 13 hours
-events: 2416
+duration: 48.3 hours
+events: 2521
 events_unit: turns
 ---
 
@@ -13,7 +13,7 @@ events_unit: turns
 
 **Project:** SundownRun2 (`~/Dev/SundownRun2`)
 **Purpose:** Work through Nathan's 3 Oct playtest feedback and GitHub #9 as a lead orchestrating a long chain of worker sessions
-**Duration:** 13 hours
+**Duration:** 48.3 hours
 **Participants:** Nathan, Kai (lead) plus workers editor6-16, track6-10, stunts3-5, audio6-7, world3, vehicle11, tunnel1-4, share1
 **Session Restart ID:** `claude -r c88f4344-3259-45dc-b607-6c9a9a8390b0`
 
@@ -49,9 +49,27 @@ Everything landed on main through worker patches (about 60 commits on 3-4 Oct). 
 
 ## Next Steps
 
-- ⬜ Land tunnel4 (the ground jolt at a bridge's foot in the outer lane, outer-lane physics checks, the checker handle leak)
-- ⬜ Land track10, the new built-in track, after tunnel4 and the new outer-lane checks
+- ✅ Land tunnel4 (bridge-foot jolt, outer-lane physics checks, checker handle leak)
+- ✅ Land track10: Ember Pass is the fourth built-in track
+- ⬜ Rerun tunnel5 (hill-crossing tunnel fails with road smoothing above 30; curved banked road over a tunnel fails the low-edge check); it died on the weekly usage limit
+- ⬜ Q15 unanswered: fix the high-bridge Ai trap after the start, the car-body night sparkle by tunnel portals, and Ember Pass's rare dirty lap (about 1 in 20)
 - ⬜ Nathan's human tests for the build thread (Xbox pad, firewall prompt, two-computer multiplayer)
+
+## Continued - 2026-10-05
+
+The lead landed the last two workers from the 3 Oct round, then hit the weekly usage limit (resets 6 Oct 17:00 AEDT) while a follow-up tunnel worker was running.
+
+- **tunnel4 landed** (`2a0e71c`, live on :5203): no outer-lane jolt where a bridge comes down (the ground at a bridge's foot eases deeper over the last 8 m, `BRIDGE_FOOT_*` in `terrain.ts`), the physics checker now drives the outer lanes there, and a batch `tracks:check` gives each track the same answer as checking it alone (rapier collider handles were leaking tags across worlds). `BRIDGE_BUILDER_VERSION 2` resets lap records on bridged tracks; Neon Pocket and Hyperdrome keep theirs. CLAUDE.md gained both gotchas.
+- **Ember Pass landed** (track10): a 3.64 km double figure-eight at dusk using every feature added since the first three built-ins (200 m tunnel through a hill, underpass under a bridge, causeway, dip, 18 degree hand bank, width changes, loop, wall ride, half pipe, stunt park). Laps 97-99 s, 5-Ai race clean, frame budget below Afterglow's. Kept at about 100 s rather than cutting the dip and hairpin.
+- **tunnel5 started** on the two tunnel bugs Ember Pass exposed, and failed on the weekly limit before reporting.
+- **Q15 put to Nathan**, unanswered at close: fix the Ai trap at a high bridge after the start, the car-body sparkle at night by tunnel mouths, and the rare off-road dirty lap.
+
+### New Decisions
+
+| Decision | Rationale |
+|---|---|
+| Ship Ember Pass at about 100 s laps | Cutting to 90 s would drop the dip and hairpin; Afterglow is 104-109 s on the same measure |
+| Keep Ember Pass road smoothing at the default 30 | The tunnel-roof check under a hill crossing fails above 30 |
 
 ## Related Sessions
 
@@ -64,4 +82,5 @@ Everything landed on main through worker patches (about 60 commits on 3-4 Oct). 
 - GOTCHA: A probe that drives a headless game page in Chrome still sees any real game controller plugged into the Mac (a pad's View button restarted probe runs), so hide real gamepads from probe pages by default and add an opt-in flag for real-pad tests.
 - PATTERN: When a placement tool has hidden requirements (a tunnel needing run-up road either side), draw the required footprint, including the extra length in a separate shade, on the hover preview before the click, rather than refusing silently.
 - DECISION: When a geometry builder change alters generated tracks, put a builder version into the track key only for tracks the change actually affects, so lap records reset only where the road changed.
+- GOTCHA: Rapier collider handles are plain numbers restarted from 0 in every new World, so any map keyed by handle (surface tags, feature lists) must be cleared when its collider is removed, or a later world's colliders inherit stale tags and batch physics checks disagree with single-track runs.
 <!-- /KAI-ATOMS-VERBATIM -->
