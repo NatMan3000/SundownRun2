@@ -8,14 +8,83 @@ Everything you see and hear is made by the code: no downloaded models, textures,
 
 ## Play it
 
-You need [Bun](https://bun.sh) (or Node.js) installed once.
+The game runs in your web browser, but it's served from your own computer, so there's a one-time setup: install **Git** (downloads the game and its updates) and **Bun** (runs it), then download the game. After that, starting it is one double-click on Windows or one command on a Mac. Use **Chrome** or **Edge**: that's what it's built and tested in.
+
+Already have Bun and Git? The short version:
 
 ```
+git clone https://github.com/NatMan3000/SundownRun2.git
+cd SundownRun2
 bun install
-bun run dev
+bun run start
 ```
 
-Then open **http://localhost:5201**. On Windows, just double-click **`Sundown Run II.bat`** instead (see [Windows](#windows) below).
+### Windows: first-time setup
+
+1. **Install Git.** Download it from https://git-scm.com/download/win and run the installer. Every default option is fine: just keep clicking Next.
+2. **Install Bun.** Click Start, type **PowerShell**, open it, paste this line and press Enter:
+   ```
+   powershell -c "irm bun.sh/install.ps1 | iex"
+   ```
+   When it says Bun was installed, close PowerShell. (Node.js LTS from https://nodejs.org also works for playing on your own, but hosting multiplayer needs Bun.)
+3. **Download the game.** Open PowerShell again (a fresh window, so it can find what you just installed) and paste these two lines:
+   ```
+   cd ~\Documents
+   git clone https://github.com/NatMan3000/SundownRun2.git
+   ```
+   That makes a folder called `SundownRun2` inside your Documents folder.
+4. **Start it.** In File Explorer, open `Documents\SundownRun2` and double-click **`Sundown Run II.bat`**. If Windows asks whether you want to run it, say yes. The first time, it installs the game's parts (about a minute), then opens the game in your browser at **http://localhost:5201**.
+5. **Keep the black window open** while you play. Closing it stops the game.
+6. **Make it fast.** On a gaming laptop, do the one-time graphics card fix in [Make it fast](#make-it-fast-give-the-browser-the-real-graphics-card) below, or the game may crawl.
+
+From then on, just double-click **`Sundown Run II.bat`** to play. Right-click it and pick **Send to > Desktop (create shortcut)** to put it on the desktop. To get the newest version, double-click **`Sundown Run II Update.bat`** (see [Updating](#updating)).
+
+**Downloaded the ZIP instead of using Git?** (On GitHub: the green **Code** button, then **Download ZIP**.) Unzip it somewhere easy like `Documents\SundownRun2` and the steps from 4 on work the same, but the Update .bat won't: it needs a folder made by `git clone`. To update a ZIP copy, download a fresh ZIP.
+
+### Mac: first-time setup
+
+1. **Open Terminal.** Press Cmd + Space, type **Terminal**, press Enter. Everything below gets pasted into this window, one line at a time, each followed by Enter.
+2. **Install Git.** Type `git --version`. If it prints a version number, you already have it. If a box pops up offering to install the "command line developer tools", click **Install** and wait for it to finish (a few minutes).
+3. **Install Bun.**
+   ```
+   curl -fsSL https://bun.sh/install | bash
+   ```
+   Then quit Terminal (Cmd + Q) and open it again, so it can find Bun. Check with `bun --version`: it should print a number.
+4. **Download the game** into your Documents folder:
+   ```
+   cd ~/Documents
+   git clone https://github.com/NatMan3000/SundownRun2.git
+   cd SundownRun2
+   bun install
+   ```
+   `bun install` fetches the game's parts (about a minute, first time only).
+5. **Start it.**
+   ```
+   bun run start
+   ```
+   It opens the game in your browser at **http://localhost:5201**. Leave Terminal open while you play; press **Ctrl + C** in it to stop the game.
+
+Next time, open Terminal and run:
+
+```
+cd ~/Documents/SundownRun2
+bun run start
+```
+
+**Updating on a Mac:** `cd ~/Documents/SundownRun2`, then `git pull` and `bun install`. If `git pull` refuses because you changed some of the game's files, and you want to throw those changes away (the same do-over the Windows Update .bat does), run `git fetch origin`, `git reset --hard origin/main` and `git clean -fd`. Tracks you drew in the editor live in the browser and are safe; track files you added to `tracks/` yourself are removed by that last command, so copy them somewhere else first.
+
+### Something went wrong?
+
+| What you see | What to do |
+|---|---|
+| "Could not find Bun or Node.js" (Windows) | Install Bun (step 2 above), then close the black window and double-click the .bat again. |
+| `bun: command not found` (Mac) | Quit Terminal and open it again after installing Bun. If it still happens, run the install line again. |
+| `git: command not found` / "'git' is not recognized" | Install Git (step 1), then open a fresh Terminal or PowerShell window. |
+| "Port 5201 is already in use" | The game is already running in another window. Use that one, or close it and start again. |
+| "Something went wrong installing the dependencies" | Check the internet works, then run it again. |
+| A Node.js error about the version | Node.js needs version 20.19 or newer (or 22.12+). Install the current LTS from https://nodejs.org, or use Bun instead. |
+| The game runs but crawls | Windows: the [graphics card fix](#make-it-fast-give-the-browser-the-real-graphics-card). Anywhere: Settings > Graphics > Quality, set to Medium or Low. |
+| No sound | Press a key or click once: the browser keeps sound off until you do (a controller press doesn't count). |
 
 ## Controls
 
@@ -107,11 +176,7 @@ It prints two links. Open the first one on the host. Open the second one on ever
 
 ## Windows
 
-### First time
-
-1. Get the game folder onto the laptop (a `git clone`, or download the ZIP and unzip it somewhere easy like `Documents\SundownRun2`).
-2. Double-click **`Sundown Run II.bat`**. It looks for Bun (or Node.js), installs the game's parts the first time (that takes a minute), and opens the game in your browser. If it says it can't find Bun or Node.js, install Bun from https://bun.sh (or Node.js LTS from https://nodejs.org) and run it again.
-3. Keep the black window open while you play. Closing it stops the game.
+First-time setup is in [Play it](#windows-first-time-setup) above.
 
 ### Make it fast: give the browser the real graphics card
 
