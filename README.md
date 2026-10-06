@@ -45,8 +45,9 @@ From then on, just double-click **`Sundown Run II.bat`** to play. Right-click it
 
 1. **Open Terminal.** Press Cmd + Space, type **Terminal**, press Enter. Everything below gets pasted into this window, one line at a time, each followed by Enter.
 2. **Install Git.** Type `git --version`. If it prints a version number, you already have it. If a box pops up offering to install the "command line developer tools", click **Install** and wait for it to finish (a few minutes).
-3. **Install Bun.**
+3. **Install Bun.** Paste these two lines (the first makes sure the settings file Bun adds itself to exists; a brand-new Mac doesn't have one):
    ```
+   touch ~/.zshrc
    curl -fsSL https://bun.sh/install | bash
    ```
    Then quit Terminal (Cmd + Q) and open it again, so it can find Bun. Check with `bun --version`: it should print a number.
@@ -78,7 +79,8 @@ bun run start
 | What you see | What to do |
 |---|---|
 | "Could not find Bun or Node.js" (Windows) | Install Bun (step 2 above), then close the black window and double-click the .bat again. |
-| `bun: command not found` (Mac) | Quit Terminal and open it again after installing Bun. If it still happens, run the install line again. |
+| "Manually add the directory to ~/.zshrc" while installing Bun (Mac) | Bun installed fine; it just couldn't tell Terminal where it lives. Run `touch ~/.zshrc`, run the install line again, then quit and reopen Terminal. |
+| `bun: command not found` (Mac) | Quit Terminal and open it again after installing Bun. If it still happens, see the row above. |
 | `git: command not found` / "'git' is not recognized" | Install Git (step 1), then open a fresh Terminal or PowerShell window. |
 | "Port 5201 is already in use" | The game is already running in another window. Use that one, or close it and start again. |
 | "Something went wrong installing the dependencies" | Check the internet works, then run it again. |
