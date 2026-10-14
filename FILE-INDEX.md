@@ -15,3 +15,10 @@
 | `tracks/neon-pocket.json` | `export` | Neon Pocket, authored from the README only |
 | `docs/title-screen.jpg` | `permanent` | Title screen screenshot shown at the top of the README |
 | `plans/scope-tunnels.md` | `reference` | Tunnels scope (GitHub #9 part 3): options, needs, risks, three stages |
+
+## `scripts/` (Warden 2026-10-15)
+
+| File | Retention | Description |
+|------|-----------|-------------|
+| `scripts/learn-to-code.ts` | permanent | LEARN TO CODE - bun run learn |
+| `scripts/check-tracks.ts` | permanent | CHECK TRACKS - prove a track file works without opening the game |
