@@ -16,3 +16,4 @@ reports/
 
 # Agent worktrees (Cleanup D13, 2026-10-21)
 .claude/worktrees/
+data/worktree-patches-*/
