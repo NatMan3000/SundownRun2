@@ -13,3 +13,6 @@ scratchpad/
 # .bat's "git clean -fd" leaves them alone.
 github-token*
 reports/
+
+# Agent worktrees (Cleanup D13, 2026-10-21)
+.claude/worktrees/
