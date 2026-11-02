@@ -73,7 +73,7 @@ export const CONFIG = {
   tagHunterBoost: 20, //   Tag and Hunt Turns: how much faster the hunter can go when far behind, in %. Up close it's a quarter of this. 0 = no help ... 50 = a rocket
 
   // ---------- HUNT TURNS (multiplayer) ----------
-  // You take turns hunting. Only catches score. Whoever presses G uses THEIR numbers for everyone.
+  // You take turns hunting. The runner scores tricks and rings, the hunter scores catches. Whoever presses G uses THEIR numbers for everyone.
   huntTurnSeconds: 60, //          how long each turn lasts. 30 = quick ... 180 = long
   catchReachMetres: 6, //          the hunter catches you by getting this close, no bump needed. 3 = you must touch ... 12 = easy
   pulseRangeMetres: 15, //         the tag pulse (F, or click the right stick) catches anyone this far in front of the hunter
@@ -81,6 +81,8 @@ export const CONFIG = {
   pulseCooldownSeconds: 4, //      after a pulse, how long before the next one is ready
   throwAwayMetres: 100, //         a caught runner is thrown at least this far from the hunter, for a fresh chase
   noCatchAfterCatchSeconds: 2, //  after a catch, the hunter can't catch anyone for this long
+  catchPoints: 500, //             Hunt Turns is a points game: each catch is worth this many points to the hunter. 100 = small ... 2000 = huge
+  catchWipeSeconds: 15, //         a catch takes away the points the runner scored in this many seconds before it. 0 = nothing lost ... 60 = a lot
 } as const
 
 export type GameConfig = typeof CONFIG

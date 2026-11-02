@@ -82,6 +82,10 @@ export interface Settings {
   throwAwayMetres: number
   /** Hunt Turns: after a catch, seconds before the hunter can catch again. */
   noCatchAfterCatchSeconds: number
+  /** Hunt Turns: points a catch is worth to the hunter. */
+  catchPoints: number
+  /** Hunt Turns: a catch takes off the runner's points from this many seconds before it. */
+  catchWipeSeconds: number
   /** Live per-track road parameters (e.g. the Hyperdrome's bank angle), keyed by track id. */
   trackParams: Record<string, Record<string, number>>
 }
@@ -119,6 +123,8 @@ export const SETTING_RANGES: Partial<Record<keyof Settings, { min: number; max: 
   pulseCooldownSeconds: { min: 1, max: 20, step: 0.5 },
   throwAwayMetres: { min: 30, max: 300, step: 10 },
   noCatchAfterCatchSeconds: { min: 0, max: 10, step: 0.5 },
+  catchPoints: { min: 100, max: 2000, step: 100 },
+  catchWipeSeconds: { min: 0, max: 60, step: 1 },
 }
 
 const STORAGE_KEY = 'sr2.settings.v1'
@@ -187,6 +193,8 @@ function defaultsFrom(cfg: typeof CONFIG): Settings {
     pulseCooldownSeconds: cfg.pulseCooldownSeconds,
     throwAwayMetres: cfg.throwAwayMetres,
     noCatchAfterCatchSeconds: cfg.noCatchAfterCatchSeconds,
+    catchPoints: cfg.catchPoints,
+    catchWipeSeconds: cfg.catchWipeSeconds,
     trackParams: {},
   }
 }

@@ -28,6 +28,7 @@ import { useGame } from '../core/store'
 import { getCar, telemetry } from '../core/telemetry'
 import { registerDev, registerInspector } from '../core/devHandles'
 import { driveOverride } from '../core/controls'
+import { emit } from '../core/events'
 import { useSettings } from '../core/settings'
 import { resumeGame } from '../core/session'
 import { propsSignal } from '../core/propsSignal'
@@ -196,6 +197,7 @@ function roundSummary() {
           phase: r.turns.phase,
           order: r.turns.order,
           catches: Object.fromEntries(r.turns.catches.entries()),
+          run: Object.fromEntries(r.turns.run.entries()),
           catchSeq: r.turns.seq,
           noCatchInMs: Math.max(0, Math.round(r.turns.noCatchUntil - performance.now())),
           pulseInMs: Math.max(0, Math.round(r.turns.pulseReadyAt - performance.now())),
@@ -205,9 +207,9 @@ function roundSummary() {
   }
 }
 
-const NET_HELP = `net(cmd): 'status' (same as __game.get('net')), 'start' (same as pressing G: a race, a tag round in tag mode, a Hunt Turns round in Hunt Turns), 'pulse' (same as F: fire the tag pulse if hunting), 'drop' (cut the connection; it heals by itself), 'reconnect' (reconnect now), 'resendTrack' (host: send the track again)`
+const NET_HELP = `net(cmd): 'status' (same as __game.get('net')), 'start' (same as pressing G: a race, a tag round in tag mode, a Hunt Turns round in Hunt Turns), 'pulse' (same as F: fire the tag pulse if hunting), 'drop' (cut the connection; it heals by itself), 'reconnect' (reconnect now), 'resendTrack' (host: send the track again), 'award', n (check only: bank n trick points exactly as a landing does - trickScore plus a trick.land - so Hunt Turns scores it if you are running)`
 
-function netCommand(cmd: string = 'status'): unknown {
+function netCommand(cmd: string = 'status', arg?: number): unknown {
   switch (cmd) {
     case 'status':
       return inspect()
@@ -226,6 +228,14 @@ function netCommand(cmd: string = 'status'): unknown {
     case 'resendTrack':
       sendTrackIfHost(true)
       return getNet().isHost ? 'sent' : 'not the host'
+    case 'award': {
+      // Same two writes TrickDetector.bank makes for a landing (store score, then the event).
+      const n = Math.round(Number(arg))
+      if (!Number.isFinite(n) || n <= 0 || n > 100000) return 'award needs a number of points, 1 to 100000'
+      useGame.setState((s) => ({ trickScore: s.trickScore + n, comboCount: 0 }))
+      emit('trick.land', { tricks: [{ name: 'ring', label: 'CHECK', points: n }], airTimeS: 1, combo: 1, points: n, clean: true })
+      return `banked ${n}`
+    }
     case 'help':
       return NET_HELP
     default:

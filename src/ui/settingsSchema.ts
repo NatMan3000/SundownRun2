@@ -143,6 +143,8 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
     { kind: 'slider', key: 'pulseCooldownSeconds', label: 'Pulse cooldown', help: 'Hunt Turns: how long after a pulse before the next one is ready.', format: (v) => `${v.toFixed(1)} s` },
     { kind: 'slider', key: 'throwAwayMetres', label: 'Throw away', help: 'Hunt Turns: a caught runner is thrown at least this far from the hunter, for a fresh chase.', format: (v) => `${Math.round(v)} m` },
     { kind: 'slider', key: 'noCatchAfterCatchSeconds', label: 'Fresh chase', help: 'Hunt Turns: after a catch, how long before the hunter can catch anyone again.', format: (v) => `${v.toFixed(1)} s` },
+    { kind: 'slider', key: 'catchPoints', label: 'Catch points', help: 'Hunt Turns: how many points a catch is worth to the hunter.', format: (v) => `${Math.round(v)}` },
+    { kind: 'slider', key: 'catchWipeSeconds', label: 'Catch wipe', help: 'Hunt Turns: a catch takes away the points the runner scored in this many seconds before it. 0 takes nothing.', format: (v) => (v <= 0 ? 'Off' : `${Math.round(v)} s`) },
   ],
 }
 

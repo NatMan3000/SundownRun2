@@ -30,7 +30,7 @@ export type GameMode =
   | 'race' //      against 0-5 Ai racers (solo) or other players (multiplayer)
   | 'stunt' //     timed run for the biggest trick score
   | 'tag' //       multiplayer only: one player is "it"
-  | 'turns' //     multiplayer only: Hunt Turns, take turns hunting; only catches score
+  | 'turns' //     multiplayer only: Hunt Turns, take turns hunting; most points wins (runners score tricks, hunters score catches)
 
 export type RaceState = 'idle' | 'countdown' | 'running' | 'finished'
 
@@ -70,6 +70,10 @@ export interface TurnsView {
   cardUntil: number
   /** Catches across the round so far, by car id (only hunters catch). */
   catches: Record<string, number>
+  /** Everyone's points so far, by car id: the points they scored running (tricks, rings, gaps, bursts; a catch takes some off) plus catchPoints per catch. Most points wins. */
+  points: Record<string, number>
+  /** Points a catch is worth to the hunter (the round's rule), for the HUD. */
+  catchPoints: number
   /** Every finished turn, in order. */
   history: TurnRecord[]
   /** Everyone's name at the start, by car id (they may leave later). */

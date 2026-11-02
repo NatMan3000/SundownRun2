@@ -1180,6 +1180,9 @@
 .hud-turnsp__name { font-family: var(--font-display); font-size: 0.95em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
 .hud-turnsp__row.is-me .hud-turnsp__name { color: var(--text); }
 .hud-turnsp__row.is-hunter .hud-turnsp__name { color: var(--tag-it); }
+.hud-turnsp__earn { font-family: var(--font-display); font-size: 0.8em; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--good); }
+.hud-turnsp__earn.is-hunting { color: var(--tag-it); }
+.hud-turnsp__c { flex: 1; text-align: right; font-family: var(--font-display); font-size: 0.75em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
 .hud-turnsp__n { font-family: var(--font-display); font-size: 2.1em; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; color: var(--text); }
 .hud-turnsp__unit { align-self: flex-end; margin-top: -0.2em; font-family: var(--font-display); font-size: 0.7em; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: var(--dim); }
 .hud-turnsp__pulse b { color: var(--dim); font-variant-numeric: tabular-nums; }

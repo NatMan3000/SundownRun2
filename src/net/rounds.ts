@@ -76,6 +76,7 @@ import {
   announceTurn,
   applyCatch,
   canCatch,
+  applyScore,
   endTurns,
   firePulse as firePulseOn,
   newTurnsState,
@@ -913,6 +914,9 @@ export function startRounds(): void {
     // Someone says they touched us while we're "it": we decide, as always.
     onMessage('catch', (m) => {
       if (round && round.kind === 'turns' && !round.ended) applyCatch(round, turnsCtx, m, m.from)
+    }),
+    onMessage('score', (m) => {
+      if (round && round.kind === 'turns' && !round.ended) applyScore(round, turnsCtx, m, m.from)
     }),
     onMessage('pulse', (m) => {
       if (round && round.kind === 'turns' && !round.ended) pulseFrom(round, turnsCtx, m)

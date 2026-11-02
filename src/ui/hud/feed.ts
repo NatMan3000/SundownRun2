@@ -200,8 +200,8 @@ function onEvent(e: AnyGameEvent): void {
       else pushToast(`${nameOf(e.hunterId, e.name)} is hunting`, 'info', 'Run!')
       return
     case 'turns.catch':
-      if (e.hunterId === 'player') pushToast(`Caught ${nameOf(e.runnerId, e.runnerName)}!`, 'gold', e.how === 'pulse' ? 'Tag pulse' : e.how === 'reach' ? 'Close enough' : 'Bump')
-      else if (e.runnerId === 'player') pushToast('Caught!', 'it', `${nameOf(e.hunterId, e.hunterName)} gets a point. You're thrown clear: run!`)
+      if (e.hunterId === 'player') pushToast(`Caught ${nameOf(e.runnerId, e.runnerName)}! +${formatScore(e.points)}`, 'gold', e.how === 'pulse' ? 'Tag pulse' : e.how === 'reach' ? 'Close enough' : 'Bump')
+      else if (e.runnerId === 'player') pushToast(e.wiped > 0 ? `Caught! -${formatScore(e.wiped)}` : 'Caught!', 'it', `${nameOf(e.hunterId, e.hunterName)} gets ${formatScore(e.points)}${e.wiped > 0 ? ' and took your last points' : ''}. You're thrown clear: run!`)
       else pushToast(`${nameOf(e.hunterId, e.hunterName)} caught ${nameOf(e.runnerId, e.runnerName)}`, 'info')
       return
     case 'reset':

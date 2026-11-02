@@ -110,14 +110,14 @@ export interface GameEventMap {
   'tag.end': { results: { name: string; itSeconds: number }[] }
   /** Hunt Turns: a turn is lining up (its countdown starts): who hunts. */
   'turns.turn': { turn: number; turns: number; hunterId: string; name: string }
-  /** Hunt Turns: the hunter caught a runner (decided on the hunter's computer). how = a bump, getting close enough, or the tag pulse. catches = the hunter's catches this round. */
-  'turns.catch': { hunterId: string; hunterName: string; runnerId: string; runnerName: string; how: 'touch' | 'reach' | 'pulse'; catches: number }
+  /** Hunt Turns: the hunter caught a runner (decided on the hunter's computer). how = a bump, getting close enough, or the tag pulse. catches = the hunter's catches this round. points = what the catch is worth to the hunter. wiped = the points it took off the runner: only known on the runner's own computer (0 on every other). */
+  'turns.catch': { hunterId: string; hunterName: string; runnerId: string; runnerName: string; how: 'touch' | 'reach' | 'pulse'; catches: number; points: number; wiped: number }
   /** Hunt Turns: a hunter fired the tag pulse at (x, y, z), nose along (dx, dz), reaching range metres across coneDeg degrees. */
   'turns.pulse': { id: string; x: number; y: number; z: number; dx: number; dz: number; range: number; coneDeg: number }
   /** Hunt Turns: OUR car was caught and thrown from (fromX, fromZ) to (x, y, z), far from the hunter. */
   'turns.thrown': { fromX: number; fromZ: number; x: number; y: number; z: number }
-  /** Hunt Turns: the round is over, most catches first. draw = the top catch counts are equal. */
-  'turns.end': { results: { name: string; catches: number }[]; draw: boolean }
+  /** Hunt Turns: the round is over, most points first. draw = the top two point totals are equal. */
+  'turns.end': { results: { name: string; catches: number; points: number }[]; draw: boolean }
 
   /** Settings / track parameter changed live (e.g. Hyperdrome bank angle). */
   'track.param': { trackId: string; param: string; value: number }

@@ -8,7 +8,7 @@
 //    stunt  your score against your best
 //    hunt   your time against your best
 //    tag    least time as "it" wins
-//    turns  Hunt Turns: most catches wins (equal is a draw)
+//    turns  Hunt Turns: most points wins (equal is a draw)
 //  Then: Again, Track select, or back to the title.
 // ============================================================
 
@@ -137,7 +137,7 @@ function TagStandings() {
   )
 }
 
-/** Hunt Turns: net reuses raceResults with `ms` = catches (most first; equal catches share a place). */
+/** Hunt Turns: net reuses raceResults with `ms` = points (most first; equal points share a place). Catches come from the turns view. */
 function TurnsStandings() {
   const results = useGame((s) => s.raceResults)
   const turns = useGame((s) => s.turns)
@@ -146,6 +146,7 @@ function TurnsStandings() {
   const top = rows[0]
   const head = !top ? 'Round over' : draw ? 'Draw' : top.isPlayer ? 'You win' : `${top.name} wins`
   const n = (r: (typeof rows)[number]) => r.ms ?? 0
+  const catchesOf = (carId: string) => turns?.catches[carId] ?? 0
   // Which turn each player hunted in.
   const turnOf = (carId: string) => (turns ? turns.history.findIndex((h) => h.hunterId === carId) + 1 : 0)
   return (
@@ -153,7 +154,7 @@ function TurnsStandings() {
       <div className="result-hero">
         <span className="eyebrow">Hunt Turns</span>
         <span className={`result-hero__big${!draw && top?.isPlayer ? ' is-win' : ''}`}>{head}</span>
-        <span className="result-hero__sub">{draw ? `${n(top)} catches each` : 'Most catches wins'}</span>
+        <span className="result-hero__sub">{draw ? `${formatScore(n(top))} points each` : 'Most points wins'}</span>
       </div>
       <table className="standings">
         <thead>
@@ -161,6 +162,7 @@ function TurnsStandings() {
             <th>Pos</th>
             <th>Driver</th>
             <th>Hunted</th>
+            <th>Points</th>
             <th>Catches</th>
           </tr>
         </thead>
@@ -173,7 +175,8 @@ function TurnsStandings() {
                 {r.isPlayer ? 'You' : r.name}
               </td>
               <td>{turnOf(r.carId) > 0 ? `Turn ${turnOf(r.carId)}` : '-'}</td>
-              <td>{n(r)}</td>
+              <td>{formatScore(n(r))}</td>
+              <td>{catchesOf(r.carId)}</td>
             </tr>
           ))}
         </tbody>

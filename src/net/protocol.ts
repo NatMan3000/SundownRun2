@@ -23,7 +23,7 @@
 import type { TrackFile } from '../track/schema'
 
 /** Bump when the wire format changes, so old and new tabs refuse each other politely. */
-export const PROTOCOL_VERSION = 4
+export const PROTOCOL_VERSION = 5
 
 /** The relay's port. A page can point somewhere else with ?relay=<port> (tests, checker previews). */
 export const RELAY_PORT = 5202
@@ -127,6 +127,9 @@ export interface TurnsRules {
   throwAwayM: number
   /** After a catch the hunter can't catch anyone for this long (ms). */
   noCatchMs: number
+  /** Points a catch is worth to the hunter, and how far back (ms) a catch takes the runner's points. */
+  catchPoints: number
+  catchWipeMs: number
   /** Between two turns: settle + the turn card + the countdown (ms). */
   breakMs: number
 }
@@ -203,6 +206,17 @@ export interface PulseMsg {
   dz: number
 }
 
+/**
+ * Hunt Turns points: my own running points (what I scored as a runner, a catch's wipe already
+ * taken off). Each computer owns its own: nobody else can work it out. A catch's points are not in
+ * it: everyone adds catchPoints per catch themselves, from the catches they all count.
+ */
+export interface ScoreMsg {
+  t: 'score'
+  raceId: number
+  run: number
+}
+
 /** A crash-prop cluster burst on the sender's machine. */
 export interface PropMsg {
   t: 'prop'
@@ -275,7 +289,7 @@ export interface QuitMsg {
   raceId: number
 }
 
-export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg | PlacesMsg | QuitMsg | CatchMsg | PulseMsg
+export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg | PlacesMsg | QuitMsg | CatchMsg | PulseMsg | ScoreMsg
 
 // ---------------------------------------------------------------- relay -> client
 

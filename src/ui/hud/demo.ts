@@ -51,6 +51,8 @@ export function hudDemo(scene: string): string {
           endsAt: now + 39000,
           cardUntil: 0,
           catches: { player: 2, 'net-2': 3 },
+          points: { player: 4140, 'net-2': 5320 },
+          catchPoints: 500,
           history: [{ hunterId: 'net-2', catches: 3 }],
           names: { player: 'You', 'net-2': 'JOSH' },
           noCatchUntil: 0,

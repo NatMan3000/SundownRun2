@@ -2,9 +2,12 @@
 //  HUNT TURNS - take turns hunting (used by rounds.ts)
 // ------------------------------------------------------------
 //  You take turns being the hunter. In a turn one player hunts and
-//  everyone else runs; everyone hunts once a round. Only catching
-//  scores: each catch is a point to the hunter, running scores
-//  nothing. Most catches wins; equal is a draw.
+//  everyone else runs; everyone hunts once a round. It is a points
+//  game: a runner scores whatever the game scores (landed tricks,
+//  stunt-park rings and gaps, bullseyes, drifts, crash props), a
+//  hunter scores catchPoints a catch, and a catch takes off the
+//  points its runner scored in the last catchWipeMs. Most points
+//  wins; equal is a draw. (Catches still count and show, small.)
 //
 //  Catching is easier than hitting a car: contact counts, so does
 //  getting within catchReachM, and the hunter has a tag pulse (F, or
@@ -24,6 +27,12 @@
 //      a runner got within reach, its pulse hit, or a runner said "I
 //      touched you"), and announces it (`catch`) with a sequence
 //      number. Everyone counts the same catches, so the results agree.
+//    - Points: each computer owns its OWN running points (it is the
+//      only one that saw them score, and it applies the wipe when it
+//      applies the catch against it) and tells the others with `score`
+//      (a few times a second when they change, forced at a catch and at
+//      each turn's end). A catch's points are never sent: everyone
+//      adds catchPoints per catch from the catches they all count.
 //    - Start spots come from play.arenaSpots(), a pure function of the
 //      track, so every computer agrees which spot is whose.
 //
@@ -46,7 +55,7 @@ import { getTrack } from '../track/current'
 import type { TrackFrame } from '../track/types'
 import { send } from './client'
 import { relayIdOf } from './netStore'
-import type { CatchMsg, PulseMsg, StartMsg, TurnsRules } from './protocol'
+import type { CatchMsg, PulseMsg, ScoreMsg, StartMsg, TurnsRules } from './protocol'
 import type { Round } from './rounds'
 
 /** After a turn's bell, wait this long for a catch still on the wire. */
@@ -82,6 +91,15 @@ export interface TurnsState {
   catches: Map<number, number>
   /** Catches in the turn being played. */
   turnCatches: number
+  /** Points each player scored running (a catch's wipe already taken off). Ours is counted here; the others' come from their `score` messages. */
+  run: Map<number, number>
+  /** Our own running points as (when, how many), newest last: what a catch can take back. */
+  ledger: { at: number; pts: number }[]
+  /** Last trickScore + propScore we saw (NaN = not yet): a rise while we run is points. */
+  lastGame: number
+  /** What we last told the others our running points were, and when. */
+  sentRun: number
+  scoreSentAt: number
   /** Finished turns. */
   history: { hunter: number; catches: number }[]
   /** Highest catch number seen this round (an older one can't count twice). */
@@ -103,6 +121,8 @@ export function turnsRulesNow(): TurnsRules {
     pulseCooldownMs: Math.round(s.pulseCooldownSeconds * 1000),
     throwAwayM: s.throwAwayMetres,
     noCatchMs: Math.round(s.noCatchAfterCatchSeconds * 1000),
+    catchPoints: s.catchPoints,
+    catchWipeMs: Math.round(s.catchWipeSeconds * 1000),
     breakMs: TURNS_SETTLE_MS + TURNS_CARD_MS + COUNT_MS,
   }
 }
@@ -127,6 +147,8 @@ export function newTurnsState(msg: StartMsg): TurnsState {
     pulseCooldownMs: num(t?.pulseCooldownMs, 200, 60000, 4000),
     throwAwayM: num(t?.throwAwayM, 0, 1000, 100),
     noCatchMs: num(t?.noCatchMs, 0, 30000, 2000),
+    catchPoints: num(t?.catchPoints, 0, 100000, 500),
+    catchWipeMs: num(t?.catchWipeMs, 0, 600000, 15000),
     breakMs: num(t?.breakMs, TURNS_SETTLE_MS + COUNT_MS, 30000, TURNS_SETTLE_MS + TURNS_CARD_MS + COUNT_MS),
   }
   // The hunting order: the grid, turned round by the raceId (the first is msg.itId, picked the same way).
@@ -142,6 +164,11 @@ export function newTurnsState(msg: StartMsg): TurnsState {
     phase: 'count',
     catches: new Map(msg.grid.map((id) => [id, 0])),
     turnCatches: 0,
+    run: new Map(msg.grid.map((id) => [id, 0])),
+    ledger: [],
+    lastGame: NaN,
+    sentRun: 0,
+    scoreSentAt: 0,
     history: [],
     seq: 0,
     noCatchUntil: 0,
@@ -174,6 +201,70 @@ export function turnsWrappingUp(r: Round): boolean {
 export function canCatch(r: Round, ctx: TurnsCtx): boolean {
   const t = r.turns
   return !!t && t.phase === 'play' && r.inGrid && r.itId === ctx.myId() && performance.now() >= t.noCatchUntil
+}
+
+// ---------------------------------------------------------------- points
+
+/** A player's points: what they scored running plus catchPoints for each catch (everyone counts the same catches). */
+export function pointsOf(t: TurnsState, id: number): number {
+  return (t.run.get(id) ?? 0) + (t.catches.get(id) ?? 0) * t.rules.catchPoints
+}
+
+/** Everything the game has scored us so far: banked tricks (rings, gaps and bullseyes are inside them), drifts and crash props. */
+function gameScore(): number {
+  const g = useGame.getState()
+  return g.trickScore + g.propScore
+}
+
+/**
+ * Every frame: points the game just gave us count, but only while we run in a live turn (a
+ * hunter's tricks score nothing). The baseline moves every frame, so a trick landed while hunting
+ * is never counted later. A fall in the score (a restart) is ignored.
+ */
+function scoreTick(r: Round, t: TurnsState, ctx: TurnsCtx, now: number): void {
+  const g = gameScore()
+  const delta = Number.isFinite(t.lastGame) ? g - t.lastGame : 0
+  t.lastGame = g
+  if (delta <= 0 || t.phase !== 'play' || !r.inGrid || r.itId === ctx.myId() || !Number.isFinite(delta)) return
+  addRun(t, ctx.myId(), delta, now)
+}
+
+function addRun(t: TurnsState, me: number, pts: number, now: number): void {
+  t.run.set(me, (t.run.get(me) ?? 0) + pts)
+  t.ledger.push({ at: now, pts })
+  if (t.ledger.length > 400) t.ledger.splice(0, t.ledger.length - 400)
+}
+
+/** Tell the others our running points: when they changed (at most four times a second), or right now (force). */
+function sendScore(r: Round, t: TurnsState, ctx: TurnsCtx, now: number, force: boolean): void {
+  if (!r.inGrid) return
+  const run = t.run.get(ctx.myId()) ?? 0
+  if (!force && (run === t.sentRun || now - t.scoreSentAt < 250)) return
+  t.sentRun = run
+  t.scoreSentAt = now
+  const msg: ScoreMsg = { t: 'score', raceId: r.raceId, run }
+  send(msg)
+}
+
+/** Someone else's running points. */
+export function applyScore(r: Round, ctx: TurnsCtx, m: ScoreMsg, from: number): void {
+  const t = r.turns
+  if (!t || r.raceId !== m.raceId || from === ctx.myId() || !r.grid.includes(from) || !Number.isFinite(m.run) || Math.abs(m.run) > 1e9) return
+  t.run.set(from, Math.round(m.run))
+  publish(r, ctx, false)
+}
+
+/** We were caught: the points we scored in the last catchWipeMs of this turn go (and can't be taken twice). Returns how many. */
+function wipeMine(r: Round, t: TurnsState, ctx: TurnsCtx, now: number): number {
+  const cutoff = Math.max(now - t.rules.catchWipeMs, turnGoAt(r, t, t.index))
+  let lost = 0
+  t.ledger = t.ledger.filter((e) => {
+    if (e.at < cutoff) return true
+    lost += e.pts
+    return false
+  })
+  if (lost > 0) t.run.set(ctx.myId(), (t.run.get(ctx.myId()) ?? 0) - lost)
+  return lost
 }
 
 // ---------------------------------------------------------------- start spots
@@ -264,7 +355,11 @@ export function applyCatch(r: Round, ctx: TurnsCtx, m: CatchMsg, from: number): 
   t.seq = m.seq
   t.catches.set(from, (t.catches.get(from) ?? 0) + 1)
   t.turnCatches++
-  t.noCatchUntil = performance.now() + t.rules.noCatchMs
+  const now = performance.now()
+  t.noCatchUntil = now + t.rules.noCatchMs
+  // The runner's own computer applies the wipe (it owns its points) and says so at once.
+  const mine = m.runnerId === ctx.myId() && r.inGrid
+  const wiped = mine ? wipeMine(r, t, ctx, now) : 0
   emit('turns.catch', {
     hunterId: ctx.carIdOn(from),
     hunterName: ctx.nameOf(from),
@@ -272,8 +367,13 @@ export function applyCatch(r: Round, ctx: TurnsCtx, m: CatchMsg, from: number): 
     runnerName: ctx.nameOf(m.runnerId),
     how: m.how,
     catches: t.catches.get(from) ?? 0,
+    points: t.rules.catchPoints,
+    wiped,
   })
-  if (m.runnerId === ctx.myId() && r.inGrid) throwAway(t, ctx, from)
+  if (mine) {
+    sendScore(r, t, ctx, now, true)
+    throwAway(t, ctx, from)
+  }
   publish(r, ctx, true)
 }
 
@@ -390,6 +490,8 @@ export function pulseFrom(r: Round, ctx: TurnsCtx, m: PulseMsg & { from: number 
 export function tickTurns(r: Round, ctx: TurnsCtx, now: number, end: (r: Round) => void): void {
   const t = r.turns
   if (!t) return
+  // Points first, so the last frame of a turn still counts before the phase moves on.
+  scoreTick(r, t, ctx, now)
   // Several steps can be due at once (a hitch, or back from a short drop): take them in order.
   for (let guard = 0; guard < 8; guard++) {
     if (t.phase === 'count') {
@@ -402,11 +504,13 @@ export function tickTurns(r: Round, ctx: TurnsCtx, now: number, end: (r: Round) 
     if (t.phase === 'play') {
       if (now < turnEndsAt(r, t, t.index)) break
       t.phase = 'settle'
+      sendScore(r, t, ctx, now, true)
       publish(r, ctx, true)
       continue
     }
     if (t.phase === 'settle') {
       if (now < turnEndsAt(r, t, t.index) + TURNS_SETTLE_MS) break
+      sendScore(r, t, ctx, now, true)
       t.history.push({ hunter: t.order[t.index], catches: t.turnCatches })
       if (t.index + 1 >= t.order.length) {
         t.phase = 'done'
@@ -440,6 +544,7 @@ export function tickTurns(r: Round, ctx: TurnsCtx, now: number, end: (r: Round) 
     break
   }
   if (t.phase === 'play' && r.itId === ctx.myId()) reachCheck(r, t, ctx)
+  sendScore(r, t, ctx, now, false)
   publish(r, ctx, false)
 }
 
@@ -459,26 +564,28 @@ export function endTurns(r: Round, ctx: TurnsCtx): void {
   // A turn cut short (someone left) still counts as played.
   if (t.phase === 'play' || t.phase === 'settle') t.history.push({ hunter: t.order[t.index], catches: t.turnCatches })
   t.phase = 'done'
-  const order = r.grid.slice().sort((a, b) => (t.catches.get(b) ?? 0) - (t.catches.get(a) ?? 0) || r.grid.indexOf(a) - r.grid.indexOf(b))
+  sendScore(r, t, ctx, performance.now(), true)
+  // Most points wins; catches don't decide (they are in store.turns.catches for the table).
+  const order = r.grid.slice().sort((a, b) => pointsOf(t, b) - pointsOf(t, a) || r.grid.indexOf(a) - r.grid.indexOf(b))
   const results: RaceResult[] = []
   let pos = 0
   let prev = -1
   order.forEach((id, i) => {
-    const n = t.catches.get(id) ?? 0
-    // Equal catches share a place.
+    const n = pointsOf(t, id)
+    // Equal points share a place.
     if (n !== prev) {
       pos = i + 1
       prev = n
     }
-    // Hunt Turns results reuse RaceResult: ms = catches (most wins).
+    // Hunt Turns results reuse RaceResult: ms = points (most wins).
     results.push({ carId: ctx.carIdOn(id), name: ctx.nameOf(id), position: pos, ms: n, bestLapMs: null, isPlayer: id === ctx.myId() })
   })
-  const draw = order.length >= 2 && (t.catches.get(order[0]) ?? 0) === (t.catches.get(order[1]) ?? 0)
+  const draw = order.length >= 2 && pointsOf(t, order[0]) === pointsOf(t, order[1])
   r.itId = 0
   publish(r, ctx, true)
   useGame.setState({ raceState: 'finished', raceResults: results })
   if (r.inGrid) {
-    emit('turns.end', { results: order.map((id) => ({ name: ctx.nameOf(id), catches: t.catches.get(id) ?? 0 })), draw })
+    emit('turns.end', { results: order.map((id) => ({ name: ctx.nameOf(id), catches: t.catches.get(id) ?? 0, points: pointsOf(t, id) })), draw })
     showResults()
   }
 }
@@ -489,6 +596,11 @@ export function remapTurns(t: TurnsState, oldId: number, newId: number): void {
   if (v !== undefined) {
     t.catches.delete(oldId)
     t.catches.set(newId, v)
+  }
+  const rv = t.run.get(oldId)
+  if (rv !== undefined) {
+    t.run.delete(oldId)
+    t.run.set(newId, rv)
   }
   t.order = t.order.map((id) => (id === oldId ? newId : id))
   for (const h of t.history) if (h.hunter === oldId) h.hunter = newId
@@ -505,8 +617,10 @@ export function publish(r: Round, ctx: TurnsCtx, force: boolean): void {
   t.publishedAt = now
   const catches: Record<string, number> = {}
   const names: Record<string, string> = {}
+  const points: Record<string, number> = {}
   for (const id of r.grid) {
     catches[ctx.carIdOn(id)] = t.catches.get(id) ?? 0
+    points[ctx.carIdOn(id)] = pointsOf(t, id)
     names[ctx.carIdOn(id)] = ctx.nameOf(id)
   }
   const hunting = t.phase === 'count' || t.phase === 'play'
@@ -520,6 +634,8 @@ export function publish(r: Round, ctx: TurnsCtx, force: boolean): void {
     endsAt: turnEndsAt(r, t, t.index),
     cardUntil: t.phase === 'card' ? turnGoAt(r, t, t.index) - COUNT_MS : 0,
     catches,
+    points,
+    catchPoints: t.rules.catchPoints,
     history: t.history.map((h) => ({ hunterId: ctx.carIdOn(h.hunter), catches: h.catches })),
     names,
     noCatchUntil: t.noCatchUntil,

@@ -155,8 +155,9 @@ export function TurnsPanel() {
   const hunter = turns?.hunterId ?? null
   const me = hunter === 'player'
   const names = turns?.names ?? {}
-  // You first, then everyone else by catches.
-  const ids = turns ? Object.keys(turns.catches).sort((a, b) => (a === 'player' ? -1 : b === 'player' ? 1 : (turns.catches[b] ?? 0) - (turns.catches[a] ?? 0))) : []
+  // You first, then everyone else by points.
+  const pts = (id: string) => turns?.points[id] ?? 0
+  const ids = turns ? Object.keys(turns.catches).sort((a, b) => (a === 'player' ? -1 : b === 'player' ? 1 : pts(b) - pts(a))) : []
   const big = !turns ? 'Get ready' : turns.done ? 'Round over' : hunter === null ? 'Next turn' : me ? 'You\'re hunting' : 'Run!'
   return (
     <div className={`hud-panel hud-mode hud-tagp hud-turnsp${me ? ' is-it' : ''}`}>
@@ -168,14 +169,17 @@ export function TurnsPanel() {
       </div>
       <div className="hud-mode__big hud-tagp__it">{big}</div>
       {hunter !== null && !me && <div className="hud-turnsp__who">{nameFor(hunter, names)} is hunting</div>}
+      {hunter !== null && !me && <div className="hud-turnsp__earn">Tricks and rings score!</div>}
+      {me && <div className="hud-turnsp__earn is-hunting">Catches score {formatScore(turns?.catchPoints ?? 0)}</div>}
       <div className="hud-turnsp__rows">
         {ids.map((id) => (
           <div key={id} className={`hud-turnsp__row${id === hunter ? ' is-hunter' : ''}${id === 'player' ? ' is-me' : ''}`}>
             <span className="hud-turnsp__name">{nameFor(id, names)}</span>
-            <b className="hud-turnsp__n">{turns?.catches[id] ?? 0}</b>
+            <span className="hud-turnsp__c">{turns?.catches[id] ?? 0} {(turns?.catches[id] ?? 0) === 1 ? 'catch' : 'catches'}</span>
+            <b className="hud-turnsp__n">{formatScore(pts(id))}</b>
           </div>
         ))}
-        <div className="hud-turnsp__unit">catches</div>
+        <div className="hud-turnsp__unit">points</div>
       </div>
       {/* The hunter's tag pulse: ready, or how long until it is (the HUD loop writes it). Always in the
           DOM (hidden while running) so the loop's handle on it survives the panel re-rendering. */}
@@ -220,6 +224,14 @@ export function TurnsCard() {
       </span>
       <span className="hud-turnscard__big">{next === 'player' ? 'Your turn to hunt' : 'Run!'}</span>
       {next !== null && next !== 'player' && <span className="hud-turnscard__sub">{nameFor(next, turns.names)} hunts next</span>}
+      {turns.points && (
+        <span className="hud-turnscard__last">
+          {Object.keys(turns.points)
+            .sort((a, b) => (turns.points[b] ?? 0) - (turns.points[a] ?? 0))
+            .map((id) => `${id === 'player' ? 'You' : nameFor(id, turns.names)} ${formatScore(turns.points[id] ?? 0)}`)
+            .join(' · ')}
+        </span>
+      )}
       {lastLine && <span className="hud-turnscard__last">Last turn: {lastLine}</span>}
     </div>
   )
