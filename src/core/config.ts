@@ -70,6 +70,7 @@ export const CONFIG = {
 
   // ---------- MULTIPLAYER ----------
   multiplayerRam: true, // true = you can shove each other, false = drive through like ghosts
+  tagHunterBoost: 20, //   Tag: how much faster "it" can go when far behind, in %. Up close it's a quarter of this. 0 = no help ... 50 = a rocket
 } as const
 
 export type GameConfig = typeof CONFIG

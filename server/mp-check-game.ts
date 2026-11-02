@@ -447,6 +447,12 @@ export async function runGameChecks(k: Kit): Promise<void> {
     const hostId = await host.evaluate(`window.__pilot.net.getNet().myId`)
     const itPage = it0?.itId === hostId ? host : join
     const otherPage = itPage === host ? join : host
+    // Hunter boost (D4): "it" gets a faster car and an arrow to the nearest player; the other doesn't.
+    await sleep(400)
+    const huntOf = (p: Page) => p.evaluate(`(() => { const row = document.querySelector('[data-hud="tagHunt"]'); return { top: window.__game.get('vehicle')?.topSpeedKmh ?? null, base: window.__pilot.settings.useSettings.getState().topSpeedKmh, arrow: !!row && row.style.display !== 'none', dist: document.querySelector('[data-hud="tagDist"]')?.textContent ?? null } })()`) as Promise<{ top: number | null; base: number; arrow: boolean; dist: string | null }>
+    const [itHunt, otherHunt] = [await huntOf(itPage), await huntOf(otherPage)]
+    check('"it" drives a faster car than the runner (hunter boost)', itHunt.top !== null && itHunt.top > itHunt.base && otherHunt.top === otherHunt.base, { it: itHunt, runner: otherHunt })
+    check('"it" sees the arrow and the distance to the runner; the runner doesn\'t', itHunt.arrow && /^\d+ m$/.test(itHunt.dist ?? '') && !otherHunt.arrow, { it: itHunt, runner: otherHunt })
     const otherId = await otherPage.evaluate(`window.__pilot.net.getNet().myId`)
     await otherPage.evaluate(`window.__pilot.stop(); window.__pilot.place(80, 0)`)
     await itPage.evaluate(`window.__pilot.stop(); window.__pilot.place(55, 0)`)

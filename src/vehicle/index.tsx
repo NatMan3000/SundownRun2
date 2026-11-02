@@ -239,6 +239,8 @@ export function VehicleLayer() {
         if (!s) return null
         return {
           speedKmh: +s.speedKmh.toFixed(1),
+          /** The top speed in use this step (tag's hunter boost raises it while you're "it"). */
+          topSpeedKmh: Math.round(s.handling.topSpeedKmh),
           gear: s.gear,
           rpm: +s.rpm.toFixed(2),
           driftDeg: +((s.driftAngle * 180) / Math.PI).toFixed(1),

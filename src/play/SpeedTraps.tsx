@@ -13,7 +13,7 @@
 // ============================================================
 
 import { useFrame } from '@react-three/fiber'
-import { telemetry } from '../core/telemetry'
+import { getCar, telemetry } from '../core/telemetry'
 import { getGame, useGame } from '../core/store'
 import { emit } from '../core/events'
 import { offerRecord } from '../core/records'
@@ -54,7 +54,8 @@ export function SpeedTraps() {
       const ahead = track.deltaS(prev, ts)
       if (ahead > 0 && ahead <= ds) {
         const kmh = Math.round(telemetry.speedKmh)
-        const { best, previous } = offerRecord(track.key, 'trapBestKmh', kmh)
+        // Tag: "it" drives a boosted car (vehicle/hunter.ts), so its speeds never count as records.
+        const { best, previous } = getCar('player')?.isIt ? { best: false, previous: getGame().trapBestKmh } : offerRecord(track.key, 'trapBestKmh', kmh)
         useGame.setState({ trapLastKmh: kmh, trapBestKmh: best ? kmh : previous })
         emit('speedtrap', { kmh, best, previousBestKmh: previous })
       }

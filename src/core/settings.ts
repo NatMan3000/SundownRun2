@@ -66,6 +66,8 @@ export interface Settings {
   quality: QualityChoice
   showFps: boolean
   multiplayerRam: boolean
+  /** Tag: extra top speed for "it" when far behind, percent (vehicle/hunter.ts). */
+  tagHunterBoost: number
   /** Live per-track road parameters (e.g. the Hyperdrome's bank angle), keyed by track id. */
   trackParams: Record<string, Record<string, number>>
 }
@@ -95,6 +97,7 @@ export const SETTING_RANGES: Partial<Record<keyof Settings, { min: number; max: 
   smashKmh: { min: 10, max: 150, step: 5 },
   magGripKmh: { min: 20, max: 160, step: 5 },
   rewindSeconds: { min: 2, max: 20, step: 1 },
+  tagHunterBoost: { min: 0, max: 50, step: 5 },
 }
 
 const STORAGE_KEY = 'sr2.settings.v1'
@@ -155,6 +158,7 @@ function defaultsFrom(cfg: typeof CONFIG): Settings {
     quality: cfg.quality,
     showFps: cfg.showFps,
     multiplayerRam: cfg.multiplayerRam,
+    tagHunterBoost: cfg.tagHunterBoost,
     trackParams: {},
   }
 }

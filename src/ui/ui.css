@@ -1169,6 +1169,9 @@
 .hud-tagp__it { font-size: 1.7em; text-transform: uppercase; letter-spacing: 0.04em; animation: none; }
 .hud-tagp.is-it { border-color: color-mix(in srgb, var(--tag-it) 70%, transparent); box-shadow: 0 0 1.4em color-mix(in srgb, var(--tag-it) 35%, transparent); }
 .hud-tagp.is-it .hud-tagp__it { color: var(--tag-it); }
+.hud-tagp__hunt b { display: inline-flex; align-items: center; gap: 0.4em; font-variant-numeric: tabular-nums; }
+.hud-tagp__hunt b span { font: inherit; letter-spacing: normal; text-transform: none; color: inherit; }
+.hud-tagp__arrow { width: 1.3em; height: 1.3em; fill: var(--tag-it); transform-origin: 50% 50%; }
 
 /* energy-core hunt */
 .hud-hunt { display: flex; align-items: center; gap: 0.8em; padding: 0.65em 1.05em; }

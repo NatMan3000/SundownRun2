@@ -27,6 +27,7 @@ import * as THREE from 'three'
 import { controlSignals, driveInput, driveOverride } from '../core/controls'
 import { emit } from '../core/events'
 import { steeringGain } from '../core/input'
+import { hunterMultiplier } from './hunter'
 import { getRecord, offerRecord } from '../core/records'
 import { getSettings, useSettings } from '../core/settings'
 import { getGame, useGame } from '../core/store'
@@ -235,7 +236,8 @@ export function PlayerCar() {
     // The autopilot (?demo=1, test harnesses) keeps the Ai's brakes: its speed plan is set to them, and
     // with yours it brakes too hard into the end of a straight and loses time getting back up to speed.
     h.brakes = set.brakes * (driveOverride.active ? 1 : DRIVE.playerBrakes)
-    h.topSpeedKmh = set.topSpeedKmh
+    // Tag: "it" gets a faster car, more when far behind (hunter.ts).
+    h.topSpeedKmh = set.topSpeedKmh * hunterMultiplier()
     h.magGripKmh = set.magGripKmh
     h.boostStrength = set.boostStrength
 

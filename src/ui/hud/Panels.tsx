@@ -126,6 +126,16 @@ export function TagPanel() {
         <span>Time as it</span>
         <b data-hud="tagMine">0.0 s</b>
       </div>
+      {/* While you're "it": which way the nearest player is, and how far (the HUD loop fills it in and shows it). */}
+      <div className="hud-lap__row hud-tagp__hunt" data-hud="tagHunt" style={{ display: 'none' }}>
+        <span>Nearest</span>
+        <b>
+          <svg className="hud-tagp__arrow" data-hud="tagArrow" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2 L20 20 L12 15.5 L4 20 Z" />
+          </svg>
+          <span data-hud="tagDist">0 m</span>
+        </b>
+      </div>
     </div>
   )
 }

@@ -28,6 +28,7 @@
 // ============================================================
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import * as THREE from 'three'
 import type { RefObject } from 'react'
 import { useGame, getGame } from '../../core/store'
 import { useSettings } from '../../core/settings'
@@ -204,6 +205,9 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
       stuntClock: null as HTMLElement | null,
       tagClock: null as HTMLElement | null,
       tagMine: null as HTMLElement | null,
+      tagHunt: null as HTMLElement | null,
+      tagArrow: null as SVGElement | null,
+      tagDist: null as HTMLElement | null,
       countdown: null as HTMLElement | null,
       raceLap: null as HTMLElement | null,
       rewindFx: null as HTMLElement | null,
@@ -217,6 +221,9 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
     const find = () => {
       seenLayout = layout.v
       resetRewindShown()
+      hunt.shown = false
+      hunt.deg = 9999
+      hunt.m = -1
       for (const k of Object.keys(refs) as (keyof typeof refs)[]) (refs as Record<string, Element | null>)[k] = q(k)
     }
 
@@ -259,6 +266,9 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
       shownSpeed += (telemetry.speedKmh - shownSpeed) * (1 - Math.exp(-dt * 14))
       shownScore += (g.trickScore - shownScore) * (1 - Math.exp(-dt * 7))
       if (Math.abs(g.trickScore - shownScore) < 0.5) shownScore = g.trickScore
+
+      // Tag: while you're "it", an arrow to the nearest player, every frame.
+      if (refs.tagHunt) writeHunt(refs.tagHunt, refs.tagArrow, refs.tagDist)
 
       // rpm arc and boost glow: every frame, but only when they actually move.
       const rpmRaw = telemetry.rpm < 0 ? 0 : telemetry.rpm > 1 ? 1 : telemetry.rpm
@@ -359,6 +369,46 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
 }
 
 /** "Lap 2 of 3" from the player's car (cars 'player'.lap = laps done this race). */
+const _toTarget = new THREE.Vector3()
+const _inv = new THREE.Quaternion()
+const hunt = { shown: false, deg: 9999, m: -1 }
+
+/** The "Nearest" row: shown only while we're "it"; the arrow turns toward the nearest player. */
+function writeHunt(row: HTMLElement, arrow: SVGElement | null, dist: HTMLElement | null): void {
+  const me = getCar('player')
+  let near: CarState | null = null
+  let best = Infinity
+  if (me?.isIt) {
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i]
+      if (c.kind !== 'remote') continue
+      const d = c.position.distanceToSquared(me.position)
+      if (d < best) {
+        best = d
+        near = c
+      }
+    }
+  }
+  const show = !!me && !!near
+  if (show !== hunt.shown) {
+    hunt.shown = show
+    row.style.display = show ? '' : 'none'
+  }
+  if (!show || !me || !near) return
+  // Into the car's own frame (nose +z): ahead is up, a player to the right turns the arrow right.
+  _toTarget.copy(near.position).sub(me.position).applyQuaternion(_inv.copy(me.quaternion).invert())
+  const deg = Math.round((Math.atan2(-_toTarget.x, _toTarget.z) * 180) / Math.PI)
+  if (arrow && deg !== hunt.deg) {
+    hunt.deg = deg
+    arrow.style.transform = `rotate(${deg}deg)`
+  }
+  const m = Math.round(Math.sqrt(best))
+  if (dist && m !== hunt.m) {
+    hunt.m = m
+    dist.textContent = `${m} m`
+  }
+}
+
 function raceLapText(laps: number, state: string): string {
   if (state === 'finished') return 'Finished'
   const me = getCar('player')

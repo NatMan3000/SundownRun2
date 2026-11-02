@@ -135,6 +135,7 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
   ],
   multiplayer: [
     { kind: 'toggle', key: 'multiplayerRam', label: 'Ramming', help: 'On: you can shove each other. Off: cars pass through like ghosts.' },
+    { kind: 'slider', key: 'tagHunterBoost', label: 'Hunter boost', help: 'Tag: when you are "it", this much extra speed when far behind (a quarter of it up close). 0 turns it off.', format: (v) => (v <= 0 ? 'Off' : `+${Math.round(v)}%`) },
   ],
 }
 
