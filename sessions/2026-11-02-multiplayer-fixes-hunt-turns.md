@@ -4,8 +4,8 @@ session_id: a996ef9c-a141-42fb-a3b0-9a4afab22353
 project: SundownRun2
 date: 2026-11-02
 topic: Multiplayer playtest fixes and the Hunt Turns mode
-duration: 5 hours
-events: 650
+duration: 7 hours
+events: 665
 events_unit: turns
 ---
 
@@ -80,3 +80,29 @@ Nathan and Josh played two-computer multiplayer live: Josh's PC ("Joshinator") h
 ## Git Status
 
 All six commits (`f49de83`, `a6f3a39`, `12c6f7f`, `a44cb35`, `f8ff09c`, `36d52cc`) pushed to origin main, verified with `git ls-remote`. This session's worktrees (crown-rush, hunt-points) were removed and their branches deleted. Two older agent worktrees under `.claude/worktrees/` predate the session and were left alone.
+
+## Continued - 2026-11-02
+
+The wrap-up tail only: Nathan ran `/EndSession`, the end-session agent wrote this log (`818b108`) and stored 5 atoms, and the lead opened the waiting playtest thread. No new code.
+
+- End-session agent: log committed `818b108`, `~/.claude` timeline row `f8e8dd23`, both pushed; checked by the lead with `git rev-list` and the atom count.
+- Thread opened: "Hunt Turns points playtest" [Waiting] on Nathan and Josh playing the points version (`81ed7f6`, pushed).
+
+### Worker - crown-builder
+
+**Restart ID:** `claude -r 2f7ab9cc-770f-4104-9e21-36c0ce89acd2`
+
+- Opus engineer in the `crown-rush` worktree; built Crown Rush, then reworked it into Hunt Turns after D6 (`src/net/turns.ts`, arena spots, Thunder Bowl).
+- Report at `/tmp/sr2-crown/report.md`; the lead reviewed and committed it as `f8ff09c`.
+
+### Worker - points-builder
+
+**Restart ID:** `claude -r dd98f396-6e82-469b-8867-5733dcf7d6d5`
+
+- Sonnet engineer in the `hunt-points` worktree; turned Hunt Turns into the points game for D8 (runner scores tricks and rings, catch pays 500 and wipes 15 s, protocol v5).
+- The lead reviewed and committed it as `36d52cc`.
+
+## Atom candidates
+
+<!-- KAI-ATOMS-VERBATIM -->
+<!-- /KAI-ATOMS-VERBATIM -->
