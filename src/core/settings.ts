@@ -68,6 +68,20 @@ export interface Settings {
   multiplayerRam: boolean
   /** Tag: extra top speed for "it" when far behind, percent (vehicle/hunter.ts). */
   tagHunterBoost: number
+  /** Hunt Turns (net/turns.ts): one turn's length, seconds. The presser's knobs travel in the start message. */
+  huntTurnSeconds: number
+  /** Hunt Turns: the hunter catches a runner this close (metres between car centres), no contact needed. */
+  catchReachMetres: number
+  /** Hunt Turns: how far the hunter's tag pulse reaches, metres. */
+  pulseRangeMetres: number
+  /** Hunt Turns: the pulse's cone, degrees (whole width, centred on the hunter's nose). */
+  pulseConeDegrees: number
+  /** Hunt Turns: seconds between pulses. */
+  pulseCooldownSeconds: number
+  /** Hunt Turns: a caught runner is thrown at least this far from the hunter, metres. */
+  throwAwayMetres: number
+  /** Hunt Turns: after a catch, seconds before the hunter can catch again. */
+  noCatchAfterCatchSeconds: number
   /** Live per-track road parameters (e.g. the Hyperdrome's bank angle), keyed by track id. */
   trackParams: Record<string, Record<string, number>>
 }
@@ -98,6 +112,13 @@ export const SETTING_RANGES: Partial<Record<keyof Settings, { min: number; max: 
   magGripKmh: { min: 20, max: 160, step: 5 },
   rewindSeconds: { min: 2, max: 20, step: 1 },
   tagHunterBoost: { min: 0, max: 50, step: 5 },
+  huntTurnSeconds: { min: 20, max: 300, step: 10 },
+  catchReachMetres: { min: 2, max: 20, step: 0.5 },
+  pulseRangeMetres: { min: 0, max: 40, step: 1 },
+  pulseConeDegrees: { min: 10, max: 180, step: 5 },
+  pulseCooldownSeconds: { min: 1, max: 20, step: 0.5 },
+  throwAwayMetres: { min: 30, max: 300, step: 10 },
+  noCatchAfterCatchSeconds: { min: 0, max: 10, step: 0.5 },
 }
 
 const STORAGE_KEY = 'sr2.settings.v1'
@@ -159,6 +180,13 @@ function defaultsFrom(cfg: typeof CONFIG): Settings {
     showFps: cfg.showFps,
     multiplayerRam: cfg.multiplayerRam,
     tagHunterBoost: cfg.tagHunterBoost,
+    huntTurnSeconds: cfg.huntTurnSeconds,
+    catchReachMetres: cfg.catchReachMetres,
+    pulseRangeMetres: cfg.pulseRangeMetres,
+    pulseConeDegrees: cfg.pulseConeDegrees,
+    pulseCooldownSeconds: cfg.pulseCooldownSeconds,
+    throwAwayMetres: cfg.throwAwayMetres,
+    noCatchAfterCatchSeconds: cfg.noCatchAfterCatchSeconds,
     trackParams: {},
   }
 }

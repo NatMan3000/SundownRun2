@@ -30,6 +30,7 @@ export type GameMode =
   | 'race' //      against 0-5 Ai racers (solo) or other players (multiplayer)
   | 'stunt' //     timed run for the biggest trick score
   | 'tag' //       multiplayer only: one player is "it"
+  | 'turns' //     multiplayer only: Hunt Turns, take turns hunting; only catches score
 
 export type RaceState = 'idle' | 'countdown' | 'running' | 'finished'
 
@@ -40,6 +41,45 @@ export interface RaceResult {
   ms: number | null // null = did not finish
   bestLapMs: number | null
   isPlayer: boolean
+}
+
+/** Hunt Turns: one turn, once it's over: who hunted and how many they caught. */
+export interface TurnRecord {
+  hunterId: string
+  catches: number
+}
+
+/**
+ * Hunt Turns, as net sees it (writer: net, a few times a second at most, and at every catch).
+ * Every car id is as it is on THIS computer ('player' = you).
+ */
+export interface TurnsView {
+  /** The round's id (the start message's raceId). */
+  raceId: number
+  /** Who is hunting, by car id. Null between turns. */
+  hunterId: string | null
+  /** Between turns: who hunts next (shown on the card). */
+  nextHunterId: string | null
+  /** The turn being played (or just played), 1-based, and how many turns the round has (one each). */
+  turn: number
+  turns: number
+  /** performance.now() this turn's chase starts (GO) and its clock runs out. */
+  goAt: number
+  endsAt: number
+  /** performance.now() the between-turns card goes away; 0 = no card. */
+  cardUntil: number
+  /** Catches across the round so far, by car id (only hunters catch). */
+  catches: Record<string, number>
+  /** Every finished turn, in order. */
+  history: TurnRecord[]
+  /** Everyone's name at the start, by car id (they may leave later). */
+  names: Record<string, string>
+  /** performance.now() the hunter can catch again (after a catch, everyone gets a fresh chase). */
+  noCatchUntil: number
+  /** performance.now() OUR tag pulse is ready again (0 = ready; only meaningful while we hunt). */
+  pulseReadyAt: number
+  /** The round is over (the results are up). */
+  done: boolean
 }
 
 export interface GameState {
@@ -124,6 +164,9 @@ export interface GameState {
   tagSeconds: Record<string, number>
   tagEndsAt: number
 
+  // ---- hunt turns (writer: net) ----
+  turns: TurnsView | null
+
   // ---- spawn (writer: net in multiplayer; 0 otherwise) ----
   /** The grid slot the player's car spawns and Shift+R-restarts on. Read only at spawn/restart, so changing it never moves a driving car. */
   playerGridSlot: number
@@ -196,6 +239,8 @@ const initial: GameState = {
   tagSeconds: {},
   tagEndsAt: 0,
 
+  turns: null,
+
   playerGridSlot: 0,
 
   mapOpen: false,
@@ -236,5 +281,6 @@ export function sessionResetFields(): Partial<GameState> {
     tagItId: null,
     tagSeconds: {},
     tagEndsAt: 0,
+    turns: null,
   }
 }

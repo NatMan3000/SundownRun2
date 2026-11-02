@@ -16,7 +16,7 @@ import { emit } from '../../core/events'
 import { useGame } from '../../core/store'
 
 export const HUD_DEMO_HELP =
-  "uiHudDemo(scene) - sample HUD state for screenshots: 'race', 'countdown', 'stunt', 'hunt', 'tag', 'tricks', 'toasts', 'trap', 'clear'"
+  "uiHudDemo(scene) - sample HUD state for screenshots: 'race', 'countdown', 'stunt', 'hunt', 'tag', 'turns', 'tricks', 'toasts', 'trap', 'clear'"
 
 export function hudDemo(scene: string): string {
   const now = performance.now()
@@ -38,6 +38,28 @@ export function hudDemo(scene: string): string {
       useGame.setState({ mode: 'tag', tagItId: 'player', tagEndsAt: now + 95000, tagSeconds: { player: 14.2 } })
       emit('tag.it', { id: 'player', name: 'You', byId: null })
       return 'tag'
+    case 'turns':
+      useGame.setState({
+        mode: 'turns',
+        turns: {
+          raceId: 1234567,
+          hunterId: 'player',
+          nextHunterId: null,
+          turn: 2,
+          turns: 2,
+          goAt: now - 21000,
+          endsAt: now + 39000,
+          cardUntil: 0,
+          catches: { player: 2, 'net-2': 3 },
+          history: [{ hunterId: 'net-2', catches: 3 }],
+          names: { player: 'You', 'net-2': 'JOSH' },
+          noCatchUntil: 0,
+          pulseReadyAt: now + 2200,
+          done: false,
+        },
+      })
+      emit('turns.turn', { turn: 2, turns: 2, hunterId: 'player', name: 'You' })
+      return 'turns'
     case 'tricks':
       useGame.setState({ trickScore: (useGame.getState().trickScore || 0) + 4300, comboCount: 2 })
       emit('trick.land', { tricks: [{ name: 'bigAir', label: 'Big Air', points: 900 }, { name: 'flip', label: 'Flip', points: 1500 }], airTimeS: 1.8, combo: 2, points: 4800, clean: true })
@@ -53,7 +75,7 @@ export function hudDemo(scene: string): string {
       emit('speedtrap', { kmh: 312.4, best: true, previousBestKmh: 298 })
       return 'trap'
     case 'clear':
-      useGame.setState({ mode: 'free', raceState: 'idle', raceGoAt: 0, stuntEndsAt: 0, coresTotal: 0, tagItId: null, tagEndsAt: 0, comboCount: 0 })
+      useGame.setState({ mode: 'free', raceState: 'idle', raceGoAt: 0, stuntEndsAt: 0, coresTotal: 0, tagItId: null, tagEndsAt: 0, turns: null, comboCount: 0 })
       return 'clear'
     default:
       return HUD_DEMO_HELP

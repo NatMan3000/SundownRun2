@@ -11,9 +11,12 @@
 //    race       props and smashables stay (chaos is fun), no hunt
 //    stunt      props count toward the score, the stunt park, no hunt
 //    tag        multiplayer: props and smashables, no hunt
+//    turns      multiplayer Hunt Turns: props, smashables and the stunt
+//               park (something to jump while you run), no hunt, no
+//               speed-trap records (the hunter's car is boosted)
 //
-//  The stunt park (src/play/stunts) is only ever in free roam and
-//  stunt attack, so racing lines stay clean.
+//  The stunt park (src/play/stunts) is only ever in free roam, stunt
+//  attack and Hunt Turns, so racing lines stay clean.
 // ============================================================
 
 import type { GameMode } from '../core/store'
@@ -39,6 +42,8 @@ export function featuresFor(mode: GameMode): ModeFeatures {
       return { props: true, smashables: true, cores: false, speedTraps: true, park: true }
     case 'tag':
       return { props: true, smashables: true, cores: false, speedTraps: true, park: false }
+    case 'turns':
+      return { props: true, smashables: true, cores: false, speedTraps: false, park: true }
   }
 }
 

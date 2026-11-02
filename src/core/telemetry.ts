@@ -131,7 +131,11 @@ export interface CarState {
   lastLapMs: number | null
   finished: boolean
   finishMs: number
-  /** Multiplayer tag: this car is "it". */
+  /**
+   * Multiplayer (writer: net): this car is the hunter. Tag: "it". Hunt Turns: the player whose
+   * turn it is to hunt (false between turns). The hunter glows, gets the hunter boost and the
+   * arrow to the nearest player (src/vehicle/hunter.ts).
+   */
   isIt: boolean
   /** Fx anchors for this car's body (set by vehicle when the body is built). */
   anchors: CarAnchors | null

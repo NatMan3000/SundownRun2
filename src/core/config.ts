@@ -70,7 +70,17 @@ export const CONFIG = {
 
   // ---------- MULTIPLAYER ----------
   multiplayerRam: true, // true = you can shove each other, false = drive through like ghosts
-  tagHunterBoost: 20, //   Tag: how much faster "it" can go when far behind, in %. Up close it's a quarter of this. 0 = no help ... 50 = a rocket
+  tagHunterBoost: 20, //   Tag and Hunt Turns: how much faster the hunter can go when far behind, in %. Up close it's a quarter of this. 0 = no help ... 50 = a rocket
+
+  // ---------- HUNT TURNS (multiplayer) ----------
+  // You take turns hunting. Only catches score. Whoever presses G uses THEIR numbers for everyone.
+  huntTurnSeconds: 60, //          how long each turn lasts. 30 = quick ... 180 = long
+  catchReachMetres: 6, //          the hunter catches you by getting this close, no bump needed. 3 = you must touch ... 12 = easy
+  pulseRangeMetres: 15, //         the tag pulse (F, or click the right stick) catches anyone this far in front of the hunter
+  pulseConeDegrees: 70, //         how wide the pulse sprays in front of the hunter. 30 = a laser ... 120 = a big fan
+  pulseCooldownSeconds: 4, //      after a pulse, how long before the next one is ready
+  throwAwayMetres: 100, //         a caught runner is thrown at least this far from the hunter, for a fresh chase
+  noCatchAfterCatchSeconds: 2, //  after a catch, the hunter can't catch anyone for this long
 } as const
 
 export type GameConfig = typeof CONFIG

@@ -175,6 +175,15 @@ export interface ParkZoneMark {
   halfWidth: number
 }
 
+/** A spot to start (or be thrown to) in an arena: on open ground, facing the middle. */
+export interface ArenaSpot {
+  x: number
+  y: number
+  z: number
+  /** Heading of the car's nose, radians (yaw about +y; 0 = +z). */
+  yaw: number
+}
+
 export interface PlayApi {
   /** Start a fresh round of the current mode (re-scatter props/cores, reset clocks). */
   newRound: () => void
@@ -186,6 +195,13 @@ export interface PlayApi {
   doParkHop: () => void
   /** The stunt park's zones for the minimap and the world map; empty when there is no park (races, time trials, ?park=0). The same array until the park changes. */
   parkZones: () => readonly ParkZoneMark[]
+  /**
+   * Hunt Turns: the current track's start spots, spread round the world on open ground clear of
+   * the road and the stunt park, each facing the middle. A pure function of the track (and the
+   * megaRampHeight knob, like the park), worked out whether or not the park is showing, so every
+   * computer gets the same list in the same order. Empty when there's no track.
+   */
+  arenaSpots: () => readonly ArenaSpot[]
 }
 
 // ---------------------------------------------------------------- registry
@@ -216,7 +232,8 @@ export const vehicle: VehicleApi = {
   setReverse: noop,
 }
 const NO_ZONES: readonly ParkZoneMark[] = []
-export const play: PlayApi = { newRound: noop, restartSession: noop, parkHop: () => null, doParkHop: noop, parkZones: () => NO_ZONES }
+const NO_SPOTS: readonly ArenaSpot[] = []
+export const play: PlayApi = { newRound: noop, restartSession: noop, parkHop: () => null, doParkHop: noop, parkZones: () => NO_ZONES, arenaSpots: () => NO_SPOTS }
 
 const installed = { fx: false, audio: false, vehicle: false, play: false }
 

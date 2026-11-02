@@ -90,7 +90,10 @@ export function startRelay(port = RELAY_PORT, log: (line: string) => void = (l) 
 
   const liveRound = (): LiveRound | null => {
     if (!live) return null
-    const limit = live.msg.kind === 'tag' ? (live.msg.seconds + 15) * 1000 : RACE_MEMORY_MS
+    const m = live.msg
+    // Hunt Turns: one turn per player, each followed by a break.
+    const turns = m.kind === 'turns' && m.turns ? m.turns : null
+    const limit = m.kind === 'tag' ? (m.seconds + 15) * 1000 : turns ? m.grid.length * (m.seconds * 1000 + turns.breakMs) + 15000 : RACE_MEMORY_MS
     if (Date.now() - live.startedAt > limit) live = null
     return live
   }

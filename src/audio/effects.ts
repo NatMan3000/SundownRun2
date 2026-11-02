@@ -277,6 +277,27 @@ export class Effects {
       case 'speedtrap':
         this.ping(k, t, e.best)
         break
+      case 'turns.turn':
+        // Your turn to hunt: tag's siren. Someone else's: a bell (run!).
+        if (e.hunterId === 'player') this.youreIt(k, t)
+        else bell(k, midiToHz(brightPentaMidi(3, 1)), t, 0.05, 0.25, 1.2)
+        break
+      case 'turns.pulse':
+        // The tag pulse: a quick falling zap with a burst of air.
+        sweep(k, 'square', 1500, 220, t, 0.26, 0.05, 0.004, 3200)
+        sweep(k, 'sine', 900, 120, t, 0.32, 0.08, 0.004)
+        noiseHit(k, t, 0.05, 'highpass', 2500, 0.7, 0.002, 0.18)
+        break
+      case 'turns.catch':
+        if (e.hunterId === 'player') this.lapTriad(k, t, false)
+        else if (e.runnerId === 'player') sweep(k, 'sine', 700, 140, t, 0.3, 0.07, 0.01)
+        else bell(k, midiToHz(brightPentaMidi(2, 1)), t, 0.04, 0.2, 1)
+        break
+      case 'turns.end':
+        // net writes the results before it announces the end: did we win it outright?
+        if (!e.draw && getGame().raceResults[0]?.isPlayer) this.fanfare(k, t, 1)
+        else this.cadence(k, t)
+        break
       case 'tag.it': {
         const car = getCar(e.id)
         if (e.id === 'player' || car?.kind === 'player') this.youreIt(k, t)

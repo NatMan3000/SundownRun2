@@ -56,6 +56,7 @@ export const controlSignals = {
   screenshot: 0, //   F9 (dev)     - capture the canvas
   race: 0, //         G / X        - multiplayer: start a synced race / tag round
   nextSong: 0, //     N / B        - music: skip to another song (drive context)
+  pulse: 0, //        F / RS click - Hunt Turns: the hunter fires the tag pulse (drive context)
 }
 
 /** Current input routing. Set by the UI / phase logic. */

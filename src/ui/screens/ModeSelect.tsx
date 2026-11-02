@@ -3,7 +3,10 @@
 // ------------------------------------------------------------
 //  Solo:        Free Roam, Time Trial, Race (with the Ai count
 //               and difficulty right there), Stunt Attack.
-//  Multiplayer: Race, Free Roam, Tag (Ai racers are solo only).
+//  Multiplayer: Race, Free Roam, Tag, Hunt Turns (Ai racers are solo
+//  only; Tag and Hunt Turns need two players, so they're only here).
+//  Hunt Turns is made for the Thunder Bowl, so picking it opens the
+//  track select with the Thunder Bowl lined up.
 //
 //  Picking a mode opens the track select.
 // ============================================================
@@ -34,6 +37,7 @@ const MP_MODES: ModeInfo[] = [
   { mode: 'race', label: 'Race', help: 'Race everyone here from a synced start grid.' },
   { mode: 'free', label: 'Free Roam', help: 'Drive together, pull tricks and shove each other around.' },
   { mode: 'tag', label: 'Tag', help: 'One player is "it" and glows. Bump someone to pass it on. Least time as "it" wins.' },
+  { mode: 'turns', label: 'Hunt Turns', help: 'Take turns hunting. Get close, bump them or fire your tag pulse (F / right stick) to catch them. Most catches wins. Play it in the Thunder Bowl.' },
 ]
 
 export function ModeSelectScreen() {

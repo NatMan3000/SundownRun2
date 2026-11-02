@@ -42,7 +42,7 @@ import { sendTrackIfHost, startTrackSync } from './trackSync'
 import { RemoteCars } from './RemoteCars'
 import { BumpApplier, startBumps, stats as bumpStats } from './bump'
 import { mySlot, spawnPending, spawnStats, spawnTick, startSpawns } from './spawn'
-import { canTag, currentRound, requestStart, roundsTick, startRounds, waitingForRacers } from './rounds'
+import { canTag, currentRound, firePulse, requestStart, roundsTick, startRounds, waitingForRacers } from './rounds'
 
 export { useNet } from './netStore'
 /**
@@ -189,18 +189,34 @@ function roundSummary() {
     itId: r.itId,
     tagSeq: r.seq,
     itSeconds: Object.fromEntries([...r.seconds.entries()].map(([id, sec]) => [id, Math.round(sec * 10) / 10])),
-    endsInMs: r.kind === 'tag' ? Math.round(r.endsAt - performance.now()) : null,
+    endsInMs: r.kind === 'tag' || r.kind === 'turns' ? Math.round(r.endsAt - performance.now()) : null,
+    turns: r.turns
+      ? {
+          turn: r.turns.index + 1,
+          phase: r.turns.phase,
+          order: r.turns.order,
+          catches: Object.fromEntries(r.turns.catches.entries()),
+          catchSeq: r.turns.seq,
+          noCatchInMs: Math.max(0, Math.round(r.turns.noCatchUntil - performance.now())),
+          pulseInMs: Math.max(0, Math.round(r.turns.pulseReadyAt - performance.now())),
+          rules: r.turns.rules,
+        }
+      : null,
   }
 }
 
-const NET_HELP = `net(cmd): 'status' (same as __game.get('net')), 'start' (same as pressing G: a race, or a tag round in tag mode), 'drop' (cut the connection; it heals by itself), 'reconnect' (reconnect now), 'resendTrack' (host: send the track again)`
+const NET_HELP = `net(cmd): 'status' (same as __game.get('net')), 'start' (same as pressing G: a race, a tag round in tag mode, a Hunt Turns round in Hunt Turns), 'pulse' (same as F: fire the tag pulse if hunting), 'drop' (cut the connection; it heals by itself), 'reconnect' (reconnect now), 'resendTrack' (host: send the track again)`
 
 function netCommand(cmd: string = 'status'): unknown {
   switch (cmd) {
     case 'status':
       return inspect()
     case 'start':
-      return requestStart() ? 'started' : 'not started (offline, a round is on, not driving, or tag with fewer than two players)'
+      return requestStart() ? 'started' : 'not started (offline, a round is on, not driving, or tag / Hunt Turns with fewer than two players)'
+    case 'pulse': {
+      const n = firePulse()
+      return n < 0 ? 'no pulse (not hunting, cooling down, or right after a catch)' : `pulse fired, caught ${n}`
+    }
     case 'drop':
       dropConnection()
       return 'dropped - reconnecting with backoff'
@@ -238,7 +254,7 @@ const netKit = {
   telemetry,
   getCar,
   net: { getNet, peerPoses, sendPose, dropConnection, reconnectNow },
-  rounds: { requestStart, currentRound, canTag, waitingForRacers },
+  rounds: { requestStart, currentRound, canTag, waitingForRacers, firePulse },
 }
 
 function registerNetDev(): void {

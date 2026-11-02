@@ -17,6 +17,12 @@
 //    race   synced countdown, frozen grid, a real lap, finish, same winner on both
 //    tag    "it" chosen, "it" rams the other, "it" passes on, the round ends, results agree
 //    props  a crash-prop burst on one screen bursts on the other
+//    leave  leaving a race mid-way (mode change) frees G; a tag started meanwhile picks you up
+//    turns  Hunt Turns in the Thunder Bowl: everyone starts far apart, both agree who hunts, a
+//           catch by reach (no contact) counts on both screens, the runner is thrown 100 m+,
+//           the 2 s fresh-chase window holds, the tag pulse catches a runner 12 m ahead but not
+//           12 m behind, the turn swaps, the round ends with the same catches on both, and a
+//           player leaving ends it
 //    robust a 3rd player arriving mid-round, three players, reconnects mid-round
 //           and mid-race, the host reloading its page
 // ============================================================
@@ -155,7 +161,7 @@ const readClosest = (p: Page) => p.evaluate(`(() => { const c = window.__closest
 
 export async function runGameChecks(k: Kit): Promise<void> {
   const { check, until, sleep } = k
-  const q = `mp=1&relay=${k.relayPort}&tagSeconds=25`
+  const q = `mp=1&relay=${k.relayPort}&tagSeconds=25&turnSeconds=25`
   console.log(`\n== game: two players in a drive on "${k.track}"`)
   // The joiner opens a DIFFERENT track on purpose: the host's must replace it.
   const host = await k.openPage(`${k.hostBase}/?${q}&name=JOSH&track=${k.track}&mode=free`, 'host', CLOSEST_SAMPLER)
@@ -535,6 +541,8 @@ export async function runGameChecks(k: Kit): Promise<void> {
     await sleep(500)
   }
 
+  if (k.sections.includes('turns')) await turnsChecks(k, host, join)
+
   if (k.sections.includes('props')) {
     console.log('\n== props: a crash-prop burst on one screen bursts on the other')
     const round = [await host.evaluate(`window.__pilot.K.propsSignal.round`), await join.evaluate(`window.__pilot.K.propsSignal.round`)]
@@ -552,6 +560,141 @@ export async function runGameChecks(k: Kit): Promise<void> {
 
   await host.close()
   await join.close()
+}
+
+/**
+ * Hunt Turns (D6): a whole round on the Thunder Bowl with 25 s turns (?turnSeconds=25). The
+ * cars are placed by the pilot for each check and sit still otherwise.
+ */
+async function turnsChecks(k: Kit, host: Page, join: Page): Promise<void> {
+  const { check, until, sleep } = k
+  console.log('\n== turns: Hunt Turns in the Thunder Bowl (D6)')
+  const startKey = await host.evaluate(`window.__pilot.current.getTrack()?.key`)
+  for (const p of [host, join]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame() })()`)
+  const loaded = await host.evaluate(`window.__pilot.current.loadTrackById('thunder-bowl').ok`)
+  const bowl = await Promise.all([host, join].map((p) => until<string>(p, `(() => { const t = window.__pilot.current.getTrack(); return t && t.id === 'thunder-bowl' ? t.key : null })()`, 20000)))
+  check('the host loads the Thunder Bowl and the joiner gets it', loaded === true && !!bowl[0] && bowl[0] === bowl[1], bowl)
+  for (const p of [host, join]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame(); window.__pilot.store.useGame.setState({ mode: 'turns' }) })()`)
+  await sleep(1500)
+  check('G in Hunt Turns starts a round', (await host.evaluate(`window.__pilot.rounds.requestStart()`)) === true)
+  const r0 = await Promise.all([host, join].map((p) => until<{ itId: number; raceId: number; order: number[] }>(p, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'turns' ? { itId: r.itId, raceId: r.raceId, order: r.turns.order } : null })()`, 3000)))
+  check('both screens are in the same round and agree who hunts first (and the order)', !!r0[0] && !!r0[1] && r0[0].raceId === r0[1].raceId && r0[0].itId === r0[1].itId && r0[0].order.join() === r0[1].order.join(), r0)
+  const posOf = (p: Page) => p.evaluate(`(() => { const c = window.__pilot.player(); return { x: +c.position.x.toFixed(1), z: +c.position.z.toFixed(1) } })()`) as Promise<{ x: number; z: number }>
+  await sleep(1200)
+  const [hp, jp] = [await posOf(host), await posOf(join)]
+  const apart = Math.hypot(hp.x - jp.x, hp.z - jp.z)
+  check('the two cars start far apart round the arena (at least 150 m)', apart >= 150, { host: hp, joiner: jp, metres: Math.round(apart) })
+  const running = await Promise.all([host, join].map((p) => until<boolean>(p, `window.__game.state.raceState === 'running' && window.__game.state.mode === 'turns'`, 6000)))
+  check('turn 1 runs on both', running.every(Boolean))
+  const hostId = (await host.evaluate(`window.__pilot.net.getNet().myId`)) as number
+  const hunterPage = r0[0]?.itId === hostId ? host : join
+  const runnerPage = hunterPage === host ? join : host
+  const hunterId = r0[0]?.itId ?? 0
+  const runnerId = (await runnerPage.evaluate(`window.__pilot.net.getNet().myId`)) as number
+
+  // ---- the hunter hunts: boost and the arrow to the runner; the runner sees how far the hunter is ----
+  await sleep(400)
+  const huntOf = (p: Page) => p.evaluate(`(() => { const row = document.querySelector('[data-hud="turnsHunt"]'); return { top: window.__game.get('vehicle')?.topSpeedKmh ?? null, base: window.__pilot.settings.useSettings.getState().topSpeedKmh, arrow: !!row && row.style.display !== 'none', label: document.querySelector('[data-hud="turnsHuntLabel"]')?.textContent ?? null, dist: document.querySelector('[data-hud="turnsDist"]')?.textContent ?? null, pulse: (() => { const b = document.querySelector('[data-hud="turnsPulse"]'); return b && b.parentElement.style.display !== 'none' ? b.textContent : null })() } })()`) as Promise<{ top: number | null; base: number; arrow: boolean; label: string | null; dist: string | null; pulse: string | null }>
+  const [hh, rh] = [await huntOf(hunterPage), await huntOf(runnerPage)]
+  check('the hunter drives a faster car (hunter boost) and has the pulse; the runner has neither', hh.top !== null && hh.top > hh.base && rh.top === rh.base && hh.pulse === 'Ready' && rh.pulse === null, { hunter: hh, runner: rh })
+  check('the hunter has an arrow to the nearest runner; the runner sees the hunter\'s distance', hh.arrow && hh.label === 'Nearest' && rh.arrow && rh.label === 'Hunter' && /^\d+ m$/.test(rh.dist ?? ''), { hunter: hh, runner: rh })
+  for (const [p, who] of [[host, 'host'], [join, 'joiner']] as const) {
+    await p.screenshot({ path: `${k.shots}/turns-panel-${who}.png` })
+    console.log(`  shot ${k.shots}/turns-panel-${who}.png`)
+  }
+
+  const catchesOn = (p: Page) => p.evaluate(`(() => { const c = window.__game.state.turns; return c ? Object.values(c.catches).reduce((a, b) => a + b, 0) : -1 })()`) as Promise<number>
+  // ---- a catch by reach: side by side 5 m apart, nobody moving, no contact ----
+  await runnerPage.evaluate(`window.__pilot.stop(); window.__pilot.place(170, 0)`)
+  await sleep(1200)
+  await hunterPage.evaluate(`window.__pilot.stop(); window.__pilot.place(170, 5)`)
+  const caught1 = await until<number>(hunterPage, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.turns.seq >= 1 ? performance.now() : 0 })()`, 4000)
+  const how1 = await hunterPage.evaluate(`window.__events.recent.filter((e) => e.type === 'turns.catch').map((e) => e.how)`)
+  const both1 = await Promise.all([host, join].map((p) => until<number>(p, `(() => { const c = window.__game.state.turns; const n = c ? Object.values(c.catches).reduce((a, b) => a + b, 0) : 0; return n === 1 ? 1 : 0 })()`, 3000)))
+  check('getting within reach (5 m, no contact) catches the runner, and both screens count it', !!caught1 && Array.isArray(how1) && (how1 as string[])[0] === 'reach' && both1.every(Boolean), { how: how1, counted: both1 })
+  // ---- the fresh-chase window: the runner straight back beside the hunter is safe for 2 s ----
+  const win = (await hunterPage.evaluate(`(() => { const r = window.__pilot.rounds.currentRound(); return { canTag: window.__pilot.rounds.canTag(), leftMs: Math.round(r.turns.noCatchUntil - performance.now()), rule: r.turns.rules.noCatchMs } })()`)) as { canTag: boolean; leftMs: number; rule: number }
+  await sleep(300)
+  const [hAfter, rAfter] = [await posOf(hunterPage), await posOf(runnerPage)]
+  const thrown = Math.hypot(hAfter.x - rAfter.x, hAfter.z - rAfter.z)
+  check('the caught runner is thrown at least 100 m from the hunter', thrown >= 100, { hunter: hAfter, runner: rAfter, metres: Math.round(thrown) })
+  await runnerPage.evaluate(`window.__pilot.stop(); window.__pilot.place(170, 0)`)
+  await sleep(600)
+  const seqMid = (await hunterPage.evaluate(`window.__pilot.rounds.currentRound().turns.seq`)) as number
+  await runnerPage.evaluate(`window.__pilot.stop(); window.__pilot.place(40, 0)`)
+  check('no catch inside the 2 s fresh-chase window (the runner sat 5 m away)', win.rule === 2000 && !win.canTag && win.leftMs > 0 && win.leftMs <= 2000 && seqMid === 1, { win, seqMid })
+  await sleep(1600)
+  check('after the window the hunter can catch again', (await hunterPage.evaluate(`window.__pilot.rounds.canTag()`)) === true)
+
+  // ---- the tag pulse: 12 m behind is safe, 12 m ahead is caught ----
+  // On the start straight, 40 m before the line (the south straight's boost pad would launch a parked car).
+  await hunterPage.evaluate(`window.__pilot.stop(); window.__pilot.place(-40, 0)`)
+  await runnerPage.evaluate(`window.__pilot.stop(); window.__pilot.place(-52, 0)`)
+  await sleep(1400)
+  const behind = (await hunterPage.evaluate(`window.__pilot.rounds.firePulse()`)) as number
+  await sleep(500)
+  const afterBehind = await catchesOn(hunterPage)
+  check('a pulse at a runner 12 m BEHIND fires but catches nobody', behind === 0 && afterBehind === 1, { fired: behind, catches: afterBehind })
+  const cool = (await hunterPage.evaluate(`window.__pilot.rounds.firePulse()`)) as number
+  check('the pulse cools down (a second press straight away does nothing)', cool === -1, { second: cool })
+  await runnerPage.evaluate(`window.__pilot.stop(); window.__pilot.place(-28, 0)`)
+  await sleep(3800) // the rest of the 4 s cooldown, and the runner's new place reaching the hunter
+  const aim = await hunterPage.evaluate(`(() => { const t = window.__pilot.tel.telemetry, c = window.__game.cars.find((c) => c.kind === 'remote'); const r = (v) => Math.round(v * 10) / 10; return { hunter: [r(t.carPosition.x), r(t.carPosition.z)], nose: [r(t.carForward.x), r(t.carForward.z)], runner: c ? [r(c.position.x), r(c.position.z)] : null } })()`)
+  const ahead = (await hunterPage.evaluate(`window.__pilot.rounds.firePulse()`)) as number
+  await sleep(150)
+  const pulseText = await hunterPage.evaluate(`document.querySelector('[data-hud="turnsPulse"]')?.textContent ?? null`)
+  await hunterPage.screenshot({ path: `${k.shots}/turns-pulse.png` })
+  console.log(`  shot ${k.shots}/turns-pulse.png`)
+  const both2 = await Promise.all([host, join].map((p) => until<number>(p, `(() => { const c = window.__game.state.turns; const n = c ? Object.values(c.catches).reduce((a, b) => a + b, 0) : 0; return n === 2 ? 1 : 0 })()`, 3000)))
+  const pulseSeen = await runnerPage.evaluate(`window.__events.recent.filter((e) => e.type === 'turns.pulse').length`)
+  check('a pulse at a runner 12 m AHEAD catches them, counted on both screens', ahead === 1 && both2.every(Boolean), { caught: ahead, counted: both2, aim })
+  check("the runner's screen saw both pulses fire (the burst is drawn for everyone)", pulseSeen === 2, { pulses: pulseSeen })
+  check('the HUD shows the pulse cooling down right after it fires', typeof pulseText === 'string' && /^\d\.\d s$/.test(pulseText), { pulseText })
+
+  // ---- the turn swaps: the other player hunts (after the between-turns card) ----
+  const cardUp = await until<boolean>(runnerPage, `!!window.__game.state.turns && window.__game.state.turns.cardUntil > performance.now()`, 30000)
+  if (cardUp) {
+    await sleep(400)
+    await runnerPage.screenshot({ path: `${k.shots}/turns-card.png` })
+    console.log(`  shot ${k.shots}/turns-card.png`)
+  }
+  const t2 = await Promise.all([host, join].map((p) => until<number>(p, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.turns.index === 1 && r.turns.phase === 'play' ? r.itId : 0 })()`, 40000)))
+  check('the turn swaps and the other player hunts, on both screens', t2[0] === runnerId && t2[1] === runnerId, { hunters: t2, expected: runnerId, first: hunterId })
+  const [hp2, jp2] = [await posOf(host), await posOf(join)]
+  const apart2 = Math.hypot(hp2.x - jp2.x, hp2.z - jp2.z)
+  check('turn 2 starts far apart again (at least 150 m)', apart2 >= 150, { metres: Math.round(apart2) })
+  const t2hunt = await huntOf(runnerPage)
+  check('the new hunter gets the boost and the pulse', t2hunt.top !== null && t2hunt.top > t2hunt.base && t2hunt.pulse === 'Ready', t2hunt)
+
+  // ---- the round ends: the same catches on both screens ----
+  const done = await Promise.all([host, join].map((p) => until<boolean>(p, `window.__game.state.raceState === 'finished' && window.__game.state.mode === 'turns' && !!window.__game.state.turns?.done`, 40000)))
+  check('the round ends on both screens', done.every(Boolean))
+  await sleep(800)
+  const res = await Promise.all([host, join].map((p) => p.evaluate(`window.__game.state.raceResults.map((r) => [r.position, r.name, r.ms])`))) as [number, string, number][][]
+  check('the results agree on both screens (places, names, catches)', res[0].length === 2 && JSON.stringify(res[0]) === JSON.stringify(res[1]), { host: res[0], joiner: res[1] })
+  const hunterName = (await hunterPage.evaluate(`window.__game.state.turns.names.player`)) as string
+  check('the first hunter has 2 catches, the second none (nobody moved in turn 2)', res[0].find((x) => x[1] !== hunterName)?.[2] === 0 && res[0][0][2] === 2, res[0])
+  const endEvt = await join.evaluate(`window.__events.recent.find((e) => e.type === 'turns.end') ?? null`)
+  check('turns.end fired with every player', !!endEvt && Array.isArray((endEvt as { results: unknown[] }).results) && (endEvt as { results: unknown[] }).results.length === 2, endEvt)
+  await sleep(600)
+  for (const [p, who] of [[host, 'host'], [join, 'joiner']] as const) {
+    await p.screenshot({ path: `${k.shots}/turns-results-${who}.png` })
+    console.log(`  shot ${k.shots}/turns-results-${who}.png`)
+  }
+
+  // ---- D3: Again starts a new round; the joiner leaving it (mode change) ends it for the host ----
+  check('Again (G) starts a new round after the results', (await host.evaluate(`window.__pilot.rounds.requestStart()`)) === true)
+  const again = await Promise.all([host, join].map((p) => until<number>(p, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'turns' && !r.ended && window.__game.state.raceState === 'running' ? r.raceId : 0 })()`, 8000)))
+  check('...on both screens', !!again[0] && again[0] === again[1], again)
+  await join.evaluate(`window.__pilot.store.useGame.setState({ mode: 'free' })`)
+  const over = await until<boolean>(host, `(() => { const r = window.__pilot.rounds.currentRound(); return !!r && r.ended && window.__game.state.raceState === 'finished' })()`, 5000)
+  check('a Hunt Turns round with only one player left ends (results up for the one left)', !!over, await host.evaluate(`(() => { const r = window.__pilot.rounds.currentRound(); return r ? { ended: r.ended, quit: [...r.quit], state: window.__game.state.raceState } : null })()`))
+
+  // Back to where the other sections expect to be.
+  for (const p of [host, join]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame(); window.__pilot.store.useGame.setState({ mode: 'free' }) })()`)
+  const back = (await host.evaluate(`window.__pilot.current.loadTrackById(${JSON.stringify(k.track)}).ok`)) as boolean
+  await until<boolean>(join, `window.__pilot.current.getTrack()?.key === ${JSON.stringify(startKey)}`, 20000)
+  if (!back) console.log('  (could not reload the starting track)')
 }
 
 /**

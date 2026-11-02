@@ -32,6 +32,9 @@ import { TrackThumb, approxTrackLength } from '../TrackThumb'
 import { beginSession } from '../flow'
 import { formatLap, formatScore, formatTopSpeed, recordAngle } from '../format'
 
+/** The arena Hunt Turns is built for (tracks/thunder-bowl.json). */
+const TURNS_TRACK = 'thunder-bowl'
+
 const SOURCE_LABEL: Record<TrackSource, string> = {
   builtin: 'Built-in',
   drawn: 'Drawn',
@@ -44,6 +47,7 @@ const MODE_LABEL: Record<GameMode, string> = {
   race: 'Race',
   stunt: 'Stunt Attack',
   tag: 'Tag',
+  turns: 'Hunt Turns',
 }
 
 function countPieces(t: TrackListing) {
@@ -170,9 +174,11 @@ export function TrackSelectScreen() {
   const tracks = useMemo(() => listTracks(), [])
   const joinId = hostTrack?.id ?? trackId
   const joinName = hostTrack?.name ?? tracks.find((t) => t.id === joinId)?.name ?? joinId
+  // Hunt Turns is made for the Thunder Bowl: line it up (any track still works).
+  const lineUp = mode === 'turns' && tracks.some((t) => t.id === TURNS_TRACK) ? TURNS_TRACK : trackId
 
   return (
-    <NavScreen id="track" onBack={closeScreen} initial={joiner ? 'go' : `track:${tracks.some((t) => t.id === trackId) ? trackId : tracks[0]?.id}`}>
+    <NavScreen id="track" onBack={closeScreen} initial={joiner ? 'go' : `track:${tracks.some((t) => t.id === lineUp) ? lineUp : tracks[0]?.id}`}>
       <div className="screen screen--track">
         <div className="scrim scrim--full" aria-hidden="true" />
         <section className="panel track-pick" aria-label="Choose a track">

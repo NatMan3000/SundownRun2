@@ -9,7 +9,7 @@
 //                    and rewind (held Backspace / LB)
 //                    (only in the 'drive' context; zero elsewhere)
 //    controlSignals  edge-triggered nonces: reset, restart, camera,
-//                    pause, screenshot, race, nextSong
+//                    pause, screenshot, race, nextSong, pulse (F / RS click)
 //    menuBus         up / down / left / right / accept / back / tabs
 //                    (only in the 'menu' context, with key repeat)
 //
@@ -111,6 +111,8 @@ const PAD = {
   RT: 7,
   VIEW: 8,
   MENU: 9,
+  /** Right stick click (the right stick does nothing else while driving). */
+  RS: 11,
   UP: 12,
   DOWN: 13,
   LEFT: 14,
@@ -325,6 +327,9 @@ function onKeyDown(e: KeyboardEvent): void {
     case 'KeyN':
       controlSignals.nextSong++
       break
+    case 'KeyF':
+      controlSignals.pulse++
+      break
     default:
       handled = code === 'Escape'
   }
@@ -473,6 +478,7 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
       if (rising(PAD.RB) && !padSuppressed[PAD.RB]) controlSignals.cameraCycle++
       if (rising(PAD.X)) controlSignals.race++
       if (rising(PAD.B) && !padSuppressed[PAD.B]) controlSignals.nextSong++
+      if (rising(PAD.RS)) controlSignals.pulse++
     } else if (ctx === 'menu') {
       if (rising(PAD.A)) sendMenu('accept', 'gamepad')
       if (rising(PAD.B)) sendMenu('back', 'gamepad')

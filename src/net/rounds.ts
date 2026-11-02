@@ -3,6 +3,9 @@
 // ------------------------------------------------------------
 //  Anyone presses G (or X on the controller):
 //    - in Tag mode, a 3-minute tag round starts for everyone
+//    - in Hunt Turns, a round of turns starts for everyone, each
+//      player hunting once (its rules and catches: turns.ts, which
+//      this file drives)
 //    - otherwise, a race starts for everyone
 //
 //  How everyone stays in step with no server deciding anything:
@@ -26,6 +29,11 @@
 //       number so an old message can't undo a newer one. The new "it"
 //       can't tag anyone for 2 seconds (no tag-backs). Everyone counts
 //       how long each player has been "it"; least time wins.
+//    5. Hunt Turns: the hunter is "it" for its turn, and only the
+//       hunter's computer decides a catch (contact, reach, its tag
+//       pulse, or a runner's "I touched you"), announced with a
+//       sequence number; the caught runner's own computer throws its
+//       car far away (turns.ts).
 //
 //  Two people pressing G at the same moment: both starts arrive
 //  everywhere, and everyone keeps the one with the lower raceId, so
@@ -36,12 +44,15 @@
 //  waiting for you in it. A race ends once nobody left in it is still
 //  racing; a tag round ends when fewer than two are left. If someone
 //  started a new round while you were still in the old one, leaving
-//  the old one drops you into theirs.
+//  the old one drops you into theirs. A Hunt Turns round ends when
+//  fewer than two are left, and you can only be dropped into one
+//  during its first turn.
 //
 //  Writes (agreed with the orchestrator): store race fields
 //  (raceState, raceGoAt, raceLaps, racePosition, raceRacers,
-//  raceResults) in multiplayer, the tag fields, store.mode on a synced
-//  start, CarState.isIt, and propsSignal while multiplayer is on.
+//  raceResults) in multiplayer, the tag fields, store.turns (turns.ts),
+//  store.mode on a synced start, CarState.isIt, and propsSignal while
+//  multiplayer is on.
 // ============================================================
 
 import * as THREE from 'three'
@@ -59,6 +70,25 @@ import { playerName } from './identity'
 import { onMessage, previousId, send, statsExtra, weAreDriving } from './client'
 import { carIdFor, getNet, multiplayerLaps, peerLive, relayIdOf, useNet } from './netStore'
 import type { FinishMsg, PlacesMsg, QuitMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
+import type { GameMode } from '../core/store'
+import {
+  announceCatch,
+  announceTurn,
+  applyCatch,
+  canCatch,
+  endTurns,
+  firePulse as firePulseOn,
+  newTurnsState,
+  placeForTurn,
+  publish as publishTurns,
+  pulseFrom,
+  remapTurns,
+  tickTurns,
+  turnSeconds,
+  turnsRulesNow,
+  turnsWrappingUp,
+} from './turns'
+import type { TurnsCtx, TurnsState } from './turns'
 
 /**
  * The order authority only swaps two cars once the one behind is this far
@@ -86,8 +116,8 @@ const TAG_SETTLE_MS = 1200
 /** Ram turned off: tag by getting this close instead (metres between car centres). */
 const TAG_REACH_NO_RAM_M = 3.2
 
-interface Round {
-  kind: 'race' | 'tag'
+export interface Round {
+  kind: 'race' | 'tag' | 'turns'
   raceId: number
   /** Relay ids in grid order. */
   grid: number[]
@@ -124,6 +154,8 @@ interface Round {
   order: number[]
   /** Race: when we (as the authority) last sent the order. */
   orderSentAt: number
+  /** Hunt Turns: the round (turns.ts). Null for races and tag. */
+  turns: TurnsState | null
 }
 
 /** "It" must be gone this long before it passes on (a quick reconnect keeps it). */
@@ -155,6 +187,11 @@ function nameOf(relayId: number): string {
   return round?.names.get(relayId) ?? getNet().peers[relayId]?.name ?? `PLAYER ${relayId}`
 }
 
+/** The game mode a round kind is played in. */
+function modeOfKind(kind: Round['kind']): GameMode {
+  return kind === 'tag' ? 'tag' : kind === 'turns' ? 'turns' : 'race'
+}
+
 /** Players who could race right now: us, plus peers driving on our track. Sorted relay ids. */
 function driversNow(): number[] {
   const track = getTrack()
@@ -179,10 +216,11 @@ export function requestStart(): boolean {
   if (getGame().phase === 'editor' || getGame().phase === 'title' || getGame().phase === 'loading') return false
   const track = getTrack()
   if (!track) return false
-  const kind: 'race' | 'tag' = getGame().mode === 'tag' ? 'tag' : 'race'
+  const mode = getGame().mode
+  const kind: Round['kind'] = mode === 'tag' ? 'tag' : mode === 'turns' ? 'turns' : 'race'
   const grid = driversNow()
-  if (kind === 'tag' && grid.length < 2) {
-    console.info('[net] tag needs at least two players on the same track')
+  if (kind !== 'race' && grid.length < 2) {
+    console.info(`[net] ${kind === 'tag' ? 'tag' : 'Hunt Turns'} needs at least two players on the same track`)
     return false
   }
   const raceId = 1 + Math.floor(Math.random() * 0x7ffffffe)
@@ -192,10 +230,11 @@ export function requestStart(): boolean {
     raceId,
     round: 1 + Math.floor(Math.random() * 0x7ffffffe),
     laps: track.file.laps ?? multiplayerLaps(getSettings().raceLaps),
-    seconds: tagSeconds(),
-    // Who starts as "it": picked from the raceId, so it is random but the same everywhere.
+    seconds: kind === 'turns' ? turnSeconds() : tagSeconds(),
+    // Who starts as "it" (Hunt Turns: hunts first): picked from the raceId, so it is random but the same everywhere.
     itId: grid[raceId % grid.length],
     grid,
+    ...(kind === 'turns' ? { turns: turnsRulesNow() } : {}),
   }
   send(msg)
   applyStart(msg, 0)
@@ -213,6 +252,7 @@ const _slotQuat = new THREE.Quaternion()
 function wrappingUp(r: Round): boolean {
   if (r.ended || !r.inGrid) return true
   if (r.kind === 'tag') return performance.now() >= r.endsAt
+  if (r.kind === 'turns') return turnsWrappingUp(r)
   return r.finishes.has(myId())
 }
 
@@ -223,6 +263,7 @@ function applyStart(msg: StartMsg, agoMs: number): void {
       // Close ours properly (results, events) and take the new one.
       if (round.inGrid && round.started) {
         if (round.kind === 'tag') endTag(round)
+        else if (round.kind === 'turns') endTurnsRound(round)
         else endRace(round)
       } else round.ended = true
     } else if (round.started || msg.raceId > round.raceId) {
@@ -263,6 +304,7 @@ function applyStart(msg: StartMsg, agoMs: number): void {
     itMissingSince: 0,
     order: msg.grid.slice(),
     orderSentAt: 0,
+    turns: msg.kind === 'turns' ? newTurnsState(msg) : null,
   }
   round = r
 
@@ -277,7 +319,8 @@ function applyStart(msg: StartMsg, agoMs: number): void {
   const g = getGame()
   if (g.phase === 'paused' || g.phase === 'results') resumeGame()
   useGame.setState({
-    mode: r.kind === 'tag' ? 'tag' : 'race',
+    mode: modeOfKind(r.kind),
+    turns: null,
     raceState: 'countdown',
     raceGoAt: r.goAt,
     raceLaps: r.laps,
@@ -290,16 +333,46 @@ function applyStart(msg: StartMsg, agoMs: number): void {
   })
   statsExtra.lap = 0
 
-  // Line up: our own car to our own slot, frozen until GO.
+  // Line up: our own car to our own slot, frozen until GO. Hunt Turns: spread round the arena instead.
   const track = getTrack()
   const player = getCar('player')
-  if (track && player?.api) {
+  if (r.kind === 'turns') placeForTurn(r, 0, turnsCtx)
+  else if (track && player?.api) {
     track.gridSlot(r.grid.indexOf(me), _slotPos, _slotQuat)
     player.api.teleport(_slotPos, _slotQuat)
-    player.api.setFrozen(true)
   }
+  player?.api?.setFrozen(true)
   emit('race.countdown', { seconds: Math.round(COUNTDOWN_MS / 1000), racers: r.grid.length })
   if (r.kind === 'tag') emit('tag.it', { id: carIdOn(r.itId), name: nameOf(r.itId), byId: null })
+  if (r.kind === 'turns') {
+    announceTurn(r, turnsCtx)
+    publishTurns(r, turnsCtx, true)
+  }
+}
+
+/** What turns.ts borrows from this file. */
+const turnsCtx: TurnsCtx = {
+  myId,
+  carIdOn,
+  nameOf,
+  inRound: (r, id) => inRound(r, id),
+  countDown: (r, goAt) => {
+    getCar('player')?.api?.setFrozen(true)
+    useGame.setState({ raceState: 'countdown', raceGoAt: goAt })
+    emit('race.countdown', { seconds: Math.round(Math.max(0, goAt - performance.now()) / 1000), racers: r.grid.length })
+  },
+  go: (r) => {
+    getCar('player')?.api?.setFrozen(false)
+    useGame.setState({ raceState: 'running' })
+    emit('race.start', { racers: r.grid.length, laps: 0 })
+  },
+}
+
+/** Hunt Turns: fire the tag pulse if we're hunting (F / click the right stick). How many it caught, or -1 if it couldn't fire. */
+export function firePulse(): number {
+  const r = round
+  if (!r || r.kind !== 'turns' || r.ended) return -1
+  return firePulseOn(r, turnsCtx)
 }
 
 function secondsRecord(r: Round): Record<string, number> {
@@ -452,16 +525,24 @@ export function waitingForRacers(): boolean {
 
 // ---------------------------------------------------------------- tag
 
-/** We are "it", the round is on, and the no-tag-back time is over. */
+/**
+ * We are "it", the round is on, and the no-tag-back time is over. Hunt Turns: we hunt, a turn is
+ * on, and the no-catch time after the last catch is over (a bump now is a catch).
+ */
 export function canTag(): boolean {
   const r = round
+  if (r && r.kind === 'turns') return !r.ended && r.started && canCatch(r, turnsCtx)
   return !!r && r.kind === 'tag' && r.started && !r.ended && r.inGrid && r.itId === myId() && performance.now() >= r.noTagUntil
 }
 
-/** Our car touched this remote player while we were "it": they are "it" now. */
+/** Our car touched this remote player while we were "it": they are "it" now. (Hunt Turns: we caught them.) */
 export function tagged(relayId: number): void {
   const r = round
   if (!r || !canTag() || !r.grid.includes(relayId) || relayId === myId()) return
+  if (r.kind === 'turns') {
+    announceCatch(r, turnsCtx, relayId, 'touch')
+    return
+  }
   const msg: TagMsg = { t: 'tag', raceId: r.raceId, itId: relayId, seq: r.seq + 1, itSeconds: r.seconds.get(myId()) ?? 0 }
   send(msg)
   applyTag(msg, myId())
@@ -476,7 +557,8 @@ let lastTouchAt = 0
  */
 export function touchedIt(relayId: number): void {
   const r = round
-  if (!r || r.kind !== 'tag' || !r.started || r.ended || !r.inGrid) return
+  if (!r || (r.kind !== 'tag' && r.kind !== 'turns') || !r.started || r.ended || !r.inGrid) return
+  if (r.kind === 'turns' && (r.turns?.phase !== 'play' || performance.now() < (r.turns?.noCatchUntil ?? 0))) return
   if (r.itId !== relayId || r.itId === myId()) return
   const now = performance.now()
   if (now < r.noTagUntil || now - lastTouchAt < 500) return
@@ -517,6 +599,12 @@ function endTag(r: Round): void {
   }
 }
 
+/** The Hunt Turns round is over: results (turns.ts), and nobody glows any more. */
+function endTurnsRound(r: Round): void {
+  endTurns(r, turnsCtx)
+  for (const c of cars) c.isIt = false
+}
+
 // ---------------------------------------------------------------- reconnects
 
 /** Someone's relay id changed mid-round (a reconnect): carry their place, time and name over. */
@@ -541,6 +629,10 @@ function remap(r: Round, oldId: number, newId: number): void {
   if (r.itId === oldId) r.itId = newId
   r.order = r.order.map((id) => (id === oldId ? newId : id))
   if (r.inGrid && r.kind === 'tag') useGame.setState({ tagItId: carIdOn(r.itId), tagSeconds: secondsRecord(r) })
+  if (r.turns) {
+    remapTurns(r.turns, oldId, newId)
+    publishTurns(r, turnsCtx, true)
+  }
 }
 
 /** We're back online with a new relay id: rejoin the round we were in, or let it go. */
@@ -578,13 +670,14 @@ function quitRound(r: Round): void {
   for (const c of cars) c.isIt = false
   const g = getGame()
   // Keep a results screen that's already up; otherwise nothing of the old round shows.
-  if (g.phase !== 'results') useGame.setState({ raceState: 'idle', raceResults: [], tagItId: null, tagSeconds: {}, tagEndsAt: 0 })
+  if (g.phase !== 'results') useGame.setState({ raceState: 'idle', raceResults: [], tagItId: null, tagSeconds: {}, tagEndsAt: 0, turns: null })
   const pending = ignoredStart
   ignoredStart = null
   if (!pending || pending.msg.raceId === r.raceId || g.phase !== 'playing') return
-  if (g.mode !== (pending.msg.kind === 'tag' ? 'tag' : 'race')) return
+  if (g.mode !== modeOfKind(pending.msg.kind)) return
   const ago = performance.now() - pending.at
-  const left = pending.msg.kind === 'tag' ? COUNTDOWN_MS + pending.msg.seconds * 1000 - ago : LATE_RACE_JOIN_MS - ago
+  // Tag: any time before its clock runs out. Hunt Turns: during its first turn. Race: its first minute.
+  const left = pending.msg.kind === 'race' ? LATE_RACE_JOIN_MS - ago : COUNTDOWN_MS + pending.msg.seconds * 1000 - ago
   if (left > 0) applyStart(pending.msg, ago)
 }
 
@@ -595,7 +688,7 @@ const LATE_RACE_JOIN_MS = 60000
 function watchForLeaving(s: ReturnType<typeof getGame>, prev: ReturnType<typeof getGame>): void {
   const r = round
   if (!r || r.ended || !r.inGrid) return
-  const kindMode = r.kind === 'tag' ? 'tag' : 'race'
+  const kindMode = modeOfKind(r.kind)
   const left =
     (s.mode !== prev.mode && s.mode !== kindMode) ||
     s.trackVersion !== prev.trackVersion ||
@@ -609,13 +702,14 @@ function endOffline(r: Round): void {
   r.offlineSince = 0
   statsExtra.lap = -1
   getCar('player')?.api?.setFrozen(false)
-  useGame.setState({ raceState: 'idle', tagItId: null, tagEndsAt: 0 })
+  useGame.setState({ raceState: 'idle', tagItId: null, tagEndsAt: 0, turns: null })
   for (const c of cars) c.isIt = false
 }
 
 // ---------------------------------------------------------------- every frame
 
 let lastRaceNonce = -1
+let lastPulseNonce = -1
 
 /** Called every render frame by NetLayer. Cheap; no allocation on the hot path. */
 export function roundsTick(dt: number): void {
@@ -624,6 +718,12 @@ export function roundsTick(dt: number): void {
   if (controlSignals.race !== lastRaceNonce) {
     lastRaceNonce = controlSignals.race
     if (weAreDriving()) requestStart()
+  }
+  // F / right stick click: the Hunt Turns tag pulse (nothing happens unless we're hunting).
+  if (lastPulseNonce < 0) lastPulseNonce = controlSignals.pulse
+  if (controlSignals.pulse !== lastPulseNonce) {
+    lastPulseNonce = controlSignals.pulse
+    if (weAreDriving()) firePulse()
   }
 
   const r = round
@@ -649,7 +749,26 @@ export function roundsTick(dt: number): void {
   }
 
   if (r.kind === 'race') tickRace(r, now)
-  else tickTag(r, now, dt)
+  else if (r.kind === 'tag') tickTag(r, now, dt)
+  else tickTurnsRound(r, now)
+}
+
+function tickTurnsRound(r: Round, now: number): void {
+  // Everyone else left (quit): the round is over.
+  if (r.grid.filter((id) => !r.quit.has(id)).length < 2) {
+    endTurnsRound(r)
+    return
+  }
+  tickTurns(r, turnsCtx, now, endTurnsRound)
+  if (r.ended) return
+  const t = r.turns
+  const hunting = !!t && (t.phase === 'count' || t.phase === 'play')
+  // The hunter glows (look draws the aura from CarState.isIt); nobody between turns.
+  for (let i = 0; i < cars.length; i++) {
+    const c = cars[i]
+    if (c.kind === 'player') c.isIt = hunting && r.itId === myId()
+    else if (c.kind === 'remote') c.isIt = hunting && relayIdOf(c.id) === r.itId
+  }
 }
 
 function tickRace(r: Round, now: number): void {
@@ -792,6 +911,12 @@ export function startRounds(): void {
       if (round && round.kind === 'race' && round.raceId === m.raceId && !round.ended) applyOrder(round, m.order)
     }),
     // Someone says they touched us while we're "it": we decide, as always.
+    onMessage('catch', (m) => {
+      if (round && round.kind === 'turns' && !round.ended) applyCatch(round, turnsCtx, m, m.from)
+    }),
+    onMessage('pulse', (m) => {
+      if (round && round.kind === 'turns' && !round.ended) pulseFrom(round, turnsCtx, m)
+    }),
     onMessage('tagTouch', (m) => {
       if (m.to !== myId() || !round || round.raceId !== m.raceId) return
       if (canTag() && round.grid.includes(m.from)) tagged(m.from)

@@ -1,0 +1,144 @@
+{
+  "format": "sundown-run-track",
+  "version": 1,
+  "id": "thunder-bowl",
+  "name": "Thunder Bowl",
+  "author": "Sundown Run II",
+  "description": "A walled neon arena packed with ramps, rings and bullseyes round a little ring road. Built for Hunt Turns: take turns hunting each other, and there is nowhere to hide for long.",
+  "laps": 3,
+  "road": {
+    "points": [
+      {
+        "x": -50,
+        "z": -40
+      },
+      {
+        "x": -35.7,
+        "z": -40
+      },
+      {
+        "x": -21.4,
+        "z": -40
+      },
+      {
+        "x": -7.1,
+        "z": -40
+      },
+      {
+        "x": 7.1,
+        "z": -40
+      },
+      {
+        "x": 21.4,
+        "z": -40
+      },
+      {
+        "x": 35.7,
+        "z": -40
+      },
+      {
+        "x": 50,
+        "z": -40
+      },
+      {
+        "x": 73.5,
+        "z": -32.4
+      },
+      {
+        "x": 88,
+        "z": -12.4
+      },
+      {
+        "x": 88,
+        "z": 12.4
+      },
+      {
+        "x": 73.5,
+        "z": 32.4
+      },
+      {
+        "x": 50,
+        "z": 40
+      },
+      {
+        "x": 35.7,
+        "z": 40
+      },
+      {
+        "x": 21.4,
+        "z": 40
+      },
+      {
+        "x": 7.1,
+        "z": 40
+      },
+      {
+        "x": -7.1,
+        "z": 40
+      },
+      {
+        "x": -21.4,
+        "z": 40
+      },
+      {
+        "x": -35.7,
+        "z": 40
+      },
+      {
+        "x": -50,
+        "z": 40
+      },
+      {
+        "x": -73.5,
+        "z": 32.4
+      },
+      {
+        "x": -88,
+        "z": 12.4
+      },
+      {
+        "x": -88,
+        "z": -12.4
+      },
+      {
+        "x": -73.5,
+        "z": -32.4
+      }
+    ],
+    "width": 16,
+    "barriers": "none",
+    "banking": {
+      "auto": false
+    }
+  },
+  "pieces": [
+    {
+      "type": "boost",
+      "at": 15.5
+    }
+  ],
+  "start": {
+    "at": 5
+  },
+  "environment": {
+    "size": 540,
+    "terrain": {
+      "kind": "flat",
+      "height": 0,
+      "edge": "wall"
+    },
+    "sky": {
+      "timeOfDay": 0.15,
+      "sunAzimuthDeg": 250
+    },
+    "palette": {
+      "edge": "#ff2bd6"
+    },
+    "roadside": {
+      "billboards": 0
+    },
+    "music": {
+      "mood": "hyper"
+    }
+  }
+}

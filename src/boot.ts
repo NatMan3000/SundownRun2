@@ -14,7 +14,7 @@ import { lastPlayedTrackId, startSession } from './core/session'
 import { loadTrackById } from './track/current'
 import { getTrackFile } from './track/registry'
 
-const MODES: GameMode[] = ['free', 'timetrial', 'race', 'stunt', 'tag']
+const MODES: GameMode[] = ['free', 'timetrial', 'race', 'stunt', 'tag', 'turns']
 
 export function boot(): void {
   const urlTrack = urlParam('track')

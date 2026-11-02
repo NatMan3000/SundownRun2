@@ -2,7 +2,7 @@
 //  HUD - what you see while driving
 // ------------------------------------------------------------
 //  Corners only, so nothing covers the road ahead:
-//    top-left      race position / stunt / tag panel, then the lap
+//    top-left      race position / stunt / tag / hunt turns panel, then the lap
 //                  panel (lap, clock, last, best, sector ticks, the
 //                  off-road marker), then the energy-core hunt,
 //                  then for a few seconds when a song starts, its
@@ -17,7 +17,8 @@
 //    speed cue     in the stunt park, above the speed: the launch
 //                  you're lined up on and its speed (ParkCue.tsx)
 //  The 3-2-1-GO countdown is the one thing allowed in the middle,
-//  and only while the cars are still on the grid.
+//  and only while the cars are still on the grid (plus Hunt Turns'
+//  short between-turns card, while nobody can catch).
 //
 //  Two update paths, on purpose (CONSTITUTION section 2):
 //    - Numbers that change every frame (speed, rpm, the lap clock,
@@ -42,7 +43,7 @@ import { gpuInfo } from '../gpu'
 import { getRaceOrder } from '../../net'
 import { SoundHint } from '../SoundHint'
 import { NowPlaying } from './NowPlaying'
-import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, useModePanels } from './Panels'
+import { AirTrickHint, Countdown, DriveHint, HuntPanel, RacePanel, SpeedTrap, StuntPanel, TagPanel, Toasts, TrickBoard, TrickFeed, TurnsCard, TurnsPanel, useModePanels } from './Panels'
 import { drawMinimap, invalidateMinimap, setMinimapCanvas } from './Minimap'
 import { RewindMeter, RewindRefused, RewindScreen, resetRewindShown, writeRewind } from './Rewind'
 import { ParkCue } from './ParkCue'
@@ -208,6 +209,12 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
       tagHunt: null as HTMLElement | null,
       tagArrow: null as SVGElement | null,
       tagDist: null as HTMLElement | null,
+      turnsClock: null as HTMLElement | null,
+      turnsPulse: null as HTMLElement | null,
+      turnsHunt: null as HTMLElement | null,
+      turnsHuntLabel: null as HTMLElement | null,
+      turnsArrow: null as SVGElement | null,
+      turnsDist: null as HTMLElement | null,
       countdown: null as HTMLElement | null,
       raceLap: null as HTMLElement | null,
       rewindFx: null as HTMLElement | null,
@@ -224,6 +231,8 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
       hunt.shown = false
       hunt.deg = 9999
       hunt.m = -1
+      hunt.label = ''
+      pulseShown = ''
       for (const k of Object.keys(refs) as (keyof typeof refs)[]) (refs as Record<string, Element | null>)[k] = q(k)
     }
 
@@ -244,6 +253,7 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
     let lastScoreShown = -1
     let lastCount = ''
     let lastPhasePlaying = false
+    let pulseShown = ''
 
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick)
@@ -267,8 +277,9 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
       shownScore += (g.trickScore - shownScore) * (1 - Math.exp(-dt * 7))
       if (Math.abs(g.trickScore - shownScore) < 0.5) shownScore = g.trickScore
 
-      // Tag: while you're "it", an arrow to the nearest player, every frame.
-      if (refs.tagHunt) writeHunt(refs.tagHunt, refs.tagArrow, refs.tagDist)
+      // Tag: while you're "it", an arrow to the nearest player. Hunt Turns: to the nearest runner, or to the hunter. Every frame.
+      if (refs.tagHunt) writeHunt(refs.tagHunt, refs.tagArrow, refs.tagDist, null)
+      if (refs.turnsHunt) writeHunt(refs.turnsHunt, refs.turnsArrow, refs.turnsDist, refs.turnsHuntLabel)
 
       // rpm arc and boost glow: every frame, but only when they actually move.
       const rpmRaw = telemetry.rpm < 0 ? 0 : telemetry.rpm > 1 ? 1 : telemetry.rpm
@@ -340,6 +351,18 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
           refs.trickScore.textContent = formatScore(score)
         }
         if (refs.huntClock && g.huntStartedAt > 0) refs.huntClock.textContent = formatLap(now - g.huntStartedAt)
+        // Hunt Turns: the pulse, at the text rate so it turns over the moment it fires. Ready, or the
+        // seconds until it is (it also waits out the fresh-chase time after a catch).
+        const pt = g.turns
+        if (refs.turnsPulse && pt) {
+          const wait = Math.max(pt.pulseReadyAt, pt.noCatchUntil, pt.goAt) - now
+          const txt = wait <= 0 ? 'Ready' : `${(wait / 1000).toFixed(1)} s`
+          if (txt !== pulseShown) {
+            pulseShown = txt
+            refs.turnsPulse.textContent = txt
+            refs.turnsPulse.classList.toggle('is-ready', wait <= 0)
+          }
+        }
       }
 
       // Slow numbers (4 a second): mode clocks and the race gap.
@@ -348,6 +371,12 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
         if (refs.stuntClock) refs.stuntClock.textContent = formatClock(g.stuntEndsAt > 0 ? (g.stuntEndsAt - now) / 1000 : 0)
         if (refs.tagClock) refs.tagClock.textContent = formatClock(g.tagEndsAt > 0 ? (g.tagEndsAt - now) / 1000 : 0)
         if (refs.tagMine) refs.tagMine.textContent = `${(g.tagSeconds.player ?? 0).toFixed(1)} s`
+        const tv = g.turns
+        if (refs.turnsClock) {
+          // The countdown shows the whole turn; between turns and after the round, nothing ticks.
+          const left = !tv || tv.done || tv.cardUntil > now ? 0 : now < tv.goAt ? (tv.endsAt - tv.goAt) / 1000 : (tv.endsAt - now) / 1000
+          refs.turnsClock.textContent = formatClock(left)
+        }
         if (refs.raceGap) refs.raceGap.textContent = raceGapText(g.raceState)
         if (refs.raceLap) refs.raceLap.textContent = raceLapText(g.raceLaps, g.raceState)
       }
@@ -371,13 +400,17 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
 /** "Lap 2 of 3" from the player's car (cars 'player'.lap = laps done this race). */
 const _toTarget = new THREE.Vector3()
 const _inv = new THREE.Quaternion()
-const hunt = { shown: false, deg: 9999, m: -1 }
+const hunt = { shown: false, deg: 9999, m: -1, label: '' }
 
-/** The "Nearest" row: shown only while we're "it"; the arrow turns toward the nearest player. */
-function writeHunt(row: HTMLElement, arrow: SVGElement | null, dist: HTMLElement | null): void {
+/**
+ * The arrow row: while we hunt (tag's "it", Hunt Turns' hunter), "Nearest" and the way to the
+ * nearest player; Hunt Turns' runner, "Hunter" and the way to whoever is hunting.
+ */
+function writeHunt(row: HTMLElement, arrow: SVGElement | null, dist: HTMLElement | null, label: HTMLElement | null): void {
   const me = getCar('player')
   let near: CarState | null = null
   let best = Infinity
+  let what = 'Nearest'
   if (me?.isIt) {
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i]
@@ -388,6 +421,16 @@ function writeHunt(row: HTMLElement, arrow: SVGElement | null, dist: HTMLElement
         near = c
       }
     }
+  } else if (me && getGame().mode === 'turns') {
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i]
+      if (c.kind === 'remote' && c.isIt) {
+        near = c
+        best = c.position.distanceToSquared(me.position)
+        what = 'Hunter'
+        break
+      }
+    }
   }
   const show = !!me && !!near
   if (show !== hunt.shown) {
@@ -395,6 +438,10 @@ function writeHunt(row: HTMLElement, arrow: SVGElement | null, dist: HTMLElement
     row.style.display = show ? '' : 'none'
   }
   if (!show || !me || !near) return
+  if (label && what !== hunt.label) {
+    hunt.label = what
+    label.textContent = what
+  }
   // Into the car's own frame (nose +z): ahead is up, a player to the right turns the arrow right.
   _toTarget.copy(near.position).sub(me.position).applyQuaternion(_inv.copy(me.quaternion).invert())
   const deg = Math.round((Math.atan2(-_toTarget.x, _toTarget.z) * 180) / Math.PI)
@@ -475,7 +522,8 @@ export function Hud() {
         {panels.race && <RacePanel />}
         {panels.stunt && <StuntPanel />}
         {panels.tag && <TagPanel />}
-        {!panels.stunt && !panels.tag && <LapPanel />}
+        {panels.turns && <TurnsPanel />}
+        {!panels.stunt && !panels.tag && !panels.turns && <LapPanel />}
         {panels.hunt && <HuntPanel />}
         {visible && <SoundHint variant="chip" />}
         {visible && <NowPlaying />}
@@ -494,6 +542,7 @@ export function Hud() {
       <Toasts />
       <RewindRefused />
       <Countdown />
+      {panels.turns && <TurnsCard />}
       {visible && <DriveHint />}
       {visible && <AirTrickHint />}
     </div>

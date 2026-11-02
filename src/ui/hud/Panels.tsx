@@ -5,6 +5,10 @@
 //  StuntPanel  time left, score, your best
 //  HuntPanel   energy cores found / total, the hunt clock
 //  TagPanel    who's "it", your seconds as it, round clock
+//  TurnsPanel  Hunt Turns: hunting or running, the turn and its clock,
+//              everyone's catches, the pulse (hunter), and an arrow
+//              to the nearest runner (hunter) or to the hunter
+//  TurnsCard   Hunt Turns: the between-turns card ("Your turn to hunt")
 //  TrickBoard  banked trick points + the live combo
 //  TrickFeed   the latest tricks, landing by landing
 //  Toasts      short top-centre messages (best lap, joined ...)
@@ -140,6 +144,87 @@ export function TagPanel() {
   )
 }
 
+// ---------------------------------------------------------------- hunt turns
+
+function nameFor(id: string, names: Record<string, string>): string {
+  return id === 'player' ? 'You' : names[id] ?? getCar(id)?.name ?? 'Someone'
+}
+
+export function TurnsPanel() {
+  const turns = useGame((s) => s.turns)
+  const hunter = turns?.hunterId ?? null
+  const me = hunter === 'player'
+  const names = turns?.names ?? {}
+  // You first, then everyone else by catches.
+  const ids = turns ? Object.keys(turns.catches).sort((a, b) => (a === 'player' ? -1 : b === 'player' ? 1 : (turns.catches[b] ?? 0) - (turns.catches[a] ?? 0))) : []
+  const big = !turns ? 'Get ready' : turns.done ? 'Round over' : hunter === null ? 'Next turn' : me ? 'You\'re hunting' : 'Run!'
+  return (
+    <div className={`hud-panel hud-mode hud-tagp hud-turnsp${me ? ' is-it' : ''}`}>
+      <div className="hud-mode__top">
+        <span className="hud-label">{turns ? `Turn ${turns.turn} of ${turns.turns}` : 'Hunt Turns'}</span>
+        <span className={`hud-mode__clock${turns && !turns.done ? '' : ' is-idle'}`} data-hud="turnsClock">
+          0:00
+        </span>
+      </div>
+      <div className="hud-mode__big hud-tagp__it">{big}</div>
+      {hunter !== null && !me && <div className="hud-turnsp__who">{nameFor(hunter, names)} is hunting</div>}
+      <div className="hud-turnsp__rows">
+        {ids.map((id) => (
+          <div key={id} className={`hud-turnsp__row${id === hunter ? ' is-hunter' : ''}${id === 'player' ? ' is-me' : ''}`}>
+            <span className="hud-turnsp__name">{nameFor(id, names)}</span>
+            <b className="hud-turnsp__n">{turns?.catches[id] ?? 0}</b>
+          </div>
+        ))}
+        <div className="hud-turnsp__unit">catches</div>
+      </div>
+      {/* The hunter's tag pulse: ready, or how long until it is (the HUD loop writes it). Always in the
+          DOM (hidden while running) so the loop's handle on it survives the panel re-rendering. */}
+      <div className="hud-lap__row hud-turnsp__pulse" style={{ display: me ? '' : 'none' }}>
+        <span>Pulse</span>
+        <b data-hud="turnsPulse">Ready</b>
+      </div>
+      {/* Hunter: the way to the nearest runner. Runner: the way to the hunter, and how far. (The HUD loop fills it in.) */}
+      <div className="hud-lap__row hud-tagp__hunt" data-hud="turnsHunt" style={{ display: 'none' }}>
+        <span data-hud="turnsHuntLabel">Nearest</span>
+        <b>
+          <svg className="hud-tagp__arrow" data-hud="turnsArrow" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2 L20 20 L12 15.5 L4 20 Z" />
+          </svg>
+          <span data-hud="turnsDist">0 m</span>
+        </b>
+      </div>
+    </div>
+  )
+}
+
+/** Between two turns: who hunts next, and how the last turn went. Shown until the next countdown. */
+export function TurnsCard() {
+  const turns = useGame((s) => s.turns)
+  const until = turns?.cardUntil ?? 0
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!until) return
+    const left = until - performance.now()
+    if (left <= 0) return
+    const t = setTimeout(() => setTick((n) => n + 1), left + 30)
+    return () => clearTimeout(t)
+  }, [until])
+  if (!turns || !until || performance.now() >= until) return null
+  const next = turns.nextHunterId
+  const last = turns.history[turns.history.length - 1]
+  const lastLine = last ? `${last.hunterId === 'player' ? 'You' : nameFor(last.hunterId, turns.names)} caught ${last.catches === 0 ? 'nobody' : last.catches === 1 ? '1' : last.catches}` : ''
+  return (
+    <div className={`hud-turnscard${next === 'player' ? ' is-hunter' : ''}`} role="status">
+      <span className="hud-label">
+        Turn {turns.turn} of {turns.turns}
+      </span>
+      <span className="hud-turnscard__big">{next === 'player' ? 'Your turn to hunt' : 'Run!'}</span>
+      {next !== null && next !== 'player' && <span className="hud-turnscard__sub">{nameFor(next, turns.names)} hunts next</span>}
+      {lastLine && <span className="hud-turnscard__last">Last turn: {lastLine}</span>}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------- tricks
 
 export function TrickBoard() {
@@ -255,6 +340,7 @@ export function DriveHint() {
   const pad = useGame((s) => s.inputDevice) === 'gamepad'
   const round = useGame((s) => s.round)
   const mp = useGame((s) => s.multiplayer)
+  const mode = useGame((s) => s.mode)
   const [gone, setGone] = useState(false)
   const driven = useRef(0)
   useEffect(() => {
@@ -272,9 +358,11 @@ export function DriveHint() {
   // Rewind is off in multiplayer, so its hint is too.
   const items = (pad ? PAD_HINTS : KEY_HINTS).filter(([, label]) => !(mp && label === 'Rewind'))
   const race: [string, string] | null = mp ? [pad ? 'X' : 'G', 'Start a race'] : null
+  // Hunt Turns: the hunter's tag pulse.
+  const pulse: [string, string] | null = mp && mode === 'turns' ? [pad ? 'RS' : 'F', 'Tag pulse'] : null
   return (
     <div className={`hud-hint${gone ? ' is-gone' : ''}`} aria-hidden={gone}>
-      {[...items, ...(race ? [race] : [])].map(([k, label]) => (
+      {[...items, ...(pulse ? [pulse] : []), ...(race ? [race] : [])].map(([k, label]) => (
         <span className="hint" key={k}>
           <Glyph name={k} pad={pad} />
           <span className="hint__label">{label}</span>
@@ -334,7 +422,7 @@ export function AirTrickHint() {
 }
 
 /** Which mode panel goes in the top-left, under (or instead of) the lap panel. */
-export function useModePanels(): { race: boolean; stunt: boolean; hunt: boolean; tag: boolean; tricks: boolean } {
+export function useModePanels(): { race: boolean; stunt: boolean; hunt: boolean; tag: boolean; turns: boolean; tricks: boolean } {
   const mode = useGame((s) => s.mode)
   const coresTotal = useGame((s) => s.coresTotal)
   const tricks = useSettings((s) => s.tricks)
@@ -343,6 +431,7 @@ export function useModePanels(): { race: boolean; stunt: boolean; hunt: boolean;
     stunt: mode === 'stunt',
     hunt: mode === 'free' && coresTotal > 0,
     tag: mode === 'tag',
-    tricks: tricks && (mode === 'free' || mode === 'stunt' || mode === 'tag'),
+    turns: mode === 'turns',
+    tricks: tricks && (mode === 'free' || mode === 'stunt' || mode === 'tag' || mode === 'turns'),
   }
 }

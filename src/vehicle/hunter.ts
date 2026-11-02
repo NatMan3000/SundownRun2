@@ -1,5 +1,5 @@
 // ============================================================
-//  HUNTER BOOST - Tag: "it" gets a faster car, more when far behind
+//  HUNTER BOOST - Tag and Hunt Turns: the hunter gets a faster car
 // ------------------------------------------------------------
 //  In a multiplayer tag round every car is the same, so a runner who
 //  floors it can never be caught. While you are "it" (CarState.isIt,
@@ -7,7 +7,8 @@
 //  (percent): a quarter of it right up close, all of it once the
 //  nearest player is HUNTER_FAR_M away. A higher top speed also gives
 //  more pull (the engine's power is sized from the top speed), so you
-//  accelerate harder too. (D4, 2 Nov 2026.)
+//  accelerate harder too. (D4, 2 Nov 2026.) Hunt Turns' hunter is
+//  "it" for its turn (CarState.isIt), so it gets the same boost.
 // ============================================================
 
 import { cars, getCar } from '../core/telemetry'

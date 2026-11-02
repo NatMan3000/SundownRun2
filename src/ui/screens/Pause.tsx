@@ -40,7 +40,7 @@ import { FavouriteSongs } from '../FavouriteSongs'
  */
 const MAP_READY = true
 
-const MODE_WORD = { free: 'Free Roam', timetrial: 'Time Trial', race: 'Race', stunt: 'Stunt Attack', tag: 'Tag' } as const
+const MODE_WORD = { free: 'Free Roam', timetrial: 'Time Trial', race: 'Race', stunt: 'Stunt Attack', tag: 'Tag', turns: 'Hunt Turns' } as const
 
 export function PauseScreen() {
   const mp = useGame((s) => s.multiplayer)

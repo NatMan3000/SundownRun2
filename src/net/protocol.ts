@@ -23,7 +23,7 @@
 import type { TrackFile } from '../track/schema'
 
 /** Bump when the wire format changes, so old and new tabs refuse each other politely. */
-export const PROTOCOL_VERSION = 3
+export const PROTOCOL_VERSION = 4
 
 /** The relay's port. A page can point somewhere else with ?relay=<port> (tests, checker previews). */
 export const RELAY_PORT = 5202
@@ -112,18 +112,39 @@ export interface PingMsg {
   c: number
 }
 
+/**
+ * Hunt Turns rules for one round, from the presser's knobs (config.ts / Settings), so every
+ * computer plays by the same numbers.
+ */
+export interface TurnsRules {
+  /** A catch by getting this close (metres between car centres), no contact needed. */
+  catchReachM: number
+  /** The tag pulse: how far it reaches (metres), how wide (degrees, whole cone), how often (ms). */
+  pulseRangeM: number
+  pulseConeDeg: number
+  pulseCooldownMs: number
+  /** A caught runner is thrown at least this far from the hunter (metres). */
+  throwAwayM: number
+  /** After a catch the hunter can't catch anyone for this long (ms). */
+  noCatchMs: number
+  /** Between two turns: settle + the turn card + the countdown (ms). */
+  breakMs: number
+}
+
 /** G / X pressed somewhere: everyone lines up and counts down. */
 export interface StartMsg {
   t: 'start'
-  kind: 'race' | 'tag'
+  kind: 'race' | 'tag' | 'turns'
   /** Random id for this race or round; every later message about it carries it. */
   raceId: number
   /** Shared crash-prop layout for this race (propsSignal.round). */
   round: number
   laps: number
-  /** Tag only: round length in seconds, and the relay id who starts as "it". */
+  /** Tag: round length in seconds (Hunt Turns: one turn's), and the relay id who starts as "it" (Hunt Turns: who hunts first). */
   seconds: number
   itId: number
+  /** Hunt Turns only: the round's rules. */
+  turns?: TurnsRules
   /** Relay ids on the grid, in slot order (sender's view; everyone uses it so grids match). */
   grid: number[]
 }
@@ -153,6 +174,33 @@ export interface TagTimeMsg {
   t: 'tagTime'
   raceId: number
   seconds: number
+}
+
+/**
+ * Hunt Turns: the hunter caught a runner. Only the hunter's computer decides (it saw the contact,
+ * got close enough, its pulse hit, or the runner says "I touched you"), and sends this. The
+ * runner's own computer throws its car far away. seq orders catches (an old one can't count twice).
+ */
+export interface CatchMsg {
+  t: 'catch'
+  raceId: number
+  /** Turn of the round, 0-based. */
+  turn: number
+  seq: number
+  /** Relay id of the runner caught. */
+  runnerId: number
+  how: 'touch' | 'reach' | 'pulse'
+}
+
+/** Hunt Turns: the hunter fired the tag pulse here, nose along (dx, dz): everyone sees the burst. */
+export interface PulseMsg {
+  t: 'pulse'
+  raceId: number
+  x: number
+  y: number
+  z: number
+  dx: number
+  dz: number
 }
 
 /** A crash-prop cluster burst on the sender's machine. */
@@ -193,7 +241,8 @@ export interface RejoinMsg {
 }
 
 /**
- * Tag: "I touched you, and you're it." Sent by a player who rams the "it" car.
+ * Tag: "I touched you, and you're it." Sent by a player who rams the "it" car
+ * (Hunt Turns: a runner who touched the hunter, so the hunter's computer can count the catch).
  * The bump shoves "it" away before its own screen sees the contact, so the
  * "it" player's computer (still the only one that decides) takes this claim
  * instead and passes "it" on if the no-tag-back time is over.
@@ -226,7 +275,7 @@ export interface QuitMsg {
   raceId: number
 }
 
-export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg | PlacesMsg | QuitMsg
+export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg | PlacesMsg | QuitMsg | CatchMsg | PulseMsg
 
 // ---------------------------------------------------------------- relay -> client
 

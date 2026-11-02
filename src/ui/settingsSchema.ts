@@ -135,7 +135,14 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
   ],
   multiplayer: [
     { kind: 'toggle', key: 'multiplayerRam', label: 'Ramming', help: 'On: you can shove each other. Off: cars pass through like ghosts.' },
-    { kind: 'slider', key: 'tagHunterBoost', label: 'Hunter boost', help: 'Tag: when you are "it", this much extra speed when far behind (a quarter of it up close). 0 turns it off.', format: (v) => (v <= 0 ? 'Off' : `+${Math.round(v)}%`) },
+    { kind: 'slider', key: 'tagHunterBoost', label: 'Hunter boost', help: 'Tag and Hunt Turns: when you are hunting, this much extra speed when far behind (a quarter of it up close). 0 turns it off.', format: (v) => (v <= 0 ? 'Off' : `+${Math.round(v)}%`) },
+    { kind: 'slider', key: 'huntTurnSeconds', label: 'Hunt turn', help: 'Hunt Turns: how long each turn lasts. Whoever presses G uses their settings for everyone.', format: (v) => `${Math.round(v)} s` },
+    { kind: 'slider', key: 'catchReachMetres', label: 'Catch reach', help: 'Hunt Turns: the hunter catches you by getting this close. No bump needed.', format: (v) => `${v.toFixed(1)} m` },
+    { kind: 'slider', key: 'pulseRangeMetres', label: 'Pulse range', help: 'Hunt Turns: how far the tag pulse reaches in front of the hunter. 0 turns the pulse off.', format: (v) => (v <= 0 ? 'Off' : `${Math.round(v)} m`) },
+    { kind: 'slider', key: 'pulseConeDegrees', label: 'Pulse width', help: 'Hunt Turns: how wide the tag pulse sprays in front of the hunter.', format: (v) => `${Math.round(v)}°` },
+    { kind: 'slider', key: 'pulseCooldownSeconds', label: 'Pulse cooldown', help: 'Hunt Turns: how long after a pulse before the next one is ready.', format: (v) => `${v.toFixed(1)} s` },
+    { kind: 'slider', key: 'throwAwayMetres', label: 'Throw away', help: 'Hunt Turns: a caught runner is thrown at least this far from the hunter, for a fresh chase.', format: (v) => `${Math.round(v)} m` },
+    { kind: 'slider', key: 'noCatchAfterCatchSeconds', label: 'Fresh chase', help: 'Hunt Turns: after a catch, how long before the hunter can catch anyone again.', format: (v) => `${v.toFixed(1)} s` },
   ],
 }
 

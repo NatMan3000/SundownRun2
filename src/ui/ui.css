@@ -1173,6 +1173,48 @@
 .hud-tagp__hunt b span { font: inherit; letter-spacing: normal; text-transform: none; color: inherit; }
 .hud-tagp__arrow { width: 1.3em; height: 1.3em; fill: var(--tag-it); transform-origin: 50% 50%; }
 
+/* Hunt Turns: hunting or running, everyone's catches, the pulse */
+.hud-turnsp__who { font-family: var(--font-display); font-size: 0.95em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--tag-it); }
+.hud-turnsp__rows { margin-top: 0.2em; padding-top: 0.4em; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 0.1em; }
+.hud-turnsp__row { display: flex; align-items: baseline; justify-content: space-between; gap: 1em; }
+.hud-turnsp__name { font-family: var(--font-display); font-size: 0.95em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.hud-turnsp__row.is-me .hud-turnsp__name { color: var(--text); }
+.hud-turnsp__row.is-hunter .hud-turnsp__name { color: var(--tag-it); }
+.hud-turnsp__n { font-family: var(--font-display); font-size: 2.1em; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; color: var(--text); }
+.hud-turnsp__unit { align-self: flex-end; margin-top: -0.2em; font-family: var(--font-display); font-size: 0.7em; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: var(--dim); }
+.hud-turnsp__pulse b { color: var(--dim); font-variant-numeric: tabular-nums; }
+.hud-turnsp__pulse b.is-ready { color: var(--good); }
+
+/* Hunt Turns: the between-turns card, in the middle while nobody can catch */
+.hud-turnscard {
+  position: absolute;
+  left: 50%;
+  top: 24%;
+  transform: translateX(-50%);
+  min-width: 18em;
+  padding: 1em 1.6em 1.1em;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4em;
+  background: var(--hud-glass);
+  backdrop-filter: blur(10px) saturate(1.2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  text-shadow: var(--legible);
+  pointer-events: none;
+  animation: turnscard-in 260ms var(--ease) both;
+}
+.hud-turnscard.is-hunter { border-color: color-mix(in srgb, var(--tag-it) 70%, transparent); box-shadow: 0 0 1.4em color-mix(in srgb, var(--tag-it) 30%, transparent); }
+.hud-turnscard__big { font-family: var(--font-display); font-size: 2.8em; font-weight: 800; line-height: 1; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text); }
+.hud-turnscard.is-hunter .hud-turnscard__big { color: var(--tag-it); }
+.hud-turnscard__sub { font-family: var(--font-display); font-size: 1.1em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--tag-it); }
+.hud-turnscard__last { font-family: var(--font-display); font-size: 0.95em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+@keyframes turnscard-in { from { opacity: 0; transform: translateX(-50%) translateY(-0.6em); } to { opacity: 1; transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) {
+  .hud-turnscard { animation: none; }
+}
+
 /* energy-core hunt */
 .hud-hunt { display: flex; align-items: center; gap: 0.8em; padding: 0.65em 1.05em; }
 .hud-hunt__core {

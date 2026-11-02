@@ -49,6 +49,7 @@ const MODE_WORD: Record<GameMode, string> = {
   race: 'Race',
   stunt: 'Stunt Attack',
   tag: 'Tag',
+  turns: 'Hunt Turns',
 }
 
 // ---------------------------------------------------------------- recent errors

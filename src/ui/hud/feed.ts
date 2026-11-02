@@ -133,7 +133,7 @@ function onEvent(e: AnyGameEvent): void {
         pushToast(`Best lap ${formatLap(e.ms)}`, 'gold', e.previousBestMs !== null ? `${((e.previousBestMs - e.ms) / 1000).toFixed(3)} s faster` : 'New record')
       } else if (e.dirty) {
         pushToast(`Lap ${e.lap} ${formatLap(e.ms)}`, 'warn', rewound ? 'You rewound in this lap, so it can\'t be a record' : 'Off road too long, so it can\'t be a record')
-      } else if (g.mode !== 'race') {
+      } else if (g.mode !== 'race' && g.mode !== 'turns') {
         pushToast(`Lap ${e.lap} ${formatLap(e.ms)}`, 'info')
       }
       if (rewound) useFeed.setState({ dirtyWhy: 'offroad' })
@@ -194,6 +194,15 @@ function onEvent(e: AnyGameEvent): void {
     case 'tag.it':
       if (e.id === 'player') pushToast('You\'re it!', 'it', 'Bump someone to pass it on')
       else pushToast(`${nameOf(e.id, e.name)} is it`, 'info', e.byId === 'player' ? 'You tagged them' : undefined)
+      return
+    case 'turns.turn':
+      if (e.hunterId === 'player') pushToast('Your turn to hunt!', 'it', `Get close, bump them, or fire your tag pulse (${g.inputDevice === 'gamepad' ? 'click the right stick' : 'F'})`)
+      else pushToast(`${nameOf(e.hunterId, e.name)} is hunting`, 'info', 'Run!')
+      return
+    case 'turns.catch':
+      if (e.hunterId === 'player') pushToast(`Caught ${nameOf(e.runnerId, e.runnerName)}!`, 'gold', e.how === 'pulse' ? 'Tag pulse' : e.how === 'reach' ? 'Close enough' : 'Bump')
+      else if (e.runnerId === 'player') pushToast('Caught!', 'it', `${nameOf(e.hunterId, e.hunterName)} gets a point. You're thrown clear: run!`)
+      else pushToast(`${nameOf(e.hunterId, e.hunterName)} caught ${nameOf(e.runnerId, e.runnerName)}`, 'info')
       return
     case 'reset':
       if (e.kind === 'auto') pushToast('Back on the road', 'info', e.reason)

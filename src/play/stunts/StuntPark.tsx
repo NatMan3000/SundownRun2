@@ -87,10 +87,11 @@ export function StuntPark() {
 /**
  * The layout for a track file, kept while only a live parameter (the bank slider) changes: the
  * park keeps its distance from the road, so the ground under it never moves with the bank.
- * Josh's megaRampHeight knob is part of the key.
+ * Josh's megaRampHeight knob is part of the key. Exported for Hunt Turns' start spots
+ * (play/arenaSpots.ts), which must keep clear of the park even before it is showing.
  */
 const layoutCache = new WeakMap<object, { mega: number; layout: ParkLayout }>()
-function layoutFor(track: TrackRuntime): ParkLayout {
+export function layoutFor(track: TrackRuntime): ParkLayout {
   const mega = CONFIG.megaRampHeight
   const hit = layoutCache.get(track.file)
   if (hit && hit.mega === mega) return hit.layout

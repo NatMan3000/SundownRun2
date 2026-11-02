@@ -11,7 +11,9 @@
 //    EnergyCores     the free-roam core hunt with a clock
 //    SpeedTraps      top-speed readings on the straights
 //    StuntPark       ramps, gaps, pipes, rings and bullseyes off the
-//                    road (free roam and stunt attack only)
+//                    road (free roam, stunt attack and Hunt Turns)
+//    turnsFx         Hunt Turns: the tag pulse's burst, catches, throws
+//    arenaSpots      Hunt Turns: the start spots (play.arenaSpots)
 //
 //  It also installs the play API (core/api.ts: newRound,
 //  restartSession) and the dev handles checkers use:
@@ -39,11 +41,23 @@ import { SpeedTraps } from './SpeedTraps'
 import { StuntPark } from './stunts/StuntPark'
 import { doParkHop, parkHop } from './stunts/parkReset'
 import { parkZones } from './stunts/parkLive'
+import { spotsFor } from './arenaSpots'
+import { layoutFor } from './stunts/StuntPark'
+import type { ArenaSpot } from '../core/api'
+import { installTurnsFx } from './turnsFx'
 import { playFlags } from './modes'
 import { drivers, flow } from './flow'
 import { raceBook } from './raceBook'
 import { playInspectors } from './inspect'
 import { stepClock } from './simCars'
+
+const NO_SPOTS: readonly ArenaSpot[] = []
+
+/** play.arenaSpots(): the current track's Hunt Turns start spots (play/arenaSpots.ts), whether or not the park is showing. */
+function arenaSpots(): readonly ArenaSpot[] {
+  const t = getTrack()
+  return t ? spotsFor(t, layoutFor(t)) : NO_SPOTS
+}
 
 /** Counts physics steps between rendered frames, so hit tests know how stale a render pose is. */
 function StepClock() {
@@ -123,8 +137,9 @@ function raceSummary(): string {
 
 export function PlayLayer() {
   useEffect(() => {
-    installPlay({ newRound, restartSession, parkHop, doParkHop, parkZones })
+    installPlay({ newRound, restartSession, parkHop, doParkHop, parkZones, arenaSpots })
     const offs = [
+      installTurnsFx(),
       registerDev('round', () => newRound(), 'new round of the current mode (props and cores re-scatter)'),
       registerDev('race', ((n: number) => devRace(n)) as never, 'race(n): start a race now with n Ai racers (0-5)'),
       registerDev('finishRace', () => devFinish(), 'end the running race (or stunt run) now and show results'),

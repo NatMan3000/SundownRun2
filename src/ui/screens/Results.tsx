@@ -8,6 +8,7 @@
 //    stunt  your score against your best
 //    hunt   your time against your best
 //    tag    least time as "it" wins
+//    turns  Hunt Turns: most catches wins (equal is a draw)
 //  Then: Again, Track select, or back to the title.
 // ============================================================
 
@@ -136,6 +137,51 @@ function TagStandings() {
   )
 }
 
+/** Hunt Turns: net reuses raceResults with `ms` = catches (most first; equal catches share a place). */
+function TurnsStandings() {
+  const results = useGame((s) => s.raceResults)
+  const turns = useGame((s) => s.turns)
+  const rows = [...results].sort((a, b) => a.position - b.position)
+  const draw = rows.length >= 2 && rows[0].ms === rows[1].ms
+  const top = rows[0]
+  const head = !top ? 'Round over' : draw ? 'Draw' : top.isPlayer ? 'You win' : `${top.name} wins`
+  const n = (r: (typeof rows)[number]) => r.ms ?? 0
+  // Which turn each player hunted in.
+  const turnOf = (carId: string) => (turns ? turns.history.findIndex((h) => h.hunterId === carId) + 1 : 0)
+  return (
+    <>
+      <div className="result-hero">
+        <span className="eyebrow">Hunt Turns</span>
+        <span className={`result-hero__big${!draw && top?.isPlayer ? ' is-win' : ''}`}>{head}</span>
+        <span className="result-hero__sub">{draw ? `${n(top)} catches each` : 'Most catches wins'}</span>
+      </div>
+      <table className="standings">
+        <thead>
+          <tr>
+            <th>Pos</th>
+            <th>Driver</th>
+            <th>Hunted</th>
+            <th>Catches</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.carId} className={r.isPlayer ? 'is-me' : ''}>
+              <td>{r.position}</td>
+              <td>
+                <span className="standings__dot" style={{ background: getCar(r.carId)?.glow }} />
+                {r.isPlayer ? 'You' : r.name}
+              </td>
+              <td>{turnOf(r.carId) > 0 ? `Turn ${turnOf(r.carId)}` : '-'}</td>
+              <td>{n(r)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  )
+}
+
 /** Free roam and time trial: a summary of the run (only the numbers that happened). */
 function RunSummary() {
   const laps = useGame((s) => s.lapCount)
@@ -179,6 +225,7 @@ function ResultBody() {
   const huntBest = useGame((s) => s.huntBestMs)
   if (mode === 'race') return <RaceStandings />
   if (mode === 'tag') return <TagStandings />
+  if (mode === 'turns') return <TurnsStandings />
   if (mode === 'stunt') {
     return <ScoreVsBest label="Stunt score" value={formatScore(stuntScore)} best={formatScore(stuntBest)} isBest={stuntBest !== null && stuntScore > 0 && stuntScore >= stuntBest} bestLabel="Your best" />
   }
