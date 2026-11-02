@@ -21,6 +21,7 @@
 //             the joiner and is drivable there
 //    race     (stage B) synced countdown, grid, finish, winner
 //    tag      (stage B) "it" passes on contact
+//    leave    leaving a race mid-way (mode change) frees G; a tag started meanwhile picks you up
 //
 //  Options: --track <id> (default afterglow), --join-track <id> (the
 //  joiner's own first track, default hyperdrome), --shots <dir> (default
@@ -51,7 +52,7 @@ const RELAY = Number(arg('relay-port') ?? 5218)
 const TRACK = arg('track') ?? 'afterglow'
 const JOIN_TRACK = arg('join-track') ?? 'hyperdrome'
 const SHOTS = arg('shots') ?? '/tmp/sr2/net'
-const ONLY = (arg('only') ?? 'client,spawn,game,drawn,props,race,tag,robust').split(',')
+const ONLY = (arg('only') ?? 'client,spawn,game,drawn,props,race,tag,leave,robust').split(',')
 mkdirSync(SHOTS, { recursive: true })
 const ROOT = dirname(import.meta.dir)
 const SNAPSHOT = join(arg('snapshot-dir') ?? '/tmp/sr2-mpcheck', 'game')
@@ -242,7 +243,7 @@ try {
   }
 
   // ============================================================ game sections
-  const gameSections = ['spawn', 'game', 'drawn', 'props', 'race', 'tag', 'robust'].filter((s) => ONLY.includes(s))
+  const gameSections = ['spawn', 'game', 'drawn', 'props', 'race', 'tag', 'leave', 'robust'].filter((s) => ONLY.includes(s))
   if (gameSections.length) {
     const { runGameChecks } = await import('./mp-check-game')
     await runGameChecks({ hostBase, joinBase, relayPort: RELAY, track: TRACK, joinTrack: JOIN_TRACK, shots: SHOTS, sections: gameSections, check, until, openPage, sleep })

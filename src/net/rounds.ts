@@ -31,6 +31,13 @@
 //  everywhere, and everyone keeps the one with the lower raceId, so
 //  every screen ends up in the same race.
 //
+//  Leaving a round (changing mode or track, or going to the title or
+//  the editor) sends `quit`: it's over for you, and everyone else stops
+//  waiting for you in it. A race ends once nobody left in it is still
+//  racing; a tag round ends when fewer than two are left. If someone
+//  started a new round while you were still in the old one, leaving
+//  the old one drops you into theirs.
+//
 //  Writes (agreed with the orchestrator): store race fields
 //  (raceState, raceGoAt, raceLaps, racePosition, raceRacers,
 //  raceResults) in multiplayer, the tag fields, store.mode on a synced
@@ -51,7 +58,7 @@ import { urlParam } from '../core/devHandles'
 import { playerName } from './identity'
 import { onMessage, previousId, send, statsExtra, weAreDriving } from './client'
 import { carIdFor, getNet, multiplayerLaps, peerLive, relayIdOf, useNet } from './netStore'
-import type { FinishMsg, PlacesMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
+import type { FinishMsg, PlacesMsg, QuitMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
 
 /**
  * The order authority only swaps two cars once the one behind is this far
@@ -98,6 +105,8 @@ interface Round {
   firstFinishAt: number
   /** Our results screen is up (we crossed the line, or the race ended). */
   shown: boolean
+  /** Relay ids who left this round (`quit`): no longer waited for, never "it". */
+  quit: Set<number>
   // ---- tag ----
   endsAt: number
   itId: number
@@ -124,6 +133,8 @@ const IT_MISSING_MS = 3000
 const REJOIN_GRACE_MS = 15000
 
 let round: Round | null = null
+/** A start that arrived while we were busy in another round, with when it started (performance.now()). */
+let ignoredStart: { msg: StartMsg; at: number } | null = null
 
 /** Read-only view for the inspector and checks. */
 export function currentRound(): Readonly<Round> | null {
@@ -216,6 +227,8 @@ function applyStart(msg: StartMsg, agoMs: number): void {
       } else round.ended = true
     } else if (round.started || msg.raceId > round.raceId) {
       // Two starts crossed: the lower raceId wins everywhere. A running round is never interrupted.
+      // Remember it: if we leave ours, we join this one (see quitRound).
+      if (round.started && msg.grid.includes(myId())) ignoredStart = { msg, at: performance.now() - agoMs }
       return
     }
   }
@@ -238,6 +251,7 @@ function applyStart(msg: StartMsg, agoMs: number): void {
     finishes: new Map(),
     firstFinishAt: 0,
     shown: false,
+    quit: new Set(),
     endsAt: now + COUNTDOWN_MS - agoMs + msg.seconds * 1000,
     itId: msg.itId,
     seq: 0,
@@ -323,14 +337,20 @@ function progressOf(id: number): number {
  * by time, then everyone by their own reported progress, swapping two cars only
  * once one is SWAP_M clear, and sends the result to everyone (`places`).
  */
+/** Still in this round: connected, and hasn't left it (`quit`). */
+function inRound(r: Round, id: number): boolean {
+  if (r.quit.has(id)) return false
+  return id === myId() || !!getNet().peers[id]
+}
+
 function orderAuthority(r: Round): number {
   let best = 0
-  for (const id of r.grid) if ((id === myId() || getNet().peers[id]) && (best === 0 || id < best)) best = id
+  for (const id of r.grid) if (inRound(r, id) && (best === 0 || id < best)) best = id
   return best
 }
 
 function computeOrder(r: Round): number[] {
-  const present = new Set(r.grid.filter((id) => id === myId() || !!getNet().peers[id]))
+  const present = new Set(r.grid.filter((id) => inRound(r, id)))
   // Start from the order everyone already shows; newcomers to it go last.
   const order = r.order.filter((id) => r.grid.includes(id))
   for (const id of r.grid) if (!order.includes(id)) order.push(id)
@@ -543,6 +563,46 @@ function rejoinAfterReconnect(liveRaceId: number | null): void {
   if (r.kind === 'tag' && r.settleAt) send({ t: 'tagTime', raceId: r.raceId, seconds: r.seconds.get(newId) ?? 0 })
 }
 
+/**
+ * We left this round (changed mode or track, went to the title or the editor):
+ * it's over for us, and everyone else stops waiting for us. If someone started
+ * a newer round we're in while we were busy, we join that one now.
+ */
+function quitRound(r: Round): void {
+  r.ended = true
+  r.quit.add(myId())
+  const msg: QuitMsg = { t: 'quit', raceId: r.raceId }
+  send(msg)
+  statsExtra.lap = -1
+  getCar('player')?.api?.setFrozen(false)
+  for (const c of cars) c.isIt = false
+  const g = getGame()
+  // Keep a results screen that's already up; otherwise nothing of the old round shows.
+  if (g.phase !== 'results') useGame.setState({ raceState: 'idle', raceResults: [], tagItId: null, tagSeconds: {}, tagEndsAt: 0 })
+  const pending = ignoredStart
+  ignoredStart = null
+  if (!pending || pending.msg.raceId === r.raceId || g.phase !== 'playing') return
+  if (g.mode !== (pending.msg.kind === 'tag' ? 'tag' : 'race')) return
+  const ago = performance.now() - pending.at
+  const left = pending.msg.kind === 'tag' ? COUNTDOWN_MS + pending.msg.seconds * 1000 - ago : LATE_RACE_JOIN_MS - ago
+  if (left > 0) applyStart(pending.msg, ago)
+}
+
+/** Joining a race the others started while we were busy: only this soon after its start. */
+const LATE_RACE_JOIN_MS = 60000
+
+/** Watch for us leaving the round we're in (mode, track, title, editor). */
+function watchForLeaving(s: ReturnType<typeof getGame>, prev: ReturnType<typeof getGame>): void {
+  const r = round
+  if (!r || r.ended || !r.inGrid) return
+  const kindMode = r.kind === 'tag' ? 'tag' : 'race'
+  const left =
+    (s.mode !== prev.mode && s.mode !== kindMode) ||
+    s.trackVersion !== prev.trackVersion ||
+    (s.phase !== prev.phase && (s.phase === 'title' || s.phase === 'editor'))
+  if (left) quitRound(r)
+}
+
 /** Offline too long (or the round is gone from the relay): it's over for us. */
 function endOffline(r: Round): void {
   r.ended = true
@@ -614,12 +674,18 @@ function tickRace(r: Round, now: number): void {
     if (changed) applyOrder(r, order)
   }
   // Done when every racer still here has finished, or the grace time after the first finish ran out.
-  const present = r.grid.filter((id) => id === myId() || !!getNet().peers[id])
+  const present = r.grid.filter((id) => inRound(r, id))
   const allIn = present.every((id) => r.finishes.has(id))
   if (allIn || (r.firstFinishAt && now - r.firstFinishAt > FINISH_GRACE_MS)) endRace(r)
 }
 
 function tickTag(r: Round, now: number, dt: number): void {
+  // Everyone else left (quit): nobody to chase. (A dropped connection isn't
+  // counted here: they have REJOIN_GRACE_MS to come back.)
+  if (r.grid.filter((id) => !r.quit.has(id)).length < 2) {
+    endTag(r)
+    return
+  }
   if (!r.settleAt) {
     // The clock runs for whoever is "it" (everyone counts; the "it" player's own count wins at hand-over).
     r.seconds.set(r.itId, (r.seconds.get(r.itId) ?? 0) + dt)
@@ -636,13 +702,13 @@ function tickTag(r: Round, now: number, dt: number): void {
   // "It" walked off (tab closed, wifi gone): after IT_MISSING_MS, hand it on to
   // the lowest relay id still here, which every screen picks the same way.
   // Waiting first means a quick reconnect (rejoin) keeps "it" where it was.
-  if (r.itId !== myId() && !getNet().peers[r.itId]) {
+  if (r.itId !== myId() && !inRound(r, r.itId)) {
     if (!r.itMissingSince) r.itMissingSince = now
     else if (now - r.itMissingSince > IT_MISSING_MS) {
       let next = 0
       for (let i = 0; i < r.grid.length; i++) {
         const id = r.grid[i]
-        if ((id === myId() || getNet().peers[id]) && (next === 0 || id < next)) next = id
+        if (inRound(r, id) && (next === 0 || id < next)) next = id
       }
       r.itMissingSince = 0
       if (next) {
@@ -715,6 +781,13 @@ export function startRounds(): void {
       if (r.shown) publishRace(r)
     }),
     onMessage('tag', (m) => applyTag(m, m.from)),
+    onMessage('quit', (m) => {
+      const r = round
+      if (!r || r.raceId !== m.raceId || r.ended || !r.grid.includes(m.from)) return
+      r.quit.add(m.from)
+      // Their place: a racer who left goes to the back (the authority re-sends the order).
+    }),
+    useGame.subscribe(watchForLeaving),
     onMessage('places', (m) => {
       if (round && round.kind === 'race' && round.raceId === m.raceId && !round.ended) applyOrder(round, m.order)
     }),

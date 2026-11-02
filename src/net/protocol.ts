@@ -217,7 +217,16 @@ export interface PlacesMsg {
   order: number[]
 }
 
-export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg | PlacesMsg
+/**
+ * "I've left this round" (changed mode or track, or went to the title or the
+ * editor): everyone stops waiting for me in it (D3, 2 Nov 2026).
+ */
+export interface QuitMsg {
+  t: 'quit'
+  raceId: number
+}
+
+export type ClientMsg = HelloMsg | StatsMsg | TrackMsg | PingMsg | StartMsg | FinishMsg | TagMsg | TagTimeMsg | PropMsg | BumpMsg | RejoinMsg | TagTouchMsg | PlacesMsg | QuitMsg
 
 // ---------------------------------------------------------------- relay -> client
 

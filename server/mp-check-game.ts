@@ -495,6 +495,40 @@ export async function runGameChecks(k: Kit): Promise<void> {
     check('each player\'s time as "it" matches on both screens (within 1 s)', Object.keys(a).every((n) => Math.abs((a[n] ?? 0) - (b[n] ?? -9999)) < 1000), { host: a, joiner: b })
   }
 
+  if (k.sections.includes('leave')) {
+    console.log('\n== leave: switching mode mid-race takes you out of it (D3)')
+    const roundOf = (p: Page) => p.evaluate(`(() => { const r = window.__pilot.rounds.currentRound(); return r ? { kind: r.kind, raceId: r.raceId, ended: r.ended, quit: [...r.quit] } : null })()`) as Promise<{ kind: string; raceId: number; ended: boolean; quit: number[] } | null>
+    for (const p of [host, join]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame(); window.__pilot.settings.useSettings.getState().set('raceLaps', 3); window.__pilot.store.useGame.setState({ mode: 'race' }) })()`)
+    await sleep(800)
+    check('a race starts (nobody will finish it)', (await host.evaluate(`window.__pilot.rounds.requestStart()`)) === true)
+    await until<boolean>(join, `window.__game.state.raceState === 'running'`, 6000)
+    const raceId = (await roundOf(host))?.raceId
+    // The joiner switches to Tag mid-race, the way the pause menu's mode change does.
+    await join.evaluate(`window.__pilot.store.useGame.setState({ mode: 'tag' })`)
+    const joinId = await join.evaluate(`window.__pilot.net.getNet().myId`)
+    const hostSaw = await until<boolean>(host, `(() => { const r = window.__pilot.rounds.currentRound(); return !!r && r.quit.has(${joinId}) })()`, 3000)
+    const joinR = await roundOf(join)
+    check('the joiner is out of the race on its own screen', !!joinR && joinR.raceId === raceId && joinR.ended && (await join.evaluate(`window.__game.state.raceState`)) === 'idle', joinR)
+    check('...and the host stops waiting for them', !!hostSaw, await roundOf(host))
+    // The joiner presses G for Tag while the host is still in the race: the host's screen keeps its race...
+    check('the joiner can start a tag round straight away', (await join.evaluate(`window.__pilot.rounds.requestStart()`)) === true)
+    await sleep(600)
+    const hostStill = await roundOf(host)
+    check('...the host, still racing, keeps its race for now', !!hostStill && hostStill.kind === 'race' && !hostStill.ended, hostStill)
+    // ...until the host switches to Tag too: it leaves the race and lands in the joiner's round.
+    await host.evaluate(`window.__pilot.store.useGame.setState({ mode: 'tag' })`)
+    const tagIds = await Promise.all([host, join].map((p) => until<number>(p, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'tag' && !r.ended ? r.raceId : 0 })()`, 3000)))
+    check('switching to Tag drops the host into the tag round the joiner started', !!tagIds[0] && tagIds[0] === tagIds[1], tagIds)
+    const running = await until<boolean>(host, `window.__game.state.raceState === 'running' && window.__game.state.mode === 'tag'`, 6000)
+    check('...and it runs on the host', !!running)
+    // The joiner leaves the tag round: with one player left it ends.
+    await join.evaluate(`window.__pilot.store.useGame.setState({ mode: 'race' })`)
+    const tagOver = await until<boolean>(host, `!!window.__pilot.rounds.currentRound()?.ended`, 4000)
+    check('a tag round with only one player left ends', !!tagOver, await roundOf(host))
+    for (const p of [host, join]) await p.evaluate(`(() => { window.__pilot.stop(); window.__pilot.K.resumeGame(); window.__pilot.settings.useSettings.getState().set('raceLaps', 1) })()`)
+    await sleep(500)
+  }
+
   if (k.sections.includes('props')) {
     console.log('\n== props: a crash-prop burst on one screen bursts on the other')
     const round = [await host.evaluate(`window.__pilot.K.propsSignal.round`), await join.evaluate(`window.__pilot.K.propsSignal.round`)]
