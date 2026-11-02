@@ -42,7 +42,7 @@ import { sendTrackIfHost, startTrackSync } from './trackSync'
 import { RemoteCars } from './RemoteCars'
 import { BumpApplier, startBumps, stats as bumpStats } from './bump'
 import { mySlot, spawnPending, spawnStats, spawnTick, startSpawns } from './spawn'
-import { canTag, currentRound, requestStart, roundsTick, startRounds } from './rounds'
+import { canTag, currentRound, requestStart, roundsTick, startRounds, waitingForRacers } from './rounds'
 
 export { useNet } from './netStore'
 /**
@@ -58,6 +58,11 @@ export { requestStart as startMultiplayerRound } from './rounds'
  * on. Published by one player for everyone, so it never shows two P1s.
  */
 export { getRaceOrder } from './rounds'
+/**
+ * For ui: you've finished a multiplayer race but others are still racing
+ * (their rows say "Racing", and "Again" waits until everyone is in).
+ */
+export { waitingForRacers } from './rounds'
 export type { NetState, NetStatus, PeerInfo } from './netStore'
 
 // ?color= goes onto our own car before anything builds it (this module loads
@@ -233,7 +238,7 @@ const netKit = {
   telemetry,
   getCar,
   net: { getNet, peerPoses, sendPose, dropConnection, reconnectNow },
-  rounds: { requestStart, currentRound, canTag },
+  rounds: { requestStart, currentRound, canTag, waitingForRacers },
 }
 
 function registerNetDev(): void {

@@ -15,7 +15,9 @@
 //       freezes it, counts down 3 seconds and lets go. LAN delay is a
 //       few milliseconds, far quicker than anyone's reactions.
 //    3. Race: crossing the line for the last lap sends `finish` with
-//       your race time. Everyone collects the same finishes, so every
+//       your race time, and your results screen opens there and then
+//       (like a race against the Ai); the others' places fill in as
+//       they cross. Everyone collects the same finishes, so every
 //       screen shows the same results. Messages carry the raceId, so
 //       a late message from an old race can never crown a winner.
 //    4. Tag: only the player who is "it" decides when they bumped
@@ -94,6 +96,8 @@ interface Round {
   lastLaps: number
   finishes: Map<number, { ms: number; bestLapMs: number | null }>
   firstFinishAt: number
+  /** Our results screen is up (we crossed the line, or the race ended). */
+  shown: boolean
   // ---- tag ----
   endsAt: number
   itId: number
@@ -159,6 +163,8 @@ export function requestStart(): boolean {
   const net = getNet()
   if (net.status !== 'online' || !net.myId) return false
   if (round && !round.ended && !wrappingUp(round)) return false
+  // Finished but others are still racing: their screens would ignore a new start.
+  if (waitingForRacers()) return false
   if (getGame().phase === 'editor' || getGame().phase === 'title' || getGame().phase === 'loading') return false
   const track = getTrack()
   if (!track) return false
@@ -231,6 +237,7 @@ function applyStart(msg: StartMsg, agoMs: number): void {
     lastLaps: 0,
     finishes: new Map(),
     firstFinishAt: 0,
+    shown: false,
     endsAt: now + COUNTDOWN_MS - agoMs + msg.seconds * 1000,
     itId: msg.itId,
     seq: 0,
@@ -300,6 +307,7 @@ function sendFinish(r: Round): void {
   if (!r.firstFinishAt) r.firstFinishAt = performance.now()
   const msg: FinishMsg = { t: 'finish', raceId: r.raceId, ms, bestLapMs }
   send(msg)
+  publishRace(r)
 }
 
 /** A racer's progress: the number their own lap tracker reports (ours live, theirs with every pose). */
@@ -382,25 +390,44 @@ function racePlaces(r: Round): number[] {
   return [...done, ...rest]
 }
 
-function endRace(r: Round): void {
-  r.ended = true
+/**
+ * Write the standings into the store. The first time (we crossed the line, or
+ * the race ended without us finishing) it also opens the results screen and
+ * plays the finish; after that it only refreshes the table as others cross.
+ */
+function publishRace(r: Round): void {
   const places = racePlaces(r)
   const results: RaceResult[] = places.map((id, i) => {
     const f = r.finishes.get(id)
     return { carId: carIdOn(id), name: nameOf(id), position: i + 1, ms: f?.ms ?? null, bestLapMs: f?.bestLapMs ?? null, isPlayer: id === myId() }
   })
   statsExtra.lap = -1
-  useGame.setState({ raceState: 'finished', raceResults: results })
   const mine = results.find((x) => x.isPlayer)
-  if (r.inGrid && mine) {
-    emit('race.finish', {
-      position: mine.position,
-      of: results.length,
-      ms: mine.ms ?? 0,
-      results: results.map((x) => ({ name: x.name, ms: x.ms, position: x.position })),
-    })
-    showResults()
-  }
+  useGame.setState({ raceState: 'finished', raceResults: results, ...(mine ? { racePosition: mine.position } : {}) })
+  if (r.shown || !r.inGrid || !mine) return
+  r.shown = true
+  emit('race.finish', {
+    position: mine.position,
+    of: results.length,
+    ms: mine.ms ?? 0,
+    results: results.map((x) => ({ name: x.name, ms: x.ms, position: x.position })),
+  })
+  showResults()
+}
+
+function endRace(r: Round): void {
+  r.ended = true
+  publishRace(r)
+}
+
+/**
+ * For ui: we've crossed the line but others are still racing. The results
+ * screen says "Racing" for them instead of "Did not finish", and "Again"
+ * waits (a new start now would only reach the players who are done).
+ */
+export function waitingForRacers(): boolean {
+  const r = round
+  return !!r && r.kind === 'race' && r.inGrid && !r.ended && r.shown
 }
 
 // ---------------------------------------------------------------- tag
@@ -684,6 +711,8 @@ export function startRounds(): void {
       if (!r || r.kind !== 'race' || r.raceId !== m.raceId || r.ended) return
       if (!r.finishes.has(m.from)) r.finishes.set(m.from, { ms: m.ms, bestLapMs: m.bestLapMs })
       if (!r.firstFinishAt) r.firstFinishAt = performance.now()
+      // Our results are up: their row gets its time and place now.
+      if (r.shown) publishRace(r)
     }),
     onMessage('tag', (m) => applyTag(m, m.from)),
     onMessage('places', (m) => {

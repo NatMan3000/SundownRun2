@@ -21,7 +21,7 @@ import { audio } from '../../core/api'
 import { quitToTitle, restartSession } from '../flow'
 import { formatLap, formatScore, formatTopSpeed, recordAngle } from '../format'
 import { getTrack } from '../../track/current'
-import { startMultiplayerRound } from '../../net'
+import { startMultiplayerRound, waitingForRacers } from '../../net'
 
 function ordinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd']
@@ -37,6 +37,8 @@ function RaceStandings() {
   const sorted = [...results].sort((a, b) => a.position - b.position)
   const me = sorted.find((r) => r.isPlayer)
   const pos = me?.position ?? position
+  // Multiplayer: you crossed the line first; the others are still out there.
+  const stillRacing = waitingForRacers()
   return (
     <>
       <div className="result-hero">
@@ -69,7 +71,7 @@ function RaceStandings() {
                   <span className="standings__dot" style={{ background: getCar(r.carId)?.glow }} />
                   {r.isPlayer ? 'You' : r.name}
                 </td>
-                <td>{r.ms === null ? 'Did not finish' : formatLap(r.ms)}</td>
+                <td>{r.ms === null ? (stillRacing ? 'Racing' : 'Did not finish') : formatLap(r.ms)}</td>
                 <td>{formatLap(r.bestLapMs)}</td>
               </tr>
             ))}
@@ -188,6 +190,11 @@ function ResultBody() {
 
 /** Multiplayer "Again": a new synced round for everyone, the same as pressing G / X. */
 function againMultiplayer(): void {
+  if (waitingForRacers()) {
+    audio.ui('error')
+    showNotice('Wait for everyone to finish first (45 seconds at most).', 'error')
+    return
+  }
   if (!startMultiplayerRound()) {
     audio.ui('error')
     showNotice("Can't start a round right now: not connected to the host, or a round is still running.", 'error')

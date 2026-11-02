@@ -409,8 +409,12 @@ export async function runGameChecks(k: Kit): Promise<void> {
     if (!done) {
       console.log('  host lap state:', JSON.stringify(await host.evaluate(`(() => { const g = window.__game.state; const t = window.__game.telemetry; return { lapCount: g.lapCount, lapStartedAt: g.lapStartedAt, dirty: g.currentLapDirty, sectors: g.sectorsPassed + '/' + g.sectorCount, s: Math.round(t.trackS), kmh: Math.round(t.speedKmh), onRoad: t.onRoad, round: window.__game.get('net').round } })()`)))
     }
+    // The host crossed first: its results screen opens at once, while the joiner is still racing.
+    const early = { hostPhase: await host.evaluate(`window.__game.state.phase`), hostWaiting: await host.evaluate(`window.__pilot.rounds.waitingForRacers()`), joinState: await join.evaluate(`window.__game.state.raceState`), hostAgain: await host.evaluate(`window.__pilot.rounds.requestStart()`) }
+    check('the first to finish sees results straight away, while the other is still racing, and "Again" waits', !!done && early.hostPhase === 'results' && early.hostWaiting === true && early.joinState === 'running' && early.hostAgain === false, early)
     const joinDone = await until<boolean>(join, `window.__game.state.raceState === 'finished'`, 60000)
-    // Results read AFTER both have finished; an empty list never counts as agreement.
+    // Results read AFTER the race has ended on both; an empty list never counts as agreement.
+    await Promise.all([host, join].map((p) => until<boolean>(p, `!!window.__pilot.rounds.currentRound()?.ended`, 10000)))
     const resultsOf = (p: Page) => p.evaluate(`window.__game.state.raceResults.map((r) => [r.position, r.name, r.ms])`) as Promise<[number, string, number | null][]>
     const hostResults = await resultsOf(host)
     const joinResults = await resultsOf(join)
