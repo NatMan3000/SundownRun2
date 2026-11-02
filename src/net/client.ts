@@ -144,7 +144,7 @@ function closeForGood(): void {
   ws = null
   sock?.close()
   forgetPeers()
-  useNet.setState({ status: 'off', myId: 0, hostId: 0, isHost: false })
+  useNet.setState({ status: 'off', myId: 0, hostId: 0, isHost: false, hostLaps: null })
 }
 
 /** Dev: drop the connection as if the wifi blinked (it reconnects by itself). */
@@ -201,7 +201,7 @@ function open(): void {
     forgetPeers()
     if (!started) return
     previousMyId = useNet.getState().myId || previousMyId
-    useNet.setState({ status: 'connecting', myId: 0, isHost: false })
+    useNet.setState({ status: 'connecting', myId: 0, isHost: false, hostLaps: null })
     reconnects++
     scheduleRetry()
   }
@@ -271,7 +271,8 @@ function removePeer(id: number): void {
 
 function setHost(hostId: number): void {
   const myId = useNet.getState().myId
-  useNet.setState({ hostId, isHost: hostId !== 0 && hostId === myId })
+  const changed = hostId !== useNet.getState().hostId
+  useNet.setState({ hostId, isHost: hostId !== 0 && hostId === myId, ...(changed ? { hostLaps: null } : {}) })
 }
 
 function receive(msg: RelayMsg): void {
@@ -308,6 +309,9 @@ function receive(msg: RelayMsg): void {
       l.bestLapMs = msg.bestLapMs
       l.rttMs = msg.rttMs
       l.statsAt = performance.now()
+      if (msg.from === useNet.getState().hostId && typeof msg.raceLaps === 'number' && msg.raceLaps !== useNet.getState().hostLaps) {
+        useNet.setState({ hostLaps: msg.raceLaps })
+      }
       break
     }
   }
@@ -355,6 +359,7 @@ function sendStats(): void {
     lastLapMs: g.lastLapMs,
     bestLapMs: g.bestLapMs,
     rttMs: useNet.getState().rttMs,
+    raceLaps: getSettings().raceLaps,
   }
   send(msg)
 }

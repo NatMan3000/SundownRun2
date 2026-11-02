@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import { SETTING_RANGES, getDefaults, useSettings } from '../../core/settings'
 import type { CameraMode, QualityChoice } from '../../core/settings'
 import { useGame } from '../../core/store'
+import { useNet } from '../../net'
 import { vehicle, audio } from '../../core/api'
 import { NavScreen, focusItem, useNavItem } from '../nav'
 import { ChoiceRow, ColourRow, HelpLine, MenuButton, SliderRow, ToggleRow } from '../widgets'
@@ -54,10 +55,28 @@ function SettingRow(props: { tab: SettingsTab; spec: RowSpec; index: number }) {
   const defaults = getDefaults()
   const qualityLevel = useGame((s) => s.qualityLevel)
   const qualityChoice = useSettings((s) => s.quality)
+  // Multiplayer joiner: the host's Laps decide every race, so show theirs, locked.
+  const hostLaps = useNet((s) => (s.status === 'online' && !s.isHost ? s.hostLaps : null))
 
   switch (spec.kind) {
     case 'slider': {
       const r = SETTING_RANGES[spec.key]!
+      if (spec.key === 'raceLaps' && hostLaps !== null) {
+        return (
+          <SliderRow
+            id={id}
+            label={spec.label}
+            value={hostLaps}
+            min={r.min}
+            max={r.max}
+            step={r.step}
+            format={spec.format}
+            onChange={() => {}}
+            help="In multiplayer the host picks the laps. A track can still set its own number."
+            disabled
+          />
+        )
+      }
       return (
         <SliderRow
           id={id}

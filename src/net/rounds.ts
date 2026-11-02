@@ -50,7 +50,7 @@ import { getTrack } from '../track/current'
 import { urlParam } from '../core/devHandles'
 import { playerName } from './identity'
 import { onMessage, previousId, send, statsExtra, weAreDriving } from './client'
-import { carIdFor, getNet, peerLive, relayIdOf, useNet } from './netStore'
+import { carIdFor, getNet, multiplayerLaps, peerLive, relayIdOf, useNet } from './netStore'
 import type { FinishMsg, PlacesMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
 
 /**
@@ -180,7 +180,7 @@ export function requestStart(): boolean {
     kind,
     raceId,
     round: 1 + Math.floor(Math.random() * 0x7ffffffe),
-    laps: track.file.laps ?? getSettings().raceLaps,
+    laps: track.file.laps ?? multiplayerLaps(getSettings().raceLaps),
     seconds: tagSeconds(),
     // Who starts as "it": picked from the raceId, so it is random but the same everywhere.
     itId: grid[raceId % grid.length],

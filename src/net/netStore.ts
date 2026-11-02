@@ -64,6 +64,8 @@ export interface NetState {
   hostTrack: { id: string; name: string } | null
   /** Set when the host's track could not be built here (shown in the menu). */
   trackError: string | null
+  /** The host's Laps setting, from its stats (joiners; null until heard). */
+  hostLaps: number | null
 }
 
 export const useNet = create<NetState>(() => ({
@@ -76,10 +78,21 @@ export const useNet = create<NetState>(() => ({
   peers: {},
   hostTrack: null,
   trackError: null,
+  hostLaps: null,
 }))
 
 export function getNet(): NetState {
   return useNet.getState()
+}
+
+/**
+ * Laps for a multiplayer race when the track doesn't set its own: the host's
+ * Laps setting, whoever presses G. Our own setting if we are the host, or
+ * until the host's number has arrived.
+ */
+export function multiplayerLaps(ownLaps: number): number {
+  const s = useNet.getState()
+  return s.isHost || s.hostLaps === null ? ownLaps : s.hostLaps
 }
 
 /** Twice-a-second peer numbers, by relay id. */

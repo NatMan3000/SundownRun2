@@ -94,6 +94,8 @@ export interface StatsMsg {
   bestLapMs: number | null
   /** My round-trip time to the relay, ms (the inspector shows it). */
   rttMs: number
+  /** My Laps setting. The host's decides every multiplayer race (D2, 2 Nov 2026). Missing from older copies. */
+  raceLaps?: number
 }
 
 /** The host's current track. Sent on connect, on every track change, and on a live param change. */

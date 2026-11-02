@@ -338,8 +338,12 @@ export async function runGameChecks(k: Kit): Promise<void> {
   }
 
   if (k.sections.includes('race')) {
-    console.log('\n== race: G on the host starts a synced race')
-    for (const p of [host, join]) await p.evaluate(`window.__pilot.stop(); window.__pilot.settings.useSettings.getState().set('raceLaps', 1)`)
+    console.log('\n== race: G on the JOINER starts a synced race, with the host\'s laps')
+    // The joiner wants 3 laps, the host 1: the host's number decides (D2), whoever presses G.
+    await host.evaluate(`window.__pilot.stop(); window.__pilot.settings.useSettings.getState().set('raceLaps', 1)`)
+    await join.evaluate(`window.__pilot.stop(); window.__pilot.settings.useSettings.getState().set('raceLaps', 3)`)
+    const heard = await until<number>(join, `window.__pilot.net.getNet().hostLaps === 1 ? 1 : 0`, 3000)
+    check('the joiner hears the host\'s Laps setting', heard === 1, { hostLaps: await join.evaluate(`window.__pilot.net.getNet().hostLaps`) })
     // Far apart before the start (mp-2's repro for the countdown gap).
     await host.evaluate(`window.__pilot.place(window.__pilot.current.getTrack().length * 0.3, 0)`)
     await join.evaluate(`window.__pilot.place(window.__pilot.current.getTrack().length * 0.05, 0)`)
@@ -358,9 +362,11 @@ export async function runGameChecks(k: Kit): Promise<void> {
     })`
     const recs = Promise.all([host.evaluate(RECORD), join.evaluate(RECORD)]) as Promise<[number, string, number, string][][]>
     // Laps come from the track file when it sets them; the check reads what was actually used.
-    await host.evaluate(`window.__pilot.rounds.requestStart()`)
+    await join.evaluate(`window.__pilot.rounds.requestStart()`)
     const hostRound = await until<{ grid: number[]; raceId: number; laps: number }>(host, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'race' ? { grid: r.grid, raceId: r.raceId, laps: r.laps } : null })()`, 3000)
     const joinRound = await until<{ grid: number[]; raceId: number }>(join, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'race' ? { grid: r.grid, raceId: r.raceId } : null })()`, 3000)
+    const fileLaps = await host.evaluate(`window.__pilot.current.getTrack().file.laps ?? null`)
+    check('the race uses the host\'s laps, not the joiner\'s (or the track\'s own)', !!hostRound && hostRound.laps === (fileLaps ?? 1), { laps: hostRound?.laps, fileLaps })
     check('both are in the same race with the same grid', !!hostRound && joinRound?.raceId === hostRound.raceId && JSON.stringify(joinRound?.grid) === JSON.stringify(hostRound.grid), { hostRound, joinRound })
     const states = [await host.evaluate(`window.__game.state.raceState`), await join.evaluate(`window.__game.state.raceState`)]
     check('both count down', states[0] === 'countdown' && states[1] === 'countdown', states)
