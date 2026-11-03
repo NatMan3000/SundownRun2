@@ -37,7 +37,7 @@ const MP_MODES: ModeInfo[] = [
   { mode: 'race', label: 'Race', help: 'Race everyone here from a synced start grid.' },
   { mode: 'free', label: 'Free Roam', help: 'Drive together, pull tricks and shove each other around.' },
   { mode: 'tag', label: 'Tag', help: 'One player is "it" and glows. Bump someone to pass it on. Least time as "it" wins.' },
-  { mode: 'turns', label: 'Hunt Turns', help: 'Take turns hunting. Get close, bump them or fire your tag pulse (F / right stick) to catch them. Runners score tricks and rings, hunters score catches, and a catch wipes the last few seconds of the runner points. Most points wins. Play it in the Thunder Bowl.' },
+  { mode: 'turns', label: 'Hunt Turns', help: 'Take turns hunting. Get close, bump them or fire your tag pulse (F / right stick) to catch them. Runners score tricks, rings and drifts (not smashed props), hunters score catches, and a catch wipes the last few seconds of the runner points. Most points wins. Play it in the Thunder Bowl.' },
 ]
 
 export function ModeSelectScreen() {

@@ -4,7 +4,7 @@
 //  You take turns being the hunter. In a turn one player hunts and
 //  everyone else runs; everyone hunts once a round. It is a points
 //  game: a runner scores whatever the game scores (landed tricks,
-//  stunt-park rings and gaps, bullseyes, drifts, crash props), a
+//  stunt-park rings and gaps, bullseyes, drifts; not crash props), a
 //  hunter scores catchPoints a catch, and a catch takes off the
 //  points its runner scored in the last catchWipeMs. Most points
 //  wins; equal is a draw. (Catches still count and show, small.)
@@ -95,7 +95,7 @@ export interface TurnsState {
   run: Map<number, number>
   /** Our own running points as (when, how many), newest last: what a catch can take back. */
   ledger: { at: number; pts: number }[]
-  /** Last trickScore + propScore we saw (NaN = not yet): a rise while we run is points. */
+  /** Last trickScore we saw (NaN = not yet): a rise while we run is points. */
   lastGame: number
   /** What we last told the others our running points were, and when. */
   sentRun: number
@@ -210,10 +210,13 @@ export function pointsOf(t: TurnsState, id: number): number {
   return (t.run.get(id) ?? 0) + (t.catches.get(id) ?? 0) * t.rules.catchPoints
 }
 
-/** Everything the game has scored us so far: banked tricks (rings, gaps and bullseyes are inside them), drifts and crash props. */
+/**
+ * What the game has scored us that counts for a runner: banked tricks (rings, gaps and bullseyes
+ * are inside them) and drifts, all in trickScore. Crash props (propScore) don't count: smashing
+ * scenery isn't running (Nathan and Josh's playtest, 3 Nov 2026).
+ */
 function gameScore(): number {
-  const g = useGame.getState()
-  return g.trickScore + g.propScore
+  return useGame.getState().trickScore
 }
 
 /**
