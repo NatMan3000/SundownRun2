@@ -3,7 +3,8 @@
 // ------------------------------------------------------------
 //  Every track the game knows (src/track/registry.ts): the
 //  built-in files in tracks/, tracks drawn in the road editor,
-//  and a multiplayer host's shared track. Each card leads with a
+//  online, other players' tracks from the online library, and a
+//  multiplayer host's shared track. Each card leads with a
 //  map drawn from the file itself, then the name, author, where it
 //  came from, the description, length, features and your records
 //  (for the track you last drove). On a track with a bank slider
@@ -38,6 +39,8 @@ const TURNS_TRACK = 'thunder-bowl'
 const SOURCE_LABEL: Record<TrackSource, string> = {
   builtin: 'Built-in',
   drawn: 'Drawn',
+  // Online: another player's track from the online library (its card says whose).
+  library: 'Online',
   shared: 'Shared',
 }
 

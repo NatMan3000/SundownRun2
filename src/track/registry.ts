@@ -8,14 +8,20 @@
 //               Drop a file in tracks/ and it appears in the game.
 //    drawn    - tracks made in the road editor (or imported), saved
 //               in this browser's localStorage.
+//    library  - online only: other players' tracks from the online
+//               track library (src/editor/library/sync.ts keeps them
+//               here, memory only). Your own library tracks are drawn.
 //    shared   - a multiplayer host's track, streamed in (memory only
 //               until the player chooses to keep it).
+//
+//  Every save or delete of a drawn track is announced to the
+//  onDrawnTracksChanged listeners (the online library uploads it).
 // ============================================================
 
 import type { TrackFile, ValidationResult } from './schema'
 import { validateTrack } from './validate'
 
-export type TrackSource = 'builtin' | 'drawn' | 'shared'
+export type TrackSource = 'builtin' | 'drawn' | 'library' | 'shared'
 
 export interface TrackListing {
   id: string
@@ -39,6 +45,28 @@ const DRAWN_KEY = 'sr2.tracks.drawn.v1'
 const shared = new Map<string, TrackFile>()
 /** A shared track held under another id than the host's: the host's id, for its key (keyIdFor). */
 const sharedHostId = new WeakMap<TrackFile, string>()
+
+/** Other players' tracks from the online library, with whose they are (display name). */
+const library = new Map<string, { file: TrackFile; owner: string }>()
+
+export type DrawnChange = { kind: 'save'; file: TrackFile } | { kind: 'delete'; id: string }
+const drawnListeners = new Set<(change: DrawnChange) => void>()
+
+/** Hear about every drawn track saved or deleted in this browser. Returns the unsubscribe. */
+export function onDrawnTracksChanged(listener: (change: DrawnChange) => void): () => void {
+  drawnListeners.add(listener)
+  return () => drawnListeners.delete(listener)
+}
+
+function announce(change: DrawnChange): void {
+  for (const l of drawnListeners) {
+    try {
+      l(change)
+    } catch (err) {
+      console.error('[tracks] a drawn-track listener failed', err)
+    }
+  }
+}
 
 function readDrawn(): Record<string, TrackFile> {
   try {
@@ -75,11 +103,15 @@ function builtins(): TrackListing[] {
   return out
 }
 
-/** Every playable track: built-in first, then drawn, then shared. */
+/** Every playable track: built-in first, then drawn, then library, then shared. An id already listed is never listed twice. */
 export function listTracks(): TrackListing[] {
   const list = builtins()
   for (const file of Object.values(readDrawn())) {
     list.push({ id: file.id, name: file.name, author: file.author, description: file.description, source: 'drawn', file })
+  }
+  for (const { file, owner } of library.values()) {
+    if (list.some((l) => l.id === file.id)) continue
+    list.push({ id: file.id, name: file.name, author: owner, description: file.description, source: 'library', file })
   }
   for (const file of shared.values()) {
     if (list.some((l) => l.id === file.id)) continue
@@ -113,13 +145,26 @@ export function freeTrackId(base: string): string {
 export function saveDrawnTrack(file: TrackFile): boolean {
   const all = readDrawn()
   all[file.id] = file
-  return writeDrawn(all)
+  if (!writeDrawn(all)) return false
+  announce({ kind: 'save', file })
+  return true
 }
 
 export function deleteDrawnTrack(id: string): void {
   const all = readDrawn()
+  if (!(id in all)) return
   delete all[id]
-  writeDrawn(all)
+  if (writeDrawn(all)) announce({ kind: 'delete', id })
+}
+
+/**
+ * Online library: replace the other players' tracks this browser knows
+ * (memory only; the library keeps its own copy). Each entry carries the
+ * owner's display name, shown as the track's author.
+ */
+export function setLibraryTracks(entries: readonly { file: TrackFile; owner: string }[]): void {
+  library.clear()
+  for (const e of entries) library.set(e.file.id, { file: e.file, owner: e.owner })
 }
 
 export function listDrawnTracks(): TrackFile[] {
@@ -174,6 +219,10 @@ export function registerSharedTrack(file: TrackFile, hostId: string = file.id): 
   shared.set(file.id, file)
   if (hostId !== file.id) sharedHostId.set(file, hostId)
   else sharedHostId.delete(file)
+  // Another player's library track under its own id: the host's copy is the one being raced, so
+  // hold that one (the library refreshes it from its own copy at its next sync).
+  const held = library.get(file.id)
+  if (held) library.set(file.id, { file, owner: held.owner })
 }
 
 /**

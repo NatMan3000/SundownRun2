@@ -13,5 +13,5 @@
     "noEmit": true,
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["worker.ts", "room.ts", "memoryStore.ts"]
+  "include": ["worker.ts", "room.ts", "memoryStore.ts", "library.ts", "libraryStore.ts", "libraryApi.ts", "access.ts", "http.ts"]
 }

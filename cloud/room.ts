@@ -30,9 +30,15 @@ import { DurableObject } from 'cloudflare:workers'
 import { IDLE_TIMEOUT_S, RelayCore } from '../server/relayCore'
 import type { ClientData, MemoryPart } from '../server/relayCore'
 import { loadMemory, saveMemory } from './memoryStore'
+import type { AccessEnv } from './access'
+import type { Library } from './library'
 
-export interface Env {
+export interface Env extends AccessEnv {
   ROOM: DurableObjectNamespace<Room>
+  /** The online track library (cloud/library.ts): one object, named "library". */
+  LIBRARY: DurableObjectNamespace<Library>
+  /** Worker secret: login emails (comma-separated) allowed to use /api/library/admin/import. Unset = nobody. */
+  LIBRARY_ADMINS?: string
   ASSETS: Fetcher
   /** Worker secret (`wrangler secret put GITHUB_TOKEN`): Issues read/write on the game's repository. Unset = sharing not switched on. */
   GITHUB_TOKEN?: string

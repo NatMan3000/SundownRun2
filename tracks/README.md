@@ -78,7 +78,7 @@ That's a ~1.4 km loop through rolling hills, with a boost pad and a jump. Everyt
 |---|---|---|---|
 | `format` | `"sundown-run-track"` | required | Always exactly this |
 | `version` | `1` | required | Always 1 for now |
-| `id` | string | required | kebab-case letters and numbers (`my-track`). Must match the file name and be unique. |
+| `id` | string | required | kebab-case letters and numbers (`my-track`). Must match the file name and be unique. In the online game a drawn track's id is unique across every player: if another player's track already has it, the track library gives yours a new one (`my-track-k3x9`). |
 | `name` | string | required | Shown in menus |
 | `author` | string | none | |
 | `description` | string | none | One or two sentences for the track picker |

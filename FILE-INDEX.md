@@ -23,3 +23,4 @@
 |------|-----------|-------------|
 | `scripts/learn-to-code.ts` | permanent | LEARN TO CODE - bun run learn |
 | `scripts/check-tracks.ts` | permanent | CHECK TRACKS - prove a track file works without opening the game |
+| `scripts/library-import.ts` | permanent | One-time import of the GitHub shared tracks into the online track library (admin, cloud/README.md step 7) |

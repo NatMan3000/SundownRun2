@@ -78,7 +78,9 @@ let lastAppliedId = ''
 function sharedId(file: TrackFile, json: string): string {
   const local = getTrackFile(file.id)
   const source = getTrackSource(file.id)
-  if (!local || source === 'shared') return file.id
+  // Another player's online library track isn't ours: the host's copy (newer, if they differ)
+  // takes its place under the real id, so no "-host" copy sits beside it in the track list.
+  if (!local || source === 'shared' || source === 'library') return file.id
   // Same id, same content (a built-in track both sides have): just use it.
   if (JSON.stringify(local) === json) return file.id
   return `${file.id}-host`

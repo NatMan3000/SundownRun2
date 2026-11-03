@@ -35,6 +35,16 @@ export const GAME_PORT = 5201
 export const CLOUD_RELAY_PATH = '/relay'
 
 /**
+ * Is this page the online game (the copy on Cloudflare, behind the login)?
+ * An https page is; the game at home (localhost, the LAN) is plain http.
+ * The one switch for everything that differs online: the relay below and
+ * the online track library (src/editor/library/sync.ts).
+ */
+export function isOnlinePage(page: { protocol: string }): boolean {
+  return page.protocol === 'https:'
+}
+
+/**
  * Where a page finds its relay.
  *  - ?relay=<port>: that port on the page's own host (tests, checker previews), wss on an https page.
  *  - an https page (the online game on Cloudflare): the same address, path /relay, over wss.
@@ -43,7 +53,7 @@ export const CLOUD_RELAY_PATH = '/relay'
 export function relayUrlFor(page: { protocol: string; host: string; hostname: string }, relayParam: string | null): string {
   const n = Number(relayParam)
   const port = relayParam !== null && relayParam !== '' && Number.isInteger(n) && n > 0 && n < 65536 ? n : null
-  const secure = page.protocol === 'https:'
+  const secure = isOnlinePage(page)
   if (port !== null) return `${secure ? 'wss' : 'ws'}://${page.hostname}:${port}`
   if (secure) return `wss://${page.host}${CLOUD_RELAY_PATH}`
   return `ws://${page.hostname}:${RELAY_PORT}`

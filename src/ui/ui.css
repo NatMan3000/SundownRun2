@@ -112,6 +112,7 @@
 .badge--builtin { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .badge--drawn { color: var(--accent2); background: color-mix(in srgb, var(--accent2) 10%, transparent); }
 .badge--shared { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.badge--library { color: var(--good); background: color-mix(in srgb, var(--good) 10%, transparent); }
 
 /* ---------------------------------------------------------------- screens + panels */
 

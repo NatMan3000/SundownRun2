@@ -18,9 +18,15 @@
 //  your tracks posts it there (share/ShareUi.tsx, through the game's
 //  server like Report a problem); Download brings a shared one in
 //  through the same checks as Import a track file (importTrack.ts).
+//
+//  Online (the https copy, library/sync.ts) there is no Share or
+//  Shared tracks: your tracks save to the online library by
+//  themselves (each row says how it stands), and the second tab is
+//  Everyone's tracks (library/LibraryUi.tsx). Someone else's track
+//  opens as your own copy. Nothing goes to GitHub from the online game.
 // ============================================================
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { audio } from '../core/api'
 import { type TrackListing, deleteDrawnTrack, downloadTrack, listTracks } from '../track/registry'
 import type { TrackFile } from '../track/schema'
@@ -32,6 +38,8 @@ import { DRIVE_TRACK_ID } from './driveToDraw'
 import { importTrackText } from './importTrack'
 import { canShare, downloadedFrom, fetchSharedList } from './share/client'
 import { ShareBox, SharedTracks } from './share/ShareUi'
+import { libraryOn, syncNow } from './library/sync'
+import { EveryonesTracks, SyncChip, SyncLine } from './library/LibraryUi'
 
 export function Library(props: { onClose: () => void }) {
   const [version, setVersion] = useState(0)
@@ -39,7 +47,14 @@ export function Library(props: { onClose: () => void }) {
   const [sharing, setSharing] = useState<TrackFile | null>(null)
   /** Is a GitHub key set up on this computer? null while asking (the Share box says which). */
   const [ready, setReady] = useState<boolean | null>(null)
-  const tracks = useMemo(() => listTracks().filter((t) => t.id !== DRIVE_TRACK_ID), [version])
+  /** The online copy: the track library instead of Share and Shared tracks. */
+  const online = libraryOn()
+  // Other players' library tracks live in Everyone's tracks, not here.
+  const tracks = useMemo(() => listTracks().filter((t) => t.id !== DRIVE_TRACK_ID && t.source !== 'library'), [version])
+  // Opening the Library online checks the library (new tracks from other players, uploads waiting).
+  useEffect(() => {
+    if (online) void syncNow().then(() => setVersion((v) => v + 1))
+  }, [online])
   const fileInput = useRef<HTMLInputElement>(null)
   const [newWorld, setNewWorld] = useState(BASE_WORLDS[0].id)
   const empty = useEditor((s) => isEmptyDraft(s.draft))
@@ -104,15 +119,17 @@ export function Library(props: { onClose: () => void }) {
           <button type="button" role="tab" aria-selected={tab === 'mine'} className={`sr-lib-tab${tab === 'mine' ? ' is-on' : ''}`} data-testid="lib-tab-mine" onClick={() => setTab('mine')}>
             Your tracks
           </button>
-          <button type="button" role="tab" aria-selected={tab === 'shared'} className={`sr-lib-tab${tab === 'shared' ? ' is-on' : ''}`} data-testid="lib-tab-shared" onClick={() => setTab('shared')}>
-            Shared tracks
+          <button type="button" role="tab" aria-selected={tab === 'shared'} className={`sr-lib-tab${tab === 'shared' ? ' is-on' : ''}`} data-testid={online ? 'lib-tab-everyone' : 'lib-tab-shared'} onClick={() => setTab('shared')}>
+            {online ? "Everyone's tracks" : 'Shared tracks'}
           </button>
         </div>
 
-        {tab === 'shared' && <SharedTracks onReady={setReady} onDownloaded={() => setVersion((v) => v + 1)} onOpen={(file) => open(file, false)} />}
+        {tab === 'shared' && !online && <SharedTracks onReady={setReady} onDownloaded={() => setVersion((v) => v + 1)} onOpen={(file) => open(file, false)} />}
+        {tab === 'shared' && online && <EveryonesTracks onOpenMine={(file) => open(file, false)} onCopy={(file) => open(file, true)} />}
 
         {tab === 'mine' && (
           <>
+            {online && <SyncLine />}
             <div className="sre-lib-now" data-testid="editor-lib-now">
               <span className="sre-label">Now editing</span>
               <strong>{name}</strong>
@@ -145,7 +162,7 @@ export function Library(props: { onClose: () => void }) {
 
             <ul className="sre-lib-list">
               {tracks.map((t) => (
-                <TrackRow key={`${t.source}:${t.id}`} track={t} isOpen={t.source === 'drawn' && t.id === savedId} state={state} onOpen={open} onShare={startShare} onDeleted={() => setVersion((v) => v + 1)} />
+                <TrackRow key={`${t.source}:${t.id}`} track={t} online={online} isOpen={t.source === 'drawn' && t.id === savedId} state={state} onOpen={open} onShare={startShare} onDeleted={() => setVersion((v) => v + 1)} />
               ))}
             </ul>
 
@@ -183,17 +200,18 @@ export function Library(props: { onClose: () => void }) {
 }
 
 /** One track in the list: its name, whose it is, and what you can do with it. The open one is marked and has no Open button. */
-function TrackRow(p: { track: TrackListing; isOpen: boolean; state: SaveState; onOpen: (file: TrackFile, asCopy: boolean) => void; onShare: (file: TrackFile) => void; onDeleted: () => void }) {
+function TrackRow(p: { track: TrackListing; online: boolean; isOpen: boolean; state: SaveState; onOpen: (file: TrackFile, asCopy: boolean) => void; onShare: (file: TrackFile) => void; onDeleted: () => void }) {
   const t = p.track
   const from = t.source === 'drawn' ? downloadedFrom(t.id) : null
   // Whether Share will work, and why not, before any click (the button's hover says it; a click says it too).
-  const share = t.source === 'drawn' ? canShare(t.file) : null
+  const share = t.source === 'drawn' && !p.online ? canShare(t.file) : null
   return (
     <li className={`sre-lib-row${p.isOpen ? ' is-open' : ''}`} data-testid={p.isOpen ? 'editor-lib-open-row' : undefined}>
       <div className="sre-lib-name">
         <strong>
           {t.name}
           {p.isOpen && <span className={`sre-save-chip is-${p.state}`}>{p.state === 'changed' ? 'Open now, changes not saved' : 'Open now'}</span>}
+          {p.online && t.source === 'drawn' && <SyncChip file={t.file} />}
         </strong>
         <span>
           {t.source === 'builtin' ? 'Built-in' : t.source === 'shared' ? 'From the host' : from ? <span className="sr-lib-from">Shared by {from.madeBy || 'someone'}, from Shared tracks</span> : `Yours${t.author ? `, by ${t.author}` : ''}`}
@@ -207,6 +225,7 @@ function TrackRow(p: { track: TrackListing; isOpen: boolean; state: SaveState; o
                 Open
               </button>
             )}
+            {!p.online && (
             <button
               type="button"
               className={`sre-btn is-quiet${share?.ok ? '' : ' is-refused'}`}
@@ -217,6 +236,7 @@ function TrackRow(p: { track: TrackListing; isOpen: boolean; state: SaveState; o
             >
               Share
             </button>
+            )}
             <button type="button" className="sre-btn is-quiet" onClick={() => downloadTrack(t.file)}>
               Export
             </button>
@@ -224,7 +244,10 @@ function TrackRow(p: { track: TrackListing; isOpen: boolean; state: SaveState; o
               type="button"
               className="sre-btn is-danger"
               onClick={() => {
-                if (!window.confirm(`Delete "${t.name}" from this browser? Export it first if you want to keep a copy.`)) return
+                const ask = p.online
+                  ? `Delete "${t.name}"? It goes from the online library too, so from every computer. Export it first if you want to keep a copy.`
+                  : `Delete "${t.name}" from this browser? Export it first if you want to keep a copy.`
+                if (!window.confirm(ask)) return
                 deleteDrawnTrack(t.id)
                 // If it was the open track, the open one is now a new track that isn't saved.
                 forgetDeletedTrack(t.id)

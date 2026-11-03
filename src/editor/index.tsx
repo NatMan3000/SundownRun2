@@ -36,6 +36,10 @@
 //                   protocol.ts (shared with server/trackShare.ts),
 //                   client.ts (talks to the server, checks tracks),
 //                   ShareUi.tsx (the Share box and the list)
+//    library/       online only: the track library on Cloudflare. Your
+//                   tracks save there by themselves, and Everyone's
+//                   tracks lists every player's: protocol.ts (shared
+//                   with cloud/), sync.ts, LibraryUi.tsx
 //    askFirst.ts    "Save it first?" before New track, the dice, opening
 //                   another track or leaving (AskFirstBox.tsx draws it)
 //    randomTrack.ts the dice: a random road that passes every check
@@ -54,6 +58,8 @@ import { EditorUi as EditorOverlayUi } from './EditorUi'
 import { onEditorOpen } from './draft'
 import { isMapOpen } from './worldMap'
 import './dev'
+// Online only: keeps your drawn tracks in the online track library (it does nothing at home).
+import './library/sync'
 
 export { EditorDrive, EditorDriveUi, startDriveToDraw } from './driveToDraw'
 export { openWorldMap, closeWorldMap } from './worldMap'

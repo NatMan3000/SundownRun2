@@ -28,6 +28,7 @@ import { PALETTE } from '../core/palette'
 import { urlParam } from '../core/devHandles'
 import { useSettings } from '../core/settings'
 import { relayUrlFor } from './protocol'
+import { cleanPlayerName } from '../editor/library/protocol'
 
 /** Colour words a kid can type into the link, mapped onto the game's palette. */
 export const COLOR_WORDS: Record<string, string> = {
@@ -57,14 +58,8 @@ export function relayUrl(): string {
 
 const NAME_KEY = 'sr2.playerName'
 
-/** Strip anything odd and keep it short enough for a name tag. */
-function cleanName(raw: string): string {
-  return raw
-    .replace(/[^\p{L}\p{N} _.'-]/gu, '')
-    .trim()
-    .slice(0, 14)
-    .toUpperCase()
-}
+/** Strip anything odd and keep it short enough for a name tag (the online library shows the same name). */
+const cleanName = cleanPlayerName
 
 let cachedName: string | null = null
 

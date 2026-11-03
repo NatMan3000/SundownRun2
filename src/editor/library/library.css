@@ -1,0 +1,56 @@
+/* ============================================================
+   ONLINE LIBRARY UI - the sync line and each track's chip
+   ------------------------------------------------------------
+   Built like the editor's save chip (editor.css .sre-save-chip) with
+   its colour tokens (--good, --warn, --bad, --dim), which come from
+   src/core/palette.ts: mint = safe online, amber = waiting, red-ish
+   bad = refused.
+   ============================================================ */
+
+.sr-sync-line {
+  margin: 10px 20px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  line-height: 1.4;
+}
+.sr-sync-line.is-good {
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 40%, transparent);
+  background: color-mix(in srgb, var(--good) 8%, transparent);
+}
+.sr-sync-line.is-warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+}
+.sr-sync-line.is-dim {
+  color: var(--dim);
+}
+
+.sr-sync-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-family: var(--font-body);
+  font-size: 0.78em;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.sr-sync-chip.is-online {
+  color: var(--good);
+}
+.sr-sync-chip.is-waiting {
+  color: var(--warn);
+}
+.sr-sync-chip.is-refused {
+  color: var(--bad);
+}
+.sr-sync-chip.is-other-login,
+.sr-sync-chip.is-theirs,
+.sr-sync-chip.is-off {
+  color: var(--dim);
+}

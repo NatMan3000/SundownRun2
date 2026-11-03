@@ -48,7 +48,9 @@ export function keepOthersSafe(text: string): { text: string; id: string | null;
   if (!parsed || typeof parsed !== 'object') return { text, id: null, renamed: null }
   const file = parsed as { id?: unknown; name?: unknown }
   if (typeof file.id !== 'string' || typeof file.name !== 'string') return { text, id: null, renamed: null }
-  const idTaken = listDrawnTracks().some((t) => t.id === file.id) || getTrackSource(file.id) === 'builtin'
+  // A built-in's id, or (online) another player's library track's id, is taken too.
+  const source = getTrackSource(file.id)
+  const idTaken = listDrawnTracks().some((t) => t.id === file.id) || source === 'builtin' || source === 'library'
   const name = freeName(file.name)
   if (!idTaken && name === file.name.trim()) return { text, id: file.id, renamed: null }
   const was = file.name

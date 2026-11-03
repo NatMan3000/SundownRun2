@@ -15,10 +15,26 @@
     "run_worker_first": ["/relay", "/api/*"]
   },
   "durable_objects": {
-    "bindings": [{ "name": "ROOM", "class_name": "Room" }]
+    "bindings": [
+      { "name": "ROOM", "class_name": "Room" },
+      // The online track library (cloud/library.ts): one object holding every player's tracks.
+      { "name": "LIBRARY", "class_name": "Library" }
+    ]
   },
-  // The free plan only runs SQLite-backed Durable Objects.
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  // The free plan only runs SQLite-backed Durable Objects. A new class needs a new tag;
+  // never edit or remove a tag that has been deployed.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Room"] },
+    { "tag": "v2", "new_sqlite_classes": ["Library"] }
+  ],
+  // Not secrets. ACCESS_AUD is the Access application's AUD tag (cloud/README.md, "Switch on
+  // the track library"); empty = the library is off and says so. Local tests override it to empty
+  // in cloud/.dev.vars to use SR2_DEV_PLAYER (ignored whenever ACCESS_AUD is set). LIBRARY_ADMINS is a secret
+  // (wrangler secret put), not a var here: it holds email addresses and this repo is public.
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "https://natman3000.cloudflareaccess.com",
+    "ACCESS_AUD": "182e50e260491f68aacf8aa9f7f1806b1ddf1add6ce5ab64e3374485c1086a20"
+  },
   // The only way in is the custom domain, behind Cloudflare Access. A workers.dev
   // address or a preview URL would be a second door with no lock on it.
   "workers_dev": false,

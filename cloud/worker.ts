@@ -7,10 +7,14 @@
 //                 Cloudflare's static assets: the Worker doesn't even run
 //    /relay       the multiplayer relay: a WebSocket handed to the one
 //                 room (room.ts, a Durable Object)
-//    /api/tracks  Share and Shared tracks: server/trackShare.ts, the same
-//                 code the game at home runs, posting to GitHub with the
-//                 GITHUB_TOKEN secret (cloud/README.md). No secret: it says
-//                 sharing isn't switched on.
+//    /api/tracks  the Shared tracks list (GitHub issues labelled track):
+//                 server/trackShare.ts, the same code the game at home
+//                 runs. Read only: online, tracks go to the library, so a
+//                 share (POST) is refused. The list feeds the one-time
+//                 import (scripts/library-import.ts).
+//    /api/library the online track library (cloud/libraryApi.ts): every
+//                 player's drawn tracks, saved under their Access login
+//                 in the Library Durable Object (cloud/library.ts)
 //    /api/report  "Report a problem" only works in the game at home (it
 //                 queues reports on that computer's disk). Here it answers
 //                 "not set up" in the shape the game understands, so the
@@ -25,14 +29,14 @@ import type { ShareResult } from '../src/editor/share/protocol'
 import { REPORT_REPO } from '../src/ui/report/protocol'
 import { createTrackShare, githubCall, type TrackShare } from '../server/trackShare'
 import type { Env } from './room'
+import { callerProblem, json, readBody } from './http'
+import { libraryAnswer } from './libraryApi'
 
 export { Room } from './room'
+export { Library } from './library'
 
+const SHARE_OFF = "Sharing to GitHub only works in the game at home. Online, your tracks save to the track library by themselves: everyone sees them in Everyone's tracks."
 const REPORT_OFF = "Reporting doesn't work in the online game. Tell Dad what happened, or report it from the game at home."
-
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } })
-}
 
 function reportAnswer(request: Request): Response {
   if (request.method === 'GET') {
@@ -87,53 +91,17 @@ function cleanToken(s: string): string | null {
   return /^[A-Za-z0-9_]{20,255}$/.test(t) ? t : null
 }
 
-/** Only the game's own page may call (Access already gates who can reach the Worker). */
-function callerProblem(request: Request): string | null {
-  const origin = request.headers.get('origin')
-  if (origin) {
-    try {
-      if (new URL(origin).host !== new URL(request.url).host) return `page from ${origin}`
-    } catch {
-      return 'unreadable origin'
-    }
-  }
-  const site = request.headers.get('sec-fetch-site')
-  if (site && site !== 'same-origin' && site !== 'none') return `${site} request`
-  return null
-}
-
-/** Read the body as text, or null if it is bigger than `max` bytes. */
-async function readBody(request: Request, max: number): Promise<string | null> {
-  const declared = Number(request.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > max) return null
-  if (!request.body) return ''
-  const reader = request.body.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.byteLength
-    if (size > max) {
-      await reader.cancel()
-      return null
-    }
-    chunks.push(value)
-  }
-  const all = new Uint8Array(size)
-  let at = 0
-  for (const c of chunks) {
-    all.set(c, at)
-    at += c.byteLength
-  }
-  return new TextDecoder().decode(all)
-}
-
 async function tracksAnswer(request: Request, env: Env): Promise<Response> {
   const refusal = callerProblem(request)
   if (refusal) {
     console.warn(`[share] refused a track request from outside the game (${refusal})`)
     const answer: ShareResult = { status: 'rejected', reason: 'invalid', message: 'Tracks can only be shared from the game itself.' }
+    return json(answer, 403)
+  }
+  // Online, tracks save to the track library (/api/library), so nothing posts to GitHub from here
+  // any more. The list still reads (public issues), for the one-time import (scripts/library-import.ts).
+  if (request.method === 'POST') {
+    const answer: ShareResult = { status: 'rejected', reason: 'invalid', message: SHARE_OFF }
     return json(answer, 403)
   }
   currentEnv = env
@@ -164,6 +132,7 @@ export default {
     }
     if (pathname === '/api/report') return reportAnswer(request)
     if (pathname === '/api/tracks') return tracksAnswer(request, env)
+    if (pathname === '/api/library' || pathname.startsWith('/api/library/')) return libraryAnswer(request, env)
     return env.ASSETS.fetch(request)
   },
 } satisfies ExportedHandler<Env>

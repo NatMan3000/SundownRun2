@@ -223,7 +223,8 @@ export function draftId(d: Draft): string {
 
 /** An id made from a track's name that no saved or built-in track has ("Canyon Run" -> canyon-run, or canyon-run-2...). */
 export function freeIdFor(name: string): string {
-  const taken = new Set(listDrawnTracks().map((t) => t.id))
+  // Your tracks, and online other players' library tracks too (the library would only give a clash a new id).
+  const taken = new Set([...listDrawnTracks().map((t) => t.id), ...listTracks().filter((t) => t.source === 'library').map((t) => t.id)])
   const base = freeTrackId(name)
   if (!taken.has(base)) return base
   let n = 2
@@ -597,6 +598,20 @@ export function forgetDeletedTrack(id: string): void {
   keepTrackLine(s.draft, draft)
   useEditor.setState({ savedId: null, dirty: true, draft, checkedDraft: s.checkedDraft === s.draft ? draft : s.checkedDraft })
   writeWorking({ draft, savedId: null, dirty: true })
+}
+
+/**
+ * Online library: a saved track was given a new id (the library had to: its
+ * id was taken by another player's track). If it is the open one, the editor
+ * follows it, so the next Save updates the same track.
+ */
+export function followRenamedTrack(oldId: string, newId: string): void {
+  const s = useEditor.getState()
+  if (s.savedId !== oldId) return
+  const draft = s.draft.id === oldId ? { ...s.draft, id: newId } : s.draft
+  keepTrackLine(s.draft, draft)
+  useEditor.setState({ draft, savedId: newId, checkedDraft: s.checkedDraft === s.draft ? draft : s.checkedDraft })
+  writeWorking({ draft, savedId: newId, dirty: s.dirty })
 }
 
 // ---------------------------------------------------------------- live preview
