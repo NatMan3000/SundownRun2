@@ -39,7 +39,7 @@ Ports: 5201 dev server, 5202 multiplayer relay, 5203 Nathan's stable copy (`vite
 - `window.__perf`: the frame report from the last `?demo=1` recording. `window.__events`: recent game events.
 - URL switches: `?track=`, `?mode=free|timetrial|race|stunt|tag|turns`, `?tagSeconds=` / `?turnSeconds=` (shorter tag rounds and Hunt Turns turns for checks, read by whoever presses G), `?demo=1`, `?time=0..1`, `?quality=low|medium|high`, `?cam=<bookmark>`, `?ai=<n>`, `?nomusic=1`, `?mp=1&name=&color=` (the relay is `ws://<host>:5202` on LAN; an https page, the online copy, uses `wss://<host>/relay`; `?relay=<port>` overrides either), `?editor=1`, `?engine=muscle|rally|hover`, `?motor=nodes`, `?nancheck=1` (on-screen broken-pixel counts), `?hide=<layer>,<layer>`.
 - `/api/report` on the dev and preview servers (`server/issues.ts`, the Report a problem screen's post office): `GET` says whether a GitHub key is set up, the version and commit, and how many reports wait in `reports/pending/`; `POST` files one. `__dev.ui('report')` opens the screen. Test only against a fake GitHub (`SR2_ISSUES_API=http://127.0.0.1:<port>`, plus `SR2_REPORTS_DIR` to keep saved reports out of the folder); never the real repository, which is public.
-- `/api/tracks` on the same servers (`server/trackShare.ts`): the editor Library's Share and Shared tracks. `GET` lists `track`-labelled issues, `POST` shares one. `__dev.share('help')` lists checker commands (list, download, can, share, mine). Test only against the fake GitHub (`bun run test:share`, or `bun server/fakeGithub.ts --port <p> --token <fake-key>[:nopush]` with `SR2_ISSUES_API` and `SR2_REPORTS_DIR` as for reports, from an export with no `github-token.txt`); never the real repository.
+- `/api/tracks` on the same servers (`server/trackShare.ts`): the editor Library's Share and Shared tracks. `GET` lists `track`-labelled issues, `POST` shares one. `__dev.share('help')` lists checker commands (list, download, can, share, mine). One brain for both the home server and the online Worker (`cloud/worker.ts`); change sharing in `server/trackShare.ts`. Test only against the fake GitHub (`bun run test:share`, or `bun server/fakeGithub.ts --port <p> --token <fake-key>[:nopush]` with `SR2_ISSUES_API` and `SR2_REPORTS_DIR` as for reports, from an export with no `github-token.txt`); never the real repository.
 
 Checking a change: a production build (`bunx vite build`, then `bunx vite preview` on a 5220-5239 port) is what counts, not the dev server. Frame cost is measured as max(CPU, GPU) with a GPU timer query, over a `?demo=1` drive at the high preset; the budget table is in `CONSTITUTION.md` section 2. The GPU is shared with anything else probing, so measure perf with nothing else running.
 
@@ -68,8 +68,8 @@ Contracts in `src/core/` and `src/track/{schema,types,registry,current}.ts` are 
 | `src/play/` | game modes, Ai racers, props, smashables, energy cores, speed traps |
 | `src/ui/` | title, garage, settings, pause, HUD, results, report a problem |
 | `src/editor/` | the road editor and world map |
-| `src/net/`, `server/` | multiplayer client and LAN relay (`server/relayCore.ts` is the relay's one brain, shared with the online room); `server/issues.ts` posts reports as GitHub issues |
-| `cloud/` | the online copy: Cloudflare Worker serving `dist/`, the relay room as a Durable Object (`cloud/README.md`) |
+| `src/net/`, `server/` | multiplayer client and LAN relay (`server/relayCore.ts` is the relay's one brain, shared with the online room); `server/issues.ts` posts reports as GitHub issues; `server/trackShare.ts` is the track-sharing brain (no web server in it), shared by `server/trackShareNode.ts` here and the online Worker |
+| `cloud/` | the online copy: Cloudflare Worker serving `dist/`, the relay room as a Durable Object, and Share / Shared tracks through `GITHUB_TOKEN` (`cloud/README.md`); Report a problem stays home-only |
 
 ## Gotchas
 

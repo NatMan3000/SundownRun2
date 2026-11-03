@@ -11,7 +11,7 @@ The game page and the multiplayer relay run on Cloudflare, so two houses can rac
 
 | Piece | What it is |
 |---|---|
-| `worker.ts` | The Worker: serves `dist/` (the production build) as static files, hands `/relay` to the room, and answers `/api/report` and `/api/tracks` with "not set up" (reporting and track sharing only work in the game at home) |
+| `worker.ts` | The Worker: serves `dist/` (the production build) as static files, hands `/relay` to the room, runs track sharing on `/api/tracks` (the same `server/trackShare.ts` the game at home runs), and answers `/api/report` with "not set up" (reporting only works in the game at home) |
 | `room.ts` | The room: one Durable Object that every player's WebSocket joins. Its rules are `server/relayCore.ts`, the same code the LAN relay (`bun run mp`) runs |
 | `memoryStore.ts` | What the room saves (next player id, the host's track, the round in progress), so a Cloudflare restart mid-game carries on |
 | `wrangler.jsonc` | Config. No account id or secret: the repository is public |
@@ -38,11 +38,14 @@ Open `https://127.0.0.1:5211/?mp=1&name=DAD` in two browsers (click through the 
    - Login methods: Google (already set up for the other apps) and One-time PIN (Josh gets a code by email).
    - Check the policy's own Session Duration says "Same as application session timeout". A policy duration overrides the app's (the Admin Login policy once forced a daily login on Nexus: `~/Dev/HomeLab/docs/cloudflare.md` § Session Duration Precedence).
 
+5. **Switch on track sharing** (Share and Shared tracks in the editor Library, the same GitHub issues labelled `track` on `NatMan3000/SundownRun2` that the game at home uses). The key is a Worker secret named `GITHUB_TOKEN`, a fine-grained token with Issues read and write on that one repository. Read it from the key file by stdin so it never shows on screen or in history: `bunx wrangler secret put GITHUB_TOKEN -c cloud/wrangler.jsonc < github-token.txt` (a secret takes effect on its own, no redeploy needed after the first deploy). Without it the Shared tracks list still reads (public) and Share answers "Sharing isn't switched on in the online game yet". **The token expires on 31 Dec 2026**: make a new one then and run the same command.
+
 Then each player opens `https://sundown.nathans-lab.fyi/?mp=1&name=JOSH&color=pink`.
 
 ## Gotchas
 
 - **A lapsed Access login breaks multiplayer quietly.** When the month runs out, Access only asks you to log in again on a full page load. The game's WebSocket to `/relay` just fails and keeps retrying (the multiplayer status shows connecting). Fix: reload the page, log in, play.
 - **Free plan budget.** The room counts every 20 incoming messages as one request, 100,000 a day, reset at 10:00 AEST / 11:00 AEDT (00:00 UTC). Two players driving send about 123 messages a second between them (measured: 59 car positions plus 2.5 status and ping messages a second each), which is about 4.5 hours of two-player driving a day. Sitting in menus or the editor costs a twentieth of that. Over the limit, the relay stops answering until the reset; the page and single player still work. The room logs its rate once a minute (`bunx wrangler tail sundown-run`).
-- **Reporting and Share are home-only.** The online copy has no GitHub key; its Report a problem and Share screens say so instead of trying.
+- **Reporting is home-only; Share works online.** Report a problem queues on the home computer's disk, so online it says so instead of trying. Share needs the `GITHUB_TOKEN` secret (step 5). It has no disk to queue on: if GitHub can't be reached the share is refused with "try again in a minute" and the browser keeps the track. The minute-long list memory and the 6-shares-in-10-minutes limit live in the Worker's memory (one isolate), so Cloudflare recycling it resets them; GitHub is the source of truth.
+- **Testing Share locally:** put a made-up key and the fake GitHub's address in `cloud/.dev.vars` (git-ignored): `GITHUB_TOKEN=fakekey_owner_0123456789abcdef` and `SR2_ISSUES_API=http://127.0.0.1:<port>`, run `bun server/fakeGithub.ts --port <port> --token fakekey_owner_0123456789abcdef`, then `bun run cloud:dev`. Never the real key or repository.
 - **Protocol versions.** Everyone online gets the deployed build, so tabs left open across a deploy see "reload every tab" (the protocol version check); reloading fixes it.

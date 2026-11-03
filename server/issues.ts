@@ -49,7 +49,8 @@ import type { Plugin } from 'vite'
 import { REPORT_ENDPOINT, REPORT_KINDS, REPORT_LIMITS, REPORT_REPO, scrubPrivate } from '../src/ui/report/protocol'
 import type { ReportDetails, ReportInfo, ReportKind, ReportRequest, ReportResult, SavedReason } from '../src/ui/report/protocol'
 import { TRACKS_ENDPOINT, type ShareSavedReason, type TrackIssue } from '../src/editor/share/protocol'
-import { type GithubResult, type SavedShare, createTrackShare } from './trackShare'
+import { type GithubResult, type SavedShare, createTrackShare, githubCall } from './trackShare'
+import { nodeTrackHandler } from './trackShareNode'
 
 // ---------------------------------------------------------------- settings
 
@@ -160,19 +161,19 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
     warn,
     readToken,
     github,
-    keep: keepShare,
-    dropWaiting: dropWaitingShares,
-    waitingCount: async () => (await listPending()).length,
-    sendWaiting,
-    callerProblem,
-    readBody,
-    reply,
+    queue: {
+      keep: keepShare,
+      dropWaiting: dropWaitingShares,
+      waitingCount: async () => (await listPending()).length,
+      sendWaiting,
+    },
   })
+  const handleTracks = nodeTrackHandler(shares, { callerProblem, readBody, reply }, warn)
 
   return (req, res, next) => {
     const path = (req.url ?? '').split('?')[0]
     if (path === TRACKS_ENDPOINT) {
-      shares.handle(req, res).catch((err) => {
+      handleTracks(req, res).catch((err) => {
         warn(`a track request failed inside the server: ${errText(err)}`)
         if (!res.headersSent) reply(res, 500, { status: 'rejected', reason: 'invalid', message: 'The game server had a problem with that. Try again.' })
         else res.end()
@@ -479,47 +480,9 @@ export function createReportHandler(opts: ReportOptions): ReportHandler {
     return { ok: false, reason: 'refused', status, detail: `GitHub said ${status}${said}` }
   }
 
-  /** Any GitHub REST call, for the track counter. The key (if given) goes only in the Authorization header. */
-  async function github(method: string, path: string, token: string | null, body?: unknown): Promise<GithubResult> {
-    const headers: Record<string, string> = {
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'SundownRunII-share-a-track',
-      'X-GitHub-Api-Version': GITHUB_API_VERSION,
-    }
-    if (token) headers.Authorization = `Bearer ${token}`
-    if (body !== undefined) headers['Content-Type'] = 'application/json'
-    let res: Response
-    try {
-      res = await fetch(`${api}${path}`, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
-      })
-    } catch (err) {
-      return { ok: false, reason: 'offline', status: 0, detail: `could not reach GitHub (${errText(err)})` }
-    }
-    const text = await res.text()
-    let data: unknown = null
-    try {
-      data = text ? JSON.parse(text) : null
-    } catch {
-      // GitHub answers in JSON; when it doesn't (a proxy page), the status code still says what happened.
-      data = null
-    }
-    const status = res.status
-    if (status >= 200 && status < 300) return { ok: true, status, data }
-    const msg = (data as { message?: unknown } | null)?.message
-    const said = typeof msg === 'string' ? `: ${msg.slice(0, 200)}` : ''
-    const outOfAsks = res.headers.get('x-ratelimit-remaining') === '0' || /rate limit/i.test(said)
-    if (status === 429 || ((status === 403 || status === 429) && outOfAsks)) {
-      return { ok: false, reason: 'busy', status, detail: `GitHub says the game has asked too many times for now (${status}${said})` }
-    }
-    if (status >= 500) return { ok: false, reason: 'offline', status, detail: `GitHub is having trouble (${status}${said})` }
-    if (status === 401) return { ok: false, reason: 'refused', status, detail: `GitHub turned the key down (401${said}): it may have run out or been copied wrong` }
-    if (status === 403) return { ok: false, reason: 'refused', status, detail: `the key is not allowed to do that (403${said}): it needs Issues: Read and write` }
-    if (status === 404) return { ok: false, reason: 'refused', status, detail: `GitHub can't find that on ${REPORT_REPO} (404${said})` }
-    return { ok: false, reason: 'refused', status, detail: `GitHub said ${status}${said}` }
+  /** Any GitHub REST call, for the track counter (server/trackShare.ts githubCall, shared with the online Worker). */
+  function github(method: string, path: string, token: string | null, body?: unknown): Promise<GithubResult> {
+    return githubCall({ api, repo: REPORT_REPO }, method, path, token, body)
   }
 
   // ---------------------------------------------------------------- the key, the version, git

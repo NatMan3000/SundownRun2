@@ -20,3 +20,6 @@ data/worktree-patches-*/
 
 # Cloudflare local dev state (wrangler dev)
 .wrangler/
+
+# wrangler dev secrets (fake keys only, but still not committed)
+.dev.vars*

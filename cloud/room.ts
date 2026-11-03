@@ -34,6 +34,10 @@ import { loadMemory, saveMemory } from './memoryStore'
 export interface Env {
   ROOM: DurableObjectNamespace<Room>
   ASSETS: Fetcher
+  /** Worker secret (`wrangler secret put GITHUB_TOKEN`): Issues read/write on the game's repository. Unset = sharing not switched on. */
+  GITHUB_TOKEN?: string
+  /** Test only: the fake GitHub's address (server/fakeGithub.ts). Unset = the real GitHub. */
+  SR2_ISSUES_API?: string
 }
 
 /** How often the room checks for silent players, at most (ms). */

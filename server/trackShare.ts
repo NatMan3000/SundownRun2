@@ -11,6 +11,12 @@
 //    GET  /api/tracks?fresh=1    the same, not from the minute-long memory
 //    POST /api/tracks            { track, madeBy, world, shareKey, issue } -> share it
 //
+//  This file has no web server in it. createTrackShare().respond() takes
+//  a plain description of a request and returns { code, body }, so both
+//  callers share ONE brain: the Bun/Vite server (server/issues.ts, through
+//  server/trackShareNode.ts) and the online Worker (cloud/worker.ts, which has
+//  no disk, so no waiting pile: a share that can't go answers "try again").
+//
 //  It is the same post office as Report a problem (server/issues.ts
 //  creates it and hands it the key, the waiting pile and the safety
 //  checks): the same key file, the same reports/pending/ folder, the
@@ -40,7 +46,6 @@
 //  back up.
 // ============================================================
 
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import { TRACK_FORMAT, TRACK_VERSION, type TrackFile } from '../src/track/schema'
 import {
   SHARE_KEY,
@@ -98,6 +103,11 @@ export interface PostOffice {
   readToken: () => Promise<string | null>
   /** One GitHub REST call (token null for a plain public read). */
   github: (method: string, path: string, token: string | null, body?: unknown) => Promise<GithubResult>
+  /** The waiting pile on disk. Absent online (the Worker has no disk): a share that can't go is then refused, and the browser keeps the track. */
+  queue?: WaitingPile
+}
+
+export interface WaitingPile {
   /** Put a share on the waiting pile; null when the pile is full. */
   keep: (issue: TrackIssue, reason: ShareSavedReason, share: SavedShare) => Promise<{ waiting: number } | null>
   /** Take waiting shares with this share key off the pile (a newer share replaces them). */
@@ -105,10 +115,26 @@ export interface PostOffice {
   waitingCount: () => Promise<number>
   /** Send whatever is waiting (after something got through). */
   sendWaiting: (why: string) => void
-  /** Requests from anywhere but the game's own pages are refused (null = fine). */
-  callerProblem: (req: IncomingMessage) => string | null
-  readBody: (req: IncomingMessage, max: number) => Promise<string | null>
-  reply: (res: ServerResponse, code: number, body: unknown) => void
+}
+
+/** A request with the web server taken out. */
+export interface ShareCall {
+  method: string
+  /** GET ?fresh=1 */
+  fresh: boolean
+  /** The Content-Type header ('' when none). */
+  contentType: string
+  /** The body as text, or null if it is bigger than `max` bytes. */
+  readBody: (max: number) => Promise<string | null>
+}
+
+export interface ShareReply {
+  code: number
+  body: ShareResult | SharedListResult
+  /** Allow header for a 405. */
+  allow?: string
+  /** Close the connection after replying (an oversize body that was not read). */
+  close?: boolean
 }
 
 /** Result of sending one share (now, or from the waiting pile). */
@@ -118,7 +144,7 @@ export type ShareSend =
   | { ok: false; takenDown?: false; reason: 'offline' | 'refused'; status: number; detail: string }
 
 export interface TrackShare {
-  handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>
+  respond: (call: ShareCall) => Promise<ShareReply>
   /** Send a share that was waiting (server/issues.ts calls this while it empties the pile). */
   sendSaved: (issue: TrackIssue, share: SavedShare, token: string) => Promise<ShareSend>
 }
@@ -130,55 +156,41 @@ export function createTrackShare(po: PostOffice): TrackShare {
   let labelChecked = false
   let listMemory: { at: number; result: SharedListResult } | null = null
 
-  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const refusal = po.callerProblem(req)
-    if (refusal) {
-      po.warn(`refused a track request from outside the game (${refusal})`)
-      po.reply(res, 403, { status: 'rejected', reason: 'invalid', message: 'Tracks can only be shared from the game itself.' })
-      return
-    }
-    if (req.method === 'GET') {
-      const fresh = new URL(req.url ?? '/', 'http://x').searchParams.get('fresh') === '1'
-      po.reply(res, 200, await listShared(fresh))
-      return
-    }
-    if (req.method !== 'POST') {
-      res.setHeader('Allow', 'GET, POST')
-      po.reply(res, 405, { status: 'rejected', reason: 'invalid', message: 'Use GET or POST.' })
-      return
-    }
+  const refused = (code: number, reason: Extract<ShareResult, { status: 'rejected' }>['reason'], message: string, close = false): ShareReply => ({
+    code,
+    body: { status: 'rejected', reason, message },
+    close: close || undefined,
+  })
+
+  async function respond(call: ShareCall): Promise<ShareReply> {
+    if (call.method === 'GET') return { code: 200, body: await listShared(call.fresh) }
+    if (call.method !== 'POST') return { ...refused(405, 'invalid', 'Use GET or POST.'), allow: 'GET, POST' }
     // A JSON content type also makes a browser ask first (CORS) before another website can post here.
-    if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) {
+    if (!/^application\/json\b/i.test(call.contentType)) {
       po.warn('refused a share that was not sent as JSON')
-      po.reply(res, 415, { status: 'rejected', reason: 'invalid', message: 'A share must be JSON.' })
-      return
+      return refused(415, 'invalid', 'A share must be JSON.')
     }
-    const raw = await po.readBody(req, SHARE_LIMITS.request)
+    const raw = await call.readBody(SHARE_LIMITS.request)
     if (raw === null) {
       po.warn(`refused a share bigger than ${SHARE_LIMITS.request} bytes`)
-      res.setHeader('Connection', 'close')
-      answer(res, 413, { status: 'rejected', reason: 'too-big', message: TOO_BIG })
-      return
+      return refused(413, 'too-big', TOO_BIG, true)
     }
     let parsed: unknown
     try {
       parsed = JSON.parse(raw)
     } catch (err) {
       po.warn(`refused a share that was not readable JSON (${errText(err)})`)
-      answer(res, 400, { status: 'rejected', reason: 'invalid', message: 'That share could not be read.' })
-      return
+      return refused(400, 'invalid', 'That share could not be read.')
     }
     const share = checkShare(parsed)
     if (typeof share === 'string') {
       po.warn(`refused a share: ${share}`)
-      answer(res, 400, { status: 'rejected', reason: 'invalid', message: `That track could not be shared: ${share}.` })
-      return
+      return refused(400, 'invalid', `That track could not be shared: ${share}.`)
     }
     const issue = buildTrackIssue(publicTrackFile(share.track, share.madeBy), share.world, share.shareKey)
     if (!issue) {
       po.warn(`refused to share "${share.track.name}": its issue would be over GitHub's ${SHARE_LIMITS.body} letters`)
-      answer(res, 413, { status: 'rejected', reason: 'too-big', message: TOO_BIG })
-      return
+      return refused(413, 'too-big', TOO_BIG)
     }
 
     const now = Date.now()
@@ -186,63 +198,57 @@ export function createTrackShare(po: PostOffice): TrackShare {
     if (recent.length >= SHARE_RATE_MAX) {
       const waitMin = Math.max(1, Math.ceil((SHARE_RATE_WINDOW_MS - (now - recent[0])) / 60_000))
       po.warn(`refused a share: ${SHARE_RATE_MAX} already in the last ${SHARE_RATE_WINDOW_MS / 60_000} minutes`)
-      answer(res, 429, {
-        status: 'rejected',
-        reason: 'too-many',
-        message: `That's ${SHARE_RATE_MAX} shares in ${SHARE_RATE_WINDOW_MS / 60_000} minutes. Have a break and share it again in ${waitMin} ${waitMin === 1 ? 'minute' : 'minutes'}.`,
-      })
-      return
+      return refused(
+        429,
+        'too-many',
+        `That's ${SHARE_RATE_MAX} shares in ${SHARE_RATE_WINDOW_MS / 60_000} minutes. Have a break and share it again in ${waitMin} ${waitMin === 1 ? 'minute' : 'minutes'}.`,
+      )
     }
     recent.push(now)
 
     const saved: SavedShare = { shareKey: share.shareKey, number: share.issue }
     const token = await po.readToken()
-    if (!token) {
-      await keepAndAnswer(res, issue, 'no-token', saved, 'sharing is not switched on here yet (no github-token.txt in the game folder)')
-      return
-    }
+    if (!token) return keepAndAnswer(issue, 'no-token', saved, 'sharing is not switched on here yet (no github-token.txt in the game folder)')
     const sent = await sendShare(issue, saved, token)
     if (!sent.ok && sent.takenDown) {
       po.warn(`did not share "${share.track.name}" again: its issue #${sent.number} is closed (taken down)`)
-      answer(res, 409, {
-        status: 'rejected',
-        reason: 'taken-down',
-        message: `This track was taken down on GitHub (its post, #${sent.number}, is closed), so it wasn't shared again. Ask Dad if it should go back up.`,
-      })
-      return
+      return refused(
+        409,
+        'taken-down',
+        `This track was taken down on GitHub (its post, #${sent.number}, is closed), so it wasn't shared again. Ask Dad if it should go back up.`,
+      )
     }
-    if (!sent.ok) {
-      await keepAndAnswer(res, issue, sent.reason, saved, sent.detail)
-      return
-    }
+    if (!sent.ok) return keepAndAnswer(issue, sent.reason, saved, sent.detail)
     // This share replaces any older copy of it still waiting on this computer.
-    const dropped = await po.dropWaiting(share.shareKey)
+    const dropped = po.queue ? await po.queue.dropWaiting(share.shareKey) : 0
     if (dropped) po.log(`dropped ${dropped} older waiting ${dropped === 1 ? 'copy' : 'copies'} of this share`)
     listMemory = null
     po.log(`${sent.updated ? 'updated' : 'shared'} "${share.track.name}": issue #${sent.number} ${sent.url}`)
     if (sent.labelMissing) po.warn(`GitHub left the "${TRACK_LABEL}" label off issue #${sent.number}, so it won't show in Shared tracks (the key's owner needs push access to the repository)`)
-    po.sendWaiting('a track was shared')
-    answer(res, 200, { status: 'sent', number: sent.number, url: sent.url, updated: sent.updated, labelMissing: sent.labelMissing })
+    po.queue?.sendWaiting('a track was shared')
+    return { code: 200, body: { status: 'sent', number: sent.number, url: sent.url, updated: sent.updated, labelMissing: sent.labelMissing } }
   }
 
-  function answer(res: ServerResponse, code: number, body: ShareResult): void {
-    po.reply(res, code, body)
-  }
-
-  async function keepAndAnswer(res: ServerResponse, issue: TrackIssue, reason: ShareSavedReason, saved: SavedShare, detail: string): Promise<void> {
-    await po.dropWaiting(saved.shareKey)
-    const kept = await po.keep(issue, reason, saved)
+  async function keepAndAnswer(issue: TrackIssue, reason: ShareSavedReason, saved: SavedShare, detail: string): Promise<ShareReply> {
+    if (!po.queue) {
+      // The online game: no disk to wait on. The browser keeps the track, so nothing is lost.
+      po.warn(`did not share a track: ${detail}`)
+      return refused(
+        503,
+        'invalid',
+        reason === 'no-token'
+          ? "Sharing isn't switched on in the online game yet. Ask Dad. Your track is still in your Library."
+          : "The track didn't go up to GitHub just now. It's still in your Library: try sharing it again in a minute.",
+      )
+    }
+    await po.queue.dropWaiting(saved.shareKey)
+    const kept = await po.queue.keep(issue, reason, saved)
     if (!kept) {
       po.warn(`could not keep a share: the waiting pile is full (${detail})`)
-      answer(res, 507, {
-        status: 'rejected',
-        reason: 'full',
-        message: 'There are already too many reports and tracks waiting on this computer. Ask Dad to switch reporting on so they can send.',
-      })
-      return
+      return refused(507, 'full', 'There are already too many reports and tracks waiting on this computer. Ask Dad to switch reporting on so they can send.')
     }
     po.warn(`kept a share on this computer: ${detail}. It goes up as soon as reporting works.`)
-    answer(res, 200, { status: 'saved', reason, waiting: kept.waiting, detail })
+    return { code: 200, body: { status: 'saved', reason, waiting: kept.waiting, detail } }
   }
 
   // ---------------------------------------------------------------- sending
@@ -328,7 +334,7 @@ export function createTrackShare(po: PostOffice): TrackShare {
   async function listShared(fresh: boolean): Promise<SharedListResult> {
     const now = Date.now()
     const ready = (await po.readToken()) !== null
-    const waiting = await po.waitingCount()
+    const waiting = po.queue ? await po.queue.waitingCount() : 0
     if (listMemory) {
       const age = now - listMemory.at
       const keep = listMemory.result.status === 'ok' ? (fresh ? LIST_FRESH_MIN_MS : LIST_KEEP_MS) : LIST_FAIL_KEEP_MS
@@ -361,7 +367,58 @@ export function createTrackShare(po: PostOffice): TrackShare {
     return { status: 'ok', items, more: all.length > SHARE_LIMITS.list, ready, waiting }
   }
 
-  return { handle, sendSaved }
+  return { respond, sendSaved }
+}
+
+// ---------------------------------------------------------------- one GitHub call
+
+const GITHUB_API_VERSION = '2026-03-10'
+const GITHUB_TIMEOUT_MS = 15_000
+
+/**
+ * Any GitHub REST call (plain fetch, so Bun and the Worker both run it). The key
+ * (if given) goes only in the Authorization header. `api` has no trailing slash.
+ */
+export async function githubCall(where: { api: string; repo: string }, method: string, path: string, token: string | null, body?: unknown): Promise<GithubResult> {
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'SundownRunII-share-a-track',
+    'X-GitHub-Api-Version': GITHUB_API_VERSION,
+  }
+  if (token) headers.Authorization = `Bearer ${token}`
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  let res: Response
+  try {
+    res = await fetch(`${where.api}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    })
+  } catch (err) {
+    return { ok: false, reason: 'offline', status: 0, detail: `could not reach GitHub (${errText(err)})` }
+  }
+  const text = await res.text()
+  let data: unknown = null
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    // GitHub answers in JSON; when it doesn't (a proxy page), the status code still says what happened.
+    data = null
+  }
+  const status = res.status
+  if (status >= 200 && status < 300) return { ok: true, status, data }
+  const msg = (data as { message?: unknown } | null)?.message
+  const said = typeof msg === 'string' ? `: ${msg.slice(0, 200)}` : ''
+  const outOfAsks = res.headers.get('x-ratelimit-remaining') === '0' || /rate limit/i.test(said)
+  if (status === 429 || (status === 403 && outOfAsks)) {
+    return { ok: false, reason: 'busy', status, detail: `GitHub says the game has asked too many times for now (${status}${said})` }
+  }
+  if (status >= 500) return { ok: false, reason: 'offline', status, detail: `GitHub is having trouble (${status}${said})` }
+  if (status === 401) return { ok: false, reason: 'refused', status, detail: `GitHub turned the key down (401${said}): it may have run out or been copied wrong` }
+  if (status === 403) return { ok: false, reason: 'refused', status, detail: `the key is not allowed to do that (403${said}): it needs Issues: Read and write` }
+  if (status === 404) return { ok: false, reason: 'refused', status, detail: `GitHub can't find that on ${where.repo} (404${said})` }
+  return { ok: false, reason: 'refused', status, detail: `GitHub said ${status}${said}` }
 }
 
 // ---------------------------------------------------------------- words

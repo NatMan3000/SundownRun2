@@ -24,14 +24,13 @@ import { useMemo, useRef, useState } from 'react'
 import { audio } from '../core/api'
 import { type TrackListing, deleteDrawnTrack, downloadTrack, listTracks } from '../track/registry'
 import type { TrackFile } from '../track/schema'
-import { fetchReportInfo } from '../ui/report/send'
 import { BASE_WORLDS, isEmptyDraft } from './draftFile'
 import { type SaveState, SAVE_STATE_WORDS, draftFromFile, fileFromDraft, forgetDeletedTrack, replaceDraft, saveState, say, useEditor } from './draft'
 import { askBeforeLeavingTrack, askNewTrack } from './askFirst'
 import { fitToDraft } from './Overlay'
 import { DRIVE_TRACK_ID } from './driveToDraw'
 import { importTrackText } from './importTrack'
-import { canShare, downloadedFrom } from './share/client'
+import { canShare, downloadedFrom, fetchSharedList } from './share/client'
 import { ShareBox, SharedTracks } from './share/ShareUi'
 
 export function Library(props: { onClose: () => void }) {
@@ -40,8 +39,6 @@ export function Library(props: { onClose: () => void }) {
   const [sharing, setSharing] = useState<TrackFile | null>(null)
   /** Is a GitHub key set up on this computer? null while asking (the Share box says which). */
   const [ready, setReady] = useState<boolean | null>(null)
-  /** Sharing can't work from this server at all (the online game). null until asked (the Shared tab only sets `ready`). */
-  const [unavailable, setUnavailable] = useState<boolean | null>(null)
   const tracks = useMemo(() => listTracks().filter((t) => t.id !== DRIVE_TRACK_ID), [version])
   const fileInput = useRef<HTMLInputElement>(null)
   const [newWorld, setNewWorld] = useState(BASE_WORLDS[0].id)
@@ -88,11 +85,9 @@ export function Library(props: { onClose: () => void }) {
   const startShare = (file: TrackFile) => {
     audio.ui('select')
     setSharing(file)
-    if (ready === null || unavailable === null)
-      void fetchReportInfo().then((info) => {
-        setReady(info ? info.ready : false)
-        setUnavailable(!!info?.unavailable)
-      })
+    // The sharing counter says whether a GitHub key is set up (home: the key file; online: the Worker secret).
+    if (ready === null)
+      void fetchSharedList().then((r) => setReady(r === 'no-server' ? false : r.ready))
   }
 
   return (
@@ -175,8 +170,7 @@ export function Library(props: { onClose: () => void }) {
       {sharing && (
         <ShareBox
           file={sharing}
-          ready={unavailable === null ? null : ready}
-          unavailable={unavailable === true}
+          ready={ready}
           changedNotSaved={sharing.id === savedId && state === 'changed'}
           onClose={() => {
             setSharing(null)
