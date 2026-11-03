@@ -24,3 +24,4 @@ created: 2026-10-02
 | 2026-11-02 | [Multiplayer playtest fixes: results on finish, host laps, leave a round](sessions/2026-11-02-multiplayer-fixes-hunt-turns.md) | Two-computer playtest with Josh: results open on finish, host's Laps rules, leaving a round frees G, tag hunter boost (f49de83-a44cb35). |
 | 2026-11-02 | [**Hunt Turns mode and Thunder Bowl arena**](sessions/2026-11-02-multiplayer-fixes-hunt-turns.md) | Crown Rush rejected; take-turns hunting with 6 m reach and a tag pulse, runner scores tricks, a catch pays 500 and wipes 15 s; protocol v5 (f8ff09c, 36d52cc). |
 | 2026-11-03 | Thread resolved: Sundown Run II online (Cloudflare) | Proven 3 Nov: Nathan on his phone hotspot and a second player on the home network raced through sundown.nathans-lab.fyi with no noticeable lag |
+| 2026-11-03 | Thread resolved: Hunt Turns points playtest | Nathan 3 Nov: drifts count for runners, crash props don't; shipped a5340fc and deployed online |
