@@ -185,8 +185,13 @@ function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
 }
 
-export function buildTrack(file: ResolvedTrackFile, params: Record<string, number>, previous?: TrackRuntime | null): TrackRuntime {
+/**
+ * `keyId` is the id that goes in the track's key (TrackRuntime.keyId): the file's own id unless
+ * given, or kept from `previous` when that was the same track (a live parameter rebuild).
+ */
+export function buildTrack(file: ResolvedTrackFile, params: Record<string, number>, previous?: TrackRuntime | null, keyId?: string): TrackRuntime {
   const t0 = now()
+  const keyIdNow = keyId ?? (previous && previous.id === file.id ? previous.keyId : file.id)
   const env = file.environment
 
   // ---- natural ground (reused from `previous` when the environment is unchanged) ----
@@ -509,7 +514,8 @@ export function buildTrack(file: ResolvedTrackFile, params: Record<string, numbe
     id: file.id,
     name: file.name,
     hash: geomHash,
-    key: `${file.id}@${geomHash}`,
+    keyId: keyIdNow,
+    key: `${keyIdNow}@${geomHash}`,
     params: { ...params },
     length: L,
     samples: S,

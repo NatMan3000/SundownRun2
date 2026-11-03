@@ -4,7 +4,7 @@
 //  A pure function of the track (and two of Josh's knobs): the
 //  same track always gets the same park, on every machine, so a
 //  stunt record means the same thing every time. Nothing here
-//  uses Math.random; the dice are seeded from the track's id.
+//  uses Math.random; the dice are seeded from the track's key id (its id, or the host's for a joiner's renamed copy).
 //
 //  The park is a handful of ZONES. A zone is a straight "lane" off
 //  the road with its stunts in a row, so you can link them: land
@@ -878,7 +878,8 @@ export function stuntBudget(t: TrackRuntime): number {
 /** Work out the stunt park for a track. Same track and knobs, same park. */
 export function buildParkLayout(t: TrackRuntime, knobs: ParkKnobs): ParkLayout {
   const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now()
-  const seed = hashString(`${t.id}:stunt-park`)
+  // keyId, not id: a multiplayer joiner's renamed copy of the host's track gets the host's park.
+  const seed = hashString(`${t.keyId}:stunt-park`)
   const rng = mulberry32(seed)
   const names = shuffleInPlace(GAP_NAMES.slice(), rng)
   const mega = Math.max(8, Math.min(30, Number.isFinite(knobs.megaHeight) ? knobs.megaHeight : 16))

@@ -45,7 +45,7 @@ import { apiInstalled, vehicle } from '../core/api'
 import { getSettings } from '../core/settings'
 import { getTrack } from '../track/current'
 import type { NearestHit } from '../track/types'
-import { liveFor, useNet } from './netStore'
+import { liveFor, onOurTrack, useNet } from './netStore'
 import type { PeerInfo } from './netStore'
 import { INTERP_MS, JUMP_M, STALE_MS, peerPoses } from './poses'
 import { POSE, POSE_FLAG } from './protocol'
@@ -309,8 +309,7 @@ function RemoteCar({ peer }: { peer: PeerInfo }) {
     const buf = peerPoses.get(peer.id)
     if (!buf || now - buf.lastRecv > STALE_MS) return false
     const live = liveFor(peer.id)
-    const track = getTrack()
-    return live.driving && !!track && live.trackKey === track.key
+    return live.driving && onOurTrack(live.trackKey)
   }
 
   // ---- physics step: hand the collider its next pose ----

@@ -16,6 +16,14 @@
 //  announce mp.track. If it is the same file we already have, only the
 //  live parameters are applied (no rebuild, the car stays put). If a
 //  joiner is in the editor, the track waits until they leave it.
+//
+//  If the joiner has a different track of the same id (their own, or the
+//  host's track downloaded from Shared tracks, whose Made by differs), the
+//  host's copy is held as `<id>-host` so theirs is never overwritten. That
+//  copy still builds as the host's road: it keeps the host's id in its
+//  key (registerSharedTrack's hostId, TrackRuntime.keyId) and the host's
+//  world seed, so every same-track check, the round seeds and the stunt
+//  park match the host's.
 // ============================================================
 
 import { getGame, useGame } from '../core/store'
@@ -23,6 +31,7 @@ import { useSettings } from '../core/settings'
 import { emit } from '../core/events'
 import { getCurrentTrackFile, getTrack, setTrackFromFile, setTrackParam } from '../track/current'
 import { getTrackFile, getTrackSource, registerSharedTrack } from '../track/registry'
+import { hashString } from '../track/noise'
 import type { TrackFile } from '../track/schema'
 import { onMessage, send } from './client'
 import { getNet, useNet } from './netStore'
@@ -43,10 +52,19 @@ export function sendTrackIfHost(force = false): void {
   if (!file || !track) return
   const params = JSON.stringify(track.params)
   if (!force && file === lastSentFile && params === lastSentParams) return
-  if (send({ t: 'track', file, params: { ...track.params } })) {
+  if (send({ t: 'track', file: outgoingFile(file, track.keyId), params: { ...track.params } })) {
     lastSentFile = file
     lastSentParams = params
   }
+}
+
+/**
+ * The file as it goes out: under the id in its key. A joiner who became host while on a renamed
+ * copy of the old host's track (`<id>-host`) sends it under the old host's id, so everyone,
+ * the old host included, ends up with the same key again.
+ */
+export function outgoingFile(file: TrackFile, keyId: string): TrackFile {
+  return keyId === file.id ? file : { ...file, id: keyId }
 }
 
 // ---------------------------------------------------------------- joiner side
@@ -64,6 +82,15 @@ function sharedId(file: TrackFile, json: string): string {
   // Same id, same content (a built-in track both sides have): just use it.
   if (JSON.stringify(local) === json) return file.id
   return `${file.id}-host`
+}
+
+/**
+ * The host's file under another id. A file with no world seed takes it from its id
+ * (src/track/validate.ts), so the copy is given the seed the host's id makes: same world.
+ */
+function renamedCopy(file: TrackFile, id: string): TrackFile {
+  const env = file.environment
+  return { ...file, id, environment: env && env.seed === undefined ? { ...env, seed: hashString(file.id) } : env }
 }
 
 /** Build the host's track here (or just update its live parameters). */
@@ -87,13 +114,13 @@ export function applyHostTrack(msg: TrackMsg): void {
   }
 
   const id = sharedId(msg.file, json)
-  const file: TrackFile = id === msg.file.id ? msg.file : { ...msg.file, id }
+  const file: TrackFile = id === msg.file.id ? msg.file : renamedCopy(msg.file, id)
   // Store the host's live parameters as ours for this track first, so the
   // track builds with them straight away (one build, not two).
   for (const [param, value] of Object.entries(msg.params)) {
     if (Number.isFinite(value)) useSettings.getState().setTrackParam(file.id, param, value)
   }
-  registerSharedTrack(file)
+  registerSharedTrack(file, msg.file.id)
   const result = setTrackFromFile(file)
   if (!result.ok) {
     const why = result.errors.map((e) => `${e.path} ${e.message}`.trim()).join('; ')

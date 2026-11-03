@@ -37,6 +37,8 @@ const LAUNCH_ORDER = ['afterglow', 'hyperdrome']
 const DRAWN_KEY = 'sr2.tracks.drawn.v1'
 
 const shared = new Map<string, TrackFile>()
+/** A shared track held under another id than the host's: the host's id, for its key (keyIdFor). */
+const sharedHostId = new WeakMap<TrackFile, string>()
 
 function readDrawn(): Record<string, TrackFile> {
   try {
@@ -164,7 +166,20 @@ export function importTrackJson(text: string): ValidationResult {
   return result
 }
 
-/** Multiplayer: hold a track streamed from the host (memory only). */
-export function registerSharedTrack(file: TrackFile): void {
+/**
+ * Multiplayer: hold a track streamed from the host (memory only). `hostId` is the id the host
+ * has it under, when it is held here under another one (a joiner's own track has that id).
+ */
+export function registerSharedTrack(file: TrackFile, hostId: string = file.id): void {
   shared.set(file.id, file)
+  if (hostId !== file.id) sharedHostId.set(file, hostId)
+  else sharedHostId.delete(file)
+}
+
+/**
+ * The id that goes in a track's key (TrackRuntime.keyId): its own id, except a host's track
+ * held here under another id, which keeps the host's, so both players' copies share one key.
+ */
+export function keyIdFor(file: TrackFile): string {
+  return sharedHostId.get(file) ?? file.id
 }

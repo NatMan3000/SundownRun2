@@ -14,6 +14,8 @@
 //  Sections:
 //    game   join + see each other + host's track reaches the joiner + a ram shoves
 //    drawn  a track that exists only in the host's browser reaches the joiner, drivable
+//    sametrack the host drives a track the joiner downloaded from Shared tracks (same id,
+//           different file): same key and world, each sees the other, G puts both on the grid
 //    race   synced countdown, frozen grid, a real lap, finish, same winner on both
 //    tag    "it" chosen, "it" rams the other, "it" passes on, the round ends, results agree
 //    props  a crash-prop burst on one screen bursts on the other
@@ -346,6 +348,8 @@ export async function runGameChecks(k: Kit): Promise<void> {
     check('on the drawn track they still see each other', !!seeEach)
   }
 
+  if (k.sections.includes('sametrack')) await sameTrackChecks(k, host, join)
+
   if (k.sections.includes('race')) {
     console.log('\n== race: G on the JOINER starts a synced race, with the host\'s laps')
     // The joiner wants 3 laps, the host 1: the host's number decides (D2), whoever presses G.
@@ -569,6 +573,101 @@ export async function runGameChecks(k: Kit): Promise<void> {
  * Hunt Turns (D6): a whole round on the Thunder Bowl with 40 s turns (?turnSeconds=40). The
  * cars are placed by the pilot for each check and sit still otherwise.
  */
+/**
+ * The shared-and-downloaded track (Nathan, 3 Nov 2026: "even though we're on the same track, he is
+ * not in it racing with me"). The host draws a track and shares it; the joiner downloads it from
+ * Shared tracks, so the joiner holds a track with the SAME id whose file differs (Share writes the
+ * Made by name into `author`). When the host drives it, the joiner's copy of the host's road must
+ * count as the same track: same key, same world, each sees the other, and G puts both on the grid,
+ * while the joiner's own download is never overwritten. Needs the dev server (it loads the Share
+ * modules by path), so it is a LAN-only section.
+ */
+async function sameTrackChecks(k: Kit, host: Page, join: Page): Promise<void> {
+  const { check, until, sleep } = k
+  console.log('\n== sametrack: the host drives a track the joiner downloaded from Shared tracks')
+  const before = await host.evaluate(`(() => { window.__sameBefore = window.__pilot.current.getCurrentTrackFile(); return window.__sameBefore.id })()`)
+  const terrainAt = `(() => { const t = window.__pilot.current.getTrack(); return [[0, 0], [100, 50], [-200, 300], [400, -250], [-350, -100]].map(([x, z]) => +t.terrainHeight(x, z).toFixed(4)) })()`
+  /** The joiner downloads the host's track the way Shared tracks' Download does: issue text, fingerprint, import. */
+  const download = (file: string) => `(async () => {
+    const proto = await import('/src/editor/share/protocol.ts')
+    const share = await import('/src/editor/share/client.ts')
+    const issue = proto.buildTrackIssue(proto.publicTrackFile(${file}, 'Dad'), 'Neon Valley', 'dadsharekey12345')
+    const read = proto.readTrackIssue(issue.body)
+    const r = share.downloadShared({ number: 4242, url: '', title: issue.title, createdAt: '', updatedAt: '', ...read })
+    const saved = JSON.parse(localStorage.getItem('sr2.tracks.drawn.v1') || '{}')[r.id]
+    return { ok: r.ok, id: r.id, why: r.why ?? null, saved: saved ? JSON.stringify(saved) : null }
+  })()`
+
+  // Two variants: one with no world seed (the world then comes from the track's id, so a renamed
+  // copy must keep the host's), then a drawn track as the editor saves it (with its own seed),
+  // which stays on for the see-each-other and race grid checks below.
+  for (const variant of ['no seed', 'seeded']) {
+    const id = variant === 'seeded' ? 'dad-shared-check' : 'dad-shared-check-noseed'
+    const hostFile = (await host.evaluate(`(async () => {
+      // From the built-in file, not the current track: an earlier section may have stretched that already.
+      const registry = await import('/src/track/registry.ts')
+      const f = JSON.parse(JSON.stringify(registry.getTrackFile(${JSON.stringify(k.track)})))
+      f.id = ${JSON.stringify(id)}
+      f.name = ${JSON.stringify(variant === 'seeded' ? 'Dad Shared Check' : 'Dad Shared Check Two')}
+      delete f.author
+      f.environment = { ...f.environment }
+      ${variant === 'seeded' ? 'f.environment.seed = 4242' : 'delete f.environment.seed'}
+      for (const pt of f.road.points) { pt.x *= 1.1; pt.z *= 0.95 }
+      window.__sameT = f
+      return JSON.stringify(f)
+    })()`)) as string
+    const got = (await join.evaluate(download(hostFile))) as { ok: boolean; id: string; why: string | null; saved: string | null }
+    check(`[${variant}] the joiner downloads the shared track under the same id, with a different file (Made by)`, got.ok && got.id === id && !!got.saved && got.saved !== hostFile, { ok: got.ok, id: got.id, why: got.why, differs: got.saved !== hostFile })
+
+    await host.evaluate(`(() => { const P = window.__pilot; P.registry.saveDrawnTrack(window.__sameT); return P.current.setTrackFromFile(window.__sameT).ok })()`)
+    const hostKey = await until<string>(host, `(() => { const t = window.__pilot.current.getTrack(); return t && t.id === ${JSON.stringify(id)} ? t.key : null })()`, 10000)
+    const name = JSON.parse(hostFile).name as string
+    const joinT = await until<{ id: string; key: string; source: string }>(join, `(() => { const t = window.__pilot.current.getTrack(); return t && t.name === ${JSON.stringify(name)} ? { id: t.id, key: t.key, source: window.__pilot.registry.getTrackSource(t.id) } : null })()`, 20000)
+    const stillMine = await join.evaluate(`JSON.stringify(JSON.parse(localStorage.getItem('sr2.tracks.drawn.v1') || '{}')[${JSON.stringify(id)}] ?? null)`)
+    check(`[${variant}] the joiner's own download is untouched (the host's copy is held beside it)`, stillMine === got.saved && !!joinT && joinT.source === 'shared' && joinT.id !== id, { joinT, untouched: stillMine === got.saved })
+    check(`[${variant}] both players' copies of the road have the same track key`, !!hostKey && joinT?.key === hostKey, { hostKey, joinKey: joinT?.key })
+    const worlds = [await host.evaluate(terrainAt), await join.evaluate(terrainAt)]
+    check(`[${variant}] the joiner's world is the host's (same ground heights)`, JSON.stringify(worlds[0]) === JSON.stringify(worlds[1]), worlds)
+    // The stunt park (Hunt Turns' arena spots come from it) is seeded from the track: the same park on both.
+    const parkOf = (p: Page) => until<string>(p, `(() => { const d = window.__dev; const t = window.__pilot.current.getTrack(); if (!t || t.name !== ${JSON.stringify(name)} || !('park' in d)) return null; const r = d.park(); return r && r.items ? JSON.stringify({ zones: r.zones, items: r.items }) : null })()`, 10000)
+    await sleep(2000) // the old track's park hands its dev handle over as the new one mounts
+    const parks = [await parkOf(host), await parkOf(join)]
+    check(`[${variant}] the joiner's stunt park is the host's`, !!parks[0] && parks[0] === parks[1], parks.map((x) => (x ? (JSON.parse(x) as { items: string[] }).items.slice(0, 2) : null)))
+  }
+
+  // On the seeded track: the one Nathan and Josh had.
+  await sleep(2000)
+  await host.evaluate(`window.__pilot.stop(); window.__pilot.place(40, -2)`)
+  await join.evaluate(`window.__pilot.stop(); window.__pilot.place(25, 2)`)
+  const seen = await Promise.all(
+    [host, join].map((p) => until<boolean>(p, `window.__game.cars.some((c) => c.kind === 'remote' && c.object && c.object.visible)`, 8000)),
+  )
+  const sameFlags = [await host.evaluate(`window.__game.get('net').peers.map((p) => p.sameTrack)`), await join.evaluate(`window.__game.get('net').peers.map((p) => p.sameTrack)`)]
+  check('each player sees the other car on the shared track', seen[0] === true && seen[1] === true, { hostSees: seen[0], joinerSees: seen[1], sameTrack: sameFlags })
+  // G on the host: both on the grid.
+  await host.evaluate(`window.__pilot.settings.useSettings.getState().set('raceLaps', 1)`)
+  await sleep(600)
+  const started = await host.evaluate(`window.__pilot.rounds.requestStart()`)
+  const hostRound = await until<{ grid: number[]; raceId: number }>(host, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'race' && !r.ended ? { grid: r.grid, raceId: r.raceId } : null })()`, 3000)
+  const joinRound = await until<{ grid: number[]; raceId: number }>(join, `(() => { const r = window.__pilot.rounds.currentRound(); return r && r.kind === 'race' && !r.ended ? { grid: r.grid, raceId: r.raceId } : null })()`, 3000)
+  const ids = [await host.evaluate(`window.__pilot.net.getNet().myId`), await join.evaluate(`window.__pilot.net.getNet().myId`)] as number[]
+  check('G on the host puts both players on the race grid', started === true && !!hostRound && ids.every((i) => hostRound.grid.includes(i)) && joinRound?.raceId === hostRound.raceId, { started, ids, hostRound, joinRound })
+  // Should the joiner become host while on its renamed copy, it sends the road under the host's id.
+  const outgoing = await join.evaluate(`(async () => { const m = await import('/src/net/trackSync.ts'); const P = window.__pilot; const f = P.current.getCurrentTrackFile(); const t = P.current.getTrack(); return { held: f.id, sends: m.outgoingFile ? m.outgoingFile(f, t.keyId).id : null } })()`)
+  check("a joiner who takes over hosting sends the shared road under the host's id", (outgoing as { sends: string | null }).sends === 'dad-shared-check', outgoing)
+  // Leave the race (a mode change, as the pause menu does) so later sections start clean.
+  for (const p of [host, join]) await p.evaluate(`window.__pilot.stop(); window.__pilot.store.useGame.setState({ mode: 'tag' })`)
+  await Promise.all([host, join].map((p) => until<boolean>(p, `(() => { const r = window.__pilot.rounds.currentRound(); return !r || r.ended })()`, 4000)))
+  for (const p of [host, join]) await p.evaluate(`(() => { window.__pilot.store.useGame.setState({ mode: 'free' }); window.__pilot.K.resumeGame() })()`)
+
+  // Back to the track the earlier sections left, on both.
+  await host.evaluate(`window.__pilot.current.setTrackFromFile(window.__sameBefore).ok`)
+  const backKey = await until<string>(host, `(() => { const t = window.__pilot.current.getTrack(); return t && t.id === ${JSON.stringify(before)} ? t.key : null })()`, 10000)
+  const joinBack = await until<string>(join, `(() => { const k = window.__pilot.current.getTrack()?.key; return k === ${JSON.stringify(backKey)} ? k : null })()`, 20000)
+  check('back on the earlier track, both again', !!backKey && joinBack === backKey, { backKey, joinBack })
+  await sleep(1500)
+}
+
 async function turnsChecks(k: Kit, host: Page, join: Page): Promise<void> {
   const { check, until, sleep } = k
   console.log('\n== turns: Hunt Turns in the Thunder Bowl (D6)')

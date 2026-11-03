@@ -25,7 +25,7 @@ import type { TrackFile, ValidationResult } from './schema'
 import type { TrackParamInfo, TrackRuntime } from './types'
 import { validateTrack } from './validate'
 import { buildTrack } from './build'
-import { getTrackFile } from './registry'
+import { getTrackFile, keyIdFor } from './registry'
 
 let current: TrackRuntime | null = null
 let currentFile: TrackFile | null = null
@@ -75,7 +75,7 @@ export function setTrackFromFile(file: TrackFile): ValidationResult {
     return result
   }
   if (result.warnings.length) console.warn('[track] warnings for', file.id, result.warnings)
-  const runtime = buildTrack(result.track, paramsRecord(file))
+  const runtime = buildTrack(result.track, paramsRecord(file), null, keyIdFor(file))
   current = runtime
   currentFile = file
   useGame.setState((s) => ({ trackId: runtime.id, trackName: runtime.name, trackVersion: s.trackVersion + 1 }))
@@ -94,7 +94,7 @@ export function setTrackParam(param: string, value: number | null): void {
   useSettings.getState().setTrackParam(currentFile.id, param, value)
   const result = validateTrack(currentFile)
   if (!result.ok || !result.track) return
-  current = buildTrack(result.track, paramsRecord(currentFile), current)
+  current = buildTrack(result.track, paramsRecord(currentFile), current, keyIdFor(currentFile))
   useGame.setState((s) => ({ trackParamVersion: s.trackParamVersion + 1 }))
   emit('track.param', { trackId: currentFile.id, param, value: current.params[param] ?? 0 })
 }

@@ -240,7 +240,17 @@ export interface TrackRuntime {
   readonly name: string
   /** Geometry hash: changes when the road or pieces change. */
   readonly hash: string
-  /** `${id}@${hash}` - the key for records and the ghost. */
+  /**
+   * The id this road goes by in its key: `id`, except a multiplayer joiner's copy of the
+   * host's track held under another id because the joiner has a different track of the
+   * same id (`<id>-host`, src/net/trackSync.ts). That copy keeps the host's id here, so
+   * both players' copies of one road have one key and one stunt park.
+   */
+  readonly keyId: string
+  /**
+   * `${keyId}@${hash}` - the key for records and the ghost, and what decides whether two
+   * players are on the same track (the race grid, seeing each other's cars, the round seeds).
+   */
   readonly key: string
   /** Live parameters in effect, e.g. { bankDeg: 32 }. */
   readonly params: Readonly<Record<string, number>>

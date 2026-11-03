@@ -36,7 +36,7 @@ import { getCurrentTrackFile, getTrack, loadTrackById, setTrackFromFile } from '
 import { getTrackSource, saveDrawnTrack } from '../track/registry'
 import { applyUrlColor, mpEnabled, playerName } from './identity'
 import { connectionInfo, dropConnection, reconnectNow, sendPose, startNet, weAreDriving } from './client'
-import { getNet, peerLive } from './netStore'
+import { getNet, onOurTrack, peerLive } from './netStore'
 import { STALE_MS, peerPoses } from './poses'
 import { POSE_FLAG } from './protocol'
 import { sendTrackIfHost, startTrackSync } from './trackSync'
@@ -163,7 +163,7 @@ function inspect() {
         latencyMs: Math.round(((live?.rttMs ?? 0) + net.rttMs) / 2),
         rttMs: live?.rttMs ?? null,
         driving: live?.driving ?? false,
-        sameTrack: !!track && live?.trackKey === track.key,
+        sameTrack: onOurTrack(live?.trackKey),
         lap: live?.lap ?? 0,
         packets: buf?.received ?? 0,
         lastPacketAgoMs: ageMs,

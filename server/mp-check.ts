@@ -19,6 +19,9 @@
 //             joiner got the host's track, a ram shoves the joiner
 //    drawn    a track that exists only in the host's browser reaches
 //             the joiner and is drivable there
+//    sametrack the host drives a track the joiner downloaded from Shared tracks
+//             (same id, different file): same key and world, they see each other,
+//             G puts both on the grid, the joiner's download is untouched (LAN only)
 //    race     (stage B) synced countdown, grid, finish, winner
 //    tag      (stage B) "it" passes on contact
 //    leave    leaving a race mid-way (mode change) frees G; a tag started meanwhile picks you up
@@ -62,7 +65,7 @@ const JOIN_TRACK = arg('join-track') ?? 'hyperdrome'
 const SHOTS = arg('shots') ?? '/tmp/sr2/net'
 /** The online game's address (wrangler dev), or undefined for LAN play. */
 const CLOUD = arg('cloud')?.replace(/\/+$/, '')
-const ONLY = (arg('only') ?? 'client,spawn,game,drawn,props,race,tag,leave,turns,robust').split(',')
+const ONLY = (arg('only') ?? 'client,spawn,game,drawn,sametrack,props,race,tag,leave,turns,robust').split(',')
 mkdirSync(SHOTS, { recursive: true })
 const ROOT = dirname(import.meta.dir)
 const SNAPSHOT = join(arg('snapshot-dir') ?? '/tmp/sr2-mpcheck', 'game')
@@ -262,7 +265,8 @@ try {
   }
 
   // ============================================================ game sections
-  const gameSections = ['spawn', 'game', 'drawn', 'props', 'race', 'tag', 'leave', 'turns', 'robust'].filter((s) => ONLY.includes(s))
+  // sametrack loads the Share modules by path, which only the dev server has: not online.
+  const gameSections = ['spawn', 'game', 'drawn', 'sametrack', 'props', 'race', 'tag', 'leave', 'turns', 'robust'].filter((s) => ONLY.includes(s) && !(CLOUD && s === 'sametrack'))
   if (gameSections.length) {
     const { runGameChecks } = await import('./mp-check-game')
     await runGameChecks({ hostBase, joinBase, relayQuery, track: TRACK, joinTrack: JOIN_TRACK, shots: SHOTS, sections: gameSections, check, until, openPage, sleep })

@@ -68,7 +68,7 @@ import { getTrack } from '../track/current'
 import { urlParam } from '../core/devHandles'
 import { playerName } from './identity'
 import { onMessage, previousId, send, statsExtra, weAreDriving } from './client'
-import { carIdFor, getNet, multiplayerLaps, peerLive, relayIdOf, useNet } from './netStore'
+import { carIdFor, getNet, multiplayerLaps, onOurTrack, peerLive, relayIdOf, useNet } from './netStore'
 import type { FinishMsg, PlacesMsg, QuitMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
 import type { GameMode } from '../core/store'
 import {
@@ -195,12 +195,11 @@ function modeOfKind(kind: Round['kind']): GameMode {
 
 /** Players who could race right now: us, plus peers driving on our track. Sorted relay ids. */
 function driversNow(): number[] {
-  const track = getTrack()
   const ids = [myId()]
   for (const key of Object.keys(getNet().peers)) {
     const id = Number(key)
     const live = peerLive.get(id)
-    if (live && live.driving && track && live.trackKey === track.key) ids.push(id)
+    if (live && live.driving && onOurTrack(live.trackKey)) ids.push(id)
   }
   return ids.sort((a, b) => a - b)
 }

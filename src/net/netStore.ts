@@ -15,6 +15,7 @@
 // ============================================================
 
 import { create } from 'zustand'
+import { getTrack } from '../track/current'
 
 export type NetStatus =
   | 'off' //             not a multiplayer page (no ?mp=1)
@@ -105,6 +106,16 @@ export function liveFor(id: number): PeerLive {
     peerLive.set(id, l)
   }
   return l
+}
+
+/**
+ * Is a player whose live stats say `trackKey` on the road we are on? The one same-track test:
+ * the race grid, seeing their car, the inspector. Compares track keys, which both players'
+ * copies of one road share even when the joiner holds it under another id (TrackRuntime.keyId).
+ */
+export function onOurTrack(trackKey: string | null | undefined): boolean {
+  const track = getTrack()
+  return !!track && !!trackKey && trackKey === track.key
 }
 
 export function carIdFor(relayId: number): string {
