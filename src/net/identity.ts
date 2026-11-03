@@ -16,6 +16,9 @@
 //                 (see COLOR_WORDS) or a hex code (%23ff8a3d).
 //    relay=5218   talk to a relay on another port (tests and checkers)
 //
+//  Played online (an https page, the Cloudflare copy), the relay is the
+//  same address at /relay instead (protocol.ts relayUrlFor).
+//
 //  The colour is applied to this browser's own car for this visit only
 //  (not saved), so you see yourself the way everyone else sees you.
 // ============================================================
@@ -24,7 +27,7 @@ import * as THREE from 'three'
 import { PALETTE } from '../core/palette'
 import { urlParam } from '../core/devHandles'
 import { useSettings } from '../core/settings'
-import { RELAY_PORT } from './protocol'
+import { relayUrlFor } from './protocol'
 
 /** Colour words a kid can type into the link, mapped onto the game's palette. */
 export const COLOR_WORDS: Record<string, string> = {
@@ -47,10 +50,9 @@ export function mpEnabled(): boolean {
   return urlParam('mp') === '1'
 }
 
-/** The relay's port: ?relay=<port> or the reserved 5202. */
-export function relayPort(): number {
-  const n = Number(urlParam('relay'))
-  return Number.isInteger(n) && n > 0 && n < 65536 ? n : RELAY_PORT
+/** The relay's address for this page (LAN: ws://<host>:5202; online over https: wss://<host>/relay). */
+export function relayUrl(): string {
+  return relayUrlFor(window.location, urlParam('relay'))
 }
 
 const NAME_KEY = 'sr2.playerName'

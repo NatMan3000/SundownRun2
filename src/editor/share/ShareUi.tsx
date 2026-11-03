@@ -38,7 +38,7 @@ const KEPT_WHY: Record<'no-token' | 'offline' | 'refused', string> = {
   refused: "GitHub said no to the game's key. Ask Dad to check it.",
 }
 
-export function ShareBox(props: { file: TrackFile; changedNotSaved: boolean; ready: boolean | null; onClose: (shared: boolean) => void }) {
+export function ShareBox(props: { file: TrackFile; changedNotSaved: boolean; ready: boolean | null; unavailable?: boolean; onClose: (shared: boolean) => void }) {
   const file = props.file
   const [madeBy, setMadeBy] = useState(() => madeByFor(file))
   const [busy, setBusy] = useState(false)
@@ -112,7 +112,7 @@ export function ShareBox(props: { file: TrackFile; changedNotSaved: boolean; rea
                 {can.why}
               </p>
             ) : (
-              <ReadyLine ready={props.ready} />
+              <ReadyLine ready={props.ready} unavailable={!!props.unavailable} />
             )}
             <div className="sre-confirm-acts">
               <button type="button" className="sre-btn" disabled={busy} onClick={() => props.onClose(false)}>
@@ -129,7 +129,8 @@ export function ShareBox(props: { file: TrackFile; changedNotSaved: boolean; rea
   )
 }
 
-function ReadyLine(props: { ready: boolean | null }) {
+function ReadyLine(props: { ready: boolean | null; unavailable: boolean }) {
+  if (props.unavailable) return <p className="sr-share-note is-warn">Sharing only works in the game at home, not the online one.</p>
   if (props.ready === null) return <p className="sr-share-note">Checking whether sharing is switched on...</p>
   if (props.ready) return <p className="sr-share-note is-good">Sharing is on: this goes straight to GitHub.</p>
   return <p className="sr-share-note is-warn">Reporting isn't switched on on this computer yet, so this will be saved here and shared once Dad turns it on.</p>

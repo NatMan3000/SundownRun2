@@ -40,6 +40,8 @@ export function Library(props: { onClose: () => void }) {
   const [sharing, setSharing] = useState<TrackFile | null>(null)
   /** Is a GitHub key set up on this computer? null while asking (the Share box says which). */
   const [ready, setReady] = useState<boolean | null>(null)
+  /** Sharing can't work from this server at all (the online game). null until asked (the Shared tab only sets `ready`). */
+  const [unavailable, setUnavailable] = useState<boolean | null>(null)
   const tracks = useMemo(() => listTracks().filter((t) => t.id !== DRIVE_TRACK_ID), [version])
   const fileInput = useRef<HTMLInputElement>(null)
   const [newWorld, setNewWorld] = useState(BASE_WORLDS[0].id)
@@ -86,7 +88,11 @@ export function Library(props: { onClose: () => void }) {
   const startShare = (file: TrackFile) => {
     audio.ui('select')
     setSharing(file)
-    if (ready === null) void fetchReportInfo().then((info) => setReady(info ? info.ready : false))
+    if (ready === null || unavailable === null)
+      void fetchReportInfo().then((info) => {
+        setReady(info ? info.ready : false)
+        setUnavailable(!!info?.unavailable)
+      })
   }
 
   return (
@@ -169,7 +175,8 @@ export function Library(props: { onClose: () => void }) {
       {sharing && (
         <ShareBox
           file={sharing}
-          ready={ready}
+          ready={unavailable === null ? null : ready}
+          unavailable={unavailable === true}
           changedNotSaved={sharing.id === savedId && state === 'changed'}
           onClose={() => {
             setSharing(null)

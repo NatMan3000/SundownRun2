@@ -102,4 +102,6 @@ export interface ReportInfo {
   changed: string[]
   /** Reports saved here, waiting to send. */
   waiting: number
+  /** Set when reporting can't work from this server at all (the online game), in words to show. */
+  unavailable?: string
 }

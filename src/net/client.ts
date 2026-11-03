@@ -7,7 +7,9 @@
 //
 //  Where it connects: ws://<the page's own host>:5202. The computer
 //  that serves the game page also runs the relay, so the page's own
-//  address is always right, on every machine, with zero setup.
+//  address is always right, on every machine, with zero setup. The
+//  online game (an https page on Cloudflare) uses wss://<host>/relay.
+//  identity.ts relayUrl() decides.
 //
 //  What it does:
 //    - connects, and reconnects forever with a gentle backoff
@@ -26,7 +28,7 @@ import { getGame, useGame } from '../core/store'
 import { getSettings, useSettings } from '../core/settings'
 import { emit } from '../core/events'
 import { getTrack } from '../track/current'
-import { playerName, relayPort } from './identity'
+import { playerName, relayUrl } from './identity'
 import { carIdFor, liveFor, peerLive, useNet } from './netStore'
 import type { PeerInfo } from './netStore'
 import { peerPoses, poseBufferFor } from './poses'
@@ -102,7 +104,7 @@ export function send(msg: ClientMsg): boolean {
 export function startNet(): void {
   if (started) return
   started = true
-  const url = `ws://${window.location.hostname}:${relayPort()}`
+  const url = relayUrl()
   useNet.setState({ status: 'connecting', relayUrl: url })
   open()
 

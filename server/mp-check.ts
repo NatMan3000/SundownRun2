@@ -25,6 +25,12 @@
 //    turns    Hunt Turns in the Thunder Bowl: start apart, catches by reach and by the tag pulse,
 //             the throw-away, the fresh-chase window, the turn swap, results, leaving
 //
+//  Online (the Cloudflare copy under `bun run cloud:dev`):
+//    --cloud https://127.0.0.1:5211  no relay or vite here: both pages
+//    load the production build from that address and talk to its /relay
+//    (the Durable Object). Nobody is on loopback there, so the HOST is the
+//    page that connects first (it is opened first).
+//
 //  Options: --track <id> (default afterglow), --join-track <id> (the
 //  joiner's own first track, default hyperdrome), --shots <dir> (default
 //  /tmp/sr2/net), --no-vite (a vite is already running on --port),
@@ -54,6 +60,8 @@ const RELAY = Number(arg('relay-port') ?? 5218)
 const TRACK = arg('track') ?? 'afterglow'
 const JOIN_TRACK = arg('join-track') ?? 'hyperdrome'
 const SHOTS = arg('shots') ?? '/tmp/sr2/net'
+/** The online game's address (wrangler dev), or undefined for LAN play. */
+const CLOUD = arg('cloud')?.replace(/\/+$/, '')
 const ONLY = (arg('only') ?? 'client,spawn,game,drawn,props,race,tag,leave,turns,robust').split(',')
 mkdirSync(SHOTS, { recursive: true })
 const ROOT = dirname(import.meta.dir)
@@ -122,6 +130,8 @@ async function openPage(url: string, label: string, preload?: string): Promise<P
   const browser = await puppeteer.launch({
     executablePath: findChrome(),
     headless: !flag('headed'),
+    // `cloud:dev --local-protocol https` serves a self-signed certificate.
+    acceptInsecureCerts: !!CLOUD,
     defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
     args: [
       '--use-angle=metal',
@@ -148,9 +158,9 @@ async function openPage(url: string, label: string, preload?: string): Promise<P
 
 // ---------------------------------------------------------------- servers
 
-const relay = startRelay(RELAY, (l) => (flag('verbose') ? console.log(l) : undefined))
+const relay = CLOUD ? null : startRelay(RELAY, (l) => (flag('verbose') ? console.log(l) : undefined))
 let vite: ReturnType<typeof Bun.spawn> | null = null
-if (!flag('no-vite')) {
+if (!flag('no-vite') && !CLOUD) {
   // Serve a frozen SNAPSHOT of the game, not the live tree: other people
   // editing files mid-check would hot-reload the pages and wipe the test.
   // (--live serves the working tree instead.)
@@ -173,33 +183,40 @@ if (!flag('no-vite')) {
   const t0 = Date.now()
   let up = false
   while (!up && Date.now() - t0 < 30000) {
-    up = await fetch(`http://127.0.0.1:${GAME_PORT}/`).then((r) => r.ok).catch(() => false)
+    // Bun's fetch option for the local https copy's self-signed certificate.
+    up = await fetch(`${CLOUD ?? `http://127.0.0.1:${GAME_PORT}`}/`, { tls: { rejectUnauthorized: false } } as RequestInit)
+      .then((r) => r.ok)
+      .catch(() => false)
     if (!up) await sleep(250)
   }
-  if (!up) throw new Error(`game server on ${GAME_PORT} never came up`)
+  if (!up) throw new Error(`game server ${CLOUD ?? `on ${GAME_PORT}`} never came up`)
 }
 
 // Interrupted (Ctrl+C, or a harness stopping us): leave nothing running on the ports.
 const cleanup = () => {
   vite?.kill()
   for (const b of browsers) b.process()?.kill()
-  relay.stop(true)
+  relay?.stop(true)
   process.exit(130)
 }
 process.on('SIGINT', cleanup)
 process.on('SIGTERM', cleanup)
 
-const lan = lanIPv4()
-if (!lan) throw new Error('No LAN address: the joiner needs one to look like a second computer.')
-const hostBase = `http://localhost:${GAME_PORT}`
-const joinBase = `http://${lan}:${GAME_PORT}`
+const lan = CLOUD ? null : lanIPv4()
+if (!CLOUD && !lan) throw new Error('No LAN address: the joiner needs one to look like a second computer.')
+const hostBase = CLOUD ?? `http://localhost:${GAME_PORT}`
+const joinBase = CLOUD ?? `http://${lan}:${GAME_PORT}`
+/** What the pages add to find the relay: nothing online (an https page or /relay finds it), else the private port. */
+const relayQuery = CLOUD ? '' : `&relay=${RELAY}`
+/** A raw socket straight to the relay. */
+const rawRelayUrl = CLOUD ? `${CLOUD.replace(/^http/, 'ws')}/relay` : `ws://localhost:${RELAY}`
 
 try {
   // ============================================================ client
   if (ONLY.includes('client')) {
     console.log('\n== client: the bare net client (no game scene needed)')
     // Load the page (no ?track: it sits on the title screen, connected) and drive the client directly.
-    const q = `?mp=1&relay=${RELAY}`
+    const q = `?mp=1${relayQuery}`
     const host = await openPage(`${hostBase}/${q}&name=HOSTY`, 'host')
     const join = await openPage(`${joinBase}/${q}&name=JOINY&color=orange`, 'join')
     // ?mp=1 starts the client by itself; reach it through net's dev kit (works on a built preview too).
@@ -211,7 +228,7 @@ try {
     const hostState = await until<{ isHost: boolean; myId: number }>(host, `(() => { const s = window.__nets.getNet(); return s.status === 'online' && Object.keys(s.peers).length === 1 ? { isHost: s.isHost, myId: s.myId } : null })()`)
     const joinState = await until<{ isHost: boolean; hostId: number; peerName: string }>(join, `(() => { const s = window.__nets.getNet(); const p = Object.values(s.peers)[0]; return s.status === 'online' && p ? { isHost: s.isHost, hostId: s.hostId, peerName: p.name } : null })()`)
     check('host page is online and sees one peer', !!hostState, hostState ?? '')
-    check('localhost page is the host', hostState?.isHost === true)
+    check(CLOUD ? 'the first page in is the host' : 'localhost page is the host', hostState?.isHost === true)
     check('LAN page is NOT the host and knows who is', joinState?.isHost === false && joinState?.hostId === hostState?.myId, joinState ?? '')
     check("joiner sees the host's name from hello", joinState?.peerName === 'HOSTY')
 
@@ -225,7 +242,7 @@ try {
     const after = await join.evaluate(`window.__netp.peerPoses.get(window.__nets.getNet().hostId).received`)
     check('a NaN pose is never sent', after === 30, `received=${after}`)
     // Receive side: a raw socket (no client code) pushes a NaN packet through the relay.
-    const rawId = await host.evaluate(`new Promise((res) => { const w = new WebSocket('ws://localhost:${RELAY}'); w.binaryType = 'arraybuffer'; w.onmessage = (e) => { if (typeof e.data !== 'string') return; const m = JSON.parse(e.data); if (m.t !== 'welcome') return; const f = new Float32Array(12); f[0] = NaN; f[6] = 1; w.send(f); const g = new Float32Array(12); g[0] = 5; g[6] = 1; w.send(g); setTimeout(() => res(m.id), 300); setTimeout(() => w.close(), 1500) } })`)
+    const rawId = await host.evaluate(`new Promise((res) => { const w = new WebSocket('${rawRelayUrl}'); w.binaryType = 'arraybuffer'; w.onmessage = (e) => { if (typeof e.data !== 'string') return; const m = JSON.parse(e.data); if (m.t !== 'welcome') return; const f = new Float32Array(12); f[0] = NaN; f[6] = 1; w.send(f); const g = new Float32Array(12); g[0] = 5; g[6] = 1; w.send(g); setTimeout(() => res(m.id), 300); setTimeout(() => w.close(), 1500) } })`)
     const rawSeen = await join.evaluate(`window.__netp.peerPoses.get(${rawId})?.received ?? 0`)
     check('the receive-side firewall drops a NaN packet and keeps the good one', rawSeen === 1, `raw sender ${rawId}: received=${rawSeen}`)
 
@@ -248,14 +265,14 @@ try {
   const gameSections = ['spawn', 'game', 'drawn', 'props', 'race', 'tag', 'leave', 'turns', 'robust'].filter((s) => ONLY.includes(s))
   if (gameSections.length) {
     const { runGameChecks } = await import('./mp-check-game')
-    await runGameChecks({ hostBase, joinBase, relayPort: RELAY, track: TRACK, joinTrack: JOIN_TRACK, shots: SHOTS, sections: gameSections, check, until, openPage, sleep })
+    await runGameChecks({ hostBase, joinBase, relayQuery, track: TRACK, joinTrack: JOIN_TRACK, shots: SHOTS, sections: gameSections, check, until, openPage, sleep })
   }
 } catch (err) {
   failures++
   console.log(`FAIL  crashed: ${(err as Error).stack ?? err}`)
 } finally {
   for (const b of browsers) await b.close().catch(() => undefined)
-  relay.stop(true)
+  relay?.stop(true)
   vite?.kill()
 }
 

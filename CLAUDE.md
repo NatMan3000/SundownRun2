@@ -23,9 +23,12 @@ Guidance for Claude Code sessions working in this repository.
 | Physics proofs for a track | `bun run tracks:check tracks/<id>.json --physics` (`--bench` adds build timings) |
 | Multiplayer host / relay alone | `bun run mp` / `bun run relay` |
 | Two-client multiplayer proof / relay tests | `bun run mp:check` / `bun run test:relay` |
+| Online copy (Cloudflare Worker + Durable Object relay), locally | `bun run cloud:dev` -> https://127.0.0.1:5211 (self-signed); setup and deploy: `cloud/README.md` |
+| Online checks | `bun run test:cloud`; with cloud:dev up, `bun run mp:check --cloud https://127.0.0.1:5211 --only client,game` |
+| Deploy the online copy (Nathan, after `bunx wrangler login`) | `bun run cloud:deploy` |
 | Regenerate Josh's workshop | `bun run learn` -> `Learn To Code.html` (commit it) |
 
-Ports: 5201 dev server, 5202 multiplayer relay, 5203 Nathan's stable copy (`vite preview` of the last good commit, built from a /tmp worktree), 5210-5219 build-worker scratch servers, 5220-5239 checker previews.
+Ports: 5201 dev server, 5202 multiplayer relay, 5203 Nathan's stable copy (`vite preview` of the last good commit, built from a /tmp worktree), 5210-5219 build-worker scratch servers (`cloud:dev` uses 5211), 5220-5239 checker previews.
 
 ## Inspecting a running game
 
@@ -34,7 +37,7 @@ Ports: 5201 dev server, 5202 multiplayer relay, 5203 Nathan's stable copy (`vite
 - `window.__game`: read-only getters (telemetry, cars, frame stats, `renderInfo()`, settings, `get('<inspector>')`, `inspectors()`).
 - `window.__dev`: commands each system registers; `__dev.help()` lists them (teleport, camera bookmarks, finish a race, hide a look layer, and so on).
 - `window.__perf`: the frame report from the last `?demo=1` recording. `window.__events`: recent game events.
-- URL switches: `?track=`, `?mode=free|timetrial|race|stunt|tag|turns`, `?tagSeconds=` / `?turnSeconds=` (shorter tag rounds and Hunt Turns turns for checks, read by whoever presses G), `?demo=1`, `?time=0..1`, `?quality=low|medium|high`, `?cam=<bookmark>`, `?ai=<n>`, `?nomusic=1`, `?mp=1&name=&color=`, `?editor=1`, `?engine=muscle|rally|hover`, `?motor=nodes`, `?nancheck=1` (on-screen broken-pixel counts), `?hide=<layer>,<layer>`.
+- URL switches: `?track=`, `?mode=free|timetrial|race|stunt|tag|turns`, `?tagSeconds=` / `?turnSeconds=` (shorter tag rounds and Hunt Turns turns for checks, read by whoever presses G), `?demo=1`, `?time=0..1`, `?quality=low|medium|high`, `?cam=<bookmark>`, `?ai=<n>`, `?nomusic=1`, `?mp=1&name=&color=` (the relay is `ws://<host>:5202` on LAN; an https page, the online copy, uses `wss://<host>/relay`; `?relay=<port>` overrides either), `?editor=1`, `?engine=muscle|rally|hover`, `?motor=nodes`, `?nancheck=1` (on-screen broken-pixel counts), `?hide=<layer>,<layer>`.
 - `/api/report` on the dev and preview servers (`server/issues.ts`, the Report a problem screen's post office): `GET` says whether a GitHub key is set up, the version and commit, and how many reports wait in `reports/pending/`; `POST` files one. `__dev.ui('report')` opens the screen. Test only against a fake GitHub (`SR2_ISSUES_API=http://127.0.0.1:<port>`, plus `SR2_REPORTS_DIR` to keep saved reports out of the folder); never the real repository, which is public.
 - `/api/tracks` on the same servers (`server/trackShare.ts`): the editor Library's Share and Shared tracks. `GET` lists `track`-labelled issues, `POST` shares one. `__dev.share('help')` lists checker commands (list, download, can, share, mine). Test only against the fake GitHub (`bun run test:share`, or `bun server/fakeGithub.ts --port <p> --token <fake-key>[:nopush]` with `SR2_ISSUES_API` and `SR2_REPORTS_DIR` as for reports, from an export with no `github-token.txt`); never the real repository.
 
@@ -45,6 +48,7 @@ Checking a change: a production build (`bunx vite build`, then `bunx vite previe
 - `src/core/config.ts` is Josh's knob file: the defaults, commented for a 12-year-old. A value he edits there beats the same value saved from the Settings menu. Keep new knobs in his language.
 - The contracts (`CONSTITUTION.md` section 6) are frozen. Change one only by adding a dated amendment to section 7 in the same commit, and update every reader.
 - A track is one file. If a change to the track builder (`src/track/build.ts`) moves geometry, bump `BUILDER_VERSION`: it feeds every track's key, so old ghosts and local records stop matching instead of replaying through moved road. A change that only moves tunnels (how they are dug, their ramps) bumps `TUNNEL_BUILDER_VERSION` instead, which only tracks with a Tunnel piece carry in their key, so the built-in tracks' ghosts and records survive it. Likewise a change that only moves the ground round bridges bumps `BRIDGE_BUILDER_VERSION`, carried only by tracks whose built road has a raised stretch (of the built-ins, only Afterglow).
+- One relay brain: `server/relayCore.ts` decides everything the relay does, for both the LAN relay (`server/relay.ts`) and the online room (`cloud/room.ts`). Change relay behaviour there, never in either socket shell; `cloud/relay.remote.test.ts` runs the same checks against both.
 - One driving brain: the Ai racers and the demo autopilot both use `createAiDriver` in `src/play/aiDriver.ts`. Fix driving there, never in a second copy.
 - Colours come from `src/core/palette.ts` and follow the colour semantics in `CONSTITUTION.md` section 1 (cyan player, magenta track, amber caution, mint boost, violet pickups). No pure primaries.
 - `~/Dev/SundownRun` is v1: read it for proven solutions, never modify it.
@@ -64,7 +68,8 @@ Contracts in `src/core/` and `src/track/{schema,types,registry,current}.ts` are 
 | `src/play/` | game modes, Ai racers, props, smashables, energy cores, speed traps |
 | `src/ui/` | title, garage, settings, pause, HUD, results, report a problem |
 | `src/editor/` | the road editor and world map |
-| `src/net/`, `server/` | LAN multiplayer client and relay; `server/issues.ts` posts reports as GitHub issues |
+| `src/net/`, `server/` | multiplayer client and LAN relay (`server/relayCore.ts` is the relay's one brain, shared with the online room); `server/issues.ts` posts reports as GitHub issues |
+| `cloud/` | the online copy: Cloudflare Worker serving `dist/`, the relay room as a Durable Object (`cloud/README.md`) |
 
 ## Gotchas
 

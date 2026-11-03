@@ -10,13 +10,16 @@
     "relay": "bun server/relay.ts",
     "learn": "bun scripts/learn-to-code.ts",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p cloud",
     "preview": "vite preview",
     "probe": "bun scripts/probe.ts",
     "tracks:check": "bun scripts/check-tracks.ts",
     "mp:check": "bun server/mp-check.ts",
     "test:relay": "bun test server/relay.test.ts",
-    "test:share": "bun test server/trackShare.test.ts"
+    "test:share": "bun test server/trackShare.test.ts",
+    "test:cloud": "bun test cloud/",
+    "cloud:dev": "bun run build && wrangler dev -c cloud/wrangler.jsonc --port 5211 --local-protocol https",
+    "cloud:deploy": "bun run build && tsc -p cloud && wrangler deploy -c cloud/wrangler.jsonc"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",
@@ -30,12 +33,14 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261103.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/three": "^0.186.0",
     "@vitejs/plugin-react": "^6.1.1",
     "puppeteer-core": "^25.12.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.1"
+    "vite": "^8.3.1",
+    "wrangler": "^4.156.2"
   }
 }

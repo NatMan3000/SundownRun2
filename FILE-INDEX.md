@@ -15,6 +15,7 @@
 | `tracks/neon-pocket.json` | `export` | Neon Pocket, authored from the README only |
 | `docs/title-screen.jpg` | `permanent` | Title screen screenshot shown at the top of the README |
 | `plans/scope-tunnels.md` | `reference` | Tunnels scope (GitHub #9 part 3): options, needs, risks, three stages |
+| `cloud/README.md` | `reference` | Online copy on Cloudflare: local try-out, deploy, custom domain, Access setup, budget |
 
 ## `scripts/` (Warden 2026-10-15)
 

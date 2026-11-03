@@ -260,6 +260,7 @@ function StatusLine(props: { info: ReportInfo | 'no-server' | null }) {
   if (info === 'no-server') {
     return <p className="report-status is-warn">The game's server isn't answering, so this will be kept in this browser and sent next time.</p>
   }
+  if (info.unavailable) return <p className="report-status is-warn">{info.unavailable}</p>
   const n = info.waiting + kept
   const waiting = n ? ` ${n} older ${n === 1 ? 'report is' : 'reports are'} waiting to go with it.` : ''
   if (info.ready) return <p className="report-status is-good">Reporting is on: this goes straight to GitHub.{waiting}</p>
@@ -348,7 +349,7 @@ export function ReportScreen() {
       if (!alive.current) return
       setInfo(i ?? 'no-server')
       // The server is back: hand over anything this browser was keeping for it.
-      if (i) void flushBrowserQueue()
+      if (i && !i.unavailable) void flushBrowserQueue()
     })
     return () => {
       alive.current = false

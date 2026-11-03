@@ -36,7 +36,8 @@ const flag = (name: string) => process.argv.includes(`--${name}`)
 interface Kit {
   hostBase: string
   joinBase: string
-  relayPort: number
+  /** Added to every page address to find the relay ('&relay=5218' on LAN, '' online). */
+  relayQuery: string
   track: string
   /** The joiner opens this track first; the host's must replace it. */
   joinTrack: string
@@ -163,7 +164,7 @@ const readClosest = (p: Page) => p.evaluate(`(() => { const c = window.__closest
 
 export async function runGameChecks(k: Kit): Promise<void> {
   const { check, until, sleep } = k
-  const q = `mp=1&relay=${k.relayPort}&tagSeconds=25&turnSeconds=40`
+  const q = `mp=1${k.relayQuery}&tagSeconds=25&turnSeconds=40`
   console.log(`\n== game: two players in a drive on "${k.track}"`)
   // The joiner opens a DIFFERENT track on purpose: the host's must replace it.
   const host = await k.openPage(`${k.hostBase}/?${q}&name=JOSH&track=${k.track}&mode=free`, 'host', CLOSEST_SAMPLER)

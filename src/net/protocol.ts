@@ -31,6 +31,24 @@ export const RELAY_PORT = 5202
 /** The game's dev server port (the links `bun run mp` prints). */
 export const GAME_PORT = 5201
 
+/** The path the online game's relay answers on (cloud/worker.ts). */
+export const CLOUD_RELAY_PATH = '/relay'
+
+/**
+ * Where a page finds its relay.
+ *  - ?relay=<port>: that port on the page's own host (tests, checker previews), wss on an https page.
+ *  - an https page (the online game on Cloudflare): the same address, path /relay, over wss.
+ *  - otherwise (LAN play from `bun run mp`): ws://<the page's host>:5202.
+ */
+export function relayUrlFor(page: { protocol: string; host: string; hostname: string }, relayParam: string | null): string {
+  const n = Number(relayParam)
+  const port = relayParam !== null && relayParam !== '' && Number.isInteger(n) && n > 0 && n < 65536 ? n : null
+  const secure = page.protocol === 'https:'
+  if (port !== null) return `${secure ? 'wss' : 'ws'}://${page.hostname}:${port}`
+  if (secure) return `wss://${page.host}${CLOUD_RELAY_PATH}`
+  return `ws://${page.hostname}:${RELAY_PORT}`
+}
+
 /** Where each number sits inside a pose packet. */
 export const POSE = {
   px: 0,
