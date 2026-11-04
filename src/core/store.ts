@@ -199,7 +199,7 @@ const initial: GameState = {
   round: 0,
   sessionStartedAt: 0,
 
-  inputDevice: 'keyboard',
+  inputDevice: touchFirst() ? 'touch' : 'keyboard',
 
   lapCount: 0,
   lastLapMs: null,
@@ -251,6 +251,18 @@ const initial: GameState = {
   garageOpen: false,
 
   qualityLevel: 'high',
+}
+
+/**
+ * True on a phone or tablet: the main pointer is a finger and nothing fine is attached. `?touch=1`
+ * forces it. Decided here, not when input starts, so a phone's very first paint is already touch
+ * (no keyboard hints or "Press any key" while it loads).
+ */
+export function touchFirst(): boolean {
+  if (typeof window === 'undefined') return false
+  if (new URLSearchParams(window.location.search).get('touch') === '1') return true
+  if (typeof window.matchMedia !== 'function') return false
+  return window.matchMedia('(pointer: coarse)').matches && !window.matchMedia('(any-pointer: fine)').matches
 }
 
 export const useGame = create<GameState>(() => ({ ...initial }))

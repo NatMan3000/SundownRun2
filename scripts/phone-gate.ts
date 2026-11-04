@@ -361,8 +361,9 @@ function hud(o, add) {
   }
   for (const [k, s] of HUD_SEL) take(k, s, false)
   for (const [k, s] of HUD_ROUND) take(k, s, true)
-  // a container never "overlaps" what it holds
-  const leaf = items.filter((a) => !items.some((b) => b !== a && a.e.contains(b.e)))
+  // a container never "overlaps" what it holds, but it does overlap its neighbours: its own text (a trick score) is covered
+  // by a chip even when no child of it is. Containers join the pair test; a pair where one holds the other is skipped.
+  const leaf = items
   const hit = (a, b) => {
     if (a.round && b.round) return Math.hypot(a.cx - b.cx, a.cy - b.cy) < a.rad + b.rad - 0.5
     if (a.round || b.round) {
@@ -373,11 +374,26 @@ function hud(o, add) {
     return a.l < b.r - 1 && b.l < a.r - 1 && a.t < b.b - 1 && b.t < a.b - 1
   }
   for (let i = 0; i < leaf.length; i++) for (let j = i + 1; j < leaf.length; j++) {
+    if (leaf[i].e.contains(leaf[j].e) || leaf[j].e.contains(leaf[i].e)) continue
     if (hit(leaf[i], leaf[j])) add(7, leaf[i].name + ' / ' + leaf[j].name, 'overlap: ' + rd(leaf[i].l) + ',' + rd(leaf[i].t) + ',' + rd(leaf[i].r) + ',' + rd(leaf[i].b) + ' vs ' + rd(leaf[j].l) + ',' + rd(leaf[j].t) + ',' + rd(leaf[j].r) + ',' + rd(leaf[j].b))
+  }
+  // a panel's own content stays inside it: a row too wide for its panel pushes a score out past the edge, where the next
+  // chip sits on it (sound still locked with a trick score up), and nothing above counts that text as part of the panel
+  for (const p of items.filter((x) => x.e.matches('.hud-panel'))) {
+    for (const d of p.e.querySelectorAll('*')) {
+      if (!vis(d) || d.closest('svg') !== null && d.tagName !== 'svg') continue
+      const q = R(d)
+      if (q.width < 2 || q.height < 2) continue
+      if (q.right > p.r + 1 || q.left < p.l - 1 || q.bottom > p.b + 1 || q.top < p.t - 1) {
+        const under = items.find((o) => !o.e.contains(d) && !d.contains(o.e) && q.left < o.r - 1 && o.l < q.right - 1 && q.top < o.b - 1 && o.t < q.bottom - 1)
+        add(7, p.name + ' / ' + label(d), 'spills out of its panel: ' + rd(q.left) + ',' + rd(q.top) + ',' + rd(q.right) + ',' + rd(q.bottom) + ' vs panel ' + rd(p.l) + ',' + rd(p.t) + ',' + rd(p.r) + ',' + rd(p.b) + (under ? ', and sits under ' + under.name : ''))
+        break
+      }
+    }
   }
   // middle band: centre third wide, from the horizon (30% down) to the car's roof (51% down). Read off the 874x402 shot: horizon at 230/780, car top at 395/780 (chase camera, same in every window)
   const bx0 = W / 3, bx1 = (2 * W) / 3, by0 = H * 0.30, by1 = H * 0.51
-  for (const a of leaf) {
+  for (const a of items.filter((a) => !items.some((b) => b !== a && a.e.contains(b.e)))) {
     if (a.l < bx1 && a.r > bx0 && a.t < by1 && a.b > by0)
       add(7, a.name, 'covers the road band x ' + rd(bx0) + '..' + rd(bx1) + ', y ' + rd(by0) + '..' + rd(by1) + ' (box ' + rd(a.l) + ',' + rd(a.t) + ',' + rd(a.r) + ',' + rd(a.b) + ')')
   }
@@ -682,6 +698,27 @@ const STEPS: Step[] = [
       await c.page.waitForFunction(() => [...document.querySelectorAll('.hud-song')].some((e) => (e as any).checkVisibility?.({ checkOpacity: true }) && e.getBoundingClientRect().width > 0), { timeout: 15000, polling: 100 }).catch(() => c.fail(7, 'song panel', 'the song panel never showed with music on'))
     },
   },
+  // Kept after hud-song: six more music pages before it made the song panel miss its window in a full run (cause unproven).
+  // sound still locked with a trick score up: the chip shares the top row with the cores, Tricks and mode panels.
+  // Each mode panel that can sit in that row is shown with the trick score, so the row is measured full.
+  ...([['tricks', []], ['hunt', ['hunt']], ['stunt', ['stunt']], ['race', ['race']], ['tag', ['tag']], ['turns', ['turns']]] as [string, string[]][]).map(
+    ([name, first]): Step => ({
+      name: `hud-sound-${name}`,
+      hud: true,
+      music: true,
+      setup: async (c) => {
+        await toHud(c)
+        await c.page.waitForFunction(() => [...document.querySelectorAll('.sound-hint')].some((e) => (e as any).checkVisibility?.({ checkOpacity: true })), { timeout: 8000 }).catch(() => c.fail(7, 'sound chip', 'the sound chip never showed with music on'))
+        // the first panel's own toasts and countdown fade before the trick score goes up: each state is measured on its own
+        for (const scene of first) {
+          await demo(c, scene)
+          await c.page.waitForFunction(() => ![...document.querySelectorAll('.hud-toast,.hud-turnscard,.hud-count,.hud-trap,.hud-cue')].some((e) => (e as any).checkVisibility?.({ checkOpacity: true }) && e.getBoundingClientRect().width > 0), { timeout: 12000 }).catch(() => {})
+        }
+        await demo(c, 'tricks')
+        await sleep(350)
+      },
+    }),
+  ),
   { name: 'hud-timetrial', hud: true, mode: 'timetrial', setup: async (c) => void (await toHud(c)) },
 ]
 

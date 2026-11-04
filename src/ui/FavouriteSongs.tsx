@@ -28,6 +28,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { audio } from '../core/api'
 import type { FavouriteSong } from '../core/api'
+import { useGame } from '../core/store'
 import { focusItem, useNavScreen } from './nav'
 import { HelpLine, MenuButton } from './widgets'
 import './favouriteSongs.css'
@@ -155,6 +156,7 @@ function GoneRow(props: { song: FavouriteSong; onUndo: () => void }) {
 export function FavouriteSongs(props: { onClose: () => void }) {
   const screen = useNavScreen()
   const { songs, musicOn, list, refresh } = useFavourites()
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   /** The last song removed while this list is open, and where it was. */
   const [gone, setGone] = useState<{ song: FavouriteSong; index: number } | null>(null)
   /** Move focus here after the next render (the item doesn't exist until then). */
@@ -223,7 +225,7 @@ export function FavouriteSongs(props: { onClose: () => void }) {
       {count === 0 && (
         <p className="empty-note fav-empty">
           No favourite songs saved. When a song you like is playing, turn on <b>Save song</b> in the pause menu and it shows up here.
-          To hunt for one, press <b>Next song</b> (or N while driving, B on the controller).
+          To hunt for one, press <b>Next song</b>{touch ? '.' : ' (or N while driving, B on the controller).'}
         </p>
       )}
       <div className="fav-foot">

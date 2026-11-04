@@ -27,6 +27,10 @@
 //  would then press a second time. The one exception is a text
 //  box you're typing in: it holds the browser's focus too, so the
 //  keys go into it.
+//
+//  A finger gets one extra rule, for every menu at once (see
+//  watchFingers below): a tap acts once and at once, and a touch
+//  that moved or scrolled presses nothing.
 // ============================================================
 
 import { createContext, useContext, useEffect, useLayoutEffect, useRef } from 'react'
@@ -35,6 +39,7 @@ import { menuBus } from '../core/controls'
 import type { InputDevice, MenuAction } from '../core/controls'
 import { audio } from '../core/api'
 import type { UiSound } from '../core/api'
+import { useGame } from '../core/store'
 import { activeScreen, setFocus, useUi } from './uiStore'
 import type { ScreenId } from './uiStore'
 
@@ -115,6 +120,7 @@ export function NavScreen(props: {
   })
   useEffect(() => {
     ensureFocus(id)
+    fingers.screenOpenedAt = performance.now()
   }, [id])
   return <NavCtx.Provider value={id}>{props.children}</NavCtx.Provider>
 }
@@ -342,6 +348,8 @@ function pickInDirection(r: ScreenReg, fromId: string, dir: Dir): Item | null {
 /** Smoothly scroll a focused item into view inside its `.nav-scroll` container. */
 function scrollIntoNavView(el: HTMLElement | null): void {
   if (!el) return
+  // A list a finger is holding or has just flicked is the finger's: never pull it back.
+  if (fingerOwnsScrolling()) return
   const box = el.closest('.nav-scroll') as HTMLElement | null
   if (!box) return
   const er = el.getBoundingClientRect()
@@ -441,9 +449,116 @@ export function handleMenuAction(action: MenuAction, device: InputDevice): void 
   }
 }
 
-/** Mount once (UiRoot): routes menuBus actions to the open screen. */
+/** Mount once (UiRoot): routes menuBus actions to the open screen and watches fingers. */
 export function useMenuBus(): void {
-  useEffect(() => menuBus.on(handleMenuAction), [])
+  useEffect(() => {
+    const offBus = menuBus.on(handleMenuAction)
+    const offFingers = watchFingers()
+    return () => {
+      offBus()
+      offFingers()
+    }
+  }, [])
+}
+
+// ---------------------------------------------------------------- fingers
+//
+//  The browser already drops the click when a list scrolls. These catch the
+//  rest, in one place, so every button, row, swatch and arrow in every menu
+//  gets them with no code of its own:
+//
+//   - a touch that moved past a thumb's wobble presses nothing, even where
+//     nothing scrolled (a sideways swipe on a list that only goes up and down);
+//   - the second tap of a double tap never lands on the screen the first one
+//     opened (Play, Play would otherwise pick a mode nobody read).
+//
+//  A real press keeps its one click, so a tap acts once, on the lift.
+
+/** Past this many pixels a touch is a swipe, not a tap. */
+const TAP_SLOP_PX = 10
+/** A screen ignores taps this soon after opening: shorter than a deliberate second tap. */
+const SCREEN_OPEN_GUARD_MS = 260
+/** A click this long after the finger left isn't that finger's (a checker's el.click()). */
+const LIFT_TO_CLICK_MS = 400
+/** How long after the last scroll nav leaves a list alone. */
+const HANDS_OFF_MS = 500
+
+const fingers = {
+  down: false,
+  id: -1,
+  x: 0,
+  y: 0,
+  /** This touch moved or scrolled something: its click is dropped. */
+  spent: false,
+  liftedAt: -Infinity,
+  lastScrollAt: -Infinity,
+  screenOpenedAt: -Infinity,
+}
+
+function fingerOwnsScrolling(): boolean {
+  if (useGame.getState().inputDevice !== 'touch') return false
+  return fingers.down || performance.now() - fingers.lastScrollAt < HANDS_OFF_MS
+}
+
+/** Should this click count? Always yes unless a finger is the device. */
+function tapCounts(): boolean {
+  if (useGame.getState().inputDevice !== 'touch') return true
+  const now = performance.now()
+  if (now - fingers.screenOpenedAt < SCREEN_OPEN_GUARD_MS) return false
+  return !(fingers.spent && now - fingers.liftedAt < LIFT_TO_CLICK_MS)
+}
+
+/** Install the finger rules. Returns a disposer. */
+function watchFingers(): () => void {
+  const onDown = (e: PointerEvent) => {
+    if (e.pointerType !== 'touch') {
+      fingers.spent = false
+      return
+    }
+    if (!e.isPrimary) return
+    fingers.down = true
+    fingers.id = e.pointerId
+    fingers.x = e.clientX
+    fingers.y = e.clientY
+    fingers.spent = false
+  }
+  const onMove = (e: PointerEvent) => {
+    if (!fingers.down || e.pointerId !== fingers.id) return
+    if (Math.hypot(e.clientX - fingers.x, e.clientY - fingers.y) > TAP_SLOP_PX) fingers.spent = true
+  }
+  const onLift = (e: PointerEvent) => {
+    if (e.pointerId !== fingers.id) return
+    fingers.down = false
+    fingers.liftedAt = performance.now()
+  }
+  const onScroll = () => {
+    fingers.lastScrollAt = performance.now()
+    if (fingers.down) fingers.spent = true
+  }
+  // First in line, ahead of React: only clicks inside an open menu are ever dropped.
+  const onClick = (e: MouseEvent) => {
+    if (tapCounts() || !(e.target instanceof Element) || !e.target.closest('.screen-host')) return
+    e.stopPropagation()
+    e.preventDefault()
+  }
+  // iOS only runs :active (the press showing on a button) on a page that listens for touches.
+  const noop = () => {}
+  window.addEventListener('pointerdown', onDown, true)
+  window.addEventListener('pointermove', onMove, { capture: true, passive: true })
+  window.addEventListener('pointerup', onLift, true)
+  window.addEventListener('pointercancel', onLift, true)
+  window.addEventListener('scroll', onScroll, { capture: true, passive: true })
+  window.addEventListener('click', onClick, true)
+  document.addEventListener('touchstart', noop, { passive: true })
+  return () => {
+    window.removeEventListener('pointerdown', onDown, true)
+    window.removeEventListener('pointermove', onMove, true)
+    window.removeEventListener('pointerup', onLift, true)
+    window.removeEventListener('pointercancel', onLift, true)
+    window.removeEventListener('scroll', onScroll, true)
+    window.removeEventListener('click', onClick, true)
+    document.removeEventListener('touchstart', noop)
+  }
 }
 
 /** Step multiplier for a held slider: 1, then faster the longer it is held. */

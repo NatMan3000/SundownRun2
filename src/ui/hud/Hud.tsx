@@ -20,6 +20,11 @@
 //  and only while the cars are still on the grid (plus Hunt Turns'
 //  short between-turns card, while nobody can catch).
 //
+//  On a touch screen the same pieces sit differently (ui/phone/touch.css): one
+//  slim band over the sky, the speed in its middle, and whatever comes and goes
+//  (speed cue, speed trap, toasts, song name) in one column under the speed, so
+//  they stack instead of landing on each other.
+//
 //  Two update paths, on purpose (CONSTITUTION section 2):
 //    - Numbers that change every frame (speed, rpm, the lap clock,
 //      the minimap) are written straight into the DOM from ONE
@@ -53,6 +58,8 @@ import { useFeed } from './feed'
 const TEXT_MS = 1000 / 20
 /** Minimap redraws per second. */
 const MAP_MS = 1000 / 30
+/** On a phone the map is small and the frame budget smaller: half as often is plenty. */
+const MAP_TOUCH_MS = 1000 / 15
 /** FPS meter writes per second. */
 const FPS_MS = 250
 /** Mode clocks and the race gap: 4 writes a second is plenty. */
@@ -117,16 +124,25 @@ function LapPanel() {
   )
 }
 
-function SpeedCluster() {
+function SpeedCluster(props: { touch: boolean }) {
   // 270-degree arc: the gap sits at the bottom, opening toward the screen edge.
   const dash = `${ARC_LEN} ${2 * Math.PI * ARC_R}`
   return (
     <div className="hud-speed" data-hud="cluster">
       <div className="hud-speed__boost" aria-hidden="true" />
-      <svg className="hud-speed__arc" viewBox="0 0 100 100" aria-hidden="true">
-        <circle className="arc-track" cx="50" cy="50" r={ARC_R} strokeDasharray={dash} />
-        <circle className="arc-fill" data-hud="rpm" cx="50" cy="50" r={ARC_R} strokeDasharray={dash} strokeDashoffset={ARC_LEN} />
-      </svg>
+      {props.touch ? (
+        // A phone has no room for the dial: the same gauge straightened out, as long as the arc
+        // so the loop's dash numbers still fit, along the bottom of the speed panel.
+        <svg className="hud-speed__bar" viewBox={`0 0 ${ARC_LEN} 4`} preserveAspectRatio="none" aria-hidden="true">
+          <line className="arc-track" x1="0" y1="2" x2={ARC_LEN} y2="2" />
+          <line className="arc-fill" data-hud="rpm" x1="0" y1="2" x2={ARC_LEN} y2="2" strokeDasharray={`${ARC_LEN} ${ARC_LEN}`} strokeDashoffset={ARC_LEN} />
+        </svg>
+      ) : (
+        <svg className="hud-speed__arc" viewBox="0 0 100 100" aria-hidden="true">
+          <circle className="arc-track" cx="50" cy="50" r={ARC_R} strokeDasharray={dash} />
+          <circle className="arc-fill" data-hud="rpm" cx="50" cy="50" r={ARC_R} strokeDasharray={dash} strokeDashoffset={ARC_LEN} />
+        </svg>
+      )}
       <div className="hud-speed__readout">
         <span className="hud-speed__num" data-hud="speed">
           0
@@ -233,6 +249,10 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
       hunt.m = -1
       hunt.label = ''
       pulseShown = ''
+      // Panels can swap between a key press and a finger: the new nodes need their numbers written again.
+      lastRpm = -1
+      lastRed = false
+      lastScoreShown = -1
       for (const k of Object.keys(refs) as (keyof typeof refs)[]) (refs as Record<string, Element | null>)[k] = q(k)
     }
 
@@ -381,7 +401,7 @@ function useHudLoop(root: RefObject<HTMLDivElement | null>) {
         if (refs.raceLap) refs.raceLap.textContent = raceLapText(g.raceLaps, g.raceState)
       }
 
-      if (now - lastMap >= MAP_MS) {
+      if (now - lastMap >= (g.inputDevice === 'touch' ? MAP_TOUCH_MS : MAP_MS)) {
         lastMap = now
         drawMinimap(getTrack(), g.trackVersion * 100000 + g.trackParamVersion)
       }
@@ -506,6 +526,9 @@ export function Hud() {
   const mp = useGame((s) => s.multiplayer)
   const showFps = useSettings((s) => s.showFps)
   const hasTrack = useGame((s) => s.trackVersion > 0)
+  const touch = useGame((s) => s.inputDevice) === 'touch'
+  // A phone only spends a line on tricks once there's a score to show.
+  const hasTricks = useGame((s) => s.trickScore > 0 || s.comboCount > 1)
   const panels = useModePanels()
   const root = useRef<HTMLDivElement | null>(null)
   useHudLoop(root)
@@ -525,21 +548,31 @@ export function Hud() {
         {panels.turns && <TurnsPanel />}
         {!panels.stunt && !panels.tag && !panels.turns && <LapPanel />}
         {panels.hunt && <HuntPanel />}
+        {touch && panels.tricks && hasTricks && <TrickBoard />}
         {visible && <SoundHint variant="chip" />}
-        {visible && <NowPlaying />}
+        {visible && !touch && <NowPlaying />}
       </div>
       {hasTrack && <MinimapPanel />}
       <div className="hud-stack hud-stack--bl">
         <TrickFeed />
-        {panels.tricks && <TrickBoard />}
+        {!touch && panels.tricks && <TrickBoard />}
       </div>
       <div className="hud-stack hud-stack--br">
-        <ParkCue />
-        <SpeedTrap />
-        <SpeedCluster />
+        {!touch && <ParkCue />}
+        {!touch && <SpeedTrap />}
+        <SpeedCluster touch={touch} />
         <RewindMeter />
       </div>
-      <Toasts />
+      {touch ? (
+        <div className="hud-stack hud-stack--mid">
+          <ParkCue />
+          <SpeedTrap />
+          <Toasts />
+          {visible && <NowPlaying />}
+        </div>
+      ) : (
+        <Toasts />
+      )}
       <RewindRefused />
       <Countdown />
       {panels.turns && <TurnsCard />}

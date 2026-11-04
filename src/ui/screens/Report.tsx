@@ -24,12 +24,13 @@
 // ============================================================
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react'
 import { create } from 'zustand'
 import { useGame } from '../../core/store'
 import { audio } from '../../core/api'
 import type { UiSound } from '../../core/api'
 import { playerName } from '../../net/identity'
+import { isOnlinePage } from '../../net/protocol'
 import { NavScreen, focusItem, focusedHandlers, useNavItem } from '../nav'
 import { ChoiceRow, HelpLine, MenuButton } from '../widgets'
 import { ActionGlyphs, Glyph, TouchBack } from '../hints'
@@ -97,7 +98,8 @@ function Field(props: {
   onFocusBox: (id: FieldId) => void
   onBlurBox: (id: FieldId) => void
 }) {
-  const pad = useGame((s) => s.inputDevice) === 'gamepad'
+  const device = useGame((s) => s.inputDevice)
+  const pad = device === 'gamepad'
   const nav = useNavItem<HTMLDivElement>(props.id, {
     // (On the controller the hint bar leaves A out here and says typing needs a keyboard.)
     onAccept: () => {
@@ -115,7 +117,7 @@ function Field(props: {
     help: props.help,
   })
   const domId = `report-${props.id}`
-  const prompt = nav.focused && !props.editing ? (pad ? 'Typing needs a keyboard' : 'Press Enter to type, or click here') : props.placeholder
+  const prompt = nav.focused && !props.editing && device !== 'touch' ? (pad ? 'Typing needs a keyboard' : 'Press Enter to type, or click here') : props.placeholder
   const common = {
     id: domId,
     className: 'field__input',
@@ -284,7 +286,8 @@ function ReportHints(props: { editing: boolean; back: string }) {
   useUi((s) => s.hintNonce)
   const device = useGame((s) => s.inputDevice)
   const pad = device === 'gamepad'
-  if (device === 'touch') return <TouchBack items={[{ action: 'back', label: props.back }]} />
+  // On a phone Back is one button: while the keyboard is up it means "done typing", so there is always a way out from under it.
+  if (device === 'touch') return <TouchBack items={[{ action: 'back', label: props.editing ? 'Done' : props.back }]} />
   if (props.editing) {
     return (
       <div className="hintbar">
@@ -324,8 +327,69 @@ function ReportHints(props: { editing: boolean; back: string }) {
 
 // ---------------------------------------------------------------- the screen
 
+/** Less than this much window gone isn't a keyboard (a browser's toolbar coming and going). */
+const KEYBOARD_PX = 80
+
+/**
+ * A phone's keyboard covers the page without resizing it, and Safari slides the page up to
+ * show the box. This keeps the whole screen, Done button included, in the part still showing.
+ */
+function useKeyboardFit(root: RefObject<HTMLDivElement | null>, on: boolean): void {
+  useEffect(() => {
+    const view = window.visualViewport
+    const el = root.current
+    if (!on || !view || !el) return
+    const clear = () => {
+      el.style.top = ''
+      el.style.bottom = ''
+      el.style.height = ''
+    }
+    const fit = () => {
+      if (window.innerHeight - view.height < KEYBOARD_PX) {
+        clear()
+        return
+      }
+      el.style.top = `${view.offsetTop}px`
+      el.style.bottom = 'auto'
+      el.style.height = `${view.height}px`
+      const box = document.activeElement
+      if (box instanceof HTMLElement && el.contains(box)) box.scrollIntoView({ block: 'nearest' })
+    }
+    view.addEventListener('resize', fit)
+    view.addEventListener('scroll', fit)
+    fit()
+    return () => {
+      view.removeEventListener('resize', fit)
+      view.removeEventListener('scroll', fit)
+      clear()
+    }
+  }, [root, on])
+}
+
+/** Why reports can't work from here, in words to show, or null when they can. The online game (https) knows before the server answers. */
+function reportingOffWords(info: ReportInfo | 'no-server' | null): string | null {
+  if (info === null) return isOnlinePage(window.location) ? 'Reporting only works in the game at home.' : null
+  return info === 'no-server' ? null : info.unavailable ?? null
+}
+
+/** The online game can't send reports: a phone gets the plain answer instead of a form that can't work. */
+function NotHere(props: { words: string }) {
+  return (
+    <section className="panel report-panel report-panel--done" aria-label="Report a problem" role="status">
+      <div className="screen-head">
+        <span className="eyebrow">Report a problem</span>
+      </div>
+      <div className="report-done">
+        <span className="report-done__big is-saved">Home only</span>
+        <p className="report-done__line">{props.words}</p>
+      </div>
+    </section>
+  )
+}
+
 export function ReportScreen() {
   const fromPause = useUi((s) => s.stack[0] === 'pause')
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   const draft = useDraft()
   // Taken the moment the screen opens, before any typing: where the car was when the problem happened.
   const [details] = useState(snapshotDetails)
@@ -339,6 +403,7 @@ export function ReportScreen() {
   const boxes = useRef<Partial<Record<FieldId, TextEl | null>>>({})
   const alive = useRef(true)
   const busy = useRef(false)
+  useKeyboardFit(root, touch)
 
   // The first time the screen opens, the name box starts with your multiplayer name tag.
   useLayoutEffect(() => {
@@ -473,15 +538,23 @@ export function ReportScreen() {
 
   const sending = stage === 'sending'
   const back = () => {
+    // A phone's one Back button says Done while the keyboard is up, and that is all it does then.
+    if (touch && editing !== null) {
+      stopTyping(root.current)
+      return
+    }
     stopTyping(root.current)
     closeScreen()
   }
+  const notHere = touch ? reportingOffWords(info) : null
 
   return (
     <NavScreen id="report" onBack={sending ? undefined : back} initial="kind">
       <div ref={root} className={`screen screen--report${fromPause ? ' screen--over-game' : ''}`}>
         <div className="scrim scrim--left" aria-hidden="true" />
-        {stage === 'done' && result ? (
+        {notHere !== null ? (
+          <NotHere words={notHere} />
+        ) : stage === 'done' && result ? (
           <DoneView
             result={result}
             onAgain={() => {
@@ -492,80 +565,83 @@ export function ReportScreen() {
             onDone={back}
           />
         ) : (
-          <section className="panel report-panel nav-scroll" aria-label="Report a problem" aria-busy={sending}>
-            <div className="screen-head">
-              <span className="eyebrow">Tell us what happened</span>
-              <h2 className="screen-title">Report a problem</h2>
-            </div>
-            <p className="report-warn">
-              <span className="report-warn__icon" aria-hidden="true">
-                !
-              </span>
-              <span>
-                This goes on the game's <b>public</b> GitHub page, where anyone can read it. No full names, addresses, school or anything private.
-              </span>
-            </p>
-            <ChoiceRow<ReportKind>
-              id="kind"
-              label="What kind"
-              value={draft.kind}
-              options={REPORT_KINDS}
-              onChange={(v) => useDraft.setState({ kind: v })}
-              help="Something's broken: a bug. An idea: something you'd love in the game. Something else: anything else."
-            />
-            <Field
-              {...fieldProps}
-              id="title"
-              label="Short title"
-              value={draft.title}
-              max={REPORT_LIMITS.title}
-              placeholder="The car fell through the big loop"
-              help="A few words that sum it up, like a headline."
-              editing={editing === 'title'}
-              onChange={(v) => useDraft.setState({ title: v })}
-            />
-            <Field
-              {...fieldProps}
-              id="text"
-              label="What happened?"
-              multiline
-              value={draft.text}
-              max={REPORT_LIMITS.text}
-              placeholder="What were you doing? What went wrong? What did you expect to happen?"
-              help="What you were doing, what went wrong, and what you expected. The more you say, the easier it is to fix."
-              editing={editing === 'text'}
-              onChange={(v) => useDraft.setState({ text: v })}
-            />
-            <Field
-              {...fieldProps}
-              id="name"
-              label="Your name"
-              optional
-              value={draft.name}
-              max={REPORT_LIMITS.name}
-              placeholder="First name or nickname"
-              help="A first name or a nickname only, never your full name."
-              editing={editing === 'name'}
-              onChange={(v) => useDraft.setState({ name: v })}
-            />
-            <MenuButton
-              id="preview"
-              label={showSent ? 'Hide what gets sent' : 'See what gets sent'}
-              className="menu-btn--small report-preview-btn"
-              acceptSound={null}
-              acceptHint={showSent ? 'Hide' : 'Show'}
-              help="Everything the game adds to your report, so you can check it first."
-              onAccept={() => {
-                audio.ui('toggle')
-                setShowSent((v) => !v)
-              }}
-            />
-            <StatusLine info={info} />
-            {problem && (
-              <p className="report-problem" role="alert">
-                {problem}
+          <section className={`panel report-panel${touch ? (editing !== null ? ' is-typing' : '') : ' nav-scroll'}`} aria-label="Report a problem" aria-busy={sending}>
+            {/* On a phone the form scrolls and Send stays put underneath it; elsewhere this box isn't there (menus-panels.css). */}
+            <div className={touch ? 'report-form nav-scroll' : 'report-form'}>
+              <div className="screen-head">
+                <span className="eyebrow">Tell us what happened</span>
+                <h2 className="screen-title">Report a problem</h2>
+              </div>
+              <p className="report-warn">
+                <span className="report-warn__icon" aria-hidden="true">
+                  !
+                </span>
+                <span>
+                  This goes on the game's <b>public</b> GitHub page, where anyone can read it. No full names, addresses, school or anything private.
+                </span>
               </p>
-            )}
+              <ChoiceRow<ReportKind>
+                id="kind"
+                label="What kind"
+                value={draft.kind}
+                options={REPORT_KINDS}
+                onChange={(v) => useDraft.setState({ kind: v })}
+                help="Something's broken: a bug. An idea: something you'd love in the game. Something else: anything else."
+              />
+              <Field
+                {...fieldProps}
+                id="title"
+                label="Short title"
+                value={draft.title}
+                max={REPORT_LIMITS.title}
+                placeholder="The car fell through the big loop"
+                help="A few words that sum it up, like a headline."
+                editing={editing === 'title'}
+                onChange={(v) => useDraft.setState({ title: v })}
+              />
+              <Field
+                {...fieldProps}
+                id="text"
+                label="What happened?"
+                multiline
+                value={draft.text}
+                max={REPORT_LIMITS.text}
+                placeholder="What were you doing? What went wrong? What did you expect to happen?"
+                help="What you were doing, what went wrong, and what you expected. The more you say, the easier it is to fix."
+                editing={editing === 'text'}
+                onChange={(v) => useDraft.setState({ text: v })}
+              />
+              <Field
+                {...fieldProps}
+                id="name"
+                label="Your name"
+                optional
+                value={draft.name}
+                max={REPORT_LIMITS.name}
+                placeholder="First name or nickname"
+                help="A first name or a nickname only, never your full name."
+                editing={editing === 'name'}
+                onChange={(v) => useDraft.setState({ name: v })}
+              />
+              <MenuButton
+                id="preview"
+                label={showSent ? 'Hide what gets sent' : 'See what gets sent'}
+                className="menu-btn--small report-preview-btn"
+                acceptSound={null}
+                acceptHint={showSent ? 'Hide' : 'Show'}
+                help="Everything the game adds to your report, so you can check it first."
+                onAccept={() => {
+                  audio.ui('toggle')
+                  setShowSent((v) => !v)
+                }}
+              />
+              <StatusLine info={info} />
+              {problem && (
+                <p className="report-problem" role="alert">
+                  {problem}
+                </p>
+              )}
+            </div>
             <nav className="report-actions" aria-label="Send or cancel">
               <ActionButton
                 id="send"
@@ -589,8 +665,8 @@ export function ReportScreen() {
             <HelpLine />
           </section>
         )}
-        {showSent && stage !== 'done' && <SentPreview details={details} info={info} />}
-        <ReportHints editing={editing !== null} back={stage === 'done' ? 'Done' : 'Cancel'} />
+        {showSent && stage !== 'done' && notHere === null && <SentPreview details={details} info={info} />}
+        <ReportHints editing={editing !== null} back={notHere !== null ? 'Back' : stage === 'done' ? 'Done' : 'Cancel'} />
       </div>
     </NavScreen>
   )

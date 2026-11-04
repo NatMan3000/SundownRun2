@@ -84,7 +84,10 @@ function drawBase(track: TrackRuntime): void {
   if (!g) return
   g.clearRect(0, 0, w, h)
   const mm = track.minimap
-  const pad = 14 * dpr
+  // A phone's map is a small box: less margin and finer lines, or the road fills it. (A desktop map is never this small.)
+  const small = w / dpr < 120
+  const fine = small ? 0.7 : 1
+  const pad = (small ? 7 : 14) * dpr
   const spanX = Math.max(1, mm.maxX - mm.minX)
   const spanZ = Math.max(1, mm.maxZ - mm.minZ)
   const s = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanZ)
@@ -107,12 +110,12 @@ function drawBase(track: TrackRuntime): void {
   // soft glow, then the dark road body, then a thin bright centre line
   g.globalAlpha = 0.28
   g.strokeStyle = edge
-  g.lineWidth = 9 * dpr
+  g.lineWidth = 9 * dpr * fine
   trace()
   g.stroke()
   g.globalAlpha = 1
   g.strokeStyle = PALETTE.road
-  g.lineWidth = 5 * dpr
+  g.lineWidth = 5 * dpr * fine
   trace()
   g.stroke()
   g.strokeStyle = edge

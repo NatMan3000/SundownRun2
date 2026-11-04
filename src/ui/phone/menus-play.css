@@ -1,22 +1,47 @@
-/* Phone menus: title, mode select, track select, garage. */
+/* Phone menus: title, mode select, track select, garage, and what every menu shares.
 
-/* ---------------------------------------------------------------- menus on a phone
-   The desktop menus are laid out for a window at least as wide as a laptop's. These keep
-   every column inside the glass, clear of the notch, and let the logo give way on a short
-   screen. The menus are tapped directly, so the focus ring has nothing left to say. */
+   Sized in px, not em: the em scale follows the window's height, so on a phone on its
+   side it bottoms out at 11 px and a thumb target built in em comes out too small. */
 
+/* ---------------------------------------------------------------- every menu */
+
+.sr-ui[data-touch] {
+  --row-press: color-mix(in srgb, var(--accent) 24%, var(--panel-solid));
+}
+
+/* Tapped directly, so no focus ring (spec P4). Pan-y here turns off the browser's double-tap
+   and pinch zoom; a scroller inside still scrolls its own way. */
 .sr-ui[data-touch] .focus-ring { display: none; }
+.sr-ui[data-touch] .screen-host { touch-action: pan-y; }
+.sr-ui[data-touch] .nav-scroll { overscroll-behavior: contain; touch-action: pan-y; }
 
-/* Going back was Esc or B; here it is a button, out of the way of every panel. */
+/* A press shows on the way down. */
+.sr-ui[data-touch] .menu-btn { min-height: 44px; align-items: center; }
+.sr-ui[data-touch] .menu-btn.is-focused { transform: none; }
+.sr-ui[data-touch] .menu-btn:active { color: var(--text); background: var(--row-press); }
+.sr-ui[data-touch] .menu-btn.is-disabled:active { color: color-mix(in srgb, var(--dim) 55%, transparent); background: none; }
+
+/* :hover sticks after a tap on a phone. */
+.sr-ui[data-touch] .learn-link:hover { color: color-mix(in srgb, var(--text) 70%, transparent); }
+.sr-ui[data-touch] .swatch:hover { transform: none; }
+.sr-ui[data-touch] .swatch.is-on:hover { transform: scale(1.18); }
+.sr-ui[data-touch] .chev:hover { background: none; transform: none; }
+
+/* Going back was Esc or B; here it is one button, in one place on every screen: top right,
+   in the thumb's reach and clear of the notch. */
 .sr-ui .screen .hintbar--touch {
   pointer-events: auto;
   left: auto;
-  right: calc(var(--safe-r) + 0.6em);
-  top: calc(var(--safe-t) + 0.6em);
+  right: calc(var(--safe-r) + 8px);
+  top: calc(var(--safe-t) + 6px);
   bottom: auto;
   transform: none;
   z-index: 2;
 }
+.sr-ui[data-touch] .touch-back { min-width: 84px; justify-content: center; padding: 0 12px 0 10px; font-size: 13px; transition: background-color 120ms ease-out; }
+.sr-ui[data-touch] .touch-back:active { background: var(--row-press); }
+
+/* ---------------------------------------------------------------- title and mode: the column */
 
 .sr-ui[data-touch] .title-col {
   left: max(5vw, calc(var(--safe-l) + 0.6em));
@@ -25,25 +50,159 @@
   justify-content: safe center;
   overflow-y: auto;
   scrollbar-width: none;
+  overscroll-behavior: contain;
 }
 .sr-ui[data-touch] .title-menu, .sr-ui[data-touch] .mode-list { width: 100%; max-width: 34em; }
-.sr-ui[data-touch] .mode-options .row { grid-template-columns: 5.5em minmax(0, 1fr) 4.5em 1.4em; gap: 0.6em; }
+.sr-ui[data-touch] .title-links { margin: 0; }
+.sr-ui[data-touch] .title-links .learn-link { min-height: 44px; display: inline-flex; align-items: center; }
+.sr-ui[data-touch] .screen--title .sound-hint--menu {
+  left: auto;
+  right: calc(var(--safe-r) + 8px);
+  top: calc(var(--safe-t) + 6px);
+  bottom: auto;
+  min-height: 44px;
+}
 
-.sr-ui[data-touch] .screen--track { padding: calc(var(--safe-t) + 0.8em) max(3vw, var(--safe-r)) calc(var(--safe-b) + 0.8em) max(3vw, var(--safe-l)); }
-.sr-ui[data-touch] .track-grid { grid-template-columns: repeat(var(--cols, 2), minmax(0, 30em)); }
+/* Race's options sit side by side under Race, so they can't push the other modes off a short screen. */
+.sr-ui[data-touch] .mode-list { gap: 0; }
+.sr-ui[data-touch] .mode-options {
+  margin: 0 0 0 12px;
+  padding: 0 10px;
+  /* The sliders sit over the 3D world: on bare road the car's tail-light read as a second thumb. */
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--panel);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 14px;
+}
+.sr-ui[data-touch] .mode-options .row { grid-template-columns: auto minmax(0, 1fr) 3.8em; gap: 8px; padding: 0; min-height: 44px; }
+.sr-ui[data-touch] .mode-options .row__reset { display: none; }
 
-/* A phone on its side has room for the menu or the logo, not both at full size. */
+/* ---------------------------------------------------------------- track select: a list to flick through */
+
+/* A desktop card is taller than this list is on a phone on its side, so a finger gets TrackRow.
+   No panel round them (display: contents): the panel's edge ran under Back and took the cards' room. */
+.sr-ui[data-touch] .screen.screen--track {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: calc(var(--safe-t) + 6px) max(var(--safe-r), 10px) calc(var(--safe-b) + 4px) max(var(--safe-l), 10px);
+}
+.sr-ui[data-touch] .track-pick { display: contents; }
+/* The panel's box was what lifted these above the scrim. */
+.sr-ui[data-touch] .track-pick > * { position: relative; }
+.sr-ui[data-touch] .track-pick .screen-head { flex: none; align-self: flex-start; flex-direction: row; align-items: center; gap: 12px; min-height: 44px; }
+.sr-ui[data-touch] .track-pick .screen-title { font-size: 22px; }
+.sr-ui[data-touch] .track-pick .eyebrow { font-size: 11px; letter-spacing: 0.2em; }
+.sr-ui[data-touch] .track-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+  align-content: start;
+  gap: 6px;
+  padding: 0;
+  overflow-x: hidden;
+}
+.sr-ui[data-touch] .track-row {
+  flex-direction: row;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 76px;
+  padding: 6px 10px 6px 6px;
+  border-radius: var(--radius-s);
+  touch-action: pan-y;
+  text-align: left;
+}
+.sr-ui[data-touch] .track-row.is-focused { transform: none; border-color: var(--line); }
+.sr-ui[data-touch] .track-row:active { background: var(--row-press); }
+.sr-ui[data-touch] .track-row.is-disabled:active { background: color-mix(in srgb, var(--ink) 50%, transparent); }
+.sr-ui[data-touch] .track-row .track-card__thumb { flex: none; width: 96px; height: auto; min-height: 62px; aspect-ratio: auto; }
+.sr-ui[data-touch] .track-row .thumb__halo { stroke-width: 4; }
+.sr-ui[data-touch] .track-row .thumb__road { stroke-width: 1.6; filter: none; }
+.sr-ui[data-touch] .track-row__body { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 3px; }
+.sr-ui[data-touch] .track-row .track-card__head { padding: 0; gap: 6px; }
+.sr-ui[data-touch] .track-row .track-card__name { font-size: 16px; letter-spacing: 0.03em; }
+.sr-ui[data-touch] .track-row .badge { flex: none; font-size: 9px; letter-spacing: 0.1em; padding: 1px 6px; }
+/* Whole facts on one line: FactLine (TrackSelect.tsx) hides any that wrap. */
+.sr-ui[data-touch] .track-row__line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: color-mix(in srgb, var(--text) 86%, transparent);
+}
+.sr-ui[data-touch] .track-row__line > span { white-space: nowrap; }
+.sr-ui[data-touch] .track-row__line > span:first-child { white-space: normal; }
+.sr-ui[data-touch] .track-row__line--quiet { color: var(--dim); font-size: 11px; }
+
+/* A joiner: the host's track and Drive first, on one row, so the list keeps its room. */
+.sr-ui[data-touch] .host-banner { flex: none; grid-template-columns: minmax(0, 1fr) auto; gap: 0 10px; padding: 4px 6px 4px 10px; }
+.sr-ui[data-touch] .host-banner__label { font-size: 10px; letter-spacing: 0.16em; }
+.sr-ui[data-touch] .host-banner__name { font-size: 15px; }
+.sr-ui[data-touch] .host-banner__why { grid-column: 1; font-size: 11px; color: var(--dim); }
+.sr-ui[data-touch] .host-banner .menu-btn { grid-row: 1 / span 3; min-height: 48px; }
+
+/* ---------------------------------------------------------------- garage: bigger targets, same layout */
+
+.sr-ui[data-touch] .screen.screen--garage { touch-action: pan-y; }
+.sr-ui[data-touch] .garage-panel { overscroll-behavior: contain; }
+.sr-ui[data-touch] .garage-panel .helpline { display: none; }
+.sr-ui[data-touch] .car-pick { touch-action: pan-y; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 4px; padding: 6px 4px; }
+.sr-ui[data-touch] .chev { width: 44px; height: 44px; font-size: 13px; }
+.sr-ui[data-touch] .chev:active { background: var(--row-press); }
+.sr-ui[data-touch] .garage-panel .stat__label { font-size: 9.5px; letter-spacing: 0.16em; }
+/* Each swatch is a 28 px dot with a 46 px target, the rest of it clear round the dot. */
+.sr-ui[data-touch] .garage-panel .swatches { gap: 18px; padding: 9px; }
+.sr-ui[data-touch] .garage-panel .swatch { position: relative; flex: none; width: 28px; height: 28px; }
+.sr-ui[data-touch] .garage-panel .swatch::before { content: ''; position: absolute; inset: -9px; }
+.sr-ui[data-touch] .garage-panel .row--swatches { row-gap: 0; }
+.sr-ui[data-touch] .garage-panel .row--swatches .row__reset { position: relative; width: 28px; height: 28px; }
+.sr-ui[data-touch] .garage-panel .row--swatches .row__reset::before { content: ''; position: absolute; inset: -8px; }
+.sr-ui[data-touch] .colour--compact > .row--slider { grid-template-columns: 4em minmax(0, 1fr) 2.8em; gap: 8px; min-height: 46px; }
+.sr-ui[data-touch] .colour--compact > .row--slider .row__reset { display: none; }
+
+/* ---------------------------------------------------------------- a phone on its side */
+
+/* The logo, the tagline and the help line give way before a control does. Safari on its side
+   leaves 292 px of a 402 px 100vh, so heights come from dvh. The logo takes what the five
+   44 px rows leave (it is 1.9em tall); the multiplayer status shares the Report row. */
 @media (max-height: 500px) {
-  .sr-ui[data-touch] .title-col { gap: 0.5em; }
-  .sr-ui[data-touch] .title-col .logo { font-size: 3.4em; }
-  .sr-ui[data-touch] .tagline { font-size: 0.85em; padding-top: 0.5em; }
+  .sr-ui[data-touch] .title-col { gap: 0; padding: 2px 0 calc(var(--safe-b) + 2px); }
+  .sr-ui[data-touch] .title-col .logo { flex: none; margin-bottom: 0; font-size: min(calc((100dvh - var(--safe-b) - 228px) / 1.9), 3.8em); }
+  .sr-ui[data-touch] .tagline { display: none; }
+  .sr-ui[data-touch] .screen--title .helpline { display: none; }
+  .sr-ui[data-touch] .title-col .mp-status { flex: none; align-self: flex-start; margin: -37px 0 15px 130px; padding: 3px 10px; }
+  .sr-ui[data-touch] .title-menu { gap: 0; }
   .sr-ui[data-touch] .title-menu .menu-btn { font-size: 1.45em; }
   .sr-ui[data-touch] .mode-list .menu-btn { font-size: 1.45em; }
-  .sr-ui[data-touch] .track-card__thumb { aspect-ratio: 32 / 12; }
+  .sr-ui[data-touch] .screen--mode .title-col { width: min(580px, calc(100vw - 10vw - var(--safe-l))); gap: 0; }
+  .sr-ui[data-touch] .screen--mode .mode-list { max-width: none; }
+  .sr-ui[data-touch] .screen--mode .title-col { padding: 4px 0 var(--safe-b); }
+  .sr-ui[data-touch] .screen--mode .screen-title { font-size: 22px; line-height: 1.08; }
+  .sr-ui[data-touch] .screen--mode .eyebrow { display: none; }
+  .sr-ui[data-touch] .screen--mode .helpline { min-height: 0; font-size: 0.85em; line-height: 1.1; }
+  .sr-ui[data-touch] .garage-panel .eyebrow { display: none; }
+  .sr-ui[data-touch] .garage-panel { gap: 6px; padding: 8px 10px; }
   .sr-ui[data-touch] .screen--settings { padding-top: calc(var(--safe-t) + 0.8em); }
 }
+
+/* ---------------------------------------------------------------- a phone stood up: usable, one column */
+
 @media (orientation: portrait) {
   .sr-ui[data-touch] .track-grid { --cols: 1; }
   .sr-ui[data-touch] .settings-panel { width: 92vw; margin-top: 3.4em; }
-}
 
+  .sr-ui[data-touch] .title-col { left: max(var(--safe-l), 12px); width: calc(100vw - max(var(--safe-l), 12px) * 2); padding-top: calc(var(--safe-t) + 56px); }
+  .sr-ui[data-touch] .title-col .logo { font-size: min(13vw, 52px); }
+  .sr-ui[data-touch] .tagline { letter-spacing: 0.18em; }
+  .sr-ui[data-touch] .mode-options { grid-template-columns: 1fr; }
+  .sr-ui[data-touch] .track-pick .screen-head { flex-direction: column; align-items: flex-start; gap: 0; }
+
+  /* Garage: the car up top, the panel under it and low enough to leave the car in view. */
+  .sr-ui[data-touch] .screen.screen--garage { align-items: flex-end; padding: 0 8px calc(var(--safe-b) + 8px); }
+  .sr-ui[data-touch] .garage-panel { width: 100%; max-height: 38%; }
+}

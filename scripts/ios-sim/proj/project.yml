@@ -1,0 +1,20 @@
+name: Rig
+options: {bundleIdPrefix: rig}
+targets:
+  Host:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources: [Host]
+    settings: {GENERATE_INFOPLIST_FILE: YES, PRODUCT_BUNDLE_IDENTIFIER: rig.host, CODE_SIGNING_ALLOWED: NO}
+  UITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources: [UITests]
+    dependencies: [{target: Host}]
+    settings: {GENERATE_INFOPLIST_FILE: YES, PRODUCT_BUNDLE_IDENTIFIER: rig.uitests, TEST_TARGET_NAME: Host, CODE_SIGNING_ALLOWED: NO}
+schemes:
+  Rig:
+    build: {targets: {Host: all, UITests: all}}
+    test: {targets: [UITests]}
