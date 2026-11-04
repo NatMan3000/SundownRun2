@@ -9,9 +9,13 @@
 //  paint, glow, trail) that the vehicle and look systems read live.
 //
 //  The car list comes from the vehicle system (vehicle.bodies()).
+//
+//  On a phone a sideways swipe changes the car too, on the picker or
+//  over the car itself.
 // ============================================================
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { getDefaults, useSettings } from '../../core/settings'
 import { useGame } from '../../core/store'
 import { audio, vehicle } from '../../core/api'
@@ -34,6 +38,45 @@ function StatBar(props: { label: string; value: number }) {
   )
 }
 
+/** Step to the next or previous car, round and round. */
+function cycleCar(bodies: readonly CarBodyInfo[], dir: -1 | 1): true {
+  if (bodies.length < 2) return true
+  const idx = Math.max(0, bodies.findIndex((b) => b.id === useSettings.getState().carBody))
+  audio.ui('toggle')
+  useSettings.getState().set('carBody', bodies[(idx + dir + bodies.length) % bodies.length].id)
+  return true
+}
+
+/** How far a thumb must travel sideways, in pixels, to change the car. */
+const SWIPE_PX = 36
+
+/**
+ * A sideways swipe on a finger changes the car: to the left brings the next one in.
+ * Mostly-vertical moves belong to the panel's scroll. The colours themselves don't
+ * take swipes, so dragging along a row of swatches can't change the car by accident.
+ */
+function useCarSwipe(bodies: readonly CarBodyInfo[]) {
+  const from = useRef<{ id: number; x: number; y: number } | null>(null)
+  return {
+    onPointerDown: (e: ReactPointerEvent) => {
+      if (e.pointerType !== 'touch' || !e.isPrimary || (e.target as Element).closest('.garage-colours, .hintbar')) return
+      from.current = { id: e.pointerId, x: e.clientX, y: e.clientY }
+    },
+    onPointerUp: (e: ReactPointerEvent) => {
+      const f = from.current
+      if (!f || f.id !== e.pointerId) return
+      from.current = null
+      const dx = e.clientX - f.x
+      if (Math.abs(dx) < SWIPE_PX || Math.abs(dx) < Math.abs(e.clientY - f.y) * 1.5) return
+      audio.unlock()
+      cycleCar(bodies, dx < 0 ? 1 : -1)
+    },
+    onPointerCancel: () => {
+      from.current = null
+    },
+  }
+}
+
 function Chevron(props: { dir: 'left' | 'right'; onPress: () => void }) {
   return (
     <span
@@ -54,13 +97,7 @@ function CarPicker(props: { bodies: readonly CarBodyInfo[] }) {
   const { bodies } = props
   const idx = Math.max(0, bodies.findIndex((b) => b.id === current))
   const body = bodies[idx]
-  const cycle = (dir: -1 | 1) => {
-    if (bodies.length < 2) return true
-    const next = bodies[(idx + dir + bodies.length) % bodies.length]
-    audio.ui('toggle')
-    useSettings.getState().set('carBody', next.id)
-    return true
-  }
+  const cycle = (dir: -1 | 1) => cycleCar(bodies, dir)
   const nav = useNavItem<HTMLDivElement>('car', {
     onLeft: () => cycle(-1),
     onRight: () => cycle(1),
@@ -104,6 +141,8 @@ export function GarageScreen() {
     return () => useGame.setState({ garageOpen: false })
   }, [])
   const bodies = vehicle.bodies()
+  const touch = useGame((s) => s.inputDevice) === 'touch'
+  const swipe = useCarSwipe(bodies)
   // One selector per value: a selector that builds a new object every time
   // would make zustand re-render forever.
   const paint = useSettings((s) => s.paint)
@@ -114,7 +153,7 @@ export function GarageScreen() {
   const defaults = getDefaults()
   return (
     <NavScreen id="garage" onBack={closeScreen} initial="car">
-      <div className="screen screen--garage">
+      <div className="screen screen--garage" {...(touch ? swipe : undefined)}>
         <div className="scrim scrim--left" aria-hidden="true" />
         <section className="panel garage-panel" aria-label="Garage">
           <div className="screen-head">
