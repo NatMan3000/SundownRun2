@@ -16,6 +16,9 @@
 //  Single player: the world is frozen behind this. Multiplayer:
 //  the world can't stop for one player, so it keeps running and
 //  your car just coasts while the menu is open.
+//
+//  On a phone the list scrolls inside the panel with Resume pinned at
+//  its top (src/ui/phone/menus-panels.css).
 // ============================================================
 
 import { useState } from 'react'
@@ -48,6 +51,7 @@ export function PauseScreen() {
   const mode = useGame((s) => s.mode)
   // Asked when the menu opens: where the car is decides which way the hop goes.
   const hop = play.parkHop()
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   // The Favourite songs list takes this panel's place; Back comes back to its button.
   const [songsOpen, setSongsOpen] = useState(false)
   const closeSongs = () => {
@@ -70,7 +74,7 @@ export function PauseScreen() {
             </div>
             {mp && <p className="pause-note">Multiplayer: the world keeps running while this menu is open.</p>}
             <nav className="pause-menu" aria-label="Pause menu">
-              <MenuButton id="resume" label="Resume" help="Back to the road." onAccept={resumeGame} acceptSound="back" />
+              <MenuButton id="resume" label="Resume" help="Back to the road." onAccept={resumeGame} acceptSound="back" className={touch ? 'menu-btn--go pause-resume' : undefined} />
               <MenuButton id="restart" label="Restart" help="Start this run again from the start line." onAccept={restartSession} acceptSound="start" />
               <MenuButton id="settings" label="Settings" help="Handling, camera, sound, time of day and more. Changes apply straight away." onAccept={() => openScreen('settings')} />
               {MAP_READY && <MenuButton id="map" label="Map" help="The whole world from above: where you are, the road and everything on it." onAccept={openMap} />}
@@ -97,7 +101,7 @@ export function PauseScreen() {
             <HelpLine />
           </section>
         )}
-        <SoundHint variant="menu" />
+        {(!touch || !songsOpen) && <SoundHint variant="menu" />}
         <HintBar
           items={[
             { action: 'move', label: 'Move' },

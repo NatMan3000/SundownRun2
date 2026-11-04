@@ -10,6 +10,11 @@
 //  The rows themselves are listed in settingsSchema.ts. Defaults
 //  come from src/core/config.ts, so if Josh changes a default
 //  there, "reset" goes back to his new value.
+//
+//  On a phone (src/ui/phone/menus-panels.css) the tabs slide sideways
+//  with the active one kept in view, the help line sits above the rows
+//  where no thumb covers it and follows the last row touched, and
+//  Reset all moves to the end of the list and asks in words.
 // ============================================================
 
 import { useEffect, useRef, useState } from 'react'
@@ -21,7 +26,7 @@ import { vehicle, audio } from '../../core/api'
 import { NavScreen, focusItem, useNavItem } from '../nav'
 import { ChoiceRow, ColourRow, HelpLine, MenuButton, SliderRow, ToggleRow } from '../widgets'
 import { HintBar } from '../hints'
-import { SETTINGS_TABS, closeScreen, useUi } from '../uiStore'
+import { SETTINGS_TABS, closeScreen, showNotice, useUi } from '../uiStore'
 import type { SettingsTab } from '../uiStore'
 import { CAMERA_CHOICES, QUALITY_CHOICES, SETTINGS_ROWS, TAB_LABELS } from '../settingsSchema'
 import type { RowSpec } from '../settingsSchema'
@@ -57,6 +62,8 @@ function SettingRow(props: { tab: SettingsTab; spec: RowSpec; index: number }) {
   const qualityChoice = useSettings((s) => s.quality)
   // Multiplayer joiner: the host's Laps decide every race, so show theirs, locked.
   const hostLaps = useNet((s) => (s.status === 'online' && !s.isHost ? s.hostLaps : null))
+  const touch = useGame((s) => s.inputDevice) === 'touch'
+  const help = (touch && 'touchHelp' in spec && spec.touchHelp) || spec.help
 
   switch (spec.kind) {
     case 'slider': {
@@ -88,7 +95,7 @@ function SettingRow(props: { tab: SettingsTab; spec: RowSpec; index: number }) {
           format={spec.format}
           onChange={(v) => set(spec.key, v)}
           defaultValue={defaults[spec.key]}
-          help={spec.help}
+          help={help}
         />
       )
     }
@@ -96,7 +103,7 @@ function SettingRow(props: { tab: SettingsTab; spec: RowSpec; index: number }) {
       return <ToggleRow id={id} label={spec.label} value={value as boolean} onChange={(v) => set(spec.key, v)} defaultValue={defaults[spec.key]} help={spec.help} />
     case 'choice': {
       if (spec.key === 'camera') {
-        return <ChoiceRow<CameraMode> id={id} label={spec.label} value={value as CameraMode} options={CAMERA_CHOICES} onChange={(v) => set('camera', v)} defaultValue={defaults.camera} help={spec.help} />
+        return <ChoiceRow<CameraMode> id={id} label={spec.label} value={value as CameraMode} options={CAMERA_CHOICES} onChange={(v) => set('camera', v)} defaultValue={defaults.camera} help={help} />
       }
       if (spec.key === 'quality') {
         return <ChoiceRow<QualityChoice> id={id} label={spec.label} value={value as QualityChoice} options={QUALITY_CHOICES} onChange={(v) => set('quality', v)} defaultValue={defaults.quality} help={spec.help} />
@@ -167,13 +174,13 @@ function GpuRow(props: { label: string }) {
   )
 }
 
-function Tab(props: { tab: SettingsTab; active: boolean; onPick: () => void }) {
+function Tab(props: { tab: SettingsTab; active: boolean; touch: boolean; onPick: () => void }) {
   const nav = useNavItem<HTMLButtonElement>(`tab:${props.tab}`, {
     onAccept: props.onPick,
     acceptSound: null,
     group: 'tabs',
     entry: props.active,
-    help: `${TAB_LABELS[props.tab]} settings.`,
+    help: props.touch ? 'Tap a row to see what it does.' : `${TAB_LABELS[props.tab]} settings.`,
   })
   return (
     <button
@@ -222,8 +229,73 @@ function ResetAll() {
   )
 }
 
+/**
+ * Reset all on a phone: the last row of the list, away from the thumbs. It asks in
+ * words, and "Keep them" lands where "Reset all" was, so a double tap keeps everything.
+ */
+function ResetAllRow() {
+  const [asking, setAsking] = useState(false)
+  if (!asking) {
+    return (
+      <div className="reset-row">
+        <span className="reset-row__words">Put every setting back to how it started.</span>
+        <MenuButton
+          id="reset-all"
+          label="Reset all"
+          className="menu-btn--small"
+          acceptSound={null}
+          help="Puts every setting back to the start. Your records and tracks are kept."
+          onAccept={() => {
+            audio.ui('toggle')
+            setAsking(true)
+          }}
+        />
+      </div>
+    )
+  }
+  return (
+    <div className="reset-row is-asking" role="group" aria-label="Reset every setting?">
+      <span className="reset-row__words">Reset every setting? Your records and tracks are kept.</span>
+      <MenuButton
+        id="reset-yes"
+        label="Yes, reset all"
+        className="menu-btn--small reset-row__yes"
+        acceptSound={null}
+        help="Puts every setting back to the start. Your records and tracks are kept."
+        onAccept={() => {
+          audio.ui('select')
+          useSettings.getState().resetAll()
+          rebuildLiveTrackAfterReset()
+          setAsking(false)
+          showNotice('Every setting is back to how it started.')
+        }}
+      />
+      <MenuButton id="reset-keep" label="Keep them" className="menu-btn--small" acceptSound="back" help="Nothing changes." onAccept={() => setAsking(false)} />
+    </div>
+  )
+}
+
+/** Keep the active tab in view when the tab row is wider than its window (a phone). */
+function useActiveTabInView(tab: SettingsTab) {
+  const box = useRef<HTMLDivElement | null>(null)
+  const first = useRef(true)
+  useEffect(() => {
+    const row = box.current
+    const active = row?.querySelector<HTMLElement>('.tab.is-active')
+    const jump = first.current || matchMedia('(prefers-reduced-motion: reduce)').matches
+    first.current = false
+    if (!row || !active || row.scrollWidth <= row.clientWidth) return
+    const r = row.getBoundingClientRect()
+    const a = active.getBoundingClientRect()
+    row.scrollTo({ left: row.scrollLeft + a.left - r.left - (r.width - a.width) / 2, behavior: jump ? 'auto' : 'smooth' })
+  }, [tab])
+  return box
+}
+
 export function SettingsScreen() {
   const tab = useUi((s) => s.settingsTab)
+  const touch = useGame((s) => s.inputDevice) === 'touch'
+  const tabsBox = useActiveTabInView(tab)
   const fromPause = useUi((s) => s.stack[0] === 'pause')
   const mp = useGame((s) => s.multiplayer)
 
@@ -245,7 +317,8 @@ export function SettingsScreen() {
 
   const rows = SETTINGS_ROWS[tab]
   return (
-    <NavScreen id="settings" onBack={closeScreen} onTab={onTab} initial={firstRowId(tab)}>
+    // On a phone no row is lit until a finger touches one: there is no focus to show yet.
+    <NavScreen id="settings" onBack={closeScreen} onTab={onTab} initial={touch ? `tab:${tab}` : firstRowId(tab)}>
       <div className={`screen screen--settings${fromPause ? ' screen--over-game' : ''}`}>
         <div className="scrim scrim--left" aria-hidden="true" />
         <section className="panel settings-panel" aria-label="Settings">
@@ -254,12 +327,12 @@ export function SettingsScreen() {
               <h2 className="screen-title">Settings</h2>
               {fromPause && <span className="eyebrow">{mp ? 'Game still running' : 'Game paused'}</span>}
             </div>
-            <div className="tabs" role="tablist">
+            <div className="tabs" role="tablist" ref={tabsBox}>
               <span className="tabs__glyph">
                 <ActionGlyphsSingle side="prev" />
               </span>
               {SETTINGS_TABS.map((t) => (
-                <Tab key={t} tab={t} active={t === tab} onPick={() => switchTab(t, 'tab')} />
+                <Tab key={t} tab={t} active={t === tab} touch={touch} onPick={() => switchTab(t, 'tab')} />
               ))}
               <span className="tabs__glyph">
                 <ActionGlyphsSingle side="next" />
@@ -270,10 +343,11 @@ export function SettingsScreen() {
             {rows.map((spec, i) => (
               <SettingRow key={`${tab}:${i}`} tab={tab} spec={spec} index={i} />
             ))}
+            {touch && <ResetAllRow />}
           </div>
           <footer className="settings-foot">
             <HelpLine />
-            <ResetAll />
+            {!touch && <ResetAll />}
           </footer>
         </section>
         <HintBar

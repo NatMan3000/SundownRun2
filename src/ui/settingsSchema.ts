@@ -30,6 +30,8 @@ export interface SliderRowSpec {
   key: NumKey
   label: string
   help: string
+  /** The help on a phone, where `help` names a key or a pad button. */
+  touchHelp?: string
   format: (v: number) => string
 }
 
@@ -45,6 +47,8 @@ export interface ChoiceRowSpec {
   key: 'camera' | 'quality' | 'carBody'
   label: string
   help: string
+  /** The help on a phone, where `help` names a key or a pad button. */
+  touchHelp?: string
 }
 
 export interface ColourRowSpec {
@@ -98,7 +102,7 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
     { kind: 'slider', key: 'topSpeedKmh', label: 'Top speed', help: 'The fastest the engine will push you. Boost pads still go past it.', format: kmh },
   ],
   camera: [
-    { kind: 'choice', key: 'camera', label: 'Camera', help: 'Chase, close or bonnet. C or RB cycles it while you drive.' },
+    { kind: 'choice', key: 'camera', label: 'Camera', help: 'Chase, close or bonnet. C or RB cycles it while you drive.', touchHelp: 'Chase, close or bonnet. The Camera button cycles it while you drive.' },
     { kind: 'slider', key: 'cameraDistance', label: 'Distance', help: 'How far behind the car the chase camera sits.', format: metres },
     { kind: 'slider', key: 'cameraHeight', label: 'Height', help: 'How high above the car the camera sits.', format: metres },
     { kind: 'slider', key: 'fov', label: 'Field of view', help: 'How wide the camera sees. Wider feels faster.', format: (v) => `${Math.round(v)}°` },
@@ -131,12 +135,12 @@ export const SETTINGS_ROWS: Record<SettingsTab, RowSpec[]> = {
     { kind: 'slider', key: 'boostStrength', label: 'Boost strength', help: 'How hard the boost pads kick. 2 is silly.', format: (v) => `${v.toFixed(1)}x` },
     { kind: 'slider', key: 'smashKmh', label: 'Smash speed', help: 'Hit roadside stuff faster than this and it smashes. Slower, it is solid.', format: kmh },
     { kind: 'slider', key: 'magGripKmh', label: 'Magnet speed', help: 'On loops and wall rides you stick above this speed. Below it you fall off.', format: kmh },
-    { kind: 'slider', key: 'rewindSeconds', label: 'Rewind', help: 'Hold Backspace (or LB) to run time backwards. This is how many seconds back it can go.', format: (v) => `${Math.round(v)} s` },
+    { kind: 'slider', key: 'rewindSeconds', label: 'Rewind', help: 'Hold Backspace (or LB) to run time backwards. This is how many seconds back it can go.', touchHelp: 'Hold the Rewind button to run time backwards. This is how many seconds back it can go.', format: (v) => `${Math.round(v)} s` },
   ],
   multiplayer: [
     { kind: 'toggle', key: 'multiplayerRam', label: 'Ramming', help: 'On: you can shove each other. Off: cars pass through like ghosts.' },
     { kind: 'slider', key: 'tagHunterBoost', label: 'Hunter boost', help: 'Tag and Hunt Turns: when you are hunting, this much extra speed when far behind (a quarter of it up close). 0 turns it off.', format: (v) => (v <= 0 ? 'Off' : `+${Math.round(v)}%`) },
-    { kind: 'slider', key: 'huntTurnSeconds', label: 'Hunt turn', help: 'Hunt Turns: how long each turn lasts. Whoever presses G uses their settings for everyone.', format: (v) => `${Math.round(v)} s` },
+    { kind: 'slider', key: 'huntTurnSeconds', label: 'Hunt turn', help: 'Hunt Turns: how long each turn lasts. Whoever presses G uses their settings for everyone.', touchHelp: 'Hunt Turns: how long each turn lasts. Whoever starts the round uses their settings for everyone.', format: (v) => `${Math.round(v)} s` },
     { kind: 'slider', key: 'catchReachMetres', label: 'Catch reach', help: 'Hunt Turns: the hunter catches you by getting this close. No bump needed.', format: (v) => `${v.toFixed(1)} m` },
     { kind: 'slider', key: 'pulseRangeMetres', label: 'Pulse range', help: 'Hunt Turns: how far the tag pulse reaches in front of the hunter. 0 turns the pulse off.', format: (v) => (v <= 0 ? 'Off' : `${Math.round(v)} m`) },
     { kind: 'slider', key: 'pulseConeDegrees', label: 'Pulse width', help: 'Hunt Turns: how wide the tag pulse sprays in front of the hunter.', format: (v) => `${Math.round(v)}°` },

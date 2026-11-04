@@ -10,6 +10,9 @@
 //    tag    least time as "it" wins
 //    turns  Hunt Turns: most points wins (equal is a draw)
 //  Then: Again, Track select, or back to the title.
+//
+//  On a phone the three buttons always show without scrolling
+//  (src/ui/phone/menus-panels.css); the numbers scroll above them.
 // ============================================================
 
 import { useGame } from '../../core/store'
@@ -255,6 +258,7 @@ export function ResultsScreen() {
   const mp = useGame((s) => s.multiplayer)
   const trackName = useGame((s) => s.trackName)
   const mode = useGame((s) => s.mode)
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   return (
     <NavScreen id="results" initial="again">
       <div className="screen screen--results screen--over-game">
@@ -264,7 +268,9 @@ export function ResultsScreen() {
             <span className="eyebrow">{trackName}</span>
             <h2 className="screen-title">Results</h2>
           </div>
-          <ResultBody />
+          <div className="results-body">
+            <ResultBody />
+          </div>
           <nav className="results-actions" aria-label="What next">
             <MenuButton
               id="again"
@@ -272,6 +278,7 @@ export function ResultsScreen() {
               help={mp ? 'Start another round for everyone (same as G / X).' : 'Same track, same mode, from the start.'}
               onAccept={mp ? againMultiplayer : restartSession}
               acceptSound="start"
+              className={touch ? 'menu-btn--go' : undefined}
             />
             <MenuButton
               id="tracks"

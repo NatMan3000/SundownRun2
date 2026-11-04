@@ -3,7 +3,9 @@
 // ------------------------------------------------------------
 //  MenuButton   a big pickable line (Play, Resume, Quit ...)
 //  SliderRow    a number: left/right to change (hold to go faster),
-//               drag with the mouse, A / Enter resets to default
+//               drag with the mouse or a thumb, A / Enter resets to
+//               default. A swipe up or down that starts on one scrolls
+//               the list instead of changing the value.
 //  ToggleRow    on / off
 //  ChoiceRow    one of a few (Chase / Close / Bonnet)
 //  ColourRow    a row of swatches plus a custom hue strip
@@ -14,10 +16,10 @@
 // ============================================================
 
 import { useRef } from 'react'
-import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { audio } from '../core/api'
-import { useNavItem, holdMultiplier, focusedHandlers } from './nav'
-import { useUi } from './uiStore'
+import { useNavItem, useNavScreen, holdMultiplier, focusedHandlers } from './nav'
+import { setFocus, useUi } from './uiStore'
 import { colourForHue, hexToHsl } from './colour'
 import type { ColourTone } from './colour'
 
@@ -109,9 +111,19 @@ export interface SliderRowProps {
   onCommit?: (v: number) => void
 }
 
+/** A finger this close to the slider's thumb picks it up where it is, so the thumb doesn't jump to the finger. */
+const THUMB_GRAB_PX = 30
+/** A finger must go this far sideways before it counts as a drag (under that it is a tap, or the start of a scroll). */
+const SLIDER_DRAG_PX = 7
+
 export function SliderRow(p: SliderRowProps) {
+  const screen = useNavScreen()
   const trackRef = useRef<HTMLDivElement | null>(null)
   const dragging = useRef(false)
+  /** The finger on this slider, from its touch down to its lift. */
+  const finger = useRef<{ id: number; x: number; y: number; grab: number; dragged: boolean } | null>(null)
+  /** The press that the next click belongs to was a finger's (a mouse press has already acted on its way down). */
+  const fingerTap = useRef(false)
   const changed = p.defaultValue !== undefined && Math.abs(p.value - p.defaultValue) > p.step * 0.25
 
   const stepBy = (dir: -1 | 1, streak: number) => {
@@ -143,6 +155,8 @@ export function SliderRow(p: SliderRowProps) {
     disabled: p.disabled,
   })
 
+  const t = p.max > p.min ? (p.value - p.min) / (p.max - p.min) : 0
+
   const valueAt = (clientX: number) => {
     const el = trackRef.current
     if (!el) return p.value
@@ -153,6 +167,17 @@ export function SliderRow(p: SliderRowProps) {
 
   const onDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (p.disabled || e.button !== 0) return
+    fingerTap.current = false
+    if (e.pointerType === 'touch') {
+      // A finger changes nothing yet: it might be starting a scroll. Up or down, the
+      // browser takes it for the list and cancels this pointer; sideways, onMove has it.
+      if (finger.current) return
+      fingerTap.current = true
+      const r = e.currentTarget.getBoundingClientRect()
+      const off = r.left + t * r.width - e.clientX
+      finger.current = { id: e.pointerId, x: e.clientX, y: e.clientY, grab: Math.abs(off) <= THUMB_GRAB_PX ? off : 0, dragged: false }
+      return
+    }
     dragging.current = true
     e.currentTarget.setPointerCapture(e.pointerId)
     audio.unlock()
@@ -163,18 +188,60 @@ export function SliderRow(p: SliderRowProps) {
     }
   }
   const onMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const f = finger.current
+    if (f) {
+      if (e.pointerId !== f.id) return
+      if (!f.dragged) {
+        const dx = Math.abs(e.clientX - f.x)
+        if (dx < SLIDER_DRAG_PX || dx < Math.abs(e.clientY - f.y)) return
+        f.dragged = true
+        fingerTap.current = false
+        e.currentTarget.setPointerCapture(e.pointerId)
+        e.currentTarget.classList.add('is-dragging')
+        audio.unlock()
+        // The help line follows the last row a finger touched.
+        setFocus(screen, p.id)
+      }
+      const v = valueAt(e.clientX + f.grab)
+      if (v !== p.value) {
+        audio.ui('slide')
+        p.onChange(v)
+      }
+      return
+    }
     if (!dragging.current) return
     const v = valueAt(e.clientX)
     if (v !== p.value) p.onChange(v)
   }
   const onUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const f = finger.current
+    if (f) {
+      if (e.pointerId !== f.id) return
+      finger.current = null
+      if (e.type === 'pointercancel') fingerTap.current = false
+      if (f.dragged) {
+        e.currentTarget.classList.remove('is-dragging')
+        p.onCommit?.(e.type === 'pointercancel' ? p.value : valueAt(e.clientX + f.grab))
+      }
+      return
+    }
     if (!dragging.current) return
     dragging.current = false
     e.currentTarget.releasePointerCapture(e.pointerId)
     p.onCommit?.(valueAt(e.clientX))
   }
 
-  const t = p.max > p.min ? (p.value - p.min) / (p.max - p.min) : 0
+  /** A finger's tap (never a stopped scroll, which fires no click) sets the value where it landed. */
+  const onTap = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (!fingerTap.current) return
+    fingerTap.current = false
+    const v = valueAt(e.clientX)
+    if (v === p.value) return
+    audio.ui('slide')
+    p.onChange(v)
+    p.onCommit?.(v)
+  }
+
   return (
     <div ref={nav.ref} {...nav.props} className={cx('row row--slider', nav.focused && 'is-focused', p.disabled && 'is-disabled', changed && 'is-changed')}>
       <span className="row__label">
@@ -188,6 +255,7 @@ export function SliderRow(p: SliderRowProps) {
         onPointerMove={onMove}
         onPointerUp={onUp}
         onPointerCancel={onUp}
+        onClick={onTap}
       >
         <div className="slider__rail">
           <div className="slider__fill" style={{ transform: `scaleX(${t})` }} />

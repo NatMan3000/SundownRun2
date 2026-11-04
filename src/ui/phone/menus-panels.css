@@ -1,16 +1,578 @@
-/* Phone menus: settings, pause, results, report. */
+/* ============================================================
+   PHONE PANELS - settings, pause, results, report, favourite songs,
+   the world map and notices on a phone on its side
+   ------------------------------------------------------------
+   The standard: spec/phone-landscape-standard.md. Everything hangs
+   off .sr-ui[data-touch] (or the map's own data-map-touch), so the
+   desktop game never sees it; the one bare rule below does nothing
+   to a layout.
+
+   The em scale follows the window's height, which would make a phone
+   on its side the smallest thing the UI ever draws. These screens
+   hold their text at a size that reads at arm's length, and every
+   target is sized in px: a thumb doesn't scale with the window.
+   ============================================================ */
+
+/* These wrappers are only boxes on a phone: everywhere else their children sit in the panel as they always did. */
+.results-body, .report-form { display: contents; }
+
+/* ---------------------------------------------------------------- the frame */
+
+.sr-ui[data-touch] .screen--garage {
+  padding: calc(var(--safe-t) + 0.8em) 0 calc(var(--safe-b) + 0.8em) max(4vw, calc(var(--safe-l) + 0.6em));
+}
 
 .sr-ui[data-touch] .screen--settings,
-.sr-ui[data-touch] .screen--garage,
 .sr-ui[data-touch] .screen--pause,
 .sr-ui[data-touch] .screen--results,
 .sr-ui[data-touch] .screen--report {
-  padding: calc(var(--safe-t) + 0.8em) 0 calc(var(--safe-b) + 0.8em) max(4vw, calc(var(--safe-l) + 0.6em));
+  --gap: 6px;
+  font-size: max(14px, 1em);
+  padding: calc(var(--safe-t) + var(--gap)) calc(var(--safe-r) + var(--gap)) calc(var(--safe-b) + var(--gap)) calc(var(--safe-l) + var(--gap));
 }
-.sr-ui[data-touch] .settings-panel { width: min(60em, calc(92vw - var(--safe-l) - 5.4em)); }
-.sr-ui[data-touch] .pause-panel { width: min(31em, 92vw); }
-.sr-ui[data-touch] .report-panel { width: min(42em, 92vw); }
-.sr-ui[data-touch] .tabs { overflow-x: auto; scrollbar-width: none; }
-.sr-ui[data-touch] .tabs .tab { flex: none; }
+
+.sr-ui[data-touch] .settings-panel,
+.sr-ui[data-touch] .pause-panel,
+.sr-ui[data-touch] .results-panel,
+.sr-ui[data-touch] .report-panel,
+.sr-ui[data-touch] .report-sent {
+  background: color-mix(in srgb, var(--panel-solid) 90%, transparent);
+  border-radius: var(--radius-s);
+  box-shadow: none;
+}
+
+/* Back keeps the top right corner to itself: a panel that would run under it stops short of it. */
+.sr-ui[data-touch] .screen--settings,
+.sr-ui[data-touch] .screen--report,
+.sr-ui[data-touch] .screen--pause:has(.fav-panel) { padding-right: calc(var(--safe-r) + 104px); }
+
+/* Things every list shares: a finger scrolls it, the page never moves, and the last row can clear the fade. */
+.sr-ui[data-touch] .settings-rows,
+.sr-ui[data-touch] .pause-menu,
+.sr-ui[data-touch] .fav-list,
+.sr-ui[data-touch] .report-form,
+.sr-ui[data-touch] .report-sent,
+.sr-ui[data-touch] .results-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: none;
+}
+.sr-ui[data-touch] .settings-rows::-webkit-scrollbar,
+.sr-ui[data-touch] .pause-menu::-webkit-scrollbar,
+.sr-ui[data-touch] .fav-list::-webkit-scrollbar,
+.sr-ui[data-touch] .report-form::-webkit-scrollbar,
+.sr-ui[data-touch] .report-sent::-webkit-scrollbar,
+.sr-ui[data-touch] .results-body::-webkit-scrollbar,
+.sr-ui[data-touch] .tabs::-webkit-scrollbar { display: none; }
+/* There's no scroll bar on a phone till you scroll: a list that goes on fades out at its foot. */
+.sr-ui[data-touch] .settings-rows,
+.sr-ui[data-touch] .pause-menu,
+.sr-ui[data-touch] .fav-list {
+  padding-bottom: 1.2em;
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 1.2em), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 1.2em), transparent);
+}
+
+/* ---------------------------------------------------------------- what stays the same across a list */
+
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report, .screen--results) .menu-btn { min-height: 44px; align-items: center; flex: none; }
+.sr-ui[data-touch] .screen--settings .menu-btn.is-focused,
+.sr-ui[data-touch] .screen--pause .menu-btn.is-focused { transform: none; }
+.sr-ui[data-touch] .menu-btn--go { color: var(--text); }
+/* :hover stays stuck after a tap on a touch screen. */
+.sr-ui[data-touch] .tab:not(.is-active):hover { color: var(--dim); }
+.sr-ui[data-touch] .swatch:hover { transform: none; }
+.sr-ui[data-touch] .row__reset.is-on:hover { color: var(--dim); }
+
+/* label | control | value | reset, in the same columns all the way down a tab. (Not the Garage or the mode options: their rows are laid out in menus-play.css.) */
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row {
+  grid-template-columns: minmax(0, 10.5em) minmax(0, 1fr) 5.6em 44px;
+  gap: 0 0.7em;
+  min-height: 46px;
+  padding: 0 0 0 0.7em;
+}
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row__label { font-size: 1em; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row__reset { width: 44px; height: 44px; justify-self: center; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .reset-icon { width: 1.25em; height: 1.25em; }
+
+/* the slider: the whole row's height is its grip, and it doesn't lag behind the thumb */
+.sr-ui[data-touch] .slider { height: 46px; touch-action: pan-y; }
+.sr-ui[data-touch] .slider__rail { height: 6px; border-radius: 3px; }
+.sr-ui[data-touch] .slider__thumb { width: 1.55em; height: 1.55em; margin: -0.775em 0 0 -0.775em; }
+.sr-ui[data-touch] .row.is-focused .slider__thumb { transform: none; }
+.sr-ui[data-touch] .slider.is-dragging .slider__thumb { transform: scale(1.2); transition: transform 160ms var(--ease); }
+.sr-ui[data-touch] .slider.is-dragging .slider__fill { transition: none; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .colour > .row--slider { min-height: 46px; padding: 0 0 0 0.7em; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .colour > .row--slider .row__label { font-size: 0.92em; padding-left: 0.6em; }
+
+/* the toggle sits in the control column, its word in the value column */
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .toggle-wrap { display: contents; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row > span:empty:not(.row__reset) { display: none; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .toggle { font-size: 1.2em; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .gpu { grid-column: 2 / 4; }
+
+/* the choice: every option a full target */
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .choice {
+  grid-column: 2 / 4;
+  max-width: 100%;
+  padding: 0;
+  gap: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* It slides sideways if it's too wide, and a swipe up or down that starts on it still scrolls the list. */
+  touch-action: pan-x pan-y;
+  overscroll-behavior-x: contain;
+}
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .choice::-webkit-scrollbar { display: none; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .choice__opt {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 0 0.85em;
+  white-space: nowrap;
+}
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .choice__opt.is-on::after { bottom: 0.35em; }
+
+/* swatches: a 44 px cell round each dot; the hex number helps nobody on a phone */
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--swatches .row__value--mono { display: none; }
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--swatches .swatches {
+  grid-column: 2 / 4;
+  display: grid;
+  grid-template-columns: repeat(11, minmax(0, 44px));
+  gap: 0;
+}
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .swatch,
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .swatch.is-on {
+  position: relative;
+  width: 100%;
+  height: 46px;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  transform: none;
+}
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .swatch::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  background: var(--sw);
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+  transition: box-shadow 160ms ease-out;
+}
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .swatch.is-on::before {
+  box-shadow: 0 0 0 2px var(--panel-solid), 0 0 0 3.5px var(--text), 0 0 0.9em color-mix(in srgb, var(--sw) 70%, transparent);
+}
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .swatch--custom::before {
+  border: 2px solid transparent;
+  background:
+    linear-gradient(var(--sw), var(--sw)) padding-box,
+    conic-gradient(hsl(0 92% 60%), hsl(90 92% 60%), hsl(180 92% 60%), hsl(270 92% 60%), hsl(360 92% 60%)) border-box;
+}
+
+/* The Car tab's eleven 44 px swatches need the room, so its labels take a narrower column. */
+.sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .settings-rows:has(.row--swatches) .row { grid-template-columns: 80px minmax(0, 1fr) 4.6em 44px; gap: 0 6px; }
+/* A narrow phone: a tighter label column, and the swatches go on their own line under their label. */
+@media (max-width: 760px) and (orientation: landscape) {
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row { grid-template-columns: minmax(0, 7.4em) minmax(0, 1fr) 4.6em 44px; gap: 0 0.4em; }
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .settings-rows:has(.row--swatches) .row--swatches { grid-template-columns: minmax(0, 1fr) 44px; }
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--swatches .swatches { grid-column: 1 / -1; grid-row: 2; }
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--swatches .row__reset { grid-column: 2; grid-row: 1; }
+}
+
+/* ---------------------------------------------------------------- settings */
+
+/* The glass is dense on these screens; the left-hand fade behind it would only darken the world beside it. */
+.sr-ui[data-touch] .screen--settings .scrim--left,
+.sr-ui[data-touch] .screen--pause .scrim--left,
+.sr-ui[data-touch] .screen--results .scrim--left,
+.sr-ui[data-touch] .screen--report .scrim--left { display: none; }
+.sr-ui[data-touch] .settings-panel {
+  width: 100%;
+  padding: 3px 3px 0;
+  gap: 0;
+}
+.sr-ui[data-touch] .settings-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0 0 0 0.7em;
+  order: 0;
+}
+.sr-ui[data-touch] .settings-head .screen-title { font-size: 1.35em; }
+.sr-ui[data-touch] .settings-head .eyebrow { display: none; }
+.sr-ui[data-touch] .tabs {
+  flex: 1;
+  min-width: 0;
+  gap: 0;
+  padding: 0 1.8em 0 0.8em;
+  border-bottom: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+  /* the tab at the edge dissolves: there's more this way */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 0.8em, #000 calc(100% - 1.8em), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 0.8em, #000 calc(100% - 1.8em), transparent);
+}
+.sr-ui[data-touch] .tabs .tab { flex: none; min-height: 44px; padding: 0 0.75em; font-size: 0.95em; }
 .sr-ui[data-touch] .tabs__glyph { display: none; }
 
+/* The help line sits above the rows, where no thumb covers it. */
+.sr-ui[data-touch] .settings-foot {
+  order: 1;
+  gap: 0;
+  padding: 0.15em 0.7em;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.sr-ui[data-touch] .settings-foot .helpline { min-height: 2.4em; font-size: 0.88em; line-height: 1.2; }
+.sr-ui[data-touch] .settings-rows { order: 2; gap: 0; padding-left: 0; padding-right: 0; padding-top: 0.15em; }
+.sr-ui[data-touch] .settings-rows > * { flex: none; }
+.sr-ui[data-touch] .param-group__head { padding: 0.4em 0.7em 0; }
+
+/* Reset all: the end of the list, away from every thumb, and it asks in words. */
+.reset-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7em;
+  min-height: 52px;
+  margin-top: 0.35em;
+  padding: 0.1em 0.2em 0.1em 0.7em;
+  border-top: 1px solid var(--line);
+}
+.reset-row__words { flex: 1; min-width: 0; font-size: 0.92em; line-height: 1.25; color: var(--dim); }
+.reset-row .menu-btn { padding: 0 0.9em; }
+.reset-row.is-asking .reset-row__words { color: var(--warn); }
+.reset-row .reset-row__yes {
+  margin-right: 1.4em;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 60%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+
+/* ---------------------------------------------------------------- pause */
+
+/* Multiplayer keeps the HUD going behind the menu; on a phone's width it would show through the panel and sit under Back. */
+.sr-ui[data-touch] .hud.is-behind-menu { visibility: hidden; }
+
+.sr-ui[data-touch] .pause-panel {
+  width: min(33em, 100%);
+  align-self: stretch;
+  overflow: hidden;
+  gap: 0.3em;
+  padding: 0.5em 0.45em 0;
+}
+.sr-ui[data-touch] .pause-panel:not(.fav-panel) > .screen-head {
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.8em;
+  padding: 0 0.5em;
+}
+.sr-ui[data-touch] .pause-panel .screen-title { font-size: 1.4em; }
+.sr-ui[data-touch] .pause-panel .eyebrow { font-size: 0.7em; letter-spacing: 0.16em; }
+.sr-ui[data-touch] .pause-note { flex: none; padding: 0 0.6em; font-size: 0.85em; line-height: 1.2; }
+.sr-ui[data-touch] .pause-menu { flex: 1 1 auto; min-height: 0; gap: 0; }
+.sr-ui[data-touch] .pause-menu .menu-btn { font-size: 1.25em; }
+.sr-ui[data-touch] .pause-menu .menu-btn__sub { font-size: 0.62em; }
+/* Resume: the one thing that stands out, and it never scrolls away. */
+.sr-ui[data-touch] .pause-menu .pause-resume {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  width: 100%;
+  min-height: 50px;
+  margin-bottom: 0.2em;
+  font-size: 1.5em;
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-solid));
+}
+.sr-ui[data-touch] .pause-params { flex: none; margin: 0.1em 0; padding: 0; }
+.sr-ui[data-touch] .pause-params .row { grid-template-columns: minmax(0, 6.5em) minmax(0, 1fr) 5.2em 44px; padding-left: 0.85em; }
+.sr-ui[data-touch] .pause-params .choice { grid-column: 2 / -1; }
+.sr-ui[data-touch] .pause-panel .helpline { display: none; }
+/* Any tap starts the sound; the hint goes where nothing else is, under Back. */
+.sr-ui[data-touch] .screen--pause .sound-hint--menu {
+  left: auto;
+  bottom: auto;
+  right: calc(var(--safe-r) + 8px);
+  top: calc(var(--safe-t) + 58px);
+  min-height: 44px;
+  font-size: 0.85em;
+}
+.sr-ui[data-touch] .sound-hint:hover { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+
+/* ---------------------------------------------------------------- favourite songs */
+
+.sr-ui[data-touch] .fav-panel { width: 100%; }
+.sr-ui[data-touch] .fav-panel > .screen-head {
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.8em;
+  padding: 0.2em 0.5em 0;
+}
+.sr-ui[data-touch] .fav-note { padding: 0 0.5em; font-size: 0.85em; line-height: 1.2; }
+.sr-ui[data-touch] .fav-list { flex: 1 1 auto; gap: 0; padding-top: 0; padding-left: 0; padding-right: 0; border: 0; }
+.sr-ui[data-touch] .fav-row { gap: 0 0.5em; padding: 0.05em 0.1em 0.05em 0.3em; }
+.sr-ui[data-touch] .fav-row .fav-btn { min-width: 4.8em; padding: 0 0.7em; justify-content: center; font-size: 0.95em; }
+/* a gap between them: Remove is never a slip off Play */
+.sr-ui[data-touch] .fav-row .fav-btn--remove { margin-left: 0.9em; color: var(--dim); }
+.sr-ui[data-touch] .fav-row__name { font-size: 1.02em; }
+.sr-ui[data-touch] .fav-row__meta { font-size: 0.8em; }
+.sr-ui[data-touch] .fav-row--gone .fav-btn--undo { border: 1px solid color-mix(in srgb, var(--warn) 60%, transparent); }
+.sr-ui[data-touch] .fav-foot { display: none; }
+
+/* ---------------------------------------------------------------- results */
+
+.sr-ui[data-touch] .results-panel {
+  width: min(44em, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  gap: 0.4em;
+  padding: 0.5em 0.6em 0.5em;
+}
+.sr-ui[data-touch] .results-panel > .screen-head {
+  flex: none;
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.8em;
+  padding: 0 0.35em;
+}
+.sr-ui[data-touch] .results-panel .screen-title { font-size: 1.1em; letter-spacing: 0.1em; }
+.sr-ui[data-touch] .results-body {
+  display: grid;
+  grid-template-columns: fit-content(46%) minmax(0, 1fr);
+  align-items: start;
+  gap: 0.6em 1.2em;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* the hero's tall letters need a little room inside the scroll box, or it trims them */
+  padding: 8px 0.35em 6px;
+}
+.sr-ui[data-touch] .results-body > * { min-width: 0; }
+.sr-ui[data-touch] .result-hero { grid-column: 1; grid-row: 1 / span 2; }
+.sr-ui[data-touch] .result-hero__big { font-size: 3em; line-height: 1.05; overflow-wrap: anywhere; }
+.sr-ui[data-touch] .result-hero__sub { font-size: 1em; }
+.sr-ui[data-touch] .results-body .stats,
+.sr-ui[data-touch] .results-body .standings { grid-column: 2; }
+.sr-ui[data-touch] .results-body .stats--wide { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45em 1em; }
+.sr-ui[data-touch] .results-body .stats dd { font-size: 1.25em; }
+/* A race's one extra number stays with the place you came, and the table gets its column to itself. */
+.sr-ui[data-touch] .results-body .stats:has(+ .standings) { grid-column: 1; grid-row: 3; grid-template-columns: 1fr; }
+.sr-ui[data-touch] .standings th { padding: 0.2em 0.45em; font-size: 0.72em; letter-spacing: 0.1em; }
+.sr-ui[data-touch] .standings td { padding: 0.32em 0.45em; }
+.sr-ui[data-touch] .results-actions { flex: none; gap: 0.5em; }
+.sr-ui[data-touch] .results-actions .menu-btn {
+  flex: 1 1 0;
+  width: auto;
+  min-height: 50px;
+  justify-content: center;
+  font-size: 1.2em;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--line);
+  transition: color 200ms ease-out, background-color 200ms ease-out, border-color 200ms ease-out;
+}
+.sr-ui[data-touch] .results-actions .menu-btn--go {
+  flex-grow: 1.5;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.sr-ui[data-touch] .results-actions .menu-btn.is-disabled { color: color-mix(in srgb, var(--text) 45%, transparent); }
+
+/* ---------------------------------------------------------------- report a problem */
+
+.sr-ui[data-touch] .screen--report { gap: 6px; align-items: stretch; }
+.sr-ui[data-touch] .report-panel {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  max-height: none;
+  gap: 0.4em;
+  padding: 0.5em 0.5em 0;
+}
+.sr-ui[data-touch] .report-panel .screen-head {
+  flex: none;
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.8em;
+  padding: 0 0.4em;
+}
+.sr-ui[data-touch] .report-panel .screen-title { font-size: 1.3em; }
+.sr-ui[data-touch] .report-panel .eyebrow { display: none; }
+.sr-ui[data-touch] .report-panel--done .eyebrow { display: block; }
+.sr-ui[data-touch] .report-panel { overflow: hidden; }
+.sr-ui[data-touch] .report-form { display: flex; flex-direction: column; gap: 0.4em; flex: 1 1 0; min-height: 0; }
+.sr-ui[data-touch] .report-form > * { flex: none; }
+.sr-ui[data-touch] .report-panel--done { align-self: flex-start; }
+.sr-ui[data-touch] .report-panel--done .screen-head,
+.sr-ui[data-touch] .report-panel--done .report-done { flex: none; }
+.sr-ui[data-touch] .report-panel .helpline { display: none; }
+.sr-ui[data-touch] .report-warn { padding: 0.45em 0.6em; font-size: 0.88em; line-height: 1.25; }
+.sr-ui[data-touch] .report-panel .row--choice { grid-template-columns: 6.5em minmax(0, 1fr); padding-left: 0.4em; }
+.sr-ui[data-touch] .report-panel .row--choice .choice { grid-column: 2; }
+.sr-ui[data-touch] .field { padding: 0.2em 0.4em 0.35em; }
+/* Under 16 px and Safari zooms the whole page the moment a box is tapped. */
+.sr-ui[data-touch] .field__input { min-height: 44px; font-size: 16px; line-height: 1.3; }
+.sr-ui[data-touch] textarea.field__input { min-height: 5.5em; }
+.sr-ui[data-touch] .report-preview-btn { margin-left: 0; }
+.sr-ui[data-touch] .report-status { padding: 0 0.4em; font-size: 0.88em; line-height: 1.25; }
+.sr-ui[data-touch] .report-problem { padding: 0 0.4em; }
+/* Send never scrolls away, and Cancel is the Back button at the top. */
+.sr-ui[data-touch] .report-actions {
+  flex: none;
+  padding: 0.3em 0;
+  border-top: 1px solid var(--line);
+}
+.sr-ui[data-touch] .report-actions [data-nav='cancel'] { display: none; }
+.sr-ui[data-touch] .report-actions .menu-btn--go { flex: 1; justify-content: center; font-size: 1.25em; min-height: 46px; }
+.sr-ui[data-touch] .report-sent { flex: 1 1 0; width: auto; min-width: 0; max-height: none; padding: 0.5em 0.6em; gap: 0.4em; }
+.sr-ui[data-touch] .report-sent > * { flex: none; }
+.sr-ui[data-touch] .report-sent .eyebrow { font-size: 0.7em; }
+.sr-ui[data-touch] .report-sent__title { font-size: 1.15em; }
+.sr-ui[data-touch] .report-done { padding: 0.3em 0.4em; }
+.sr-ui[data-touch] .report-done__big { font-size: 2.6em; }
+.sr-ui[data-touch] .report-done__line { font-size: 1.05em; }
+.sr-ui[data-touch] .report-panel--done .report-actions { border-top: 0; }
+.sr-ui[data-touch] .report-panel--done .report-actions .menu-btn { flex: 1; justify-content: center; font-size: 1.15em; }
+
+/* The keyboard is up on a phone on its side: only the box being typed in fits in what's left. */
+@media (max-height: 500px) {
+  .sr-ui[data-touch] .report-panel.is-typing { padding-top: 0.2em; }
+  .sr-ui[data-touch] .report-panel.is-typing .report-form > :not(.is-editing),
+  .sr-ui[data-touch] .report-panel.is-typing .report-actions { display: none; }
+  .sr-ui[data-touch] .report-panel.is-typing .report-form > .field { flex: 1 1 auto; min-height: 0; }
+  .sr-ui[data-touch] .report-panel.is-typing textarea.field__input { flex: 1 1 auto; min-height: 2.8em; }
+}
+
+/* ---------------------------------------------------------------- notices */
+
+/* Top middle, clear of the notch and of both thumbs, and a long one wraps instead of leaving the screen. */
+.sr-ui[data-touch] .notice {
+  top: calc(var(--safe-t) + 8px);
+  max-width: calc(100vw - var(--safe-l) - var(--safe-r) - 24px);
+  width: max-content;
+  padding: 0.6em 1.2em;
+  border-radius: 1.4em;
+  font-size: max(14px, 1em);
+  line-height: 1.25;
+  text-align: center;
+  background: color-mix(in srgb, var(--panel-solid) 94%, transparent);
+}
+
+/* ---------------------------------------------------------------- the world map (pause > Map) */
+
+/* The map gets the screen. The way back is the first and biggest thing in the side panel, the key scrolls under it. */
+.sre[data-map-touch] {
+  --panel-w: 15.5em;
+  --rail-w: 54px;
+  font-size: max(13px, 1em);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+.sre[data-map-touch] .sre-panel {
+  top: calc(var(--safe-t) + 6px);
+  right: calc(var(--safe-r) + 6px);
+  bottom: calc(var(--safe-b) + 6px);
+  border-radius: 9px;
+  box-shadow: none;
+}
+.sre[data-map-touch] .sre-look-corner {
+  top: calc(var(--safe-t) + 6px);
+  right: calc(var(--panel-w) + var(--safe-r) + 14px);
+}
+.sre[data-map-touch] .sre-actions {
+  order: -1;
+  margin: 0;
+  padding: 6px;
+  grid-template-columns: 1fr;
+  border-top: 0;
+}
+.sre[data-map-touch] .sre-actions .sre-btn { min-height: 48px; }
+.sre[data-map-touch] .sre-head { padding: 0 10px 4px; }
+.sre[data-map-touch] .sre-kicker { display: none; }
+.sre[data-map-touch] .sre-title { font-size: 1.1em; line-height: 1.15; }
+.sre[data-map-touch] .sre-stats { gap: 4px; margin-top: 2px; }
+.sre[data-map-touch] .sre-stat { padding: 0; background: none; }
+.sre[data-map-touch] .sre-stat-value { font-size: 1em; white-space: nowrap; }
+/* A mark can be wider than the column beside its words (RAISED): each mark sits above its words. */
+.sre[data-map-touch] .sre-legend li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.sre[data-map-touch] .sre-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+.sre[data-map-touch] .sre-tools {
+  left: calc(var(--safe-l) + 6px);
+  padding: 4px;
+  gap: 0;
+}
+.sre[data-map-touch] .sre-tool { height: 44px; grid-template-columns: 1fr; justify-items: center; padding: 0; }
+.sre[data-map-touch] .sre-tool svg { width: 22px; height: 22px; }
+.sre[data-map-touch] .sre-tool-name,
+.sre[data-map-touch] .sre-tip { display: none; }
+.sre[data-map-touch] .sre-tool:hover:not(:disabled) { color: var(--dim); background: none; }
+
+/* ---------------------------------------------------------------- stood up: usable, not polished */
+
+@media (orientation: portrait) {
+  /* Stood up, Back has a strip of its own above the panel. */
+  .sr-ui[data-touch] .screen--settings,
+  .sr-ui[data-touch] .screen--pause,
+  .sr-ui[data-touch] .screen--pause:has(.fav-panel),
+  .sr-ui[data-touch] .screen--report {
+    padding-top: calc(var(--safe-t) + var(--gap) + 52px);
+    padding-right: calc(var(--safe-r) + var(--gap));
+  }
+  .sr-ui[data-touch] .settings-panel { width: 100%; margin-top: 0; }
+  .sr-ui[data-touch] .screen--report { flex-direction: column; }
+  .sr-ui[data-touch] .settings-head { flex-wrap: wrap; }
+  .sr-ui[data-touch] .settings-head .tabs { flex-basis: 100%; }
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row { grid-template-columns: minmax(0, 1fr) auto auto 44px; padding-top: 0.15em; padding-bottom: 0.15em; }
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row__reset { grid-column: -2; }
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--slider .slider,
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--choice .choice,
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--swatches .swatches { grid-column: 1 / -1; grid-row: 2; }
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--swatches .swatches { grid-template-columns: repeat(6, 44px); }
+  .sr-ui[data-touch] .pause-params .row { grid-template-columns: minmax(0, 1fr) auto auto 44px; }
+  .sr-ui[data-touch] .pause-params .choice { grid-column: 1 / -1; }
+  .sr-ui[data-touch] .report-panel .row--choice { grid-template-columns: minmax(0, 1fr); }
+  .sr-ui[data-touch] .report-panel .row--choice .choice { grid-column: 1; }
+  .sr-ui[data-touch] .reset-row { flex-wrap: wrap; }
+  .sr-ui[data-touch] .reset-row__words { flex-basis: 100%; }
+  .sr-ui[data-touch] .results-body { grid-template-columns: minmax(0, 1fr); }
+  .sr-ui[data-touch] .result-hero,
+  .sr-ui[data-touch] .results-body .stats,
+  .sr-ui[data-touch] .results-body .standings { grid-column: 1; grid-row: auto; }
+  .sr-ui[data-touch] .results-actions { flex-wrap: wrap; }
+  .sr-ui[data-touch] .fav-row { grid-template-columns: 1.6em minmax(0, 1fr) auto; }
+  .sr-ui[data-touch] .screen--pause .sound-hint--menu { left: calc(var(--safe-l) + var(--gap)); right: auto; top: calc(var(--safe-t) + var(--gap)); }
+  .sr-ui[data-touch] .fav-row__mark { grid-row: 1; }
+  .sr-ui[data-touch] .fav-row .fav-btn { grid-row: 2; }
+  .sr-ui[data-touch] .fav-row .fav-btn:not(.fav-btn--remove) { grid-column: 1 / 3; justify-self: start; }
+  /* Stood up, the map takes the top and the side panel the bottom third. */
+  .sre[data-map-touch] { --panel-w: auto; }
+  .sre[data-map-touch] .sre-look-corner { right: calc(var(--safe-r) + 6px); }
+  .sre[data-map-touch] .sre-panel { top: auto; left: 6px; right: 6px; width: auto; height: 34%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sr-ui[data-touch] .slider.is-dragging .slider__thumb { transition: none; }
+}
