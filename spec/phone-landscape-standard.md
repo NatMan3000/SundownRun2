@@ -15,9 +15,9 @@ Every check runs at all of these, with the notch insets on. The first is the one
 
 | Name | CSS px | Insets (L / R / B) | What it is |
 |---|---|---|---|
-| `pwa` | 844 x 390 | 47 / 47 / 21 | iPhone 14-class added to the Home Screen: the whole screen |
-| `safari` | 844 x 340 | 47 / 47 / 0 | the same phone in Safari, tab bar showing (the tightest common height) |
-| `small` | 667 x 331 | 0 / 0 / 0 | iPhone SE-class in Safari |
+| `pwa` | 874 x 402 | 62 / 62 / 21 | Nathan's iPhone 17 Pro added to the Home Screen: the whole screen. Size [live: the simulator's 1206 x 2622 screenshot at 3x]; insets [doc], until measured |
+| `safari` | 874 x 340 | 62 / 62 / 0 | the same phone in Safari, bars showing (a stand-in for the tightest height, until measured) |
+| `small` | 667 x 331 | 0 / 0 / 0 | a small older iPhone in Safari: must work, need not shine |
 
 Stood up (390 x 844) must stay usable, not polished; a phone with its rotation locked still has to play.
 
@@ -47,3 +47,4 @@ Each screen's shot is read against these before it is called done (`~/.claude/sk
 | P3 | No service worker on the Home Screen copy | A deploy reaches an installed copy on its next open anyway; a cached shell behind Access is how a lapsed login bricks a PWA | Kai, 5 Nov 2026 |
 | P4 | Menus are tapped directly, so the focus ring is hidden on touch | It answers a question a thumb never asks | Kai, 5 Nov 2026 |
 | P5 | The Road Editor works on a phone too: its UI gets reconfigured for thumbs, and it is not hidden. Every editor function stays reachable. The layout is Nathan's pick from comps before the build | "if we can get the road editor to work, that'd be good. I think it needs a lot of effort to reconfigure the UI, but I think we can do it. Why not, lets go!" | Nathan, 5 Nov 2026 |
+| P6 | Target phone is the iPhone 17 Pro. The menus already port well and are usable, so this pass fixes what overlaps and what doesn't fit, not a redesign of what works | "most of it's pretty good, it's ported over well, you can still press the menus and whatnot, so it's very usable, but there's obviously a few bits that are over top of other bits in the UI ... for a iPhone 17 Pro" | Nathan, 5 Nov 2026 |
