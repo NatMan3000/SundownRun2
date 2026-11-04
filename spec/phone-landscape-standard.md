@@ -27,7 +27,7 @@ Stood up (390 x 844) must stay usable, not polished; a phone with its rotation l
 2. **Targets at least 44 px tall** with a usable width, including slider thumbs' hit area, swatches, tabs, chips and arrows (`UX-Fitts`). Small text is fine on a phone; small targets are not.
 3. **Nothing clipped or off screen.** A panel that can't fit scrolls inside itself by a finger swipe, and a swipe that starts on a row scrolls instead of pressing it. Scrolling never moves the page.
 4. **Clear of the notch and the home bar.** Everything interactive stays inside the safe area; only the game's picture runs under them.
-5. **One screen, one job.** On a 340 px tall window the primary action is visible without scrolling, on the first screen of every menu (`UX-Restorff`, `UX-Hick`). The logo and decoration give way before a control does.
+5. **One screen, one job.** On a 292 px tall window (a Safari tab) the primary action is visible without scrolling, on the first screen of every menu (`UX-Restorff`, `UX-Hick`). The logo and decoration give way before a control does.
 6. **A tap answers at once** with a visible change and its sound (`UX-Response`). A tap that opens something opens it; nothing needs a second tap because the first only "focused" it.
 7. **While driving, nothing covers the road ahead or sits under a thumb.** HUD panels never overlap each other or the controls, in any mode, including the transient ones (toasts, countdown, trick pops, song name, sound chip, rewind tag).
 8. **No key names on a phone.** "Press F", "Esc", glyphs for keys or pad buttons never show while touch is the device: they say the button's name, or nothing.
