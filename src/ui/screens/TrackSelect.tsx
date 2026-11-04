@@ -15,9 +15,13 @@
 //
 //  Multiplayer: only the host picks. Everyone else sees the
 //  host's track and a Drive button.
+//
+//  On a phone on its side a card that size would fill the screen,
+//  so a finger gets a short one (TrackRow): the map on the left, then
+//  the name and at most two lines. A list you flick up and down.
 // ============================================================
 
-import { useMemo } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useGame } from '../../core/store'
 import type { GameMode } from '../../core/store'
 import { getRecords } from '../../core/records'
@@ -25,16 +29,19 @@ import { listTracks } from '../../track/registry'
 import type { TrackListing, TrackSource } from '../../track/registry'
 import { getTrack, trackParamsFor } from '../../track/current'
 import { useNet } from '../../net'
-import { NavScreen, useNavItem } from '../nav'
+import { NavScreen, focusItem, useNavItem } from '../nav'
 import { MenuButton } from '../widgets'
 import { HintBar } from '../hints'
-import { closeScreen, useUi } from '../uiStore'
+import { closeScreen, showNotice, useUi } from '../uiStore'
 import { TrackThumb, approxTrackLength } from '../TrackThumb'
 import { beginSession } from '../flow'
 import { formatLap, formatScore, formatTopSpeed, recordAngle } from '../format'
 
 /** The arena Hunt Turns is built for (tracks/thunder-bowl.json). */
 const TURNS_TRACK = 'thunder-bowl'
+
+/** Why a joiner's track card does nothing. */
+const HOST_PICKS = 'Only the host can change the track.'
 
 const SOURCE_LABEL: Record<TrackSource, string> = {
   builtin: 'Built-in',
@@ -79,6 +86,94 @@ function featuresOf(t: TrackListing): string[] {
   ].filter(Boolean) as string[]
 }
 
+function formatLength(metres: number): string {
+  return metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${Math.round(metres)} m`
+}
+
+/**
+ * One line of small facts: as many whole facts as fit, most interesting first. The
+ * rest aren't shown at all, so none is ever cut in half; a turn of the phone re-counts.
+ */
+function FactLine(props: { facts: (string | false | null | undefined)[]; quiet?: boolean }) {
+  const facts = props.facts.filter(Boolean) as string[]
+  const line = useRef<HTMLSpanElement>(null)
+  useLayoutEffect(() => {
+    const el = line.current
+    if (!el) return
+    const fit = () => {
+      const items = [...el.children] as HTMLElement[]
+      for (const i of items) i.hidden = false
+      const wrapped = items.filter((i) => i.offsetTop > items[0].offsetTop)
+      for (const i of wrapped) i.hidden = true
+    }
+    fit()
+    const watch = new ResizeObserver(fit)
+    watch.observe(el.parentElement ?? el)
+    return () => watch.disconnect()
+  }, [facts.join()])
+  if (facts.length === 0) return null
+  return (
+    <span ref={line} className={`track-row__line${props.quiet ? ' track-row__line--quiet' : ''}`}>
+      {facts.map((f) => (
+        <span key={f}>{f}</span>
+      ))}
+    </span>
+  )
+}
+
+/**
+ * One track on a phone: map on the left; the name and its badge; the length and
+ * what's on the road; then who drew it and your records, when there are any.
+ * The tap starts it, so no description. A joiner's tap says why nothing happens.
+ */
+function TrackRow(props: { t: TrackListing; current: boolean; disabled: boolean; onGo: () => void }) {
+  const { t } = props
+  const nav = useNavItem<HTMLButtonElement>(`track:${t.id}`, {
+    onAccept: props.onGo,
+    acceptSound: null,
+    disabled: props.disabled,
+  })
+  const live = getTrack()
+  const rec = props.current && live?.id === t.id ? getRecords(live.key) : null
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      ref={nav.ref}
+      {...nav.props}
+      onClick={props.disabled ? () => showNotice(HOST_PICKS) : nav.props.onClick}
+      aria-disabled={props.disabled || undefined}
+      className={`track-card track-row${nav.focused ? ' is-focused' : ''}${props.disabled ? ' is-disabled' : ''}`}
+    >
+      <TrackThumb file={t.file} width={120} height={80} className="track-card__thumb" />
+      <span className="track-row__body">
+        <span className="track-card__head">
+          <span className="track-card__name">{t.name}</span>
+          <span className={`badge badge--${t.source}`}>{SOURCE_LABEL[t.source]}</span>
+        </span>
+        <FactLine
+          facts={[
+            formatLength(approxTrackLength(t.file)),
+            t.file.laps ? `${t.file.laps} ${t.file.laps === 1 ? 'lap' : 'laps'}` : null,
+            ...featuresOf(t).map((f) => f.replace('adjustable ', '')),
+          ]}
+        />
+        <FactLine
+          quiet
+          facts={[
+            t.source !== 'builtin' && t.author && `by ${t.author}`,
+            props.current && 'Last driven',
+            rec?.bestLapMs !== undefined && `Best lap ${formatLap(rec.bestLapMs)}`,
+            rec?.stuntBest !== undefined && `Stunt best ${formatScore(rec.stuntBest)}`,
+            rec?.huntBestMs !== undefined && `Core hunt ${formatLap(rec.huntBestMs)}`,
+            rec?.trapBestKmh !== undefined && `Top speed ${formatTopSpeed(rec.trapBestKmh, recordAngle(live))}`,
+          ]}
+        />
+      </span>
+    </button>
+  )
+}
+
 /**
  * One track: the map is the hero, then the name, where it came from, its
  * description, length and laps, your records (for the track you last drove)
@@ -118,7 +213,7 @@ function TrackCard(props: { t: TrackListing; current: boolean; disabled: boolean
       <dl className="stats track-card__stats">
         <div>
           <dt>Length</dt>
-          <dd>{len >= 1000 ? `${(len / 1000).toFixed(1)} km` : `${Math.round(len)} m`}</dd>
+          <dd>{formatLength(len)}</dd>
         </div>
         {t.file.laps ? (
           <div>
@@ -168,6 +263,7 @@ export function TrackSelectScreen() {
   const mode = useUi((s) => s.pendingMode)
   const mp = useGame((s) => s.multiplayer)
   const trackId = useGame((s) => s.trackId)
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   const isHost = useNet((s) => s.isHost)
   const hostTrack = useNet((s) => s.hostTrack)
   const online = useNet((s) => s.status) === 'online'
@@ -179,6 +275,13 @@ export function TrackSelectScreen() {
   const joinName = hostTrack?.name ?? tracks.find((t) => t.id === joinId)?.name ?? joinId
   // Hunt Turns is made for the Thunder Bowl: line it up (any track still works).
   const lineUp = mode === 'turns' && tracks.some((t) => t.id === TURNS_TRACK) ? TURNS_TRACK : trackId
+  // A finger has no focus to follow, so bring the lined-up track into the list's view as it opens.
+  useEffect(() => {
+    if (touch && !joiner) focusItem('track', `track:${lineUp}`)
+    // Only as the screen opens: after that the list is the finger's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const Card = touch ? TrackRow : TrackCard
 
   return (
     <NavScreen id="track" onBack={closeScreen} initial={joiner ? 'go' : `track:${tracks.some((t) => t.id === lineUp) ? lineUp : tracks[0]?.id}`}>
@@ -193,7 +296,8 @@ export function TrackSelectScreen() {
             <div className="host-banner">
               <span className="host-banner__label">Track from the host</span>
               <span className="host-banner__name">{joinName}</span>
-              <MenuButton id="go" label="Drive" help="Only the host can change the track." className="menu-btn--go" acceptSound={null} onAccept={() => beginSession(mode, joinId)} />
+              {touch && <span className="host-banner__why">{HOST_PICKS}</span>}
+              <MenuButton id="go" label="Drive" help={HOST_PICKS} className="menu-btn--go" acceptSound={null} onAccept={() => beginSession(mode, joinId)} />
             </div>
           )}
           {tracks.length === 0 ? (
@@ -201,7 +305,7 @@ export function TrackSelectScreen() {
           ) : (
             <div className={`track-grid nav-scroll${joiner ? ' is-locked' : ''}`}>
               {tracks.map((t) => (
-                <TrackCard key={`${t.source}:${t.id}`} t={t} current={t.id === trackId} disabled={joiner} onGo={() => beginSession(mode, t.id)} />
+                <Card key={`${t.source}:${t.id}`} t={t} current={t.id === trackId} disabled={joiner} onGo={() => beginSession(mode, t.id)} />
               ))}
             </div>
           )}

@@ -24,6 +24,8 @@ interface ModeInfo {
   mode: GameMode
   label: string
   help: string
+  /** The help line on a phone, where the help above names keys that aren't there. */
+  touchHelp?: string
 }
 
 const SOLO_MODES: ModeInfo[] = [
@@ -37,11 +39,12 @@ const MP_MODES: ModeInfo[] = [
   { mode: 'race', label: 'Race', help: 'Race everyone here from a synced start grid.' },
   { mode: 'free', label: 'Free Roam', help: 'Drive together, pull tricks and shove each other around.' },
   { mode: 'tag', label: 'Tag', help: 'One player is "it" and glows. Bump someone to pass it on. Least time as "it" wins.' },
-  { mode: 'turns', label: 'Hunt Turns', help: 'Take turns hunting. Get close, bump them or fire your tag pulse (F / right stick) to catch them. Runners score tricks, rings and drifts (not smashed props), hunters score catches, and a catch wipes the last few seconds of the runner points. Most points wins. Play it in the Thunder Bowl.' },
+  { mode: 'turns', label: 'Hunt Turns', help: 'Take turns hunting. Get close, bump them or fire your tag pulse (F / right stick) to catch them. Runners score tricks, rings and drifts (not smashed props), hunters score catches, and a catch wipes the last few seconds of the runner points. Most points wins. Play it in the Thunder Bowl.', touchHelp: 'Take turns hunting. Get close, bump them or press Pulse to catch them. Most points wins. Play it in the Thunder Bowl.' },
 ]
 
 export function ModeSelectScreen() {
   const mp = useGame((s) => s.multiplayer)
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   const pending = useUi((s) => s.pendingMode)
   const aiRacers = useSettings((s) => s.aiRacers)
   const aiDifficulty = useSettings((s) => s.aiDifficulty)
@@ -64,7 +67,7 @@ export function ModeSelectScreen() {
           <nav className="mode-list" aria-label="Game modes">
             {modes.map((m) => (
               <div className="mode-item" key={m.mode}>
-                <MenuButton id={`mode:${m.mode}`} label={m.label} help={m.help} onAccept={() => pick(m.mode)} />
+                <MenuButton id={`mode:${m.mode}`} label={m.label} help={touch && m.touchHelp ? m.touchHelp : m.help} onAccept={() => pick(m.mode)} />
                 {m.mode === 'race' && !mp && (
                   <div className="mode-options">
                     <SliderRow
