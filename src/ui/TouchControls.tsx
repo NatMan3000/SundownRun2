@@ -14,20 +14,28 @@
 //                  one to the next. Sliding from Gas (or Brake)
 //                  onto Drift keeps that pedal on: one thumb can
 //                  power through a drift.
-//    Top row       Menu, Reset, Camera, Rewind (held), Next song,
-//                  Race (multiplayer). Hunt Turns adds Pulse.
+//    Left edge     Menu and Reset, up high where a thumb on the stick
+//                  can't land on them by accident.
+//    By the map    Camera, and Race in multiplayer.
+//    Above Gas     Rewind (held; it shows how much is stored), or in
+//                  Hunt Turns while you hunt, Pulse (it shows when it's
+//                  ready). Lifting off Gas to press either is what you
+//                  want anyway. Next song is in the pause menu: nobody
+//                  should reach across the road for it at 200 km/h.
 //
 //  Fingers only write the touchInput singleton and the edge-trigger
 //  nonces in controlSignals; input.ts smooths them like any device.
 //  Moves write straight to the DOM (no React state), and nothing
-//  here runs per frame.
+//  here runs per frame: Rewind's meter and Pulse's countdown tick a
+//  few times a second on a timer, and only touch the DOM on a change.
 // ============================================================
 
 import { useEffect, useRef } from 'react'
-import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import type { PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react'
 import { CONFIG } from '../core/config'
 import { controlSignals, touchInput } from '../core/controls'
-import { useGame } from '../core/store'
+import { getGame, useGame } from '../core/store'
+import { rewind } from '../core/telemetry'
 import { audio } from '../core/api'
 
 type Pedal = 'gas' | 'brake' | 'drift'
@@ -51,9 +59,12 @@ function releaseTouchInput(): void {
   touchInput.rewind = false
 }
 
-/** One small button on the top row. Fires on the finger going down: a game can't wait for the lift. */
-function TopButton(props: { label: string; onPress: () => void; onRelease?: () => void; children: ReactNode; hot?: boolean }) {
-  const { label, onPress, onRelease, children, hot } = props
+/** How often Rewind's meter and Pulse's countdown look at their numbers. */
+const SLOW_TICK_MS = 150
+
+/** One small button. Fires on the finger going down: a game can't wait for the lift. */
+function TopButton(props: { label: string; onPress: () => void; onRelease?: () => void; children: ReactNode; extra?: string; root?: RefObject<HTMLButtonElement | null>; meter?: boolean }) {
+  const { label, onPress, onRelease, children, extra, root, meter } = props
   const down = (e: ReactPointerEvent<HTMLButtonElement>) => {
     e.currentTarget.classList.add('is-down')
     e.currentTarget.setPointerCapture?.(e.pointerId)
@@ -64,18 +75,75 @@ function TopButton(props: { label: string; onPress: () => void; onRelease?: () =
     onRelease?.()
   }
   return (
-    <button type="button" tabIndex={-1} data-touch-button="" className={`touch-top${hot ? ' touch-top--hot' : ''}`} aria-label={label} onPointerDown={down} onPointerUp={up} onPointerCancel={up}>
+    <button ref={root} type="button" tabIndex={-1} data-touch-button="" className={`touch-top${extra ? ` ${extra}` : ''}`} aria-label={label} onPointerDown={down} onPointerUp={up} onPointerCancel={up}>
       <svg viewBox="0 0 24 24" aria-hidden="true">
         {children}
       </svg>
       <span>{label}</span>
+      {meter && <i className="touch-top__meter" aria-hidden="true" />}
+    </button>
+  )
+}
+
+/** Rewind, with how much is stored as a bar along its foot. Goes dim when there's nothing to go back to. */
+function RewindButton() {
+  const root = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    let shown = -1
+    const write = () => {
+      const f = rewind.capacity > 0 ? Math.round(Math.min(1, Math.max(0, rewind.stored / rewind.capacity)) * 100) : 0
+      if (f === shown || !root.current) return
+      shown = f
+      root.current.style.setProperty('--fill', (f / 100).toFixed(2))
+      root.current.classList.toggle('is-empty', f === 0)
+    }
+    write()
+    const t = setInterval(write, SLOW_TICK_MS)
+    return () => clearInterval(t)
+  }, [])
+  return (
+    <TopButton label="Rewind" extra="touch-rewind is-empty" root={root} meter onPress={() => (touchInput.rewind = true)} onRelease={() => (touchInput.rewind = false)}>
+      <path d="M11.5 6l-8 6 8 6zM20.5 6l-8 6 8 6z" />
+    </TopButton>
+  )
+}
+
+/** The hunter's tag pulse: lit when it can fire, the seconds until it can when it can't. */
+function PulseButton() {
+  const root = useRef<HTMLButtonElement | null>(null)
+  const word = useRef<HTMLSpanElement | null>(null)
+  useEffect(() => {
+    let shown = ''
+    const write = () => {
+      const t = getGame().turns
+      if (!t || !root.current || !word.current) return
+      const wait = Math.max(t.pulseReadyAt, t.noCatchUntil, t.goAt) - performance.now()
+      const txt = wait <= 0 ? 'Pulse' : `${(wait / 1000).toFixed(1)} s`
+      if (txt === shown) return
+      shown = txt
+      word.current.textContent = txt
+      root.current.classList.toggle('is-ready', wait <= 0)
+    }
+    write()
+    const t = setInterval(write, SLOW_TICK_MS)
+    return () => clearInterval(t)
+  }, [])
+  const press = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    e.currentTarget.classList.add('is-down')
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    controlSignals.pulse++
+  }
+  const lift = (e: ReactPointerEvent<HTMLButtonElement>) => e.currentTarget.classList.remove('is-down')
+  return (
+    <button ref={root} type="button" tabIndex={-1} data-touch-button="" className="touch-pulse" aria-label="Pulse" onPointerDown={press} onPointerUp={lift} onPointerCancel={lift}>
+      <span ref={word}>Pulse</span>
     </button>
   )
 }
 
 function TouchLayer() {
   const mp = useGame((s) => s.multiplayer)
-  const mode = useGame((s) => s.mode)
+  const hunting = useGame((s) => s.mode === 'turns' && s.turns?.hunterId === 'player' && !s.turns.done)
   const layer = useRef<HTMLDivElement | null>(null)
   const base = useRef<HTMLDivElement | null>(null)
   const knob = useRef<HTMLDivElement | null>(null)
@@ -258,23 +326,19 @@ function TouchLayer() {
         <TopButton label="Reset" onPress={() => controlSignals.reset++}>
           <path d="M5 12a7 7 0 1 0 2.2-5.1M5 5v4.5h4.5" />
         </TopButton>
-        <TopButton label="Camera" onPress={() => controlSignals.cameraCycle++}>
-          <path d="M3.5 8.5h4l1.5-2.5h6l1.5 2.5h4v10h-17zM12 11a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2z" />
-        </TopButton>
-        {!mp && (
-          <TopButton label="Rewind" onPress={() => (touchInput.rewind = true)} onRelease={() => (touchInput.rewind = false)}>
-            <path d="M11.5 6l-8 6 8 6zM20.5 6l-8 6 8 6z" />
-          </TopButton>
-        )}
-        <TopButton label="Song" onPress={() => controlSignals.nextSong++}>
-          <path d="M9 17.5V5.5l10-2v12M9 17.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0zM19 15.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z" />
-        </TopButton>
+      </div>
+      <div className="touch-row touch-row--view">
         {mp && (
-          <TopButton label="Race" hot onPress={() => controlSignals.race++}>
+          <TopButton label="Race" extra="touch-top--hot" onPress={() => controlSignals.race++}>
             <path d="M6 21V4M6 4.5c4-2 7 2 12 0v9c-5 2-8-2-12 0" />
           </TopButton>
         )}
+        <TopButton label="Camera" onPress={() => controlSignals.cameraCycle++}>
+          <path d="M3.5 8.5h4l1.5-2.5h6l1.5 2.5h4v10h-17zM12 11a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2z" />
+        </TopButton>
       </div>
+      {!mp && <RewindButton />}
+      {mp && hunting && <PulseButton />}
 
       <div ref={base} className="touch-stick" aria-hidden="true">
         <i className="touch-stick__arrow touch-stick__arrow--l" />
@@ -291,11 +355,6 @@ function TouchLayer() {
       <div ref={gas} className="touch-pedal touch-pedal--gas">
         Gas
       </div>
-      {mp && mode === 'turns' && (
-        <button type="button" tabIndex={-1} data-touch-button="" className="touch-pulse" onPointerDown={() => controlSignals.pulse++}>
-          Pulse
-        </button>
-      )}
     </div>
   )
 }

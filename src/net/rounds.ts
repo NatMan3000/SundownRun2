@@ -71,6 +71,7 @@ import { onMessage, previousId, send, statsExtra, weAreDriving } from './client'
 import { carIdFor, getNet, multiplayerLaps, onOurTrack, peerLive, relayIdOf, useNet } from './netStore'
 import type { FinishMsg, PlacesMsg, QuitMsg, RejoinMsg, StartMsg, TagMsg, TagTimeMsg, TagTouchMsg } from './protocol'
 import type { GameMode } from '../core/store'
+import type { StartRefusal } from '../core/events'
 import {
   announceCatch,
   announceTurn,
@@ -206,23 +207,30 @@ function driversNow(): number[] {
 
 // ---------------------------------------------------------------- starting
 
+/** Why a round can't start right now, or null if it can. */
+export function startRefusal(): StartRefusal | 'other' | null {
+  const net = getNet()
+  if (net.status !== 'online' || !net.myId) return 'offline'
+  if (round && !round.ended && !wrappingUp(round)) return 'round'
+  // Finished but others are still racing: their screens would ignore a new start.
+  if (waitingForRacers()) return 'waiting'
+  if (getGame().phase === 'editor' || getGame().phase === 'title' || getGame().phase === 'loading') return 'other'
+  if (!getTrack()) return 'other'
+  const mode = getGame().mode
+  if ((mode === 'tag' || mode === 'turns') && driversNow().length < 2) return 'alone'
+  return null
+}
+
 /** G / X pressed here: propose a race or tag round to everyone. */
 export function requestStart(): boolean {
-  const net = getNet()
-  if (net.status !== 'online' || !net.myId) return false
-  if (round && !round.ended && !wrappingUp(round)) return false
-  // Finished but others are still racing: their screens would ignore a new start.
-  if (waitingForRacers()) return false
-  if (getGame().phase === 'editor' || getGame().phase === 'title' || getGame().phase === 'loading') return false
+  const refusal = startRefusal()
+  if (refusal === 'alone') console.info(`[net] ${getGame().mode === 'tag' ? 'tag' : 'Hunt Turns'} needs at least two players on the same track`)
+  if (refusal) return false
   const track = getTrack()
   if (!track) return false
   const mode = getGame().mode
   const kind: Round['kind'] = mode === 'tag' ? 'tag' : mode === 'turns' ? 'turns' : 'race'
   const grid = driversNow()
-  if (kind !== 'race' && grid.length < 2) {
-    console.info(`[net] ${kind === 'tag' ? 'tag' : 'Hunt Turns'} needs at least two players on the same track`)
-    return false
-  }
   const raceId = 1 + Math.floor(Math.random() * 0x7ffffffe)
   const msg: StartMsg = {
     t: 'start',
@@ -710,6 +718,21 @@ function endOffline(r: Round): void {
 
 let lastRaceNonce = -1
 let lastPulseNonce = -1
+let lastNoStart: StartRefusal | null = null
+let lastNoStartAt = -Infinity
+/** Mashing the button repeats nothing: the toast already on screen is the answer. */
+const NO_START_REPEAT_MS = 2500
+
+/** Race, G or X was pressed and no round started: tell the player why. */
+function sayWhyNoStart(): void {
+  const why = startRefusal()
+  if (!why || why === 'other') return
+  const now = performance.now()
+  if (why === lastNoStart && now - lastNoStartAt < NO_START_REPEAT_MS) return
+  lastNoStart = why
+  lastNoStartAt = now
+  emit('mp.noStart', { reason: why })
+}
 
 /** Called every render frame by NetLayer. Cheap; no allocation on the hot path. */
 export function roundsTick(dt: number): void {
@@ -717,7 +740,7 @@ export function roundsTick(dt: number): void {
   if (lastRaceNonce < 0) lastRaceNonce = controlSignals.race
   if (controlSignals.race !== lastRaceNonce) {
     lastRaceNonce = controlSignals.race
-    if (weAreDriving()) requestStart()
+    if (weAreDriving() && !requestStart()) sayWhyNoStart()
   }
   // F / right stick click: the Hunt Turns tag pulse (nothing happens unless we're hunting).
   if (lastPulseNonce < 0) lastPulseNonce = controlSignals.pulse

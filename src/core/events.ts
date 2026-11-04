@@ -23,6 +23,9 @@
 
 export type TrickName = 'air' | 'bigAir' | 'hugeAir' | 'spin' | 'flip' | 'roll' | 'drift' | 'wallRide' | 'loop' | 'nearMiss' | 'ring' | 'gap' | 'target'
 
+/** Why a multiplayer round didn't start: not connected, one is on, others still finishing, nobody to play with. */
+export type StartRefusal = 'offline' | 'round' | 'waiting' | 'alone'
+
 export interface GameEventMap {
   /** A driving session began (after the countdown in race modes). */
   'session.start': { trackId: string; trackName: string; mode: string; multiplayer: boolean }
@@ -105,6 +108,8 @@ export interface GameEventMap {
   'mp.join': { name: string; id: string }
   'mp.leave': { name: string; id: string }
   'mp.track': { trackId: string; trackName: string; fromHost: boolean }
+  /** Race, G or X was pressed and no round started. */
+  'mp.noStart': { reason: StartRefusal }
   /** Tag: someone became "it". */
   'tag.it': { id: string; name: string; byId: string | null }
   'tag.end': { results: { name: string; itSeconds: number }[] }

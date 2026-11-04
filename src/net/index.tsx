@@ -52,7 +52,7 @@ export { useNet } from './netStore'
  * Returns false if it couldn't start (offline, a round is on, not driving,
  * or tag with fewer than two players).
  */
-export { requestStart as startMultiplayerRound } from './rounds'
+export { requestStart as startMultiplayerRound, startRefusal as multiplayerStartRefusal } from './rounds'
 /**
  * For ui: the race order every screen agrees on, as car ids, 1st first
  * ('player' = you, 'net-<id>' = the others). Empty when no multiplayer race is

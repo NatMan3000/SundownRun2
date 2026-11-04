@@ -22,7 +22,7 @@ import { audio } from '../../core/api'
 import { quitToTitle, restartSession } from '../flow'
 import { formatLap, formatScore, formatTopSpeed, recordAngle } from '../format'
 import { getTrack } from '../../track/current'
-import { startMultiplayerRound, waitingForRacers } from '../../net'
+import { multiplayerStartRefusal, startMultiplayerRound, waitingForRacers } from '../../net'
 
 function ordinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd']
@@ -247,7 +247,7 @@ function againMultiplayer(): void {
   }
   if (!startMultiplayerRound()) {
     audio.ui('error')
-    showNotice("Can't start a round right now: not connected to the host, or a round is still running.", 'error')
+    showNotice(multiplayerStartRefusal() === 'alone' ? 'Needs another player on the same track.' : "Can't start a round right now: not connected to the host, or a round is still running.", 'error')
   }
 }
 

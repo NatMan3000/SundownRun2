@@ -36,7 +36,7 @@
 import { controlSignals, driveInput, inputState, menuBus, touchInput } from './controls'
 import type { InputContext, InputDevice, MenuAction } from './controls'
 import { audio } from './api'
-import { useGame } from './store'
+import { touchFirst, useGame } from './store'
 import { getSettings } from './settings'
 import { telemetry } from './telemetry'
 
@@ -381,13 +381,6 @@ function onBlur(): void {
 /** A finger on the glass makes touch the device, the same "last touched wins" as a key or a pad. */
 function onPointerDown(e: PointerEvent): void {
   if (e.pointerType === 'touch') setDevice('touch')
-}
-
-/** True on a phone or tablet: the main pointer is a finger and nothing fine is attached. `?touch=1` forces it. */
-function touchFirst(): boolean {
-  if (new URLSearchParams(window.location.search).get('touch') === '1') return true
-  if (typeof window.matchMedia !== 'function') return false
-  return window.matchMedia('(pointer: coarse)').matches && !window.matchMedia('(any-pointer: fine)').matches
 }
 
 let mounted = 0
