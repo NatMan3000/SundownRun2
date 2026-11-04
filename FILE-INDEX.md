@@ -19,6 +19,8 @@
 | `spec/phone-landscape-standard.md` | `reference` | Landscape iPhone standard and decisions ledger (P1-P6) |
 | `scripts/make-icons.ts` | `permanent` | Home Screen icon generator |
 | `scripts/phone-gate.ts` | `permanent` | Phone gate behind bun run phone:check |
+| `scripts/chrome.ts` | `permanent` | Finds which Chrome the dev tools drive: explicit path, $CHROME_PATH, puppeteer's cache, then an installed one |
+| `scripts/touch-check.ts` | `permanent` | Touch check behind bun run touch:check: drives the phone controls with real CDP touch events |
 | `public/manifest.webmanifest` | `permanent` | Home Screen app manifest |
 
 ## `scripts/` (Warden 2026-10-15)
