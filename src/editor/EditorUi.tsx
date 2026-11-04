@@ -46,6 +46,7 @@ import { Overlay, cancelPointerGesture, fitToDraft, pencilHint } from './Overlay
 import { Panel } from './Panel'
 import { Library } from './Library'
 import { closeWorldMap } from './worldMap'
+import { useGame } from '../core/store'
 import { PLACE_TOOLS, type PlaceKind } from './pieces'
 import { setView, view, zoomAt } from './view'
 import { AskFirstDialog } from './AskFirstBox'
@@ -135,6 +136,8 @@ export function EditorUi() {
   const [library, setLibrary] = useState(false)
   // In the 3D view the map's drawing and tools wait (look3d.css dims them).
   const look3d = useLook3d((s) => s.mode !== 'map')
+  // The world map on a phone: src/ui/phone/menus-panels.css (the editor itself stays as it is).
+  const mapOnPhone = useGame((s) => s.mapOpen && s.inputDevice === 'touch')
 
   // Esc / the pad's Menu button: close a dialog, then clear the selection, then leave.
   useEffect(() => {
@@ -166,7 +169,7 @@ export function EditorUi() {
   }, [mode])
 
   return (
-    <div className={look3d ? 'sre is-3d' : 'sre'} style={cssVars} data-testid="editor-ui">
+    <div className={look3d ? 'sre is-3d' : 'sre'} style={cssVars} data-testid="editor-ui" data-map-touch={mapOnPhone ? '1' : undefined}>
       <Overlay />
       <Look3dUi />
       <EmptyMapNote />

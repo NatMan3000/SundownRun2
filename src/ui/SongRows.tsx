@@ -23,6 +23,7 @@
 import { useEffect, useState } from 'react'
 import { audio } from '../core/api'
 import type { SongList } from '../core/api'
+import { useGame } from '../core/store'
 import { ChoiceRow, MenuButton, ToggleRow } from './widgets'
 
 const POLL_MS = 250
@@ -45,6 +46,7 @@ function useSongState() {
 
 export function SongRows(props: { onOpenFavourites: () => void }) {
   const { song, list, refresh } = useSongState()
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   const options: { value: SongList; label: string }[] = [
     { value: 'all', label: 'All' },
     { value: 'favourites', label: 'Favourites' },
@@ -56,7 +58,7 @@ export function SongRows(props: { onOpenFavourites: () => void }) {
         label="Next song"
         sub={song ? `${song.name} · ${song.key}` : 'No music playing'}
         disabled={!song}
-        help="Not feeling this one? A new song starts on the next bar, a second or two from now. While driving: N, or B on the controller."
+        help={`Not feeling this one? A new song starts on the next bar, a second or two from now.${touch ? '' : ' While driving: N, or B on the controller.'}`}
         onAccept={() => {
           audio.nextSong()
           refresh()
