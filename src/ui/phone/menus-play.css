@@ -179,11 +179,12 @@
   .sr-ui[data-touch] .title-menu { gap: 0; }
   .sr-ui[data-touch] .title-menu .menu-btn { font-size: 1.45em; }
   .sr-ui[data-touch] .mode-list .menu-btn { font-size: 1.45em; }
-  .sr-ui[data-touch] .screen--mode .title-col { width: min(580px, calc(100vw - 10vw - var(--safe-l))); gap: 2px; }
+  .sr-ui[data-touch] .screen--mode .title-col { width: min(580px, calc(100vw - 10vw - var(--safe-l))); gap: 0; }
   .sr-ui[data-touch] .screen--mode .mode-list { max-width: none; }
-  .sr-ui[data-touch] .screen--mode .screen-title { font-size: 22px; }
+  .sr-ui[data-touch] .screen--mode .title-col { padding: 4px 0 var(--safe-b); }
+  .sr-ui[data-touch] .screen--mode .screen-title { font-size: 22px; line-height: 1.08; }
   .sr-ui[data-touch] .screen--mode .eyebrow { display: none; }
-  .sr-ui[data-touch] .screen--mode .helpline { min-height: 0; }
+  .sr-ui[data-touch] .screen--mode .helpline { min-height: 0; font-size: 0.85em; line-height: 1.1; }
   .sr-ui[data-touch] .garage-panel .eyebrow { display: none; }
   .sr-ui[data-touch] .garage-panel { gap: 6px; padding: 8px 10px; }
   .sr-ui[data-touch] .screen--settings { padding-top: calc(var(--safe-t) + 0.8em); }

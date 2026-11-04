@@ -303,7 +303,7 @@
 
 /* A race says which lap in its own panel, so the lap panel doesn't. */
 .sr-ui[data-touch] .hud-race + .hud-lap { min-height: 0; padding-top: 0.25em; padding-bottom: 0.4em; }
-.sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__top { position: absolute; right: 0.4em; top: -0.5em; }
+.sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__top { position: absolute; right: 0.4em; top: 0; }
 .sr-ui[data-touch] .hud-race + .hud-lap .hud-label { display: none; }
 .sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__clock { grid-row: 1 / span 2; }
 
@@ -364,10 +364,13 @@
 .sr-ui[data-touch] .hud-hunt__count { font-size: 1.35em; }
 .sr-ui[data-touch] .hud-hunt .hud-label { display: none; }
 .sr-ui[data-touch] .hud-hunt__clock { font-size: 0.95em; }
+/* Idle, the clock only says "Find them all" or the best time: that gives its room to the row's other panels and the sound chip. */
+.sr-ui[data-touch] .hud-hunt__clock.is-idle { display: none; }
 .sr-ui[data-touch] .hud-tricks { min-width: 0; flex-direction: row; align-items: center; justify-content: space-between; gap: 0.5em; padding: 0.05em 0.6em; }
 .sr-ui[data-touch] .hud-tricks .hud-label { font-size: 0.75em; letter-spacing: 0.14em; }
 .sr-ui[data-touch] .hud-tricks__top { justify-content: flex-start; gap: 0.5em; }
-.sr-ui[data-touch] .hud-combo { font-size: 0.75em; padding: 0 0.45em; box-shadow: none; }
+.sr-ui[data-touch] .hud-combo { font-size: 0.75em; padding: 0 0.45em; box-shadow: none; white-space: nowrap; }
+.sr-ui[data-touch] .hud-tricks, .sr-ui[data-touch] .hud-tricks__top, .sr-ui[data-touch] .hud-tricks__score { white-space: nowrap; }
 .sr-ui[data-touch] .hud-tricks__score { font-size: 1.35em; }
 /* A label, not a button, on a phone: any tap anywhere starts the sound (TouchControls lets Safari have the lift). */
 .sr-ui[data-touch] .sound-hint--chip { font-size: 0.75em; padding: 0.2em 0.7em 0.2em 0.5em; backdrop-filter: none; pointer-events: none; }
@@ -545,10 +548,15 @@
     min-height: var(--hud-button);
   }
   .sr-ui[data-touch] .hud-stack--tl > .sound-hint { flex: 0 0 auto; }
+  /* Cores and Tricks keep the width of what they hold, so the chip wraps under them rather than sitting on the score. */
+  .sr-ui[data-touch] .hud-stack--tl > .hud-hunt, .sr-ui[data-touch] .hud-stack--tl > .hud-tricks { flex: 0 0 auto; }
   .sr-ui[data-touch] .hud-stack--tl > .hud-lap:not(:first-child) { flex: 1 1 100%; }
   .sr-ui[data-touch] .hud-race + .hud-lap { display: flex; flex-direction: row; align-items: center; justify-content: space-between; padding-bottom: 0.3em; }
   .sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__rows { flex-direction: row; gap: 0.9em; border-left: 0; padding-left: 0; }
   .sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__clock { font-size: 1.45em; }
+  /* The Off road / Dirty tag sits in the row between the clock and Last/Best: raised above the panel it covered the race panel over it. */
+  .sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__top { position: static; order: 1; flex: none; }
+  .sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__rows { order: 2; }
   .sr-ui[data-touch] .hud-tricks .hud-label { letter-spacing: 0.06em; }
   .sr-ui[data-touch] .hud-tricks__top { gap: 0.35em; }
   .sr-ui[data-touch] .hud-combo { padding: 0 0.3em; letter-spacing: 0.02em; }

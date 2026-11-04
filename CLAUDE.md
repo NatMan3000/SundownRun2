@@ -28,6 +28,8 @@ Guidance for Claude Code sessions working in this repository.
 | Online checks | `bun run test:cloud`; with cloud:dev up, `bun run mp:check --cloud https://127.0.0.1:5211 --only client,game` |
 | Deploy the online copy (Nathan, after `bunx wrangler login`) | `bun run cloud:deploy` |
 | Phone controls proof (real touch events, needs a preview running) | `bun run touch:check 5220` |
+| Phone gate: every screen and HUD state at the phone windows (`--port`, `--window pwa\|safari\|small`, `--only <step>`, `--out`, `--list`) | `bun run phone:check -- --port 5220` (`scripts/phone-gate.ts`; the standard is `spec/phone-landscape-standard.md`) |
+| Real Mobile Safari on the iPhone 17 Pro simulator (rotate, shot, tap, drag, sweep; one script at a time) | `bash scripts/ios-sim/shot.sh "http://localhost:5220/?nomusic=1" /tmp/a.png` (`scripts/ios-sim/README.md`) |
 | Regenerate the Home Screen icons from `public/icons/icon.svg` | `bun run icons` |
 | Regenerate Josh's workshop | `bun run learn` -> `Learn To Code.html` (commit it) |
 
@@ -111,3 +113,4 @@ Inherited from v1 (each cost a rework there):
 - The road material (`src/look/road/roadMaterial.ts`) splits the key light's highlight from the headlights' by matching the text of three's `lights_fragment_begin` shader chunk. After a three.js upgrade, check the console: if the chunk changed, it logs an error and falls back to scaling every highlight together (the night road streak gets hot again).
 - A touch finger must let go through every exit: `pointerup`, `pointercancel`, `touchend` with no touches left, window blur and a hidden page all release in `src/ui/TouchControls.tsx`, and unmounting clears `touchInput`, or a lost lift leaves the gas stuck on.
 - The online copy sits behind Cloudflare Access, so the Home Screen icon is inlined in `index.html` as a data: URI at build (`vite.config.ts`, `inlineTouchIcon`) and the manifest link carries `crossorigin="use-credentials"`. iOS's Add to Home Screen can't fetch a file behind a login and shows a letter tile. There is deliberately no service worker: Workers serve `index.html` for revalidation, so a deploy reaches an installed copy on its next open, and a cached shell behind Access is how a lapsed login bricks a PWA.
+- A Safari tab on an iPhone 17 Pro on its side is 874x292 while `100vh` is 402, so phone CSS uses `dvh` or px, never `vh` or `vmin`; the phone gate's `safari` window rewrites those units to Safari's values to catch it.
