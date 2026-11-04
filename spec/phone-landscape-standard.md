@@ -15,8 +15,8 @@ Every check runs at all of these, with the notch insets on. The first is the one
 
 | Name | CSS px | Insets (L / R / B) | What it is |
 |---|---|---|---|
-| `pwa` | 874 x 402 | 62 / 62 / 21 | Nathan's iPhone 17 Pro added to the Home Screen: the whole screen. Size [live: the simulator's 1206 x 2622 screenshot at 3x]; insets [doc], until measured |
-| `safari` | 874 x 340 | 62 / 62 / 0 | the same phone in Safari, bars showing (a stand-in for the tightest height, until measured) |
+| `pwa` | 874 x 402 | 62 / 62 / 20 | Nathan's iPhone 17 Pro added to the Home Screen: the whole screen. Insets [live: simulator, iOS 27.2]; size from the screen [live], the saved copy itself not yet measured |
+| `safari` | 874 x 292 | 62 / 62 / 20 | the same phone in a Safari tab, bars showing [live: simulator, iOS 27.2]. Safari's two-row top bar takes 110 px, and here `100vh` is 402 while the page gets 292, so use `dvh` for visible height |
 | `small` | 667 x 331 | 0 / 0 / 0 | a small older iPhone in Safari: must work, need not shine |
 
 Stood up (390 x 844) must stay usable, not polished; a phone with its rotation locked still has to play.
