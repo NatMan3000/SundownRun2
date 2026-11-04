@@ -18,3 +18,7 @@ Shots, build output and logs go under `$IOS_SIM_OUT` (default `/tmp/sr2/ios-sim`
 - `tap.sh` and `drag.sh` take about 3 minutes on a live game page, because XCUITest waits for the app to go idle.
 - Restart Safari between shots (`sweep.sh` does). With six game tabs open the map's road line vanished; the cause is unproven.
 - This Xcode has no Simulator.app, so nothing shows on screen: read the screenshots.
+
+## Known simulator behaviour
+
+On the game, the first real touch freezes the page for about 9 s: `AudioContext.resume()` on the first `touchend` doesn't return until then, and the tap's click arrives afterwards and acts once. Measured with an event log on 5 Nov 2026 (one tap, no second tap needed); a plain page with no audio answers a tap in 4 ms, so it isn't the rig. Later taps are instant. Whether a real iPhone stalls at all isn't measured here.
