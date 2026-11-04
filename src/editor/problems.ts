@@ -274,7 +274,8 @@ function issueRemedy(issue: TrackIssue, d: Draft, rc: RoadCurve, spot: P | null)
     return { remedy: go ? { kind: 'go', does: 'Drag this road point (and the road near it) further from the edge with Select and move, or bend that bit of road inward.', go } : { kind: 'none', does: plainWords(m) }, roadAt: roadAtOf(spot) }
   }
   const nearPoint = /near point (-?\d+(?:\.\d+)?)/.exec(m)
-  if (issue.path === 'road.points' && nearPoint) {
+  // (A warning can outlive its road: New track empties the map before the checks run again, and `frameAt` throws on no road.)
+  if (issue.path === 'road.points' && nearPoint && rc.curve.length) {
     const at = Number(nearPoint[1])
     const p = frameAt(rc, at).p
     if (/crosses itself/.test(m)) {
