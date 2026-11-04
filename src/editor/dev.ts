@@ -100,6 +100,8 @@
 //    __dev.editor('pins')                  where each problem's pin and tag are on screen (to click them)
 //
 //  Inspector: __game.get('editor') - a summary of the draft.
+//  Inspector: __game.get('editorGesture') - what fingers have done (mapGestures.ts), the exact view,
+//             and the pencil's last finished line as it reached the tool.
 //  URL switch: ?editor=1 opens the editor straight away.
 // ============================================================
 
@@ -150,7 +152,8 @@ import {
   undo,
   useEditor,
 } from './draft'
-import { fitToDraft } from './Overlay'
+import { fitToDraft, lastPencilLine } from './Overlay'
+import { gestureStats } from './mapGestures'
 import { crossingScreens, markScreens, pinScreens } from './mapDraw'
 import { heightLimits } from './raise'
 import { type StretchTool, isStretchTool } from './stretchRuns'
@@ -681,6 +684,7 @@ registerDev('editor', editorCommand as (...args: never[]) => unknown, "road edit
 registerInspector('editor', summary)
 registerInspector('editorSel', () => useEditor.getState().selection)
 registerInspector('editorMsg', () => useEditor.getState().message?.text ?? null)
+registerInspector('editorGesture', () => ({ ...gestureStats, view: { cx: view.cx, cz: view.cz, mpp: view.mpp }, line: lastPencilLine.points }))
 
 // ?editor=1 opens the editor once the game has booted.
 if (typeof window !== 'undefined' && urlParam('editor') === '1') {

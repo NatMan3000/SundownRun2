@@ -24,6 +24,7 @@
 | `scripts/phone-gate.ts` | `permanent` | Phone gate behind bun run phone:check |
 | `scripts/chrome.ts` | `permanent` | Finds which Chrome the dev tools drive: explicit path, $CHROME_PATH, puppeteer's cache, then an installed one |
 | `scripts/touch-check.ts` | `permanent` | Touch check behind bun run touch:check: drives the phone controls with real CDP touch events |
+| `scripts/editor-touch-check.ts` | `permanent` | Editor touch check behind bun run editor:touch: drives the Road Editor's gesture layer with real multi-finger CDP touch events |
 | `public/manifest.webmanifest` | `permanent` | Home Screen app manifest |
 
 ## `scripts/` (Warden 2026-10-15)

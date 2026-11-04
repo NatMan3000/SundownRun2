@@ -7,6 +7,7 @@ Real Mobile Safari on the iPhone 17 Pro simulator (iOS 27.2), driven from the sh
 | `rotate.sh landscape-left\|landscape-right\|portrait` | Sets the device orientation through XCUITest. |
 | `shot.sh <url or ""> <out.png>` | Opens the URL in Safari, waits 4 s, screenshots. An empty URL shoots what is there. |
 | `tap.sh x y`, `drag.sh x1 y1 x2 y2` | A tap or drag at points from the window's top-left. |
+| `pinch.sh scale velocity [label]` | Two real fingers (XCUITest's `pinch`), centred on the page, or on the first element whose label contains `label`. Scale above 1 with a positive velocity spreads, below 1 with a negative one squeezes. |
 | `sweep.sh [steps-file]` | One state per line (`name query [wait] [shots]`), Safari restarted between each. `shots` above 1 bursts that many screenshots `BURST_GAP` seconds apart, for states that fade. |
 | `sweep-server.ts <dist> <port>` | Serves a build with a script added so a URL can open any screen (`sweep=`, `tab=`, `hud=`, `after=`). |
 | `sheet.ts <out.png> <name>...` | Lays sweep shots out as 874x292 cells on one sheet. |
@@ -18,6 +19,7 @@ Shots, build output and logs go under `$IOS_SIM_OUT` (default `/tmp/sr2/ios-sim`
 - `tap.sh` and `drag.sh` take about 3 minutes on a live game page, because XCUITest waits for the app to go idle.
 - Restart Safari between shots (`sweep.sh` does). With six game tabs open the map's road line vanished; the cause is unproven.
 - This Xcode has no Simulator.app, so nothing shows on screen: read the screenshots.
+- `pinch.sh` spreading lands both fingers in the same millisecond, 8 px apart. A squeeze (`pinch.sh 0.6 -1`) starts them so far apart that in a 292 px tab one lands in Safari's bars, so only one finger reaches the page: it isn't a pinch.
 
 ## Known simulator behaviour
 

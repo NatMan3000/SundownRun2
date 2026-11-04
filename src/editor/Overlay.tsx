@@ -1,5 +1,5 @@
 // ============================================================
-//  OVERLAY - mouse and keyboard on the map
+//  OVERLAY - mouse, keyboard and fingers on the map
 // ------------------------------------------------------------
 //  A see-through 2D canvas laid over the 3D top-down view. It turns
 //  what your hands do into editor actions, depending on the tool:
@@ -66,6 +66,10 @@
 //  road, the moment the 3D camera has moved (look3dSpace onPosed).
 //  Esc stops a drag or a half-drawn line before anything else.
 //
+//  Fingers reach these handlers through mapGestures.ts: one finger is
+//  the tool, two fingers are always the map (so no Pan tool on a phone
+//  either). A mouse or a pen goes straight through.
+//
 //  The drawing itself is in mapDraw.ts.
 // ============================================================
 
@@ -88,6 +92,7 @@ import {
   beginBend,
   beginGesture,
   bendView,
+  cancelBend,
   deleteSelection,
   endBend,
   endGesture,
@@ -120,8 +125,9 @@ import { marksOf, pickStretchAt, selectRun, stretchHoverLabel, stretchToPick } f
 import { type RedrawPlan, type RoadHit, frameAt, metresBetween, nearestOnRoad, planRedraw, straightPencilLine, wrapAt } from './road'
 import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
 import { view, panBy, setView, zoomAt, fitBox } from './view'
-import { groundAt, look3dOn } from './look3d'
+import { groundAt, look3dOn, turnLook } from './look3d'
 import { dragView, heightAt, in3d, mppAt, onPosed, pick3d, pose, roadNearest, roadUnder, setDragPlane, setRoadShown, toWorld, worldToScreen, zoomViewAt } from './look3dSpace'
+import { attachMapGestures } from './mapGestures'
 
 /** Pixels the pointer must move before the pencil adds another point. */
 const PENCIL_STEP_PX = 3
@@ -208,6 +214,9 @@ export function pickAt(sx: number, sy: number): Pick | null {
   if (crossing && crossing.d < bestD) best = { kind: 'crossing', x: crossing.spot.x, z: crossing.spot.z }
   return best
 }
+
+/** The pencil's last finished line, as it reached the tool (for checkers: `__game.get('editorGesture')`). */
+export const lastPencilLine = { points: [] as readonly P[] }
 
 /** Esc while a drag or a half-drawn pencil line is going on: stop it (set by the mounted Overlay). */
 let cancelGestureNow: (() => boolean) | null = null
@@ -300,6 +309,12 @@ export function Overlay() {
     }
     resize()
     fitToDraft()
+    // Safari settles the notch's room a moment after loading, and innerWidth changes with no resize event
+    // (750 becomes 874 on an iPhone 17 Pro on its side). Left alone the map's marks sit 62 px off the picture.
+    const sizeWatch = new ResizeObserver(() => {
+      if (window.innerWidth !== view.width || window.innerHeight !== view.height) resize()
+    })
+    if (canvas.parentElement) sizeWatch.observe(canvas.parentElement)
 
     const setCursor = () => {
       const s = useEditor.getState()
@@ -504,7 +519,8 @@ export function Overlay() {
     const onDown = (e: PointerEvent) => {
       // Clicking the map takes the keyboard back from any panel control.
       if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur()
-      canvas.setPointerCapture(e.pointerId)
+      // (A finger: mapGestures.ts took it the moment it landed, and it may have lifted by the time the tool hears.)
+      if (e.pointerType !== 'touch') canvas.setPointerCapture(e.pointerId)
       lastX = e.clientX
       lastY = e.clientY
       const s = useEditor.getState()
@@ -653,7 +669,8 @@ export function Overlay() {
         return
       }
       // Select tool. A second press within 350 ms on the same spot is a double-click: add a road point.
-      const now = performance.now()
+      // (A finger reaches this a moment after it landed, so the time it really landed counts.)
+      const now = e.pointerType === 'touch' ? e.timeStamp : performance.now()
       const isDouble = now - lastDown.t < 350 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 6
       lastDown = { t: isDouble ? 0 : now, x: e.clientX, y: e.clientY }
       if (isDouble) {
@@ -749,7 +766,9 @@ export function Overlay() {
         // Drawing a wall ride: once the pointer has moved, the wall covers the stretch dragged.
         if (!placeDrag.moved && Math.hypot(e.clientX - placeDrag.x, e.clientY - placeDrag.y) >= PLACE_DRAG_PX) placeDrag.moved = true
         const side = wallRideSide(s.placeKind)
-        if (placeDrag.moved && side) {
+        // (Undo in the middle of the drag can have taken the road away.)
+        if (mapIsEmpty()) ghost = null
+        else if (placeDrag.moved && side) {
           const rc = roadGeometry(s.draft.points, s.draft.width).rc
           const span = wallRideFromDrag(rc, placeDrag.at, roadNearest(rc, q).at)
           const f = frameAt(rc, span.at)
@@ -868,6 +887,7 @@ export function Overlay() {
       if (!drawing) return
       drawing = false
       const done = stroke
+      lastPencilLine.points = done
       // The pen trails the pointer: finish the line where the pointer let go, so a
       // stroke ending on the road (a stretch redraw) really ends there.
       if (pen && pen.stringPx > 0) {
@@ -1224,11 +1244,52 @@ export function Overlay() {
       return false
     }
 
-    canvas.addEventListener('pointerdown', onDown)
-    canvas.addEventListener('pointermove', onMove)
-    canvas.addEventListener('pointerup', onUp)
-    canvas.addEventListener('pointercancel', onUp)
-    canvas.addEventListener('pointerleave', onLeave)
+    // The editor just before the tool heard a finger: a press called off goes back to exactly this.
+    let beforePress: ReturnType<typeof useEditor.getState> | null = null
+    /**
+     * A finger's press is called off (a second finger came down early, or the system took the
+     * touch away): whatever it started stops, and nothing it did stays, not even an Undo step.
+     */
+    const takeBackPress = () => {
+      const was = beforePress
+      beforePress = null
+      panning = false
+      roadClick = null
+      hintOnClick = null
+      lastDown = { t: 0, x: 0, y: 0 }
+      if (bending) {
+        bending = false
+        bendShown = null
+        cancelBend()
+      }
+      cancelPointerGesture()
+      setDragPlane(null)
+      ghost = null
+      if (was) {
+        // Straight, Curve and Place act the moment they hear the press: that made an Undo step, so it comes off again.
+        if (useEditor.getState().past !== was.past) undo()
+        useEditor.setState({ draft: was.draft, past: was.past, future: was.future, dirty: was.dirty, savedId: was.savedId, notes: was.notes, selection: was.selection, shaping: was.shaping, tool: was.tool, message: was.message })
+      }
+      shapeDirty = stretchDirty = needsDraw = true
+      setCursor()
+    }
+    const detachGestures = attachMapGestures(canvas, {
+      down: (e) => {
+        if (e.pointerType === 'touch') beforePress = useEditor.getState()
+        onDown(e)
+      },
+      move: onMove,
+      up: onUp,
+      leave: onLeave,
+      takeBack: takeBackPress,
+      justPanning: () => panning,
+      zoom: zoomViewAt,
+      slide: (dx, dy) => dragView('slide', dx, dy),
+      // Clockwise on screen: the camera goes the other way round, so the ground turns with the fingers.
+      twist: (radians) => {
+        if (in3d()) turnLook(radians, 0)
+      },
+    })
     canvas.addEventListener('wheel', onWheel, { passive: false })
     canvas.addEventListener('contextmenu', onContext)
     window.addEventListener('keydown', onKeyDown)
@@ -1242,11 +1303,8 @@ export function Overlay() {
       cancelGestureNow = null
       setDragPlane(null)
       if (dragging) endGesture()
-      canvas.removeEventListener('pointerdown', onDown)
-      canvas.removeEventListener('pointermove', onMove)
-      canvas.removeEventListener('pointerup', onUp)
-      canvas.removeEventListener('pointercancel', onUp)
-      canvas.removeEventListener('pointerleave', onLeave)
+      detachGestures()
+      sizeWatch.disconnect()
       canvas.removeEventListener('wheel', onWheel)
       canvas.removeEventListener('contextmenu', onContext)
       window.removeEventListener('keydown', onKeyDown)

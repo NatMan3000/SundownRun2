@@ -29,7 +29,8 @@ Guidance for Claude Code sessions working in this repository.
 | Deploy the online copy (Nathan, after `bunx wrangler login`) | `bun run cloud:deploy` |
 | Phone controls proof (real touch events, needs a preview running) | `bun run touch:check 5220` |
 | Phone gate: every screen and HUD state at the phone windows (`--port`, `--window pwa\|safari\|small`, `--only <step>`, `--out`, `--list`) | `bun run phone:check -- --port 5220` (`scripts/phone-gate.ts`; the standard is `spec/phone-landscape-standard.md`) |
-| Real Mobile Safari on the iPhone 17 Pro simulator (rotate, shot, tap, drag, sweep; one script at a time) | `bash scripts/ios-sim/shot.sh "http://localhost:5220/?nomusic=1" /tmp/a.png` (`scripts/ios-sim/README.md`) |
+| Road Editor's map with real fingers: arm, pinch, two-finger drag, twist, cancels, a real mouse at 1920x1080 (`--window pwa\|safari`, `--only 1,2`, `--out`; needs a preview running) | `bun run editor:touch -- --port 5220` (`scripts/editor-touch-check.ts`) |
+| Real Mobile Safari on the iPhone 17 Pro simulator (rotate, shot, tap, drag, pinch, sweep; one script at a time) | `bash scripts/ios-sim/shot.sh "http://localhost:5220/?nomusic=1" /tmp/a.png` (`scripts/ios-sim/README.md`) |
 | Regenerate the Home Screen icons from `public/icons/icon.svg` | `bun run icons` |
 | Regenerate Josh's workshop | `bun run learn` -> `Learn To Code.html` (commit it) |
 
@@ -74,7 +75,7 @@ Contracts in `src/core/` and `src/track/{schema,types,registry,current}.ts` are 
 | `src/audio/` | engine, effects, procedural synthwave music, mixer |
 | `src/play/` | game modes, Ai racers, props, smashables, energy cores, speed traps |
 | `src/ui/` | title, garage, settings, pause, HUD, results, report a problem; `TouchControls.tsx` and `phone/` are the phone's on-screen controls and layout (`spec/phone-landscape-standard.md`) |
-| `src/editor/` | the road editor and world map; `src/editor/library/` is the online track library's browser side (online copy only) |
+| `src/editor/` | the road editor and world map; `mapGestures.ts` stands in front of the map's pointer handlers (one finger is the tool, two are always the map); `src/editor/library/` is the online track library's browser side (online copy only) |
 | `src/net/`, `server/` | multiplayer client and LAN relay (`server/relayCore.ts` is the relay's one brain, shared with the online room); `server/issues.ts` posts reports as GitHub issues; `server/trackShare.ts` is the track-sharing brain (no web server in it), shared by `server/trackShareNode.ts` here and the online Worker |
 | `cloud/` | the online copy: Cloudflare Worker serving `dist/`, the relay room as a Durable Object, and the track library (`library.ts`, a second SQLite Durable Object, behind the Access login checked in `access.ts`) that replaces Share / Shared tracks online (`cloud/README.md`); Report a problem stays home-only |
 
@@ -114,3 +115,5 @@ Inherited from v1 (each cost a rework there):
 - A touch finger must let go through every exit: `pointerup`, `pointercancel`, `touchend` with no touches left, window blur and a hidden page all release in `src/ui/TouchControls.tsx`, and unmounting clears `touchInput`, or a lost lift leaves the gas stuck on.
 - The online copy sits behind Cloudflare Access, so the Home Screen icon is inlined in `index.html` as a data: URI at build (`vite.config.ts`, `inlineTouchIcon`) and the manifest link carries `crossorigin="use-credentials"`. iOS's Add to Home Screen can't fetch a file behind a login and shows a letter tile. There is deliberately no service worker: Workers serve `index.html` for revalidation, so a deploy reaches an installed copy on its next open, and a cached shell behind Access is how a lapsed login bricks a PWA.
 - A Safari tab on an iPhone 17 Pro on its side is 874x292 while `100vh` is 402, so phone CSS uses `dvh` or px, never `vh` or `vmin`; the phone gate's `safari` window rewrites those units to Safari's values to catch it.
+- `frameAt` (`src/editor/road.ts`) throws on a road with no points, and the Checks list runs inside a React render with no error boundary, so one call there blanks the whole editor. Warnings outlive their road: New track empties the map before the checks run again. Guard with `rc.curve.length` (`bun run editor:touch -- --only 12`).
+- For its first moments after loading, Safari on an iPhone on its side says `innerWidth` is 750, then 874, with no `resize` event (the notch's room settling). Anything sized from it at load must watch an element too (`Overlay.tsx` `sizeWatch`), or the map's marks sit 62 px off the picture under them.
