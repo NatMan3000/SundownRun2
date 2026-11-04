@@ -19,6 +19,7 @@
 | `spec/phone-landscape-standard.md` | `reference` | Landscape iPhone standard and decisions ledger (P1-P7) |
 | `spec/phone-editor/plan.md` | `reference` | Road Editor on a phone: what today's touch does, the gesture map, the layouts compared, the ten pieces of Phase B |
 | `spec/phone-editor/inventory.md` | `reference` | Every Road Editor action and state, and where it goes on a phone |
+| `spec/phone-editor/piece-1-report.md` | `reference` | Piece 1, the gesture layer: numbers, break-it table, Safari results, the phone trial list, notes for piece 2 |
 | `spec/phone-editor/*.png` | `reference` | Pictures of the chosen layout (C, One tool button) and the sheet of all three |
 | `scripts/make-icons.ts` | `permanent` | Home Screen icon generator |
 | `scripts/phone-gate.ts` | `permanent` | Phone gate behind bun run phone:check |
