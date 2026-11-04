@@ -90,20 +90,20 @@ bun run start
 
 ## Controls
 
-| Action | Keyboard | Xbox controller |
-|---|---|---|
-| Throttle / brake and reverse | W / S or Up / Down | RT / LT |
-| Steer | A / D or Left / Right | Left stick |
-| Handbrake (drift) | Space | A |
-| Tricks in the air | hold Space, then W/S to flip, A/D to roll | hold A, then the left stick |
-| Camera (chase, close, bonnet) | C | RB |
-| Rewind time (hold it: up to 10 seconds back) | Backspace | LB |
-| Back to the road | R | Y |
-| Restart at the start line | Shift + R | View |
-| Menu | Esc | Menu |
-| Start a race or tag round (multiplayer) | G | X |
+| Action | Keyboard | Xbox controller | Phone, on its side |
+|---|---|---|---|
+| Throttle / brake and reverse | W / S or Up / Down | RT / LT | Gas / Brake |
+| Steer | A / D or Left / Right | Left stick | Thumb stick on the left |
+| Handbrake (drift) | Space | A | Drift |
+| Tricks in the air | hold Space, then W/S to flip, A/D to roll | hold A, then the left stick | hold Drift, then the thumb stick |
+| Camera (chase, close, bonnet) | C | RB | Camera |
+| Rewind time (hold it: up to 10 seconds back) | Backspace | LB | Rewind |
+| Back to the road | R | Y | Reset |
+| Restart at the start line | Shift + R | View | Menu, then Restart |
+| Menu | Esc | Menu | Menu |
+| Start a race or tag round (multiplayer) | G | X | Race |
 
-Whichever you touched last is in charge: you can swap between keyboard and controller at any time. In menus, the arrows or d-pad move, Enter or A picks, Esc or B goes back, and Q/E or LB/RB switch tabs.
+Whichever you touched last is in charge: you can swap between keyboard, controller and touch at any time. In menus, the arrows or d-pad move, Enter or A picks, Esc or B goes back, and Q/E or LB/RB switch tabs. On a phone you just tap, swipe to scroll, and Back is top right.
 
 Sound starts after your first key press or click (that's the browser's rule; a controller press doesn't count). The game shows a reminder until it does.
 

@@ -48,3 +48,17 @@ Each screen's shot is read against these before it is called done (`~/.claude/sk
 | P4 | Menus are tapped directly, so the focus ring is hidden on touch | It answers a question a thumb never asks | Kai, 5 Nov 2026 |
 | P5 | The Road Editor works on a phone too: its UI gets reconfigured for thumbs, and it is not hidden. Every editor function stays reachable. The layout is Nathan's pick from comps before the build | "if we can get the road editor to work, that'd be good. I think it needs a lot of effort to reconfigure the UI, but I think we can do it. Why not, lets go!" | Nathan, 5 Nov 2026 |
 | P6 | Target phone is the iPhone 17 Pro. The menus already port well and are usable, so this pass fixes what overlaps and what doesn't fit, not a redesign of what works | "most of it's pretty good, it's ported over well, you can still press the menus and whatnot, so it's very usable, but there's obviously a few bits that are over top of other bits in the UI ... for a iPhone 17 Pro" | Nathan, 5 Nov 2026 |
+
+## Sign-off
+
+5 Nov 2026, commit d776896 (merged to main as 395e94c). Lead read every menu and HUD state in real Mobile Safari on the iPhone 17 Pro simulator at 874x292 (`scripts/ios-sim/sweep.sh`) [live]. Working views read: title, mode, track, garage, settings (car, handling, audio, multiplayer), pause, results, report, driving in free roam, race, stunt, Tag and Hunt Turns, plus countdown, toasts, speed trap and tricks with sound locked. A swipe up from a slider scrolled and left its value alone; a sideways drag set it; one tap walked title to mode to track to driving [live, simulator]. `bun run phone:check` all windows ALL PASS, every rule broken once and seen failing; `touch:check` 84 pass; desktop identical to 085600a apart from run-to-run noise. Fresh checker's verdict: ship, no blockers (`phone-checker`, report kept only in the session). `mp:check` 139 pass, 3 fail: the first three checks after a cold vite start, which also fail on 085600a under load and passed 142 of 142 on a quieter run of the HUD lane.
+
+Not verified: a real thumb on a real phone at this commit, Home Screen window size (874x402 is the screen size), phone GPU cost, the iOS keyboard on Report, pad.
+
+## Known, left for later
+
+- First touch on the game freezes the page about 9 s on the simulator, inside `AudioContext.resume()` (`scripts/ios-sim/README.md`). Not measured on a real iPhone.
+- The gate can't see multiplayer on a phone (Pulse, Race, host banner). Pulse was placed by hand at 874x292, clear of Drift.
+- World map labels overlap each other on a phone (canvas, `src/editor/mapDraw.ts`); goes with the Road Editor lane.
+- Settings tabs start with Fun and Multiplayer off screen; Pause's Quit to title and Garage's Underglow and Light trail are below the fold at 292 with little cue.
+- Pause shows Resume twice; Restart sits right under Resume; Mode's unlit rows can't be read before tapping them; Play is a lit row rather than a loud button. Left as they are under P6.
