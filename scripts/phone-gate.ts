@@ -505,6 +505,8 @@ interface Step {
   mode?: string
   /** Boot with the game's music on (no nomusic=1), so the sound chip and the song panel can show */
   music?: boolean
+  /** This step gets a page of its own. Steps with the same mode and music otherwise share one, so a tap in one carries into the next */
+  ownPage?: boolean
   primary?: string
   setup: (c: Ctx) => Promise<void>
   extra?: (c: Ctx) => Promise<void>
@@ -691,6 +693,8 @@ const STEPS: Step[] = [
     name: 'hud-song',
     hud: true,
     music: true,
+    // its tap unlocks sound for good, and the steps below need sound still locked; and it needs a song that has only just started
+    ownPage: true,
     setup: async (c) => {
       await toHud(c)
       await tapAt(c, c.win.w / 2, c.win.h * 0.3)
@@ -698,7 +702,6 @@ const STEPS: Step[] = [
       await c.page.waitForFunction(() => [...document.querySelectorAll('.hud-song')].some((e) => (e as any).checkVisibility?.({ checkOpacity: true }) && e.getBoundingClientRect().width > 0), { timeout: 15000, polling: 100 }).catch(() => c.fail(7, 'song panel', 'the song panel never showed with music on'))
     },
   },
-  // Kept after hud-song: six more music pages before it made the song panel miss its window in a full run (cause unproven).
   // sound still locked with a trick score up: the chip shares the top row with the cores, Tricks and mode panels.
   // Each mode panel that can sit in that row is shown with the trick score, so the row is measured full.
   ...([['tricks', []], ['hunt', ['hunt']], ['stunt', ['stunt']], ['race', ['race']], ['tag', ['tag']], ['turns', ['turns']]] as [string, string[]][]).map(
@@ -855,7 +858,7 @@ for (const wname of WINDOWS) {
     for (const step of steps) {
       current = step.name
       const mode = step.mode ?? 'free'
-      const key = mode + (step.music ? '+music' : '')
+      const key = mode + (step.music ? '+music' : '') + (step.ownPage ? `+${step.name}` : '')
       if (!ctx || ctxMode !== key) {
         await ctx?.page.close()
         ctx = await boot(wname, win, mode, !!step.music)
