@@ -15,6 +15,7 @@
     "probe": "bun scripts/probe.ts",
     "icons": "bun scripts/make-icons.ts",
     "touch:check": "bun scripts/touch-check.ts",
+    "phone:check": "bun scripts/phone-gate.ts",
     "tracks:check": "bun scripts/check-tracks.ts",
     "mp:check": "bun server/mp-check.ts",
     "test:relay": "bun test server/relay.test.ts",
