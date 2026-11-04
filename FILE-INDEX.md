@@ -16,7 +16,10 @@
 | `docs/title-screen.jpg` | `permanent` | Title screen screenshot shown at the top of the README |
 | `plans/scope-tunnels.md` | `reference` | Tunnels scope (GitHub #9 part 3): options, needs, risks, three stages |
 | `cloud/README.md` | `reference` | Online copy on Cloudflare: local try-out, deploy, custom domain, Access setup, budget |
-| `spec/phone-landscape-standard.md` | `reference` | Landscape iPhone standard and decisions ledger (P1-P6) |
+| `spec/phone-landscape-standard.md` | `reference` | Landscape iPhone standard and decisions ledger (P1-P7) |
+| `spec/phone-editor/plan.md` | `reference` | Road Editor on a phone: what today's touch does, the gesture map, the layouts compared, the ten pieces of Phase B |
+| `spec/phone-editor/inventory.md` | `reference` | Every Road Editor action and state, and where it goes on a phone |
+| `spec/phone-editor/*.png` | `reference` | Pictures of the chosen layout (C, One tool button) and the sheet of all three |
 | `scripts/make-icons.ts` | `permanent` | Home Screen icon generator |
 | `scripts/phone-gate.ts` | `permanent` | Phone gate behind bun run phone:check |
 | `scripts/chrome.ts` | `permanent` | Finds which Chrome the dev tools drive: explicit path, $CHROME_PATH, puppeteer's cache, then an installed one |

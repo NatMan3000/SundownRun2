@@ -21,4 +21,4 @@ Shots, build output and logs go under `$IOS_SIM_OUT` (default `/tmp/sr2/ios-sim`
 
 ## Known simulator behaviour
 
-On the game, the first real touch freezes the page for about 9 s: `AudioContext.resume()` on the first `touchend` doesn't return until then, and the tap's click arrives afterwards and acts once. Measured with an event log on 5 Nov 2026 (one tap, no second tap needed); a plain page with no audio answers a tap in 4 ms, so it isn't the rig. Later taps are instant. Whether a real iPhone stalls at all isn't measured here.
+On the game, the first real touch freezes the page for about 9 s: `AudioContext.resume()` on the first `touchend` doesn't return until then, and the tap's click arrives afterwards and acts once. Measured with an event log on 5 Nov 2026 (one tap, no second tap needed); a plain page with no audio answers a tap in 4 ms, so it isn't the rig. Later taps are instant. On Nathan's real iPhone 17 Pro the stall is unnoticeable (his words, 5 Nov 2026), so don't chase it: it is the simulator's.
