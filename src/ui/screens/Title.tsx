@@ -22,6 +22,7 @@ import { MenuButton, HelpLine } from '../widgets'
 import { HintBar } from '../hints'
 import { openScreen, showNotice, useUi } from '../uiStore'
 import { SoundHint } from '../SoundHint'
+import { MadeWith } from '../MadeWith'
 
 /** The sun's horizontal cuts down the letters, top to bottom: [from, to] as fractions of the letter height. */
 const LOGO_CUTS: [number, number][] = [
@@ -253,6 +254,7 @@ export function TitleScreen() {
           {mp && <MpStatus />}
         </div>
         <SoundHint variant="menu" />
+        <MadeWith />
         <HintBar
           items={[
             { action: 'move', label: 'Move' },

@@ -1620,6 +1620,30 @@
 .title-links { display: flex; flex-wrap: wrap; gap: 0.2em 0.6em; margin: -0.4em 0 0 0.4em; }
 .title-links .learn-link { margin: 0; }
 
+/* "Made with (the sun) by Josh & Kai" (MadeWith.tsx): the title screen's bottom corner, opposite the hints. Nothing to press. */
+.made-with {
+  position: absolute;
+  right: 6vw;
+  bottom: 3.6vh;
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.95em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--text) 85%, transparent);
+  text-shadow: var(--legible);
+  pointer-events: none;
+}
+.made-with__sun {
+  flex: none;
+  width: 1.75em;
+  height: 1.6em;
+  filter: drop-shadow(0 0 0.35em color-mix(in srgb, var(--sun-mid) 55%, transparent));
+}
+
 .screen--report { display: flex; align-items: center; gap: 1.4em; padding: 5vh 0 9vh 5vw; }
 .screen--report .hintbar { left: 5vw; bottom: 2.6vh; }
 .hint--note { font-family: var(--font-display); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--warn); }

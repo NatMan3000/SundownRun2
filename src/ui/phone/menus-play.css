@@ -62,6 +62,11 @@
   bottom: auto;
   min-height: 44px;
 }
+.sr-ui[data-touch] .made-with {
+  right: calc(var(--safe-r) + 12px);
+  bottom: calc(var(--safe-b) + 6px);
+  font-size: 12px;
+}
 
 /* Race's options sit side by side under Race, so they can't push the other modes off a short screen. */
 .sr-ui[data-touch] .mode-list { gap: 0; }
