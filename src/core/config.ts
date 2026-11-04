@@ -30,6 +30,9 @@ export const CONFIG = {
   brakes: 1.0, //      0.5 = soft brakes ... 1.15 = stops on a coin. Past about 1.15 the tyres can't grip any harder
   topSpeedKmh: 260, // the fastest the engine will push you (boost pads go past it!)
 
+  // ---------- PHONE CONTROLS ----------
+  touchStickPixels: 46, // how far your thumb slides for full steering on a phone. 30 = twitchy ... 70 = slow and gentle
+
   // ---------- CAMERA ----------
   camera: 'chase' as 'chase' | 'close' | 'bonnet', // press C (or RB) to cycle while driving
   cameraDistance: 7.5, // metres behind the car (chase camera)

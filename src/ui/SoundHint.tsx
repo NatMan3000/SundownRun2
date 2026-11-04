@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from 'react'
 import { audio } from '../core/api'
+import { useGame } from '../core/store'
 
 const POLL_MS = 250
 
@@ -52,6 +53,7 @@ const FADE_MS = 220
  */
 export function SoundHint(props: { variant: 'menu' | 'chip' }) {
   const locked = useSoundLocked()
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   const [mounted, setMounted] = useState(locked)
   useEffect(() => {
     if (locked) {
@@ -71,7 +73,7 @@ export function SoundHint(props: { variant: 'menu' | 'chip' }) {
       role="status"
     >
       <MutedSpeaker />
-      <span className="sound-hint__text">Press any key or click for sound</span>
+      <span className="sound-hint__text">{touch ? 'Tap for sound' : 'Press any key or click for sound'}</span>
     </button>
   )
 }

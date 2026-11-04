@@ -32,7 +32,7 @@ import type { UiSound } from '../../core/api'
 import { playerName } from '../../net/identity'
 import { NavScreen, focusItem, focusedHandlers, useNavItem } from '../nav'
 import { ChoiceRow, HelpLine, MenuButton } from '../widgets'
-import { ActionGlyphs, Glyph } from '../hints'
+import { ActionGlyphs, Glyph, TouchBack } from '../hints'
 import type { HintItem } from '../hints'
 import { closeScreen, setFocus, showNotice, useUi } from '../uiStore'
 import { REPORT_KINDS, REPORT_LIMITS, REPORT_REPO } from '../report/protocol'
@@ -282,7 +282,9 @@ const SAVED_WHY: Record<SavedReason, string> = {
 function ReportHints(props: { editing: boolean; back: string }) {
   useUi((s) => s.focus)
   useUi((s) => s.hintNonce)
-  const pad = useGame((s) => s.inputDevice) === 'gamepad'
+  const device = useGame((s) => s.inputDevice)
+  const pad = device === 'gamepad'
+  if (device === 'touch') return <TouchBack items={[{ action: 'back', label: props.back }]} />
   if (props.editing) {
     return (
       <div className="hintbar">

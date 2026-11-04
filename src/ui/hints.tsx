@@ -10,6 +10,7 @@
 //  letter), so there are no image files.
 // ============================================================
 
+import { menuBus } from '../core/controls'
 import { useGame } from '../core/store'
 import { useUi } from './uiStore'
 import { focusedHandlers } from './nav'
@@ -106,7 +107,9 @@ export function Glyph(props: { name: string; pad: boolean }) {
 
 /** The glyphs for an action on the current device. */
 export function ActionGlyphs(props: { action: HintAction }) {
-  const pad = useGame((s) => s.inputDevice) === 'gamepad'
+  const device = useGame((s) => s.inputDevice)
+  const pad = device === 'gamepad'
+  if (device === 'touch') return null // nothing to press: the thing itself is on the screen
   const names = (pad ? PAD : KEYS)[props.action]
   return (
     <span className="glyphs">
@@ -132,6 +135,8 @@ export function HintBar(props: { items: HintItem[]; contextual?: boolean }) {
   useUi((s) => s.focus)
   useUi((s) => s.stack)
   useUi((s) => s.hintNonce)
+  const touch = useGame((s) => s.inputDevice) === 'touch'
+  if (touch) return <TouchBack items={props.items} />
   const h = props.contextual === false ? null : focusedHandlers()
   const extra: HintItem[] = []
   if (h?.sideHint) extra.push({ action: 'adjust', label: h.sideHint })
@@ -145,6 +150,25 @@ export function HintBar(props: { items: HintItem[]; contextual?: boolean }) {
           <span className="hint__label">{i.label}</span>
         </span>
       ))}
+    </div>
+  )
+}
+
+/**
+ * On a phone there are no keys to name, and everything on a menu is tapped directly,
+ * except going back, which is Esc or B elsewhere: so the bar becomes one Back button.
+ */
+export function TouchBack(props: { items: HintItem[] }) {
+  const back = props.items.find((i) => i.action === 'back')
+  if (!back) return null
+  return (
+    <div className="hintbar hintbar--touch">
+      <button type="button" className="touch-back" onClick={() => menuBus.emit('back', 'touch')}>
+        <svg viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M8 1.5 L3 6 L8 10.5" />
+        </svg>
+        {back.label}
+      </button>
     </div>
   )
 }

@@ -16,7 +16,7 @@
 // ============================================================
 
 export type InputContext = 'drive' | 'menu' | 'editor' | 'text'
-export type InputDevice = 'keyboard' | 'gamepad'
+export type InputDevice = 'keyboard' | 'gamepad' | 'touch'
 
 /** The player's driving input after smoothing and response curves. */
 export const driveInput = {
@@ -28,6 +28,21 @@ export const driveInput = {
   rewind: false,
   /** Whichever device was touched last (hot-swap, no config). */
   device: 'keyboard' as InputDevice,
+}
+
+/**
+ * The on-screen controls' raw finger state (src/ui/TouchControls.tsx writes,
+ * src/core/input.ts reads and smooths, exactly like a key or a stick).
+ */
+export const touchInput = {
+  /** Thumb stick, sideways: -1..1, left negative. */
+  steer: 0,
+  /** Thumb stick, up and down: -1..1, up positive. Pitches the car in the air, nothing on the ground. */
+  stickY: 0,
+  gas: false,
+  brake: false,
+  handbrake: false,
+  rewind: false,
 }
 
 /**

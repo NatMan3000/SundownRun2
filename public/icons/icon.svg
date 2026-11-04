@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- The game's sundown: every colour is from src/core/palette.ts. Full bleed and opaque: the phone rounds the corners. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b0b3a" />
+      <stop offset="0.55" stop-color="#5b1670" />
+      <stop offset="1" stop-color="#ff3d7f" />
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe66b" />
+      <stop offset="0.55" stop-color="#ff9a3c" />
+      <stop offset="1" stop-color="#ff2e7e" />
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff8a3d" stop-opacity="0.75" />
+      <stop offset="1" stop-color="#ff8a3d" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="roadWarm" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff9a3c" stop-opacity="0.75" />
+      <stop offset="0.6" stop-color="#ff2bd6" stop-opacity="0.12" />
+      <stop offset="1" stop-color="#ff2bd6" stop-opacity="0" />
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="14" /></filter>
+    <mask id="bands">
+      <rect width="1024" height="1024" fill="#fff" />
+      <rect y="372" width="1024" height="12" fill="#000" />
+      <rect y="432" width="1024" height="20" fill="#000" />
+      <rect y="498" width="1024" height="30" fill="#000" />
+      <rect y="572" width="1024" height="42" fill="#000" />
+    </mask>
+    <clipPath id="ground"><rect y="640" width="1024" height="384" /></clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#sky)" />
+  <circle cx="512" cy="420" r="430" fill="url(#glow)" />
+  <circle cx="512" cy="400" r="290" fill="url(#sun)" mask="url(#bands)" />
+
+  <rect y="640" width="1024" height="384" fill="#07050e" />
+  <g clip-path="url(#ground)" stroke="#6b4dff" stroke-width="5" opacity="0.65" fill="none">
+    <path d="M512 640 L-500 1024 M512 640 L-120 1024 M512 640 L1144 1024 M512 640 L1524 1024" />
+    <path d="M0 672 H1024 M0 724 H1024 M0 800 H1024 M0 910 H1024" />
+  </g>
+
+  <path d="M512 640 L880 1024 H144 Z" fill="#0a0a12" />
+  <path d="M512 640 L880 1024 H144 Z" fill="url(#roadWarm)" />
+  <g stroke="#ff2bd6" stroke-linecap="round" fill="none">
+    <path d="M512 640 L144 1024 M512 640 L880 1024" stroke-width="30" filter="url(#soft)" />
+    <path d="M512 640 L144 1024 M512 640 L880 1024" stroke-width="16" />
+  </g>
+  <path d="M508 680 h8 l2 34 h-12 Z M503 744 h18 l4 58 h-26 Z" fill="#c4f7ff" />
+
+  <!-- the car, from behind, on its cyan underglow -->
+  <ellipse cx="512" cy="952" rx="205" ry="44" fill="#19e3ff" opacity="0.55" filter="url(#soft)" />
+  <path d="M352 948 q-14 0 -14 -16 l6 -62 q4 -30 34 -36 l40 -8 q16 -44 44 -50 h100 q28 6 44 50 l40 8 q30 6 34 36 l6 62 q0 16 -14 16 Z" fill="#1b1f3b" />
+  <path d="M430 818 q12 -32 32 -36 h100 q20 4 32 36 Z" fill="#07050e" />
+  <rect x="358" y="860" width="308" height="20" rx="10" fill="#19e3ff" />
+</svg>

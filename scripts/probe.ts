@@ -41,10 +41,8 @@
 //  the perf report, as plain lines. Exit code 1 if the page threw.
 // ============================================================
 
-import { existsSync, readdirSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import puppeteer from 'puppeteer-core'
+import { findChrome } from './chrome'
 import type { KeyInput } from 'puppeteer-core'
 
 function arg(name: string): string | undefined {
@@ -60,31 +58,6 @@ function flag(name: string): boolean {
   return process.argv.includes(`--${name}`)
 }
 
-function findChrome(): string {
-  const explicit = arg('chrome') ?? process.env.CHROME_PATH
-  if (explicit && existsSync(explicit)) return explicit
-  const cache = join(homedir(), '.cache', 'puppeteer', 'chrome')
-  if (existsSync(cache)) {
-    const versions = readdirSync(cache).sort().reverse()
-    for (const v of versions) {
-      const mac = join(cache, v, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing')
-      if (existsSync(mac)) return mac
-      const linux = join(cache, v, 'chrome-linux64', 'chrome')
-      if (existsSync(linux)) return linux
-      const win = join(cache, v, 'chrome-win64', 'chrome.exe')
-      if (existsSync(win)) return win
-    }
-  }
-  const apps = [
-    '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    '/usr/bin/google-chrome',
-  ]
-  for (const a of apps) if (existsSync(a)) return a
-  throw new Error('No Chrome found. Pass --chrome <path> or set CHROME_PATH.')
-}
-
 const url = arg('url')
 if (!url) {
   console.error('usage: bun run probe -- --url <url> [--wait s] [--steps "..."] [--shot path] [--eval expr] [--perf]')
@@ -97,7 +70,7 @@ const waitS = Number(arg('wait') ?? 5)
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const browser = await puppeteer.launch({
-  executablePath: findChrome(),
+  executablePath: findChrome(arg('chrome')),
   headless: !flag('headed'),
   defaultViewport: { width, height, deviceScaleFactor: 1 },
   args: [

@@ -1069,7 +1069,20 @@ export function CameraRig() {
   return null
 }
 
-function setFov(camera: THREE.PerspectiveCamera, fov: number): void {
+/** Below this width-to-height a screen starts seeing less road than a laptop does (only a phone stood up gets here). */
+const NARROW_ASPECT = 1.2
+/** How far a narrow screen may open the view: past this, the sky and the road's edges stretch. */
+const NARROW_MAX_WIDEN = 2
+
+/** A narrow screen opens the vertical view, or the car fills it and hides the road. Everything else: unchanged. */
+function fittedFov(fov: number, aspect: number): number {
+  if (!(aspect > 0) || aspect >= NARROW_ASPECT) return fov
+  const widen = Math.min(NARROW_MAX_WIDEN, NARROW_ASPECT / aspect)
+  return (2 * Math.atan(Math.tan((fov * Math.PI) / 360) * widen) * 180) / Math.PI
+}
+
+function setFov(camera: THREE.PerspectiveCamera, logicalFov: number): void {
+  const fov = fittedFov(logicalFov, camera.aspect)
   if (Number.isFinite(fov) && Math.abs(camera.fov - fov) > 0.01) {
     camera.fov = fov
     camera.updateProjectionMatrix()

@@ -1,0 +1,223 @@
+/* ============================================================
+   PHONE - what a touch screen needs on top of ui.css
+   ------------------------------------------------------------
+   Everything here hangs off .sr-ui[data-touch] (set while touch is
+   the device in use), so the desktop game never sees it. Target:
+   an iPhone on its side, spec/phone-landscape-standard.md.
+   ============================================================ */
+
+/* Text on a phone can't be selected by a long press on the way to a button. */
+.sr-ui[data-touch] {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --edge: clamp(10px, 3.4vmin, 28px);
+  --gas: clamp(84px, 28vmin, 150px);
+  --pedal: clamp(68px, 22vmin, 118px);
+  --stick: clamp(96px, 30vmin, 160px);
+  --knob: clamp(44px, 13vmin, 70px);
+  /* just above Drift, the highest of the thumbs' buttons */
+  --above-thumbs: calc(var(--safe-b) + var(--edge) + var(--gas) * 0.92 + var(--pedal) + 8px);
+}
+.sr-ui[data-touch] input, .sr-ui[data-touch] textarea { -webkit-user-select: text; user-select: text; }
+
+
+/* ---------------------------------------------------------------- touch controls (TouchControls.tsx)
+   Sized in vmin, not em: a thumb is the same size whatever the window's height, and the
+   em scale follows height, so a phone on its side would shrink every target. Everything
+   clears the notch and the home bar through the safe-area insets. No blur here: these sit
+   over the road all the time and a phone has no frame time to spare for it. */
+
+.touch {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.touch-pedal {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--pedal);
+  height: var(--pedal);
+  border-radius: 50%;
+  pointer-events: none;
+  --tint: var(--accent);
+  border: 2px solid color-mix(in srgb, var(--tint) 70%, transparent);
+  background: color-mix(in srgb, var(--panel-solid) 42%, transparent);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: clamp(11px, 3.4vmin, 17px);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-shadow: var(--legible);
+  transition: background 90ms ease-out, transform 90ms ease-out;
+}
+.touch-pedal.is-down {
+  background: color-mix(in srgb, var(--tint) 55%, transparent);
+  transform: scale(0.95);
+}
+.touch-pedal--gas {
+  --tint: var(--accent);
+  width: var(--gas);
+  height: var(--gas);
+  right: calc(var(--safe-r) + var(--edge));
+  bottom: calc(var(--safe-b) + var(--edge));
+  font-size: clamp(14px, 4.6vmin, 22px);
+}
+.touch-pedal--brake {
+  --tint: var(--warn);
+  right: calc(var(--safe-r) + var(--edge) + var(--gas) + 8px);
+  bottom: calc(var(--safe-b) + var(--edge));
+}
+/* Drift sits on the thumb's arc between the other two, so a slide from Gas lands on it. */
+.touch-pedal--drift {
+  --tint: var(--accent2);
+  right: calc(var(--safe-r) + var(--edge) + var(--gas) * 0.62);
+  bottom: calc(var(--safe-b) + var(--edge) + var(--gas) * 0.92);
+}
+
+.touch-stick {
+  position: absolute;
+  left: calc(var(--safe-l) + var(--edge) + 6px);
+  bottom: calc(var(--safe-b) + var(--edge) + 6px);
+  width: var(--stick);
+  height: var(--stick);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--panel-solid) 32%, transparent);
+  transition: transform 160ms var(--ease), background 90ms ease-out;
+}
+.touch-stick.is-held {
+  transition: background 90ms ease-out;
+  background: color-mix(in srgb, var(--panel-solid) 48%, transparent);
+}
+.touch-stick__knob {
+  width: var(--knob);
+  height: var(--knob);
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  transition: transform 160ms var(--ease);
+}
+.touch-stick.is-held .touch-stick__knob { transition: none; }
+.touch-stick__arrow {
+  position: absolute;
+  top: 50%;
+  width: 0.65em;
+  height: 0.65em;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 80%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--accent) 80%, transparent);
+}
+.touch-stick__arrow--l { left: 8%; transform: translateY(-50%) rotate(45deg); }
+.touch-stick__arrow--r { right: 8%; transform: translateY(-50%) rotate(225deg); }
+
+.touch-row {
+  position: absolute;
+  top: calc(var(--safe-t) + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+}
+.touch-top {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  touch-action: none;
+  transition: background 90ms ease-out;
+}
+.touch-top svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.touch-top span {
+  font-family: var(--font-display);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.touch-top.is-down { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.touch-top--hot { border-color: var(--accent); }
+
+.touch-pulse {
+  position: absolute;
+  right: calc(var(--safe-r) + var(--edge));
+  bottom: calc(var(--safe-b) + var(--edge) + var(--gas) + 10px);
+  width: var(--pedal);
+  height: var(--pedal);
+  border-radius: 50%;
+  border: 2px solid var(--tag-it);
+  background: color-mix(in srgb, var(--tag-it) 28%, transparent);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: clamp(11px, 3.4vmin, 17px);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-transform: uppercase;
+  text-shadow: var(--legible);
+  touch-action: none;
+}
+
+/* The HUD makes room for two thumbs: on its side the speedometer sits between them, the
+   trick score above the stick. Stood up, the top row can't fit between the lap panel and
+   the map, so it sits just above the thumbs with the speed and score above it. */
+.sr-ui[data-touch] .hud-stack--tl { top: calc(var(--safe-t) + 0.6em); left: calc(var(--safe-l) + 0.6em); width: 12.5em; }
+.sr-ui[data-touch] .hud-map { top: calc(var(--safe-t) + 0.6em); right: calc(var(--safe-r) + 0.6em); width: 10em; max-height: 10em; }
+.sr-ui[data-touch] .hud-stack--br { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 0.4em); align-items: center; font-size: 0.62em; }
+.sr-ui[data-touch] .hud-stack--bl { left: calc(var(--safe-l) + 0.6em); bottom: calc(var(--safe-b) + var(--edge) + var(--stick) + 14px); flex-direction: row-reverse; justify-content: flex-end; align-items: flex-end; }
+
+@media (orientation: portrait) {
+  .touch-row { top: auto; bottom: var(--above-thumbs); }
+  .sr-ui[data-touch] .hud-stack--br { left: auto; right: calc(var(--safe-r) + 0.8em); transform: none; bottom: calc(var(--above-thumbs) + 52px); align-items: flex-end; }
+  .sr-ui[data-touch] .hud-stack--bl { bottom: calc(var(--above-thumbs) + 52px); }
+}
+
+.touch-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  min-height: 44px;
+  padding: 0 1.2em 0 0.9em;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.touch-back svg { width: 0.85em; height: 0.85em; fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+@media (prefers-reduced-motion: reduce) {
+  .touch-stick, .touch-stick__knob, .touch-pedal, .touch-top { transition: none; }
+}

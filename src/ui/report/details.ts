@@ -205,7 +205,7 @@ export function snapshotDetails(): ReportDetails {
   add('Browser', browserWords(ua))
   add('Browser details', ua || 'unknown')
   add('Screen', `${window.innerWidth}x${window.innerHeight} window, ${window.screen.width}x${window.screen.height} screen, pixel ratio ${fixed(window.devicePixelRatio, 2)}`)
-  add('Controls', g.inputDevice === 'gamepad' ? 'controller' : 'keyboard')
+  add('Controls', g.inputDevice === 'gamepad' ? 'controller' : g.inputDevice === 'touch' ? 'touch screen' : 'keyboard')
   add('Time of day', fixed(s.timeOfDay, 2))
   add('Changed settings', changedSettings(s))
 

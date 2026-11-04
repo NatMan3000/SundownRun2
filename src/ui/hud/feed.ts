@@ -196,7 +196,7 @@ function onEvent(e: AnyGameEvent): void {
       else pushToast(`${nameOf(e.id, e.name)} is it`, 'info', e.byId === 'player' ? 'You tagged them' : undefined)
       return
     case 'turns.turn':
-      if (e.hunterId === 'player') pushToast('Your turn to hunt!', 'it', `Get close, bump them, or fire your tag pulse (${g.inputDevice === 'gamepad' ? 'click the right stick' : 'F'})`)
+      if (e.hunterId === 'player') pushToast('Your turn to hunt!', 'it', `Get close, bump them, or fire your tag pulse (${g.inputDevice === 'gamepad' ? 'click the right stick' : g.inputDevice === 'touch' ? 'the Pulse button' : 'F'})`)
       else pushToast(`${nameOf(e.hunterId, e.name)} is hunting`, 'info', 'Run!')
       return
     case 'turns.catch':

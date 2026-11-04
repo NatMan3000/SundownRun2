@@ -1,0 +1,49 @@
+/* Phone menus: title, mode select, track select, garage. */
+
+/* ---------------------------------------------------------------- menus on a phone
+   The desktop menus are laid out for a window at least as wide as a laptop's. These keep
+   every column inside the glass, clear of the notch, and let the logo give way on a short
+   screen. The menus are tapped directly, so the focus ring has nothing left to say. */
+
+.sr-ui[data-touch] .focus-ring { display: none; }
+
+/* Going back was Esc or B; here it is a button, out of the way of every panel. */
+.sr-ui .screen .hintbar--touch {
+  pointer-events: auto;
+  left: auto;
+  right: calc(var(--safe-r) + 0.6em);
+  top: calc(var(--safe-t) + 0.6em);
+  bottom: auto;
+  transform: none;
+  z-index: 2;
+}
+
+.sr-ui[data-touch] .title-col {
+  left: max(5vw, calc(var(--safe-l) + 0.6em));
+  width: min(36em, calc(100vw - 10vw - var(--safe-l)));
+  padding: calc(var(--safe-t) + 0.6em) 0 calc(var(--safe-b) + 0.6em);
+  justify-content: safe center;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.sr-ui[data-touch] .title-menu, .sr-ui[data-touch] .mode-list { width: 100%; max-width: 34em; }
+.sr-ui[data-touch] .mode-options .row { grid-template-columns: 5.5em minmax(0, 1fr) 4.5em 1.4em; gap: 0.6em; }
+
+.sr-ui[data-touch] .screen--track { padding: calc(var(--safe-t) + 0.8em) max(3vw, var(--safe-r)) calc(var(--safe-b) + 0.8em) max(3vw, var(--safe-l)); }
+.sr-ui[data-touch] .track-grid { grid-template-columns: repeat(var(--cols, 2), minmax(0, 30em)); }
+
+/* A phone on its side has room for the menu or the logo, not both at full size. */
+@media (max-height: 500px) {
+  .sr-ui[data-touch] .title-col { gap: 0.5em; }
+  .sr-ui[data-touch] .title-col .logo { font-size: 3.4em; }
+  .sr-ui[data-touch] .tagline { font-size: 0.85em; padding-top: 0.5em; }
+  .sr-ui[data-touch] .title-menu .menu-btn { font-size: 1.45em; }
+  .sr-ui[data-touch] .mode-list .menu-btn { font-size: 1.45em; }
+  .sr-ui[data-touch] .track-card__thumb { aspect-ratio: 32 / 12; }
+  .sr-ui[data-touch] .screen--settings { padding-top: calc(var(--safe-t) + 0.8em); }
+}
+@media (orientation: portrait) {
+  .sr-ui[data-touch] .track-grid { --cols: 1; }
+  .sr-ui[data-touch] .settings-panel { width: 92vw; margin-top: 3.4em; }
+}
+

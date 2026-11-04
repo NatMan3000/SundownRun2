@@ -22,11 +22,15 @@
 //    screens/       title, mode, track, garage, settings, pause, results, report
 //    report/        what "Report a problem" sends and how (server/issues.ts posts it)
 //    hud/           the driving HUD and minimap
+//    TouchControls  the phone's on-screen stick and buttons
 // ============================================================
 
 import { useEffect, useRef } from 'react'
 import type { CSSProperties, JSX, RefObject } from 'react'
 import './ui.css'
+import './phone/touch.css'
+import './phone/menus-play.css'
+import './phone/menus-panels.css'
 import { FONTS, PALETTE } from '../core/palette'
 import { getGame, useGame } from '../core/store'
 import type { Phase } from '../core/store'
@@ -41,6 +45,7 @@ import type { ScreenId, SettingsTab } from './uiStore'
 import { FocusRing } from './FocusRing'
 import { HUD_DEMO_HELP, hudDemo } from './hud/demo'
 import { Hud } from './hud/Hud'
+import { TouchControls } from './TouchControls'
 import { TitleScreen } from './screens/Title'
 import { ModeSelectScreen } from './screens/ModeSelect'
 import { TrackSelectScreen } from './screens/TrackSelect'
@@ -326,6 +331,7 @@ export function UiRoot() {
   const mapOpen = useGame((s) => s.mapOpen)
   // The quality actually in use (look's quality manager): Low drops the glass blur (see ui.css).
   const quality = useGame((s) => s.qualityLevel)
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   const screen = useActiveScreen()
   const root = useRef<HTMLDivElement | null>(null)
 
@@ -352,6 +358,7 @@ export function UiRoot() {
       ref={root}
       className="sr-ui"
       data-quality={quality}
+      data-touch={touch ? '1' : undefined}
       style={CSS_VARS}
       // Clicks never leave a browser focus behind (our focus model is our own),
       // except in text fields, which need it.
@@ -361,6 +368,7 @@ export function UiRoot() {
       }}
     >
       <Hud />
+      <TouchControls />
       {Screen && (
         <div className="screen-host" key={screen}>
           <Screen />

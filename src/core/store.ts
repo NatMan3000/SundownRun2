@@ -105,7 +105,7 @@ export interface GameState {
   sessionStartedAt: number
 
   // ---- input (writer: core/input) ----
-  inputDevice: 'keyboard' | 'gamepad'
+  inputDevice: 'keyboard' | 'gamepad' | 'touch'
 
   // ---- player laps (writer: vehicle's lap tracker) ----
   lapCount: number

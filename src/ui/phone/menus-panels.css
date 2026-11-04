@@ -1,0 +1,16 @@
+/* Phone menus: settings, pause, results, report. */
+
+.sr-ui[data-touch] .screen--settings,
+.sr-ui[data-touch] .screen--garage,
+.sr-ui[data-touch] .screen--pause,
+.sr-ui[data-touch] .screen--results,
+.sr-ui[data-touch] .screen--report {
+  padding: calc(var(--safe-t) + 0.8em) 0 calc(var(--safe-b) + 0.8em) max(4vw, calc(var(--safe-l) + 0.6em));
+}
+.sr-ui[data-touch] .settings-panel { width: min(60em, calc(92vw - var(--safe-l) - 5.4em)); }
+.sr-ui[data-touch] .pause-panel { width: min(31em, 92vw); }
+.sr-ui[data-touch] .report-panel { width: min(42em, 92vw); }
+.sr-ui[data-touch] .tabs { overflow-x: auto; scrollbar-width: none; }
+.sr-ui[data-touch] .tabs .tab { flex: none; }
+.sr-ui[data-touch] .tabs__glyph { display: none; }
+

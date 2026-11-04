@@ -290,7 +290,9 @@ export function SettingsScreen() {
 
 /** LB on the left end of the tab row, RB on the right (Q / E on the keyboard). */
 function ActionGlyphsSingle(props: { side: 'prev' | 'next' }) {
-  const pad = useGame((s) => s.inputDevice) === 'gamepad'
+  const device = useGame((s) => s.inputDevice)
+  const pad = device === 'gamepad'
+  if (device === 'touch') return null
   if (!pad) return <span className="glyph glyph--key">{props.side === 'prev' ? 'Q' : 'E'}</span>
   return <span className="glyph glyph--bumper">{props.side === 'prev' ? 'LB' : 'RB'}</span>
 }

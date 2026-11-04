@@ -216,6 +216,9 @@ export class AudioRig {
       }
     }
     const ctx = this.g.ctx
+    // iPhone: mix with whatever else is playing and follow the silent switch, like any game.
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession
+    if (session) session.type = 'ambient'
     if (ctx.state !== 'running' && ctx.state !== 'closed') {
       ctx.resume().catch(() => {
         // Not allowed yet (no gesture so far). The next gesture or poll tries again.

@@ -349,7 +349,8 @@ const HINT_DRIVE_S = 8
  * few seconds, and comes back next run.
  */
 export function DriveHint() {
-  const pad = useGame((s) => s.inputDevice) === 'gamepad'
+  const device = useGame((s) => s.inputDevice)
+  const pad = device === 'gamepad'
   const round = useGame((s) => s.round)
   const mp = useGame((s) => s.multiplayer)
   const mode = useGame((s) => s.mode)
@@ -367,6 +368,8 @@ export function DriveHint() {
     }, 500)
     return () => clearInterval(t)
   }, [round])
+  // On a phone the controls are on the screen, each with its name on it.
+  if (device === 'touch') return null
   // Rewind is off in multiplayer, so its hint is too.
   const items = (pad ? PAD_HINTS : KEY_HINTS).filter(([, label]) => !(mp && label === 'Rewind'))
   const race: [string, string] | null = mp ? [pad ? 'X' : 'G', 'Start a race'] : null
@@ -396,7 +399,8 @@ const AIR_HINT_DELAY_S = 0.2
  * the next round.
  */
 export function AirTrickHint() {
-  const pad = useGame((s) => s.inputDevice) === 'gamepad'
+  const device = useGame((s) => s.inputDevice)
+  const pad = device === 'gamepad'
   const round = useGame((s) => s.round)
   const tricks = useSettings((s) => s.tricks)
   const [show, setShow] = useState(false)
@@ -423,12 +427,18 @@ export function AirTrickHint() {
   if (!tricks) return null
   return (
     <div className={`hud-hint hud-hint--air${show ? '' : ' is-gone'}`} aria-hidden={!show}>
-      <span className="hint">
-        <Glyph name={pad ? 'A' : 'Space'} pad={pad} />
-        <span className="hint__plus">+</span>
-        <Glyph name={pad ? 'LS' : 'W A S D'} pad={pad} />
-        <span className="hint__label">in the air: tricks</span>
-      </span>
+      {device === 'touch' ? (
+        <span className="hint">
+          <span className="hint__label">Hold Drift and push the stick in the air: tricks</span>
+        </span>
+      ) : (
+        <span className="hint">
+          <Glyph name={pad ? 'A' : 'Space'} pad={pad} />
+          <span className="hint__plus">+</span>
+          <Glyph name={pad ? 'LS' : 'W A S D'} pad={pad} />
+          <span className="hint__label">in the air: tricks</span>
+        </span>
+      )}
     </div>
   )
 }

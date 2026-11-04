@@ -1,9 +1,11 @@
 // ============================================================
-//  INPUT - keyboard + Xbox controller, last touched wins
+//  INPUT - keyboard + Xbox controller + touch, last touched wins
 // ------------------------------------------------------------
 //  Implements the controls contract (src/core/controls.ts). This
 //  is the ONLY file that listens to the keyboard and polls the
-//  Gamepad API for driving and menu navigation. It writes:
+//  Gamepad API for driving and menu navigation. The phone's
+//  on-screen controls (src/ui/TouchControls.tsx) hand it their raw
+//  finger state in touchInput. It writes:
 //
 //    driveInput      smoothed throttle / brake / steer / handbrake,
 //                    and rewind (held Backspace / LB)
@@ -31,7 +33,7 @@
 //     audio.unlock() so a controller-only player still gets sound.
 // ============================================================
 
-import { controlSignals, driveInput, inputState, menuBus } from './controls'
+import { controlSignals, driveInput, inputState, menuBus, touchInput } from './controls'
 import type { InputContext, InputDevice, MenuAction } from './controls'
 import { audio } from './api'
 import { useGame } from './store'
@@ -74,6 +76,10 @@ const STICK_LOCK_SECONDS_FAST = 0.4
 const COUNTER_STEER_BETA = 0.12
 
 const STICK_DEADZONE = 0.14
+/** A thumb on glass doesn't wander like a worn stick does: a small deadzone keeps the first nudge alive. */
+const TOUCH_DEADZONE = 0.06
+/** In the air, the thumb stick past this far up or down pitches the car (the pedals' job on a keyboard). */
+const TOUCH_AIR_PITCH = 0.3
 const TRIGGER_DEADZONE = 0.05
 /** How far the stick must move to count as "the pad was touched" (hot-swap). */
 const PAD_ACTIVE_AXIS = 0.35
@@ -156,6 +162,8 @@ export function steeringGain(): number {
 const keys = { fwd: false, back: false, left: false, right: false, hand: false, rewind: false }
 
 let device: InputDevice = 'keyboard'
+/** Phones and tablets: a device with a finger and no mouse starts on touch, and falls back to it when a pad goes away. */
+let restDevice: InputDevice = 'keyboard'
 let lastContext: InputContext = inputState.context
 
 const padPrev = new Uint8Array(PAD_BUTTONS)
@@ -180,6 +188,7 @@ export const inputDebug = {
   padConnected: false,
   padId: '',
   keys,
+  touch: touchInput,
   /** The last few menu actions sent (newest last), e.g. 'down:keyboard'. */
   recentMenu: [] as string[],
 }
@@ -369,6 +378,18 @@ function onBlur(): void {
   clearDriveKeys()
 }
 
+/** A finger on the glass makes touch the device, the same "last touched wins" as a key or a pad. */
+function onPointerDown(e: PointerEvent): void {
+  if (e.pointerType === 'touch') setDevice('touch')
+}
+
+/** True on a phone or tablet: the main pointer is a finger and nothing fine is attached. `?touch=1` forces it. */
+function touchFirst(): boolean {
+  if (new URLSearchParams(window.location.search).get('touch') === '1') return true
+  if (typeof window.matchMedia !== 'function') return false
+  return window.matchMedia('(pointer: coarse)').matches && !window.matchMedia('(any-pointer: fine)').matches
+}
+
 let mounted = 0
 
 /** Attach the keyboard listeners. Returns a disposer. Safe under StrictMode double mounts and HMR. */
@@ -378,6 +399,11 @@ export function initInput(): () => void {
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onBlur)
+    window.addEventListener('pointerdown', onPointerDown, true)
+    if (touchFirst()) {
+      restDevice = 'touch'
+      setDevice('touch')
+    }
   }
   return () => {
     mounted--
@@ -385,6 +411,7 @@ export function initInput(): () => void {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
+      window.removeEventListener('pointerdown', onPointerDown, true)
       clearDriveKeys()
       zeroDrive()
     }
@@ -431,6 +458,35 @@ function padMenuDirection(p: Gamepad): MenuAction | null {
   return x < 0 ? 'left' : 'right'
 }
 
+/** Analog steering, a stick's or a thumb's: light smoothing, and full lock wound on gently at speed. */
+function stickSteer(steer: number, dt: number): void {
+  const kmh = Number.isFinite(telemetry.speedKmh) ? telemetry.speedKmh : 0
+  const steerRate = ANALOG_RATE + (STICK_STEER_RATE_FAST - ANALOG_RATE) * smoothstep(40, 120, kmh)
+  const was = driveInput.steer
+  let next = approach(was, steer, steerRate, dt)
+  const tame = smoothstep(STICK_TAME_LO_KMH, STICK_TAME_HI_KMH, kmh)
+  if (tame > 0) {
+    const windingOn = Math.abs(next) > Math.abs(was) && (was === 0 || Math.sign(next) === Math.sign(was))
+    const beta = Number.isFinite(telemetry.driftAngle) ? telemetry.driftAngle : 0
+    const catching = Math.abs(beta) > COUNTER_STEER_BETA && Math.sign(next) === Math.sign(beta)
+    if (windingOn && !catching) {
+      const maxStep = dt / (STICK_LOCK_SECONDS_FAST * tame)
+      next = clamp(next, was - maxStep, was + maxStep)
+    }
+  }
+  driveInput.steer = next
+}
+
+/** Digital pedals, a key's or an on-screen button's: eased in and out so full throttle never snaps on. */
+function digitalPedals(fwd: boolean, back: boolean, dt: number): void {
+  const tt = fwd ? 1 : 0
+  driveInput.throttle = approach(driveInput.throttle, tt, tt > 0 ? THROTTLE_ATTACK : THROTTLE_RELEASE, dt)
+  const bt = back ? 1 : 0
+  driveInput.brake = approach(driveInput.brake, bt, bt > 0 ? BRAKE_ATTACK : BRAKE_RELEASE, dt)
+  if (driveInput.throttle < 0.001) driveInput.throttle = 0
+  if (driveInput.brake < 0.001) driveInput.brake = 0
+}
+
 function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | null {
   const pad = readGamepad()
   if (!pad) {
@@ -439,7 +495,7 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
       inputDebug.padConnected = false
       padPrev.fill(0)
       padSuppressed.fill(0)
-      if (device === 'gamepad') setDevice('keyboard')
+      if (device === 'gamepad') setDevice(restDevice)
     }
     menuDir = null
     padRewind = false
@@ -506,24 +562,9 @@ function pollGamepad(nowMs: number, ctx: InputContext, dt: number): Gamepad | nu
 
   // Analog driving (only while the pad owns the car and we are driving).
   if (ctx === 'drive' && device === 'gamepad') {
-    const steer = stickCurve(deadzone(ax, STICK_DEADZONE))
+    stickSteer(stickCurve(deadzone(ax, STICK_DEADZONE)), dt)
     const throttle = padSuppressed[PAD.RT] ? 0 : deadzone(buttonValue(pad, PAD.RT), TRIGGER_DEADZONE)
     const brake = padSuppressed[PAD.LT] ? 0 : deadzone(buttonValue(pad, PAD.LT), TRIGGER_DEADZONE)
-    const kmh = Number.isFinite(telemetry.speedKmh) ? telemetry.speedKmh : 0
-    const steerRate = ANALOG_RATE + (STICK_STEER_RATE_FAST - ANALOG_RATE) * smoothstep(40, 120, kmh)
-    const was = driveInput.steer
-    let next = approach(was, steer, steerRate, dt)
-    const tame = smoothstep(STICK_TAME_LO_KMH, STICK_TAME_HI_KMH, kmh)
-    if (tame > 0) {
-      const windingOn = Math.abs(next) > Math.abs(was) && (was === 0 || Math.sign(next) === Math.sign(was))
-      const beta = Number.isFinite(telemetry.driftAngle) ? telemetry.driftAngle : 0
-      const catching = Math.abs(beta) > COUNTER_STEER_BETA && Math.sign(next) === Math.sign(beta)
-      if (windingOn && !catching) {
-        const maxStep = dt / (STICK_LOCK_SECONDS_FAST * tame)
-        next = clamp(next, was - maxStep, was + maxStep)
-      }
-    }
-    driveInput.steer = next
     driveInput.throttle = approach(driveInput.throttle, throttle, ANALOG_RATE, dt)
     driveInput.brake = approach(driveInput.brake, brake, ANALOG_RATE, dt)
     driveInput.handbrake = padNow[PAD.A] === 1 && !padSuppressed[PAD.A]
@@ -564,11 +605,22 @@ export function pollInput(nowMs: number): void {
     zeroDrive()
     return
   }
-  // Rewind is a held button from either device, whichever is driving.
-  driveInput.rewind = keys.rewind || padRewind
+  // Rewind is a held button from any device, whichever is driving.
+  driveInput.rewind = keys.rewind || padRewind || touchInput.rewind
   if (device === 'gamepad' && padConnected) {
     sanitise()
     return // the pad path above already wrote driveInput
+  }
+
+  if (device === 'touch') {
+    // Thumb stick: analog in, like the pad. Buttons: digital in, like the keys.
+    stickSteer(stickCurve(deadzone(touchInput.steer, TOUCH_DEADZONE)), dt)
+    // A thumb has no W and S to spare in the air: the stick's up and down pitch the car there.
+    const pitch = telemetry.airborne ? touchInput.stickY : 0
+    digitalPedals(touchInput.gas || pitch > TOUCH_AIR_PITCH, touchInput.brake || pitch < -TOUCH_AIR_PITCH, dt)
+    driveInput.handbrake = touchInput.handbrake
+    sanitise()
+    return
   }
 
   // Keyboard: digital in, analog out.
@@ -585,12 +637,7 @@ export function pollInput(nowMs: number): void {
   driveInput.steer = approach(driveInput.steer, steerTarget, steerRate, dt)
   if (Math.abs(driveInput.steer) < 0.002) driveInput.steer = 0
 
-  const tt = keys.fwd ? 1 : 0
-  driveInput.throttle = approach(driveInput.throttle, tt, tt > 0 ? THROTTLE_ATTACK : THROTTLE_RELEASE, dt)
-  const bt = keys.back ? 1 : 0
-  driveInput.brake = approach(driveInput.brake, bt, bt > 0 ? BRAKE_ATTACK : BRAKE_RELEASE, dt)
-  if (driveInput.throttle < 0.001) driveInput.throttle = 0
-  if (driveInput.brake < 0.001) driveInput.brake = 0
+  digitalPedals(keys.fwd, keys.back, dt)
   driveInput.handbrake = keys.hand
   sanitise()
 }
