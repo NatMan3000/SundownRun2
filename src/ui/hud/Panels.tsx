@@ -448,12 +448,14 @@ export function useModePanels(): { race: boolean; stunt: boolean; hunt: boolean;
   const mode = useGame((s) => s.mode)
   const coresTotal = useGame((s) => s.coresTotal)
   const tricks = useSettings((s) => s.tricks)
+  // Hunt Turns already lists everyone's points; a phone hasn't the room to say it twice.
+  const touch = useGame((s) => s.inputDevice) === 'touch'
   return {
     race: mode === 'race',
     stunt: mode === 'stunt',
     hunt: mode === 'free' && coresTotal > 0,
     tag: mode === 'tag',
     turns: mode === 'turns',
-    tricks: tricks && (mode === 'free' || mode === 'stunt' || mode === 'tag' || mode === 'turns'),
+    tricks: tricks && (mode === 'free' || mode === 'stunt' || mode === 'tag' || (mode === 'turns' && !touch)),
   }
 }

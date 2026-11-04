@@ -29,6 +29,8 @@ async function open(w:number,h:number,q='track=afterglow&mode=free&nomusic=1&qua
   page.on('pageerror',e=>log('PAGEERROR '+e.message))
   await page.setUserAgent(UA)
   await page.setViewport({width:w,height:h,deviceScaleFactor:2,isMobile:true,hasTouch:true})
+  // Records the UI's very first state as it lands in the page, before anything has run for long.
+  await page.evaluateOnNewDocument(()=>{const look=()=>{const e=document.querySelector('.sr-ui');if(!e||(window as any).__firstTouch!==undefined)return;(window as any).__firstTouch=e.getAttribute('data-touch')==='1';(window as any).__firstText=e.textContent};new MutationObserver(look).observe(document,{subtree:true,childList:true})})
   await page.goto(`http://localhost:${port}/?${q}`,{waitUntil:'load'})
   const cdp=await page.createCDPSession()
   return {page,cdp}
@@ -38,12 +40,16 @@ const touch=(cdp:any,type:string,pts:P[])=>cdp.send('Input.dispatchTouchEvent',{
 const inp=(page:any)=>page.evaluate(()=>{const g=(window as any).__game;const i=g.get('input');const t=g.telemetry;return {device:i.device,ctx:i.context,touch:i.touch,kmh:t.speedKmh,steer:t.steer,th:t.throttle,br:t.brake,hb:t.handbrake}})
 const rect=(page:any,sel:string)=>page.evaluate((s:string)=>{const e=document.querySelector(s);if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,l:r.left,t:r.top,r:r.right,b:r.bottom}},sel)
 
-for(const [name,w,h] of [['landscape',844,390],['portrait',390,844]] as const){
+// The tab window is a real iPhone 17 Pro in Safari on its side, the tightest there is.
+for(const [name,w,h] of [['landscape',874,402],['tab',874,292],['portrait',390,844]] as const){
   const {page,cdp}=await open(w,h)
   await sleep(9000)
   const before=await inp(page)
   log(`${name} boot ${JSON.stringify(before)}`)
   ok(before.device==='touch',`${name}: phone boots on touch`)
+  const first=await page.evaluate(()=>({touch:(window as any).__firstTouch,text:(window as any).__firstText as string}))
+  ok(first.touch===true,`${name}: the very first paint is already touch`)
+  ok(!/Press any key|Backspace|Shift\+R/.test(first.text??''),`${name}: no key names in the first paint`)
   await page.screenshot({path:`${OUT}/${name}-0-boot.png`})
   const started=await page.evaluate(()=>(window as any).__game.get('ui'))
   log(`${name} ui ${JSON.stringify({stack:started.stack,ctx:started.inputContext})}`)
@@ -99,6 +105,10 @@ for(const [name,w,h] of [['landscape',844,390],['portrait',390,844]] as const){
   // rewind hold
   await touch(cdp,'touchStart',[{...btn('Rewind'),id:5}]); await sleep(120)
   s=await inp(page); ok(s.touch.rewind===true,`${name}: Rewind is held`)
+  const shade=await page.evaluate(()=>{const b=document.querySelector('.touch-rewind') as HTMLElement;const cs=getComputedStyle(b);return {down:b.classList.contains('is-down'),fill:b.style.getPropertyValue('--fill'),bg:cs.backgroundColor}})
+  log(`${name} rewind while held ${JSON.stringify(shade)}`)
+  ok(shade.down,`${name}: a held Rewind shows it is held`)
+  ok(Number(shade.fill)>=0,`${name}: Rewind carries its meter (${shade.fill})`)
   await touch(cdp,'touchEnd',[]); await sleep(120)
   s=await inp(page); ok(s.touch.rewind===false,`${name}: Rewind lets go`)
   const sig0=await page.evaluate(()=>(window as any).__game.telemetry.speedKmh)
@@ -136,7 +146,7 @@ for(const [name,w,h] of [['landscape',844,390],['portrait',390,844]] as const){
   await tap(w/2,h/2); await sleep(200)
   s=await inp(page); ok(s.device==='touch',`${name}: a finger takes it back`)
   // layout overlap check
-  const overlap=await page.evaluate(()=>{const R=(s:string)=>{const e=document.querySelector(s);return e?e.getBoundingClientRect():null};const items:[string,DOMRect|null][]=[['tl',R('.hud-stack--tl')],['map',R('.hud-map')],['row',R('.touch-row')],['speed',R('.hud-speed')],['stick',R('.touch-stick')],['brake',R('.touch-pedal--brake')],['gas',R('.touch-pedal--gas')],['drift',R('.touch-pedal--drift')]];const out:string[]=[];for(let i=0;i<items.length;i++)for(let j=i+1;j<items.length;j++){const a=items[i][1],b=items[j][1];if(!a||!b||!(a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom))continue;const round=(n:string)=>['stick','brake','gas','drift'].includes(n);if(round(items[i][0])&&round(items[j][0])){const d=Math.hypot(a.left+a.width/2-b.left-b.width/2,a.top+a.height/2-b.top-b.height/2);if(d>=a.width/2+b.width/2)continue}out.push(items[i][0]+'/'+items[j][0])}return out})
+  const overlap=await page.evaluate(()=>{const R=(s:string)=>{const e=document.querySelector(s);return e?e.getBoundingClientRect():null};const panels=[...document.querySelectorAll('.hud-stack--tl > *')].map((e,i)=>['panel'+i,e.getBoundingClientRect()] as [string,DOMRect]);const items:[string,DOMRect|null][]=[...panels,['map',R('.hud-map')],['row',R('.touch-row')],['view',R('.touch-row--view')],['rewind',R('.touch-rewind')],['speed',R('.hud-speed')],['stick',R('.touch-stick')],['brake',R('.touch-pedal--brake')],['gas',R('.touch-pedal--gas')],['drift',R('.touch-pedal--drift')]];const out:string[]=[];for(let i=0;i<items.length;i++)for(let j=i+1;j<items.length;j++){const a=items[i][1],b=items[j][1];if(!a||!b||!(a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom))continue;const round=(n:string)=>['stick','brake','gas','drift'].includes(n);if(round(items[i][0])&&round(items[j][0])){const d=Math.hypot(a.left+a.width/2-b.left-b.width/2,a.top+a.height/2-b.top-b.height/2);if(d>=a.width/2+b.width/2)continue}out.push(items[i][0]+'/'+items[j][0])}return out})
   log(`${name} overlaps: ${JSON.stringify(overlap)}`)
   ok(overlap.length===0,`${name}: nothing overlaps`)
   await page.close()

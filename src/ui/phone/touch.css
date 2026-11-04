@@ -15,11 +15,14 @@
   --safe-r: env(safe-area-inset-right, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-l: env(safe-area-inset-left, 0px);
-  --edge: clamp(10px, 3.4vmin, 28px);
-  --gas: clamp(84px, 28vmin, 150px);
-  --pedal: clamp(68px, 22vmin, 118px);
-  --stick: clamp(96px, 30vmin, 160px);
-  --knob: clamp(44px, 13vmin, 70px);
+  /* One hundredth of the shorter side of what's actually showing. Plain vmin counts the height
+     with Safari's toolbars hidden: 402 on a real iPhone 17 Pro whose page is 292. */
+  --u: 1dvmin;
+  --edge: clamp(10px, calc(3.4 * var(--u)), 28px);
+  --gas: clamp(84px, calc(28 * var(--u)), 150px);
+  --pedal: clamp(68px, calc(22 * var(--u)), 118px);
+  --stick: clamp(96px, calc(30 * var(--u)), 160px);
+  --knob: clamp(44px, calc(13 * var(--u)), 70px);
   /* just above Drift, the highest of the thumbs' buttons */
   --above-thumbs: calc(var(--safe-b) + var(--edge) + var(--gas) * 0.92 + var(--pedal) + 8px);
 }
@@ -27,7 +30,7 @@
 
 
 /* ---------------------------------------------------------------- touch controls (TouchControls.tsx)
-   Sized in vmin, not em: a thumb is the same size whatever the window's height, and the
+   Sized in --u (the shorter side), not em: a thumb is the same size whatever the window's height, and the
    em scale follows height, so a phone on its side would shrink every target. Everything
    clears the notch and the home bar through the safe-area insets. No blur here: these sit
    over the road all the time and a phone has no frame time to spare for it. */
@@ -56,16 +59,20 @@
   background: color-mix(in srgb, var(--panel-solid) 42%, transparent);
   color: var(--text);
   font-family: var(--font-display);
-  font-size: clamp(11px, 3.4vmin, 17px);
+  font-size: clamp(11px, calc(3.4 * var(--u)), 17px);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   text-shadow: var(--legible);
-  transition: background 90ms ease-out, transform 90ms ease-out;
+  transition: background 160ms ease-out, box-shadow 160ms ease-out;
 }
+/* A thumb hides the middle of the button, so the press shows round its edge: a solid ring outside
+   it (no blur, so nothing to pay per frame) as well as the fill. */
 .touch-pedal.is-down {
-  background: color-mix(in srgb, var(--tint) 55%, transparent);
-  transform: scale(0.95);
+  background: color-mix(in srgb, var(--tint) 62%, transparent);
+  border-color: var(--tint);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--tint) 42%, transparent);
+  transition: none;
 }
 .touch-pedal--gas {
   --tint: var(--accent);
@@ -73,7 +80,7 @@
   height: var(--gas);
   right: calc(var(--safe-r) + var(--edge));
   bottom: calc(var(--safe-b) + var(--edge));
-  font-size: clamp(14px, 4.6vmin, 22px);
+  font-size: clamp(14px, calc(4.6 * var(--u)), 22px);
 }
 .touch-pedal--brake {
   --tint: var(--warn);
@@ -89,7 +96,8 @@
 
 .touch-stick {
   position: absolute;
-  left: calc(var(--safe-l) + var(--edge) + 6px);
+  /* where a thumb lands: not in the corner, even on a phone with no notch to clear */
+  left: max(calc(var(--safe-l) + var(--edge) + 6px), 28px);
   bottom: calc(var(--safe-b) + var(--edge) + 6px);
   width: var(--stick);
   height: var(--stick);
@@ -126,17 +134,25 @@
 .touch-stick__arrow--l { left: 8%; transform: translateY(-50%) rotate(45deg); }
 .touch-stick__arrow--r { right: 8%; transform: translateY(-50%) rotate(225deg); }
 
+/* Menu and Reset down the left edge; Race and Camera just left of the map. */
 .touch-row {
   position: absolute;
-  top: calc(var(--safe-t) + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  top: var(--hud-top);
+  left: var(--hud-left);
   display: flex;
+  flex-direction: column;
   gap: 4px;
 }
+.touch-row--view {
+  left: auto;
+  right: calc(var(--hud-right) + var(--hud-map-w) + 4px);
+  flex-direction: row;
+}
 .touch-top {
-  width: 44px;
-  height: 44px;
+  position: relative;
+  width: var(--hud-button);
+  height: var(--hud-button);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -144,9 +160,9 @@
   gap: 1px;
   border-radius: var(--radius-s);
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  background: color-mix(in srgb, var(--panel-solid) 70%, transparent);
   touch-action: none;
-  transition: background 90ms ease-out;
+  transition: background 200ms ease-out;
 }
 .touch-top svg {
   width: 20px;
@@ -159,47 +175,406 @@
 }
 .touch-top span {
   font-family: var(--font-display);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: var(--dim);
+  color: var(--text);
 }
-.touch-top.is-down { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+/* On at once, off gently: a quick tap under a thumb still flashes. */
+.touch-top.is-down { background: color-mix(in srgb, var(--accent) 70%, transparent); border-color: var(--accent); transition: none; }
 .touch-top--hot { border-color: var(--accent); }
 
+/* The one big button above Gas: Rewind, or in Hunt Turns while you hunt, Pulse. */
+.touch-rewind,
 .touch-pulse {
   position: absolute;
-  right: calc(var(--safe-r) + var(--edge));
-  bottom: calc(var(--safe-b) + var(--edge) + var(--gas) + 10px);
-  width: var(--pedal);
-  height: var(--pedal);
-  border-radius: 50%;
-  border: 2px solid var(--tag-it);
-  background: color-mix(in srgb, var(--tag-it) 28%, transparent);
-  color: var(--text);
+  right: var(--hud-right);
+  bottom: var(--above-thumbs);
+  width: 64px;
+  height: 60px;
+  box-sizing: border-box;
+}
+.touch-rewind { --fill: 0; overflow: hidden; border-color: color-mix(in srgb, var(--accent) 70%, transparent); }
+.touch-rewind svg { width: 26px; height: 26px; fill: color-mix(in srgb, var(--accent) 80%, transparent); stroke: none; }
+.touch-rewind span { margin-bottom: 4px; }
+.touch-rewind.is-empty { border-color: var(--line); }
+.touch-rewind.is-empty svg { fill: var(--dim); }
+.touch-rewind.is-empty span { color: var(--dim); }
+.touch-rewind.is-down svg { fill: var(--text); }
+.touch-rewind.is-down span { color: var(--text); }
+.touch-rewind.is-down .touch-top__meter { background: var(--text); }
+.touch-top__meter {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(var(--fill, 0));
+}
+.touch-pulse {
+  border-radius: var(--radius-s);
+  border: 2px solid var(--line);
+  background: color-mix(in srgb, var(--panel-solid) 70%, transparent);
+  color: var(--dim);
   font-family: var(--font-display);
-  font-size: clamp(11px, 3.4vmin, 17px);
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   text-align: center;
   text-transform: uppercase;
   text-shadow: var(--legible);
   touch-action: none;
+  transition: background 200ms ease-out;
+}
+.touch-pulse span { display: block; }
+.touch-pulse.is-ready { border-color: var(--tag-it); background: color-mix(in srgb, var(--tag-it) 38%, transparent); color: var(--text); }
+.touch-pulse.is-down { background: color-mix(in srgb, var(--tag-it) 75%, transparent); transition: none; }
+
+/* ---------------------------------------------------------------- the HUD on a phone
+   A phone on its side is about 340 px tall and most of that is road. So the read-outs share
+   one slim band over the sky, nothing sits in the middle of the road below it, and every
+   panel says in two lines what it says in five on a desktop. Laid out left to right:
+
+     Menu, Reset | lap and mode panels | SPEED | Race, Camera | map
+
+   Whatever comes and goes (speed cue, speed trap, toasts, song name) stacks in one column
+   under the speed, so two of them can't land on each other. The trick feed sits above the
+   stick. Sizes are in em against this block's own font size, which doesn't follow .sr-ui's
+   (that one follows the window height, and a menu may want it different). */
+
+.sr-ui[data-touch] {
+  --hud-em: clamp(12px, calc(3.5 * var(--u)), 13px);
+  --hud-top: calc(var(--safe-t) + 6px);
+  --hud-left: calc(var(--safe-l) + var(--edge));
+  --hud-right: calc(var(--safe-r) + var(--edge));
+  --hud-button: 44px;
+  --hud-stack-left: calc(var(--hud-left) + var(--hud-button) + 4px);
+  --hud-stack-w: calc(var(--hud-em) * 16.6);
+  --hud-map-w: calc(var(--hud-em) * 8);
+  --hud-map-h: calc(var(--hud-em) * 7);
+  --hud-band: calc(var(--hud-top) + var(--hud-button) + 4px);
+}
+.sr-ui[data-touch] .hud {
+  font-size: var(--hud-em);
+  /* One small shadow instead of the desktop's wide soft one: these numbers change 20 times a second. */
+  --legible: 0 1px 2px var(--shade);
 }
 
-/* The HUD makes room for two thumbs: on its side the speedometer sits between them, the
-   trick score above the stick. Stood up, the top row can't fit between the lap panel and
-   the map, so it sits just above the thumbs with the speed and score above it. */
-.sr-ui[data-touch] .hud-stack--tl { top: calc(var(--safe-t) + 0.6em); left: calc(var(--safe-l) + 0.6em); width: 12.5em; }
-.sr-ui[data-touch] .hud-map { top: calc(var(--safe-t) + 0.6em); right: calc(var(--safe-r) + 0.6em); width: 10em; max-height: 10em; }
-.sr-ui[data-touch] .hud-stack--br { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 0.4em); align-items: center; font-size: 0.62em; }
-.sr-ui[data-touch] .hud-stack--bl { left: calc(var(--safe-l) + 0.6em); bottom: calc(var(--safe-b) + var(--edge) + var(--stick) + 14px); flex-direction: row-reverse; justify-content: flex-end; align-items: flex-end; }
+/* No blur anywhere on the drive: every blurred box is its own GPU pass on a phone's GPU, and
+   the dense glass keeps text legible without it. The rewind wash goes too: a full-screen
+   backdrop filter is the dearest of the lot, and the tint and scan lines still say "rewind". */
+.sr-ui[data-touch] .hud,
+.sr-ui[data-touch] .hud *,
+.sr-ui[data-touch] .hud *::before,
+.sr-ui[data-touch] .hud *::after { backdrop-filter: none; }
+.sr-ui[data-touch] .hud-rewindfx__wash { background: color-mix(in srgb, var(--panel-solid) 30%, transparent); }
+.sr-ui[data-touch] .hud .arc-fill,
+.sr-ui[data-touch] .hud .arc-fill.is-red { filter: none; }
 
+/* The panels, each cut down to what you act on. */
+.sr-ui[data-touch] .hud-panel { border-radius: var(--radius-s); }
+.sr-ui[data-touch] .hud-stack--tl { top: var(--hud-top); left: var(--hud-stack-left); width: var(--hud-stack-w); gap: 3px; }
+.sr-ui[data-touch] .hud-fps__chip { display: none; }
+
+/* Lap: the clock with Last and Best beside it, two lines tall */
+.sr-ui[data-touch] .hud-lap {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 0.6em;
+  align-items: center;
+  min-height: var(--hud-button);
+  box-sizing: border-box;
+  padding: 0.15em 0.6em 0.3em;
+  gap: 0 0.6em;
+}
+.sr-ui[data-touch] .hud-lap__top { grid-column: 1; grid-row: 1; gap: 0.4em; justify-content: flex-start; }
+.sr-ui[data-touch] .hud-lap .hud-label { font-size: 0.75em; letter-spacing: 0.14em; white-space: nowrap; }
+.sr-ui[data-touch] .hud-lap__clock { grid-column: 1; grid-row: 2; font-size: 1.7em; line-height: 1; }
+.sr-ui[data-touch] .hud-tag { font-size: 0.62em; letter-spacing: 0.06em; padding: 0 0.35em; border-radius: 3px; }
+.sr-ui[data-touch] .hud-sectors { position: absolute; left: 0.6em; right: 0.6em; bottom: 2px; gap: 2px; }
+.sr-ui[data-touch] .hud-sectors i { height: 2px; box-shadow: none; }
+.sr-ui[data-touch] .hud-lap__rows { grid-column: 2; grid-row: 1 / span 2; margin: 0; padding: 0 0 0 0.6em; border-top: 0; border-left: 1px solid var(--line); gap: 0.1em; }
+.sr-ui[data-touch] .hud-lap__row { gap: 0.5em; align-items: baseline; }
+.sr-ui[data-touch] .hud-lap__row span { font-size: 0.75em; letter-spacing: 0.1em; }
+.sr-ui[data-touch] .hud-lap__row b { font-size: 1em; min-width: 0; white-space: nowrap; }
+
+/* A race says which lap in its own panel, so the lap panel doesn't. */
+.sr-ui[data-touch] .hud-race + .hud-lap { min-height: 0; padding-top: 0.25em; padding-bottom: 0.4em; }
+.sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__top { position: absolute; right: 0.4em; top: -0.5em; }
+.sr-ui[data-touch] .hud-race + .hud-lap .hud-label { display: none; }
+.sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__clock { grid-row: 1 / span 2; }
+
+/* Race: the place, big, then the lap and the gap */
+.sr-ui[data-touch] .hud-race { padding: 0.1em 0.6em 0.2em; gap: 0.7em; }
+.sr-ui[data-touch] .hud-race__p { font-size: 1.2em; }
+.sr-ui[data-touch] .hud-race__num { font-size: 2.2em; line-height: 1; }
+.sr-ui[data-touch] .hud-race__of { font-size: 1em; margin-left: 0.2em; }
+.sr-ui[data-touch] .hud-race__side { gap: 0; }
+.sr-ui[data-touch] .hud-race .hud-label { font-size: 0.75em; letter-spacing: 0.12em; }
+.sr-ui[data-touch] .hud-race__gap { font-size: 0.95em; }
+
+/* Stunt: time on the first line, score and best on the second */
+.sr-ui[data-touch] .hud-mode { padding: 0.2em 0.6em 0.3em; gap: 0; }
+.sr-ui[data-touch] .hud-mode .hud-label { font-size: 0.75em; letter-spacing: 0.14em; white-space: nowrap; }
+.sr-ui[data-touch] .hud-mode__top { align-items: center; }
+.sr-ui[data-touch] .hud-mode__clock { font-size: 1.3em; line-height: 1.1; }
+.sr-ui[data-touch] .hud-mode__big { font-size: 1.5em; line-height: 1.1; }
+.sr-ui[data-touch] .hud-mode:not(.hud-tagp) { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 0.8em; align-items: baseline; }
+.sr-ui[data-touch] .hud-mode:not(.hud-tagp) .hud-mode__top { grid-column: 1 / span 2; }
+.sr-ui[data-touch] .hud-mode .hud-lap__row b { font-size: 1em; }
+.sr-ui[data-touch] .hud-mode .hud-lap__row span { font-size: 0.75em; }
+
+/* Tag: who's it beside the clock; time as it; the arrow to the nearest */
+.sr-ui[data-touch] .hud-tagp:not(.hud-turnsp) { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 0.6em; align-items: center; }
+.sr-ui[data-touch] .hud-tagp:not(.hud-turnsp) .hud-mode__top { grid-column: 2; grid-row: 1; }
+.sr-ui[data-touch] .hud-tagp:not(.hud-turnsp) .hud-label { display: none; }
+.sr-ui[data-touch] .hud-tagp:not(.hud-turnsp) .hud-mode__big { grid-column: 1; grid-row: 1; }
+.sr-ui[data-touch] .hud-tagp:not(.hud-turnsp) .hud-lap__row { grid-column: 1 / span 2; }
+.sr-ui[data-touch] .hud-tagp__it { font-size: 1.25em; letter-spacing: 0.02em; white-space: nowrap; }
+.sr-ui[data-touch] .hud-tagp.is-it { box-shadow: none; }
+.sr-ui[data-touch] .hud-tagp__hunt { align-items: center; }
+.sr-ui[data-touch] .hud-tagp__hunt b { font-size: 1.15em; }
+.sr-ui[data-touch] .hud-tagp__arrow { width: 1.2em; height: 1.2em; }
+
+/* Hunt Turns: the turn and its clock; hunting or running; everyone's score; the arrow. Pulse's
+   countdown is on the Pulse button, where the thumb is going. */
+.sr-ui[data-touch] .hud-turnsp { flex-direction: row; flex-wrap: wrap; align-items: baseline; column-gap: 0.6em; }
+.sr-ui[data-touch] .hud-turnsp > .hud-mode__top,
+.sr-ui[data-touch] .hud-turnsp > .hud-turnsp__earn,
+.sr-ui[data-touch] .hud-turnsp > .hud-turnsp__rows,
+.sr-ui[data-touch] .hud-turnsp > .hud-tagp__hunt { flex: 0 0 100%; }
+.sr-ui[data-touch] .hud-turnsp__who { font-size: 0.8em; letter-spacing: 0.04em; }
+.sr-ui[data-touch] .hud-turnsp__earn { font-size: 0.75em; letter-spacing: 0.06em; }
+.sr-ui[data-touch] .hud-turnsp__rows { margin-top: 0.1em; padding-top: 0.15em; gap: 0; }
+.sr-ui[data-touch] .hud-turnsp__row { gap: 0.5em; }
+.sr-ui[data-touch] .hud-turnsp__row:nth-child(n + 4):not(.hud-turnsp__unit) { display: none; }
+.sr-ui[data-touch] .hud-turnsp__name { font-size: 0.85em; letter-spacing: 0.04em; }
+.sr-ui[data-touch] .hud-turnsp__c { font-size: 0.75em; letter-spacing: 0.02em; }
+.sr-ui[data-touch] .hud-turnsp__n { font-size: 1.1em; line-height: 1.15; }
+.sr-ui[data-touch] .hud-turnsp__n::after { content: ' pts'; font-size: 0.7em; font-weight: 600; letter-spacing: 0.06em; color: var(--dim); }
+.sr-ui[data-touch] .hud-turnsp__unit,
+.sr-ui[data-touch] .hud-turnsp__pulse { display: none !important; }
+
+/* Energy cores and tricks: one line each */
+.sr-ui[data-touch] .hud-hunt { padding: 0.05em 0.6em; gap: 0.5em; }
+.sr-ui[data-touch] .hud-hunt__core { width: 0.75em; height: 0.75em; box-shadow: none; }
+.sr-ui[data-touch] .hud-hunt__count { font-size: 1.35em; }
+.sr-ui[data-touch] .hud-hunt .hud-label { display: none; }
+.sr-ui[data-touch] .hud-hunt__clock { font-size: 0.95em; }
+.sr-ui[data-touch] .hud-tricks { min-width: 0; flex-direction: row; align-items: center; justify-content: space-between; gap: 0.5em; padding: 0.05em 0.6em; }
+.sr-ui[data-touch] .hud-tricks .hud-label { font-size: 0.75em; letter-spacing: 0.14em; }
+.sr-ui[data-touch] .hud-tricks__top { justify-content: flex-start; gap: 0.5em; }
+.sr-ui[data-touch] .hud-combo { font-size: 0.75em; padding: 0 0.45em; box-shadow: none; }
+.sr-ui[data-touch] .hud-tricks__score { font-size: 1.35em; }
+/* A label, not a button, on a phone: any tap anywhere starts the sound (TouchControls lets Safari have the lift). */
+.sr-ui[data-touch] .sound-hint--chip { font-size: 0.75em; padding: 0.2em 0.7em 0.2em 0.5em; backdrop-filter: none; pointer-events: none; }
+
+/* The map: a fixed box whatever the track's shape, so the buttons below it never move. */
+.sr-ui[data-touch] .hud-map {
+  top: var(--hud-top);
+  right: var(--hud-right);
+  width: var(--hud-map-w);
+  height: var(--hud-map-h) !important;
+}
+.sr-ui[data-touch] .hud-map__north { display: none; }
+
+/* The speed: top centre, the nearest thing to where your eyes already are. The dial's disc
+   becomes the panel; the gauge lies along its foot. */
+.sr-ui[data-touch] .hud-stack--br {
+  top: var(--hud-top);
+  bottom: auto;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  align-items: center;
+  gap: 0;
+}
+.sr-ui[data-touch] .hud-speed {
+  width: auto;
+  min-width: 9.2em;
+  height: var(--hud-button);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sr-ui[data-touch] .hud-speed::before { inset: 0; border-radius: var(--radius-s); }
+.sr-ui[data-touch] .hud-speed__boost { inset: -0.5em; border-radius: var(--radius); }
+.sr-ui[data-touch] .hud-speed__readout { position: relative; inset: auto; flex-direction: row; align-items: baseline; gap: 0.35em; padding: 0 0.7em 0.2em; }
+.sr-ui[data-touch] .hud-speed__num { font-size: 2.5em; min-width: 1.75em; text-align: right; line-height: 1; }
+.sr-ui[data-touch] .hud-speed__unit { font-size: 0.75em; letter-spacing: 0.06em; margin: 0; }
+.sr-ui[data-touch] .hud-speed__gear { margin: 0 0 0 0.2em; min-width: 1.4em; padding: 0 0.25em; border-radius: 4px; font-size: 1.05em; align-self: center; box-sizing: border-box; }
+.hud-speed__bar { position: absolute; left: 0.6em; right: 0.6em; bottom: 3px; width: calc(100% - 1.2em); height: 3px; display: block; overflow: hidden; border-radius: 1.5px; }
+.hud-speed__bar line { stroke-width: 4; stroke-linecap: butt; }
+/* The stored-rewind meter lives on the Rewind button itself. */
+.sr-ui[data-touch] .hud-rewind { display: none; }
+
+/* What comes and goes: a column under the speed, between the panels on the left and the map.
+   Centred on the screen where there's room for that; on a narrow phone, in the room there is. */
+.sr-ui[data-touch] .hud-stack--mid {
+  top: var(--hud-band);
+  left: calc(var(--hud-stack-left) + var(--hud-stack-w) + 6px);
+  right: calc(var(--hud-stack-left) + var(--hud-stack-w) + 6px);
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+.sr-ui[data-touch] .hud-toasts { position: static; transform: none; gap: 3px; width: 100%; }
+.sr-ui[data-touch] .hud-toast:nth-last-child(n + 3) { display: none; }
+/* A speed trap or cue is already using the sky: one toast then, the newest. */
+.sr-ui[data-touch] .hud-trap ~ .hud-toasts .hud-toast:nth-last-child(n + 2),
+.sr-ui[data-touch] .hud-cue ~ .hud-toasts .hud-toast:nth-last-child(n + 2) { display: none; }
+.sr-ui[data-touch] .hud-toast { white-space: normal; text-align: center; max-width: 100%; box-sizing: border-box; padding: 0.05em 0.9em 0.1em; border-radius: var(--radius-s); gap: 0; }
+.sr-ui[data-touch] .hud-toast__text { font-size: 1.05em; letter-spacing: 0.05em; }
+.sr-ui[data-touch] .hud-toast__sub { font-size: 0.78em; line-height: 1.15; }
+.sr-ui[data-touch] .hud-toast--gold,
+.sr-ui[data-touch] .hud-trap,
+.sr-ui[data-touch] .hud-cue.is-on,
+.sr-ui[data-touch] .hud-turnscard.is-hunter { box-shadow: none; }
+.sr-ui[data-touch] .hud-cue { flex-direction: row; align-items: baseline; gap: 0.6em; padding: 0.15em 0.7em; border-radius: var(--radius-s); }
+.sr-ui[data-touch] .hud-cue .hud-label { font-size: 0.75em; letter-spacing: 0.1em; white-space: nowrap; }
+.sr-ui[data-touch] .hud-cue__row { gap: 0.5em; }
+.sr-ui[data-touch] .hud-cue__kmh { font-size: 1.5em; }
+.sr-ui[data-touch] .hud-cue__kmh i { font-size: 0.5em; letter-spacing: 0.06em; }
+.sr-ui[data-touch] .hud-cue__band { font-size: 0.82em; letter-spacing: 0.06em; white-space: nowrap; }
+.sr-ui[data-touch] .hud-trap { flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: baseline; column-gap: 0.6em; padding: 0.1em 0.7em; border-radius: var(--radius-s); }
+.sr-ui[data-touch] .hud-trap .hud-label { font-size: 0.75em; letter-spacing: 0.1em; white-space: nowrap; }
+@media (max-height: 500px) {
+  .sr-ui[data-touch] .hud-trap .hud-label { display: none; }
+}
+.sr-ui[data-touch] .hud-trap__kmh { font-size: 1.7em; line-height: 1.05; white-space: nowrap; }
+.sr-ui[data-touch] .hud-trap__kmh i { font-size: 0.45em; letter-spacing: 0.06em; }
+.sr-ui[data-touch] .hud-trap__best { font-size: 0.8em; white-space: nowrap; }
+.sr-ui[data-touch] .hud-song { flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: baseline; column-gap: 0.5em; padding: 0.15em 0.7em; max-width: 100%; box-sizing: border-box; }
+.sr-ui[data-touch] .hud-song__eyebrow { font-size: 0.75em; letter-spacing: 0.1em; white-space: nowrap; }
+.sr-ui[data-touch] .hud-song__name { font-size: 0.95em; text-align: center; }
+.sr-ui[data-touch] .hud-song__key { display: none; }
+
+/* Hunt Turns' between-turns card, in the same room. */
+.sr-ui[data-touch] .hud-turnscard {
+  top: var(--hud-band);
+  left: calc(var(--hud-stack-left) + var(--hud-stack-w) + 6px);
+  right: calc(var(--hud-stack-left) + var(--hud-stack-w) + 6px);
+  transform: none;
+  min-width: 0;
+  padding: 0.35em 0.7em 0.45em;
+  gap: 0.1em;
+  text-align: center;
+  animation-name: touch-card-in;
+}
+@keyframes touch-card-in { from { opacity: 0; transform: translateY(-0.5em); } to { opacity: 1; transform: none; } }
+.sr-ui[data-touch] .hud-turnscard .hud-label { font-size: 0.75em; letter-spacing: 0.12em; }
+.sr-ui[data-touch] .hud-turnscard__big { font-size: 1.6em; }
+.sr-ui[data-touch] .hud-turnscard__sub { font-size: 0.85em; letter-spacing: 0.04em; }
+.sr-ui[data-touch] .hud-turnscard__last { font-size: 0.75em; letter-spacing: 0.04em; }
+
+/* 3-2-1-GO under the speed, and the tags that say rewind's on or off. */
+.sr-ui[data-touch] .hud-count { top: 46%; font-size: 5.4em; }
+.sr-ui[data-touch] .hud-rewindtag { top: var(--hud-band); gap: 0.4em; padding: 0.2em 0.8em; }
+.sr-ui[data-touch] .hud-rewindtag__icon { width: 1.4em; height: 0.8em; filter: none; }
+.sr-ui[data-touch] .hud-rewindtag__word { font-size: 1.25em; letter-spacing: 0.1em; }
+.sr-ui[data-touch] .hud-rewindtag__left { font-size: 1em; min-width: 2.8em; }
+.sr-ui[data-touch] .hud-rewindno { top: var(--hud-band); font-size: 0.9em; padding: 0.3em 0.9em; }
+
+/* The trick feed sits above the stick, the newest two pops: more would reach whatever is above them. */
+.sr-ui[data-touch] .hud-stack--bl { left: var(--hud-left); bottom: calc(var(--safe-b) + var(--edge) + var(--stick) + 12px); }
+.sr-ui[data-touch] .hud-feed { gap: 3px; }
+.sr-ui[data-touch] .hud-pop { padding: 0.1em 0.55em; gap: 0.45em; }
+.sr-ui[data-touch] .hud-pop__label { font-size: 1.05em; letter-spacing: 0.03em; }
+.sr-ui[data-touch] .hud-pop.is-big .hud-pop__label { font-size: 1.2em; }
+.sr-ui[data-touch] .hud-pop__pts { font-size: 1em; }
+.sr-ui[data-touch] .hud-pop__combo { font-size: 0.85em; }
+.sr-ui[data-touch] .hud-pop:nth-last-child(n + 3) { display: none; }
+
+/* "Hold Drift and push the stick in the air": at the foot, between the thumbs. */
+.sr-ui[data-touch] .hud-hint--air {
+  bottom: calc(var(--safe-b) + 6px);
+  max-width: calc(100vw - 2 * (var(--safe-l) + var(--edge) + var(--stick) + var(--gas) + 40px));
+  white-space: normal;
+  text-align: center;
+  font-size: 0.95em;
+  width: max-content;
+}
+
+/* A narrow phone: the column under the speed takes the room it has rather than being centred. */
+@media (max-width: 720px) and (orientation: landscape) {
+  .sr-ui[data-touch] .hud-stack--mid,
+  .sr-ui[data-touch] .hud-turnscard { right: calc(var(--hud-right) + var(--hud-map-w) + 6px); }
+  .sr-ui[data-touch] .hud-toasts { flex-direction: row; flex-wrap: wrap; align-items: flex-start; justify-content: center; }
+  .sr-ui[data-touch] .hud-toast:last-child { order: -1; }
+}
+
+/* A phone in a Safari tab, on its side: under 320 px tall, a thin strip. (Real iPhone 17 Pro: 874 x 292.)
+   Drift drops closer to the other two, which frees the corner above it for the map and the big
+   button, the map goes wide and low, and that button goes flat. */
+@media (max-height: 320px) {
+  .sr-ui[data-touch] {
+    --hud-map-h: calc(var(--hud-em) * 6);
+    --above-thumbs: calc(var(--safe-b) + var(--edge) + var(--gas) * 0.78 + var(--pedal) + 3px);
+  }
+  .touch-pedal--drift {
+    right: calc(var(--safe-r) + var(--edge) + var(--gas) * 0.78);
+    bottom: calc(var(--safe-b) + var(--edge) + var(--gas) * 0.78);
+  }
+  .touch-rewind, .touch-pulse { height: var(--hud-button); }
+  .touch-rewind svg { width: 20px; height: 20px; }
+  .sr-ui[data-touch] .hud-count { top: 50%; font-size: 4.6em; }
+  /* Who's earning what, and last turn's line: the first to go. Scores for you and the nearest rival stay. */
+  .sr-ui[data-touch] .hud-turnsp > .hud-turnsp__earn { display: none; }
+  .sr-ui[data-touch] .hud-turnsp__row:nth-child(n + 3):not(.hud-turnsp__unit) { display: none; }
+  .sr-ui[data-touch] .hud-turnscard__last:last-child:not(:nth-child(-n + 3)) { display: none; }
+}
+
+/* The same strip on a wide phone: everything on the left shares two rows. Menu and Reset side by
+   side, the first panel beside them, the rest in one line under all three. The column of what comes
+   and goes starts under the speed and runs right, since the second row takes the room to its left. */
+@media (max-height: 320px) and (min-width: 780px) and (orientation: landscape) {
+  .touch-row:not(.touch-row--view) { flex-direction: row; }
+  .sr-ui[data-touch] .hud-stack--tl {
+    left: var(--hud-left);
+    width: calc(var(--hud-button) * 2 + 8px + var(--hud-stack-w));
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .sr-ui[data-touch] .hud-stack--tl > * { flex: 1 1 0; min-width: 0; box-sizing: border-box; }
+  .sr-ui[data-touch] .hud-stack--tl > :first-child {
+    flex: 0 0 var(--hud-stack-w);
+    margin-left: calc(var(--hud-button) * 2 + 8px);
+    min-height: var(--hud-button);
+  }
+  .sr-ui[data-touch] .hud-stack--tl > .sound-hint { flex: 0 0 auto; }
+  .sr-ui[data-touch] .hud-stack--tl > .hud-lap:not(:first-child) { flex: 1 1 100%; }
+  .sr-ui[data-touch] .hud-race + .hud-lap { display: flex; flex-direction: row; align-items: center; justify-content: space-between; padding-bottom: 0.3em; }
+  .sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__rows { flex-direction: row; gap: 0.9em; border-left: 0; padding-left: 0; }
+  .sr-ui[data-touch] .hud-race + .hud-lap .hud-lap__clock { font-size: 1.45em; }
+  .sr-ui[data-touch] .hud-tricks .hud-label { letter-spacing: 0.06em; }
+  .sr-ui[data-touch] .hud-tricks__top { gap: 0.35em; }
+  .sr-ui[data-touch] .hud-combo { padding: 0 0.3em; letter-spacing: 0.02em; }
+
+  .sr-ui[data-touch] .hud-stack--mid,
+  .sr-ui[data-touch] .hud-turnscard {
+    left: calc(50% - var(--hud-em) * 4.6);
+    right: calc(var(--hud-right) + var(--hud-map-w) + 6px);
+  }
+  .sr-ui[data-touch] .hud-stack--mid { align-items: flex-start; }
+  /* Two short toasts side by side, the newest first: a second row would be over the road. */
+  .sr-ui[data-touch] .hud-toasts { flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+  .sr-ui[data-touch] .hud-toast:last-child { order: -1; }
+  .sr-ui[data-touch] .hud-rewindtag,
+  .sr-ui[data-touch] .hud-rewindno { left: calc(50% - var(--hud-em) * 4.6); transform: none; }
+}
+
+/* Stood up: usable, not polished. Speed above the thumbs, Camera and Race under the map. */
 @media (orientation: portrait) {
-  .touch-row { top: auto; bottom: var(--above-thumbs); }
-  .sr-ui[data-touch] .hud-stack--br { left: auto; right: calc(var(--safe-r) + 0.8em); transform: none; bottom: calc(var(--above-thumbs) + 52px); align-items: flex-end; }
-  .sr-ui[data-touch] .hud-stack--bl { bottom: calc(var(--above-thumbs) + 52px); }
+  .touch-row--view { top: calc(var(--hud-top) + var(--hud-map-h) + 4px); right: var(--hud-right); left: auto; }
+  .sr-ui[data-touch] .hud-stack--tl { width: calc(100vw - var(--hud-stack-left) - var(--hud-map-w) - var(--hud-right) - 6px); }
+  .sr-ui[data-touch] .hud-stack--br { top: auto; bottom: calc(var(--above-thumbs) + 8px); }
+  .sr-ui[data-touch] .hud-stack--mid,
+  .sr-ui[data-touch] .hud-turnscard { top: 11.5em; left: var(--hud-left); right: var(--hud-right); }
+  .sr-ui[data-touch] .hud-count { top: 40%; }
+  .sr-ui[data-touch] .hud-rewindtag, .sr-ui[data-touch] .hud-rewindno { top: 8em; }
 }
 
 .touch-back {
@@ -219,5 +594,5 @@
 .touch-back svg { width: 0.85em; height: 0.85em; fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 @media (prefers-reduced-motion: reduce) {
-  .touch-stick, .touch-stick__knob, .touch-pedal, .touch-top { transition: none; }
+  .touch-stick, .touch-stick__knob, .touch-pedal, .touch-top, .touch-pulse { transition: none; }
 }

@@ -188,6 +188,12 @@ function onEvent(e: AnyGameEvent): void {
     case 'mp.leave':
       pushToast(`${e.name} left`, 'info')
       return
+    case 'mp.noStart':
+      if (e.reason === 'alone') pushToast('Needs another player', 'warn', `${g.mode === 'tag' ? 'Tag' : 'Hunt Turns'} takes two on the same track`)
+      else if (e.reason === 'round') pushToast(g.mode === 'race' ? 'Race already on' : 'Round already on', 'warn')
+      else if (e.reason === 'waiting') pushToast('Others still racing', 'warn', 'You can start a new one when they finish')
+      else pushToast('Not connected yet', 'warn')
+      return
     case 'mp.track':
       if (e.fromHost) pushToast(`Track: ${e.trackName}`, 'info', 'Picked by the host')
       return
@@ -196,7 +202,7 @@ function onEvent(e: AnyGameEvent): void {
       else pushToast(`${nameOf(e.id, e.name)} is it`, 'info', e.byId === 'player' ? 'You tagged them' : undefined)
       return
     case 'turns.turn':
-      if (e.hunterId === 'player') pushToast('Your turn to hunt!', 'it', `Get close, bump them, or fire your tag pulse (${g.inputDevice === 'gamepad' ? 'click the right stick' : g.inputDevice === 'touch' ? 'the Pulse button' : 'F'})`)
+      if (e.hunterId === 'player') pushToast('Your turn to hunt!', 'it', g.inputDevice === 'touch' ? 'Get close, bump them, or fire a Pulse' : `Get close, bump them, or fire your tag pulse (${g.inputDevice === 'gamepad' ? 'click the right stick' : 'F'})`)
       else pushToast(`${nameOf(e.hunterId, e.name)} is hunting`, 'info', 'Run!')
       return
     case 'turns.catch':
