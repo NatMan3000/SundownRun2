@@ -19,6 +19,7 @@ Shots, build output and logs go under `$IOS_SIM_OUT` (default `/tmp/sr2/ios-sim`
 - `tap.sh` and `drag.sh` take about 3 minutes on a live game page, because XCUITest waits for the app to go idle.
 - Restart Safari between shots (`sweep.sh` does). With six game tabs open the map's road line vanished; the cause is unproven.
 - This Xcode has no Simulator.app, so nothing shows on screen: read the screenshots.
+- A wiped Safari has one tab and no tab strip: the page is 338 tall and window y = page y + 64, not the usual 110.
 - `pinch.sh` spreading lands both fingers in the same millisecond, 8 px apart. A squeeze (`pinch.sh 0.6 -1`) starts them so far apart that in a 292 px tab one lands in Safari's bars, so only one finger reaches the page: it isn't a pinch.
 
 ## Known simulator behaviour
