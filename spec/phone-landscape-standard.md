@@ -59,6 +59,7 @@ Not verified: a real thumb on a real phone at this commit, Home Screen window si
 ## Known, left for later
 
 - First touch on the game freezes the page about 9 s on the simulator, inside `AudioContext.resume()` (`scripts/ios-sim/README.md`). On Nathan's real iPhone 17 Pro it is unnoticeable (his words, 5 Nov 2026), so it is the simulator's and nothing needs fixing.
+- In a Safari tab on its side the keyboard leaves about 68 px of page and iOS's AutoFill bar sits on 44 of them, so a text box can't be seen while typing; the bar's tick brings it back (Multiplayer's name box, Report's boxes share `useKeyboardFit`) [live, simulator, 5 Nov 2026]. A Home Screen copy has about 178 px above the keyboard by the same sum; not seen on a phone yet.
 - The gate can't see multiplayer on a phone (Pulse, Race, host banner). Pulse was placed by hand at 874x292, clear of Drift.
 - World map labels overlap each other on a phone (canvas, `src/editor/mapDraw.ts`); goes with the Road Editor lane.
 - Settings tabs start with Fun and Multiplayer off screen; Pause's Quit to title and Garage's Underglow and Light trail are below the fold at 292 with little cue.

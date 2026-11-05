@@ -71,17 +71,17 @@ function multiplayerName(): string {
 }
 
 /** Take the keyboard back from a box inside `root` (so W, A, S, D work for the game again). */
-function stopTyping(root: HTMLElement | null): void {
+export function stopTyping(root: HTMLElement | null): void {
   const el = document.activeElement
   if (el instanceof HTMLElement && root?.contains(el)) el.blur()
 }
 
 // ---------------------------------------------------------------- a text box
 
-type TextEl = HTMLInputElement | HTMLTextAreaElement
+export type TextEl = HTMLInputElement | HTMLTextAreaElement
 
-function Field(props: {
-  id: FieldId
+export function Field<I extends string>(props: {
+  id: I
   label: string
   optional?: boolean
   multiline?: boolean
@@ -89,14 +89,16 @@ function Field(props: {
   max: number
   placeholder: string
   help: string
+  /** What the phone keyboard's Enter key says (Join: 'go'). */
+  enterKeyHint?: 'go' | 'next' | 'done'
   editing: boolean
   onChange: (v: string) => void
-  register: (id: FieldId, el: TextEl | null) => void
-  startTyping: (id: FieldId) => void
-  clickBox: (id: FieldId) => void
-  onKey: (id: FieldId, e: ReactKeyboardEvent<TextEl>) => void
-  onFocusBox: (id: FieldId) => void
-  onBlurBox: (id: FieldId) => void
+  register: (id: I, el: TextEl | null) => void
+  startTyping: (id: I) => void
+  clickBox: (id: I) => void
+  onKey: (id: I, e: ReactKeyboardEvent<TextEl>) => void
+  onFocusBox: (id: I) => void
+  onBlurBox: (id: I) => void
 }) {
   const device = useGame((s) => s.inputDevice)
   const pad = device === 'gamepad'
@@ -126,6 +128,7 @@ function Field(props: {
     placeholder: prompt,
     spellCheck: true,
     autoComplete: 'off',
+    enterKeyHint: props.enterKeyHint,
     onChange: (e: { target: { value: string } }) => props.onChange(e.target.value),
     onKeyDown: (e: ReactKeyboardEvent<TextEl>) => props.onKey(props.id, e),
     onFocus: () => props.onFocusBox(props.id),
@@ -163,7 +166,7 @@ function Field(props: {
  * main button, so moving down into the row from anywhere lands on Send (or
  * Done), not on whichever button happens to sit closest.
  */
-function ActionButton(props: {
+export function ActionButton(props: {
   id: string
   label: string
   main?: boolean
@@ -334,7 +337,7 @@ const KEYBOARD_PX = 80
  * A phone's keyboard covers the page without resizing it, and Safari slides the page up to
  * show the box. This keeps the whole screen, Done button included, in the part still showing.
  */
-function useKeyboardFit(root: RefObject<HTMLDivElement | null>, on: boolean): void {
+export function useKeyboardFit(root: RefObject<HTMLDivElement | null>, on: boolean): void {
   useEffect(() => {
     const view = window.visualViewport
     const el = root.current

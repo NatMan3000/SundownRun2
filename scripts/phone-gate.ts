@@ -1030,6 +1030,22 @@ const STEPS: Step[] = [
   ),
   { name: 'report', setup: async (c) => void (await ui(c, 'report')) },
   {
+    name: 'multiplayer',
+    primary: '[data-nav="join"]',
+    setup: async (c) => void (await ui(c, 'multiplayer')),
+    extra: async (c) => {
+      // From the title: the quiet link opens the screen with one tap, once.
+      await ui(c, 'title')
+      await sleep(600)
+      const t0 = await c.page.evaluate(() => performance.now())
+      if (!(await tapSel(c, '[data-nav="multiplayer"]'))) return c.fail(6, 'Multiplayer link', 'not found to tap')
+      const s = await uiState(c)
+      const n = await c.page.evaluate((t: number) => (window as any).__gate.accepts(t), t0)
+      if (s.screen !== 'multiplayer') c.fail(6, 'Multiplayer link', `a tap did not open the screen (screen is ${s.screen})`)
+      else if (n !== 1) c.fail(6, 'Multiplayer link', `one tap acted ${n} times`)
+    },
+  },
+  {
     name: 'pause',
     primary: '[data-nav="resume"]',
     setup: async (c) => {

@@ -180,7 +180,11 @@
   .sr-ui[data-touch] .title-col .logo { flex: none; margin-bottom: 0; font-size: min(calc((100dvh - var(--safe-b) - 228px) / 1.9), 3.8em); }
   .sr-ui[data-touch] .tagline { display: none; }
   .sr-ui[data-touch] .screen--title .helpline { display: none; }
-  .sr-ui[data-touch] .title-col .mp-status { flex: none; align-self: flex-start; margin: -37px 0 15px 130px; padding: 3px 10px; }
+  /* wide enough that the status, which sits to the right of the two links, has room for its words */
+  .sr-ui[data-touch] .screen--title .title-col:has(.mp-status) { width: min(640px, calc(100vw - 10vw - var(--safe-l))); }
+  .sr-ui[data-touch] .title-col .mp-status { flex: none; align-self: flex-start; margin: -37px 0 15px 240px; padding: 3px 10px; }
+  /* The credit gives way before the Reload button: the version warning needs the bottom row. */
+  .sr-ui[data-touch] .screen--title:has(.mp-status--version-mismatch) .made-with { display: none; }
   .sr-ui[data-touch] .title-menu { gap: 0; }
   .sr-ui[data-touch] .title-menu .menu-btn { font-size: 1.45em; }
   .sr-ui[data-touch] .mode-list .menu-btn { font-size: 1.45em; }

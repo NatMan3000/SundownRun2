@@ -1847,3 +1847,20 @@ textarea.field__input { min-height: 6.5em; }
 @media (prefers-reduced-motion: reduce) {
   .hud-song { animation: song-out 1ms linear 4100ms forwards; }
 }
+
+/* ---------------------------------------------------------------- multiplayer screen and the reload button */
+
+.mp-intro { margin: 0; padding: 0 0.7em; font-size: 1.05em; line-height: 1.45; color: color-mix(in srgb, var(--text) 88%, transparent); }
+.mp-status__reload { flex: none; padding: 0.3em 1em; }
+/* a different version: the words on the left, one Reload button the height of both lines on the right */
+.mp-status--version-mismatch {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'dot main reload' 'dot error reload';
+  align-items: center;
+  gap: 0.2em 0.7em;
+}
+.mp-status--version-mismatch .mp-status__dot { grid-area: dot; align-self: start; margin-top: 0.45em; }
+.mp-status--version-mismatch .mp-status__main { grid-area: main; }
+.mp-status--version-mismatch .mp-status__error { grid-area: error; }
+.mp-status--version-mismatch .mp-status__reload { grid-area: reload; }

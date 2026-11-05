@@ -1,14 +1,18 @@
 // ============================================================
 //  IDENTITY - who this browser is in a multiplayer game
 // ------------------------------------------------------------
-//  Multiplayer is switched on by the page address, not by a setting:
+//  Multiplayer is switched on by the page address:
 //
 //    http://localhost:5201/?mp=1&name=JOSH
 //    http://192.168.0.10:5201/?mp=1&name=DAD&color=orange
 //
 //  The address is the one thing that is different on every computer
 //  (config.ts is shared by everyone because they all load the game
-//  from the host), so name and colour ride on it.
+//  from the host), so name and colour ride on it. Nobody has to type
+//  it: the title screen's Multiplayer link (ui/screens/Multiplayer.tsx)
+//  writes it for you (joinUrl) and "Leave multiplayer" takes it off
+//  again (leaveUrl). A Home Screen copy has no address bar, so that
+//  link is its only way in. The address is still the one switch.
 //
 //    mp=1         join the game
 //    name=JOSH    your name tag (14 letters max; remembered for next time)
@@ -54,6 +58,26 @@ export function mpEnabled(): boolean {
 /** The relay's address for this page (LAN: ws://<host>:5202; online over https: wss://<host>/relay). */
 export function relayUrl(): string {
   return relayUrlFor(window.location, urlParam('relay'))
+}
+
+/** The switches Join adds and Leave takes off again. Every other switch on the address stays. */
+const MP_PARAMS = ['mp', 'name', 'color', 'relay'] as const
+
+/** This page's address with multiplayer switched on under `name`; its other switches are kept. */
+export function joinUrl(href: string, name: string): string {
+  const url = new URL(href)
+  url.searchParams.set('mp', '1')
+  const clean = cleanPlayerName(name)
+  if (clean) url.searchParams.set('name', clean)
+  else url.searchParams.delete('name')
+  return url.toString()
+}
+
+/** This page's address with multiplayer taken off (mp, name, color and relay); its other switches are kept. */
+export function leaveUrl(href: string): string {
+  const url = new URL(href)
+  for (const key of MP_PARAMS) url.searchParams.delete(key)
+  return url.toString()
 }
 
 const NAME_KEY = 'sr2.playerName'

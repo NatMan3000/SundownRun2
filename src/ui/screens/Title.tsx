@@ -16,6 +16,7 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useGame } from '../../core/store'
 import { openEditor } from '../../core/session'
+import { leaveUrl } from '../../net/identity'
 import { useNet } from '../../net'
 import { NavScreen, useNavItem } from '../nav'
 import { MenuButton, HelpLine } from '../widgets'
@@ -155,6 +156,20 @@ const STATUS_WORDS = {
   'version-mismatch': 'Different game version',
 } as const
 
+/** Reload: a game saved to the Home Screen has no reload button of its own. */
+function ReloadButton() {
+  const nav = useNavItem<HTMLButtonElement>('reload', {
+    onAccept: () => window.location.reload(),
+    acceptHint: 'Reload',
+    help: 'Load the newest version of the game.',
+  })
+  return (
+    <button type="button" tabIndex={-1} ref={nav.ref} {...nav.props} className={`menu-btn menu-btn--small menu-btn--go mp-status__reload${nav.focused ? ' is-focused' : ''}`}>
+      <span className="menu-btn__label">Reload</span>
+    </button>
+  )
+}
+
 /** "Connected - 3 players - you're hosting", plus any track problem in plain words. */
 export function MpStatus() {
   const status = useNet((s) => s.status)
@@ -176,7 +191,10 @@ export function MpStatus() {
       )}
       {role && <span className="mp-status__meta">{role}</span>}
       {status === 'version-mismatch' && (
-        <span className="mp-status__error">Everyone needs the same version of the game. Update, then reload this page.</span>
+        <>
+          <ReloadButton />
+          <span className="mp-status__error">Reload to update. Everyone needs the same version.</span>
+        </>
       )}
       {trackError && <span className="mp-status__error">The host's track could not be built here: {trackError}</span>}
     </div>
@@ -223,6 +241,24 @@ function ReportLink() {
   )
 }
 
+/**
+ * "Multiplayer": a quiet link beside Report a problem. It opens the Multiplayer screen, or, once you are
+ * in, reads "Leave multiplayer" and goes straight back to the same page with multiplayer taken off.
+ */
+function MultiplayerLink(props: { inMp: boolean }) {
+  const { inMp } = props
+  const nav = useNavItem<HTMLButtonElement>('multiplayer', {
+    onAccept: () => (inMp ? window.location.assign(leaveUrl(window.location.href)) : openScreen('multiplayer')),
+    acceptHint: inMp ? 'Leave' : 'Open',
+    help: inMp ? 'Go back to playing on your own. The page reloads.' : 'Play with friends in the same game.',
+  })
+  return (
+    <button type="button" tabIndex={-1} ref={nav.ref} {...nav.props} className={`learn-link${nav.focused ? ' is-focused' : ''}`}>
+      {inMp ? 'Leave multiplayer' : 'Multiplayer'}
+    </button>
+  )
+}
+
 export function TitleScreen() {
   const mp = useGame((s) => s.multiplayer)
   return (
@@ -248,6 +284,7 @@ export function TitleScreen() {
           </nav>
           <div className="title-links">
             {import.meta.env.DEV && <LearnLink />}
+            <MultiplayerLink inMp={mp} />
             <ReportLink />
           </div>
           <HelpLine />

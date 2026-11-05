@@ -22,6 +22,9 @@
 //    sametrack the host drives a track the joiner downloaded from Shared tracks
 //             (same id, different file): same key and world, they see each other,
 //             G puts both on the grid, the joiner's download is untouched (LAN only)
+//    join     the title screen's Multiplayer link: tap it, type a name, Join; both pages read
+//             Connected with 2 players and each other's name; Leave multiplayer takes mp off the
+//             address and the other page drops to 1 player; the name is remembered after a fresh load
 //    race     (stage B) synced countdown, grid, finish, winner
 //    tag      (stage B) "it" passes on contact
 //    leave    leaving a race mid-way (mode change) frees G; a tag started meanwhile picks you up
@@ -65,7 +68,7 @@ const JOIN_TRACK = arg('join-track') ?? 'hyperdrome'
 const SHOTS = arg('shots') ?? '/tmp/sr2/net'
 /** The online game's address (wrangler dev), or undefined for LAN play. */
 const CLOUD = arg('cloud')?.replace(/\/+$/, '')
-const ONLY = (arg('only') ?? 'client,spawn,game,drawn,sametrack,props,race,tag,leave,turns,robust').split(',')
+const ONLY = (arg('only') ?? 'client,join,spawn,game,drawn,sametrack,props,race,tag,leave,turns,robust').split(',')
 mkdirSync(SHOTS, { recursive: true })
 const ROOT = dirname(import.meta.dir)
 const SNAPSHOT = join(arg('snapshot-dir') ?? '/tmp/sr2-mpcheck', 'game')
@@ -262,6 +265,54 @@ try {
     const promoted = await until<boolean>(join, `window.__nets.getNet().isHost`, 3000)
     check('when the host leaves, the joiner takes over hosting', !!promoted)
     await join.close()
+  }
+
+  // ============================================================ join
+  if (ONLY.includes('join')) {
+    console.log("\n== join: the title screen's Multiplayer link (no address typed)")
+    // Both pages open WITHOUT ?mp=1: only the relay port (a private-port checker's switch) is on the address.
+    const start = `${hostBase}/?nomusic=1&quality=low${relayQuery}`
+    const a = await openPage(start, 'A')
+    const b = await openPage(start, 'B')
+    const goJoin = async (page: Page, name: string) => {
+      await page.waitForSelector('[data-nav="multiplayer"]', { timeout: 30000 })
+      check(`${name}: title shows a Multiplayer link and no multiplayer status yet`, !!(await page.$('[data-nav="multiplayer"]')) && !(await page.$('.mp-status')))
+      await page.click('[data-nav="multiplayer"]')
+      await page.waitForSelector('.screen--mp input', { timeout: 8000 })
+      await page.click('.screen--mp input')
+      for (let i = 0; i < 16; i++) await page.keyboard.press('Backspace')
+      await page.keyboard.type(name)
+      const nav = page.waitForNavigation({ waitUntil: 'load', timeout: 30000 })
+      await page.click('[data-nav="join"]')
+      await nav
+    }
+    await goJoin(a, 'ANNA')
+    await goJoin(b, 'BEN')
+    for (const [page, me, other] of [[a, 'ANNA', 'BEN'], [b, 'BEN', 'ANNA']] as const) {
+      const url = new URL(page.url())
+      check(`${me}: Join put mp=1 and the name on the address, kept the other switches`, url.searchParams.get('mp') === '1' && url.searchParams.get('name') === me && url.searchParams.get('nomusic') === '1', page.url())
+      const seen = await until<string>(page, `(() => { const e = document.querySelector('.mp-status'); const t = e ? e.textContent : ''; return /Connected/.test(t) && /2 players/.test(t) ? t : null })()`, 20000)
+      check(`${me}: reads Connected with 2 players`, !!seen, seen ?? '')
+      const names = await until<string>(page, `(() => { const k = window.__game && window.__game.get('netKit'); if (!k) return null; const n = Object.values(k.net.getNet().peers).map((p) => p.name).join(','); return n === '${other}' ? n : null })()`, 8000)
+      check(`${me}: sees ${other}'s name`, names === other, names ?? '')
+    }
+    // Leave: straight back, same page, switches off the address.
+    const left = a.waitForNavigation({ waitUntil: 'load', timeout: 30000 })
+    await a.click('[data-nav="multiplayer"]')
+    await left
+    const gone = new URL(a.url())
+    check('Leave multiplayer: mp, name, color and relay are off the address, other switches stay', ['mp', 'name', 'color', 'relay'].every((k) => !gone.searchParams.has(k)) && gone.searchParams.get('nomusic') === '1', a.url())
+    await a.waitForSelector('[data-nav="multiplayer"]', { timeout: 30000 })
+    check('after Leave: no status line, the link reads Multiplayer again', !(await a.$('.mp-status')) && (await a.$eval('[data-nav="multiplayer"]', (e) => e.textContent)) === 'Multiplayer')
+    const one = await until<string>(b, `(() => { const e = document.querySelector('.mp-status'); const t = e ? e.textContent : ''; return /Connected/.test(t) && /1 player(?!s)/.test(t) ? t : null })()`, 8000)
+    check('the other page drops to 1 player', !!one, one ?? '')
+    // The name is remembered after a fresh load (no ?name= on the address any more).
+    await a.click('[data-nav="multiplayer"]')
+    await a.waitForSelector('.screen--mp input', { timeout: 8000 })
+    const remembered = await a.$eval('.screen--mp input', (e) => (e as HTMLInputElement).value)
+    check('the name box starts with the remembered name after a fresh load', remembered === 'ANNA', remembered)
+    await a.close()
+    await b.close()
   }
 
   // ============================================================ game sections
