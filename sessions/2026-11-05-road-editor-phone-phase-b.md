@@ -5,7 +5,8 @@ project: SundownRun2
 date: 2026-11-05
 topic: Road Editor on a phone finished, crash guard, audit must-fixes, all live
 duration: about 25 hours
-events: 1861
+session_ids: [9c5d033e-244d-47db-9d3f-e43e49f31c0a, 14167a00-0a59-4379-855b-763f83b9eee3]
+events: 2839
 events_unit: turns
 ---
 
@@ -112,8 +113,100 @@ A credential exposure ran alongside this on the evening of 5 Nov, started by a w
 
 Main was 00912e6 on Forgejo and the GitHub mirror before this log's commit (read back with `ls-remote`), tree clean. This session's stretch runs 395e94c to 00912e6. Left alone: `data/worktree-patches-2026-10-21/` (gitignored) and two old `.claude/worktrees/agent-*` worktrees that aren't this session's.
 
+## Continued - 2026-11-05
+
+The chain's brief reopened this log for its first segment and its 17 named workers. No new work needs adding to the story above: the lead's turns past the first log's 04:02 cut-off are told in What We Did, and all 10 of the segment's prompts fall before that cut-off. What was missing is the worker record, below. The 2839 in the frontmatter is the chain's summed turns, not 978 turns of new work.
+
+### Segment 9c5d033e - the phone pass and Phase B up to the compaction
+
+**Restart ID:** `claude -r 9c5d033e-244d-47db-9d3f-e43e49f31c0a`
+
+- Touch controls, the icon and the phone standard, told in [2026-11-04-phone-controls-landscape-pass.md](2026-11-04-phone-controls-landscape-pass.md).
+- From 04:02 on 5 Nov: the checker's SHIP verdict, the merge and deploy at 04:24, then Phase B to the compaction at 16:06, told in What We Did above.
+
+### Segment 14167a00 - already logged above
+
+**Restart ID:** `claude -r 14167a00-0a59-4379-855b-763f83b9eee3`
+
+### Workers
+
+#### Worker - phone-gate
+**Restart ID:** `claude -r 343f20fd-a62d-4bb3-b14f-001718bfa96b`
+- Built `scripts/phone-gate.ts` and `bun run phone:check`: 5 windows, 33 screens and states, with a `--break` proof per rule. Merged at e32a4e9.
+
+#### Worker - phone-hud
+**Restart ID:** `claude -r b627a94e-e407-48bd-a8d5-bf8c29afd837`
+- One slim band over the sky at 874x292, touch buttons regrouped, and a Race press that starts nothing says why. b3d0426. The toast itself was not shot in real Safari.
+
+#### Worker - phone-play
+**Restart ID:** `claude -r 7770c1a7-96e1-4720-beb3-49e3c6940cc0`
+- Tap and swipe rules for every menu (`watchFingers()` in `src/ui/nav.tsx`), 3 taps from opening to driving. 1235b04.
+
+#### Worker - phone-panels
+**Restart ID:** `claude -r ed5ad8f3-2504-496f-bc1f-9ac16125b9f6`
+- Settings, Pause, Results, Report, songs and the map fit at the measured height; a swipe on a slider scrolls. 048111e. 5 findings, 0 blockers; slider and Report keyboard unproven on a real iPhone.
+
+#### Worker - phone-editor
+**Restart ID:** `claude -r 0d809d66-38a0-4bbc-a827-00ee5945c0c6`
+- Phase A only: editor inventory, three layout comps and the plan, recommending A. Nathan picked C.
+
+#### Worker - sim-rig
+**Restart ID:** `claude -r fcdace07-0cc4-4f6e-9b43-300d26308c82`
+- iPhone 17 Pro simulator rig over XCUITest; measured Safari landscape at 874x292. Tap and drag ran, but their effect on a page was unconfirmed in its report.
+
+#### Worker - phone-fixup
+**Restart ID:** `claude -r d4cdda70-d17b-4ad7-be32-d832a0329624`
+- Cleared the last overlaps and moved the rig to `scripts/ios-sim/`. eb2eb23. Gate all pass, touch 84 pass and 0 fail. Hunt's idle clock is hidden on touch to make room.
+
+#### Worker - phone-checker
+**Restart ID:** `claude -r 43677bf8-5cce-4e62-8de5-3aef19a5c071`
+- Fresh check of d776896: SHIP, no blockers, defects of medium or lower. Left open: one extra `mp:check` failure in a section flaky on both commits.
+
+#### Worker - editor-gesture
+**Restart ID:** `claude -r d6b656d4-9c66-401a-813f-67fd0983b599`
+- Piece 1, the gesture layer and `bun run editor:touch` (d0c80d4), plus the blank-editor crash on New track (a421928).
+
+#### Worker - editor-tools
+**Restart ID:** `claude -r 28d49b08-9fe4-43bb-b233-791c5deff6f8`
+- Piece 2, tools under a finger, including `src/editor/ThumbButtons.tsx`. 4727098.
+
+#### Worker - editor-shell
+**Restart ID:** `claude -r dc310aa1-dc18-4767-ab71-af951aba82a9`
+- Pieces 3 to 5, layout C (0a68ec3), then P8 (1880491) and the scale, tips and tunnel hold (a675ae6). Found two real bugs behind 15 red lines after a merge: a refused double tap, and a piece on the road's seam making the file invalid.
+
+#### Worker - mp-join
+**Restart ID:** `claude -r 6dbc1bf0-ca05-403b-8023-0bfa0957832a`
+- The Multiplayer link, screen, Join and Leave, and a Reload button on a version mismatch. 50d51f2.
+
+#### Worker - gl-loss
+**Restart ID:** `claude -r 122bcc90-f027-4a3e-a449-8d77839ca175`
+- Root cause: `new EffectComposer` reads context attributes that a lost context answers with null, and no error boundary existed. Guard and Reload screen at d18130f, Chrome only.
+
+#### Worker - road-labels
+**Restart ID:** `claude -r 900d75ed-40b2-4f22-ba9c-52d60c878611`
+- Road labels only with their own tool, stepping clear of edge buttons (P10). 6bcbd16; desktop byte-identical.
+
+#### Worker - editor-words
+**Restart ID:** `claude -r a088db7e-7d3b-42a5-b6d0-a3c4390d9f62`
+- Pieces 6 and 8's words, `src/editor/phoneWords.ts`, scenario 25. 7387234. Its stray `export -n` started the exposure logged in Kai.
+
+#### Worker - editor-rooms
+**Restart ID:** `claude -r 2f4be9c2-6c54-4868-b0ad-070b8e3a5b34`
+- Pieces 7, 9 and 8's layout: scenario 26 went from 91 pass and 32 fail to 123 pass and 0 fail; computer layout pixel-identical. cf90a9b.
+
+#### Worker - game-fixes
+**Restart ID:** `claude -r 2312b191-8da8-4412-851a-a65b5874a335`
+- Time of day clock and the Final lap fix. 2d08727.
+
 ## Related Sessions
 
 - [2026-11-04-phone-controls-landscape-pass.md](2026-11-04-phone-controls-landscape-pass.md): the same process, its first hours
 - [Kai: YCOS token exposure and the keychain](../../../.claude/sessions/2026-11-05-ycos-token-exposure-keychain.md)
 - [YCOS: exposure note](../../YCOS/sessions/nathan/2026-11-05-roadmap-token-exposure-note.md)
+
+## Atom candidates
+
+<!-- KAI-ATOMS-VERBATIM -->
+- GOTCHA: postprocessing's `new EffectComposer(gl)` throws on a lost WebGL context because `getContextAttributes()` returns null, and with no React error boundary that blanks the whole page for good; don't build it on a lost context, and keep a root boundary.
+- GOTCHA: In a browser gate, a tap on a shared page unlocks audio for every later step on that page, so steps that test a sound-locked state need their own page.
+<!-- /KAI-ATOMS-VERBATIM -->
