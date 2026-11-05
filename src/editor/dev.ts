@@ -152,7 +152,7 @@ import {
   undo,
   useEditor,
 } from './draft'
-import { fitToDraft, lastPencilLine } from './Overlay'
+import { fitToDraft, lastPencilLine, touchState } from './Overlay'
 import { gestureStats } from './mapGestures'
 import { crossingScreens, markScreens, pinScreens } from './mapDraw'
 import { heightLimits } from './raise'
@@ -687,7 +687,7 @@ registerDev('editor', editorCommand as (...args: never[]) => unknown, "road edit
 registerInspector('editor', summary)
 registerInspector('editorSel', () => useEditor.getState().selection)
 registerInspector('editorMsg', () => useEditor.getState().message?.text ?? null)
-registerInspector('editorGesture', () => ({ ...gestureStats, view: { cx: view.cx, cz: view.cz, mpp: view.mpp }, line: lastPencilLine.points }))
+registerInspector('editorGesture', () => ({ ...gestureStats, view: { cx: view.cx, cz: view.cz, mpp: view.mpp }, line: lastPencilLine.points, touch: touchState }))
 
 // ?editor=1 opens the editor once the game has booted.
 if (typeof window !== 'undefined' && urlParam('editor') === '1') {

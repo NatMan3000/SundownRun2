@@ -1456,13 +1456,990 @@ async function newTrackOverWarnings(p: Phone, input: 'finger' | 'mouse') {
   await p.ed('tool', 'select')
 }
 
+// ---------------------------------------------------------------- piece 2: the tools under a finger
+
+type TouchView = {
+  fingerDown: boolean
+  pointerX: number
+  pointerY: number
+  shape: { marks: World[]; pull: World | null; preview: World[]; ok: boolean } | null
+  ghost: { kind: string; at: World; wall?: unknown; tunnel?: unknown } | null
+  lift: number
+  pendingLifts: number
+  commits: number
+}
+const touchOf = async (p: Phone) => (await p.g()).touch as TouchView
+const message = (p: Phone) => p.page.evaluate(() => (window as unknown as { __game: { get(k: string): unknown } }).__game.get('editorMsg') as string | null)
+/** Pick a piece to place by its number key. */
+const pickPieceKey = async (p: Phone, digit: string) => {
+  await p.page.keyboard.press(`Digit${digit}`)
+  await sleep(80)
+}
+/** Wait until the tool has heard the finger (after an Undo the page can be busy for a moment, and the arm timer waits its turn), then a beat. */
+const toolHeard = async (p: Phone) => {
+  for (let i = 0; i < 150 && (await p.g()).phase !== 'tool'; i++) await sleep(20)
+  await sleep(60)
+}
+/** Spots on the map well away from the road and from each other, the emptiest first (to put things on, and to tap to let go of a pick). */
+const freeSpots = async (p: Phone, want = 3, xMax = Math.min(p.w - 270, 520), xMin = 280): Promise<Spot[]> => {
+  const n = (await p.sum()).points
+  const shown: Spot[] = []
+  for (let i = 0; i < n * 4; i++) {
+    const s = (await p.ed('screen', i / 4)) as { sx: number; sy: number }
+    shown.push({ x: s.sx, y: s.sy })
+  }
+  const cands: { x: number; y: number; d: number }[] = []
+  // (Inside the world, which fills the middle of the screen when the map is fitted: a prop outside it is a problem, with a pin that would take the finger.)
+  for (let x = xMin; x < xMax; x += 10)
+    for (let y = 60; y < p.h - 70; y += 10) cands.push({ x, y, d: Math.min(...shown.map((q) => Math.hypot(q.x - x, q.y - y))) })
+  cands.sort((a, b) => b.d - a.d)
+  const out: Spot[] = []
+  for (const c of cands) {
+    if (c.d < 45) break
+    if (out.every((o) => Math.hypot(o.x - c.x, o.y - c.y) > 110)) out.push({ x: c.x, y: c.y })
+    if (out.length >= want) break
+  }
+  return out
+}
+const screenOf = async (p: Phone, at: number): Promise<Spot> => {
+  const s = (await p.ed('screen', at)) as { sx: number; sy: number }
+  return { x: s.sx, y: s.sy }
+}
+
+/** 13. Straight and Curve: a finger down previews, sliding moves the preview, lifting does it; a cancel leaves nothing; no false warning. */
+async function shapesOnLift(p: Phone) {
+  await p.freshRoad()
+  const n = (await p.sum()).points
+  const quiet = async (label: string, before: Awaited<ReturnType<Phone['sum']>>, road0: string) => {
+    const after = await p.sum()
+    ok(after.undoSteps === before.undoSteps && (await p.road()) === road0, `${label}: no Undo step, road unchanged`, { undo: after.undoSteps - before.undoSteps })
+  }
+  // ---- Straight: find two ends that make a legal straight (a corner too tight is refused, which is not what this checks).
+  await p.ed('tool', 'straight')
+  let a: Spot & { at: number } | null = null
+  let b: Spot | null = null
+  for (let k = 0; k < n && !b; k++) {
+    const at = k + 0.5
+    for (const len of [2.5, 2, 1.5, 1]) {
+      const A = await screenOf(p, at)
+      const B = await screenOf(p, (at + len) % n)
+      if (A.x < 130 || B.x < 130 || A.x > p.w - 220 || B.x > p.w - 220 || A.y < 40 || B.y < 40 || A.y > p.h - 50 || B.y > p.h - 50) continue
+      await p.tap(A)
+      await p.down({ ...B, id: 1 })
+      await toolHeard(p)
+      const sh = (await touchOf(p)).shape
+      await p.cancel()
+      await sleep(100)
+      await p.ed('tool', 'pencil')
+      await p.ed('tool', 'straight')
+      if (sh?.ok && sh.preview.length > 3) {
+        a = { ...A, at }
+        b = B
+        break
+      }
+    }
+  }
+  ok(!!a && !!b, 'a legal straight to try', { a, b })
+  if (!a || !b) return
+  await p.ed('tool', 'pencil')
+  await p.ed('tool', 'straight')
+  let before = await p.sum()
+  let road0 = await p.road()
+  let g0 = await p.g()
+  await p.down({ ...a, id: 1 })
+  await toolHeard(p)
+  let t = await touchOf(p)
+  ok(t.fingerDown && t.shape?.marks.length === 1, 'straight: a finger down previews the start', { marks: t.shape?.marks.length })
+  ok(Math.hypot(t.pointerX - a.x, t.pointerY - a.y) < 0.5, 'straight: the pointer is where the finger pressed', { x: t.pointerX, y: t.pointerY })
+  ok((await p.sum()).shaping === null, 'straight: the press itself did nothing yet')
+  await quiet('straight, first press', before, road0)
+  await p.lift()
+  await sleep(150)
+  let s = await p.sum()
+  t = await touchOf(p)
+  ok(s.shaping?.tool === 'straight' && Math.abs(s.shaping.a - a.at) < 0.3, 'straight: lifting puts the first end in', s.shaping)
+  ok(t.commits - ((g0.touch as TouchView).commits) === 1 && !t.fingerDown, 'straight: one commit, finger up')
+  ok(Math.hypot(t.pointerX - a.x, t.pointerY - a.y) < 0.5, 'straight: lifting does not wipe the pointer', { x: t.pointerX, y: t.pointerY })
+  // The second end: press shows the straight, sliding moves it, lifting does it.
+  road0 = await p.road()
+  before = await p.sum()
+  await p.down({ ...b, id: 1 })
+  await toolHeard(p)
+  t = await touchOf(p)
+  ok(t.shape?.marks.length === 2 && (t.shape?.preview.length ?? 0) > 3, 'straight: pressing the far end previews the straight', { marks: t.shape?.marks.length, preview: t.shape?.preview.length })
+  const prev0 = JSON.stringify(t.shape?.preview)
+  await quiet('straight, preview', before, road0)
+  const further = await screenOf(p, (a.at + 3.5) % n)
+  const stepTo = (from: Spot, to: Spot, i: number, of: number) => ({ x: from.x + ((to.x - from.x) * i) / of, y: from.y + ((to.y - from.y) * i) / of, id: 1 })
+  for (let i = 1; i <= 10; i++) {
+    await p.move(stepTo(b, further, i, 10))
+    await sleep(14)
+  }
+  await sleep(120)
+  t = await touchOf(p)
+  ok(JSON.stringify(t.shape?.preview) !== prev0, 'straight: sliding moves the preview', { points: t.shape?.preview.length })
+  await quiet('straight, slid', before, road0)
+  await p.cancel()
+  await sleep(150)
+  await quiet('straight, cancelled', before, road0)
+  ok((await p.sum()).shaping?.tool === 'straight', 'straight: the first end is still in after a cancel')
+  // Press, slide off the road, lift: nothing happens, it says what to do.
+  const off = await offRoad(p)
+  await p.down({ ...b, id: 1 })
+  await toolHeard(p)
+  if (off) await p.move({ ...off, id: 1 })
+  await sleep(60)
+  await p.lift()
+  await sleep(150)
+  await quiet('straight, lifted off the road', before, road0)
+  ok(/Click on the road/.test((await message(p)) ?? ''), 'straight: lifted off the road says where to click', await message(p))
+  // The real thing: press the far end, slide, lift.
+  await p.down({ ...b, id: 1 })
+  await toolHeard(p)
+  for (let i = 1; i <= 6; i++) {
+    await p.move(stepTo(b, further, i, 12))
+    await sleep(14)
+  }
+  const landed = stepTo(b, further, 6, 12)
+  await p.lift()
+  await sleep(250)
+  s = await p.sum()
+  ok(s.undoSteps === before.undoSteps + 1 && (await p.road()) !== road0, 'straight: lifting makes it straight, one Undo step', { undo: s.undoSteps - before.undoSteps, at: landed })
+  ok(s.shaping === null, 'straight: the shape is finished')
+  await p.page.screenshot({ path: `${OUT}/${windowName}-13-straight.png` })
+
+  // ---- Curve: two taps, then press, pull, lift.
+  await p.freshRoad()
+  await p.ed('tool', 'curve')
+  let c1: Spot = { x: 0, y: 0 }
+  let c2: Spot = c1
+  for (const [k, len] of [[1.5, 16], [20.5, 16], [40.5, 16], [60.5, 16], [80.5, 16], [100.5, 16], [10.5, 24], [50.5, 24], [90.5, 24]] as const) {
+    c1 = await screenOf(p, k % n)
+    c2 = await screenOf(p, (k + len) % n)
+    if (c1.x < 130 || c2.x < 130 || c1.x > p.w - 220 || c2.x > p.w - 220 || c1.y < 40 || c2.y < 40 || c1.y > p.h - 50 || c2.y > p.h - 50) continue
+    if (Math.hypot(c1.x - c2.x, c1.y - c2.y) < 55) continue
+    await p.tap(c1)
+    await p.tap(c2)
+    if ((await p.sum()).shaping?.b != null) break
+    await p.ed('tool', 'pencil')
+    await p.ed('tool', 'curve')
+  }
+  const sh2 = (await p.sum()).shaping
+  ok(sh2?.tool === 'curve' && sh2.b != null, 'curve: two taps are in', sh2)
+  await sleep(350)
+  const said = (await message(p)) ?? ''
+  ok(!/edge of the world/.test(said), 'curve: no false "off the edge of the world" after two taps', said)
+  before = await p.sum()
+  road0 = await p.road()
+  const mid = { x: (c1.x + c2.x) / 2, y: (c1.y + c2.y) / 2 }
+  // A pull the car can take: the nearer the chord, the gentler. Press at each in turn until the preview says it will do.
+  let pull1 = mid
+  let found = false
+  for (const off of [3, 6, 10, 16, 24, 36, -6, -12, -20]) {
+    pull1 = { x: mid.x + off * 0.6, y: mid.y - off * 0.8 }
+    await p.down({ ...pull1, id: 1 })
+    await toolHeard(p)
+    found = ((await touchOf(p)).shape?.ok ?? false) && ((await touchOf(p)).shape?.preview.length ?? 0) > 3
+    if (found) break
+    await p.cancel()
+    await sleep(100)
+  }
+  ok(found, 'curve: a pull the preview likes', { pull1, c1, c2, said: await message(p), shape: (await touchOf(p)).shape ? { ok: (await touchOf(p)).shape!.ok, pull: (await touchOf(p)).shape!.pull, pv: (await touchOf(p)).shape!.preview.length } : null })
+  if (!found) return
+  const pull2 = { x: pull1.x + 4, y: pull1.y - 3 }
+  t = await touchOf(p)
+  ok(t.shape?.pull != null, 'curve: pressing shows the curve through the finger', { preview: t.shape?.preview.length })
+  const cp0 = JSON.stringify(t.shape?.preview)
+  await quiet('curve, preview', before, road0)
+  for (let i = 1; i <= 8; i++) {
+    await p.move(stepTo(pull1, pull2, i, 8))
+    await sleep(14)
+  }
+  await sleep(120)
+  t = await touchOf(p)
+  ok(JSON.stringify(t.shape?.preview) !== cp0, 'curve: sliding pulls the curve', {})
+  const okNow = t.shape?.ok ?? false
+  await p.lift()
+  await sleep(250)
+  s = await p.sum()
+  ok(okNow && s.undoSteps === before.undoSteps + 1 && (await p.road()) !== road0 && s.shaping === null, 'curve: lifting makes the curve, one Undo step', { okNow, undo: s.undoSteps - before.undoSteps })
+  await p.ed('tool', 'select')
+}
+
+/** 14. Place: the piece shows under the finger, slides with it, goes down where the finger lifts; a cancel leaves nothing. */
+async function placeOnLift(p: Phone) {
+  await p.page.evaluate(() => {
+    const w = window as unknown as { __ev: string[] }
+    w.__ev = []
+    for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'pointerleave']) document.querySelector('.sre-overlay')!.addEventListener(t, (e) => w.__ev.push(`${t}:${(e as PointerEvent).pointerId}@${Math.round((e as PointerEvent).clientX)},${Math.round((e as PointerEvent).clientY)}`))
+  })
+  await p.freshRoad()
+  await p.ed('fit')
+  const road = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  const slide = (from: Spot, to: Spot, i: number, of: number) => ({ x: from.x + ((to.x - from.x) * i) / of, y: from.y + ((to.y - from.y) * i) / of, id: 1 })
+  await pickPieceKey(p, '1')
+  ok((await p.sum()).tool === 'place', 'place: the Boost pad is in hand')
+  const before = await p.sum()
+  const road0 = await p.road()
+  await p.down({ ...road, id: 1 })
+  await toolHeard(p)
+  let t = await touchOf(p)
+  ok(t.ghost?.kind === 'boost', 'place: pressing shows the piece', t.ghost?.kind)
+  ok((await p.sum()).pieces === before.pieces && (await p.sum()).undoSteps === before.undoSteps, 'place: the press itself placed nothing')
+  const at0 = t.ghost?.at
+  const slideTo = await screenOf(p, (road.at + 10) % before.points)
+  for (let i = 1; i <= 8; i++) {
+    await p.move(slide(road, slideTo, i, 8))
+    await sleep(14)
+  }
+  await sleep(100)
+  t = await touchOf(p)
+  const liftSeen = t.lift
+  ok(!!at0 && !!t.ghost && Math.hypot(t.ghost.at.x - at0.x, t.ghost.at.z - at0.z) > 5, 'place: sliding moves the piece', { from: at0, to: t.ghost?.at })
+  await p.cancel()
+  await sleep(150)
+  let a = await p.sum()
+  ok(a.pieces === before.pieces && a.undoSteps === before.undoSteps && (await p.road()) === road0, 'place: a cancel leaves nothing')
+  ok(!(await touchOf(p)).ghost, 'place: and the piece is gone from under the finger')
+  // The real thing.
+  await p.down({ ...road, id: 1 })
+  await toolHeard(p)
+  for (let i = 1; i <= 8; i++) {
+    await p.move(slide(road, slideTo, i, 8))
+    await sleep(14)
+  }
+  await p.lift()
+  await sleep(250)
+  a = await p.sum()
+  const placed = ((await p.ed('file')) as { pieces: { type: string; at: number }[] }).pieces
+  ok(a.pieces === before.pieces + 1 && a.undoSteps === before.undoSteps + 1, 'place: lifting puts it down, one Undo step', { pieces: a.pieces - before.pieces })
+  // It rode 56 px above the finger (below it near the top edge) and snapped to the nearest road, and that is where it landed.
+  const ridden = await p.roadNear(slideTo.x, slideTo.y - 56 < 28 ? slideTo.y + 56 : slideTo.y - 56)
+  ok(placed.some((q) => q.type === 'boost' && Math.abs(q.at - ridden.at) < 0.6), 'place: where it was shown riding above the finger, not under it', { want: round(ridden.at), placed: placed.map((q) => round(q.at)), shownLift: liftSeen, slideTo, ridden })
+  ok(!(await touchOf(p)).ghost, 'place: the see-through piece is gone')
+  await p.undoTo(before.undoSteps)
+  // 14 px off the road: further than a mouse reaches, inside a finger's 20.
+  const near = { x: road.x, y: road.y - 14 }
+  const n0 = (await p.sum()).pieces
+  await p.tap(near)
+  await sleep(200)
+  ok((await p.sum()).pieces === n0 + 1, 'place: a finger 14 px off the road still places on it', { added: (await p.sum()).pieces - n0 })
+  await p.undoTo(before.undoSteps)
+  // A press well off the road pans, and a tap there says what to do.
+  const off = await offRoad(p)
+  if (off) {
+    const gv0 = (await p.g()).view
+    const path = Array.from({ length: 14 }, (_, i) => ({ x: off.x + i * 5, y: off.y + i * 2 }))
+    await p.drag(path)
+    const gv1 = (await p.g()).view
+    ok(close((gv0.cx - gv1.cx) / gv0.mpp, 65, DRAG_PX) && close((gv0.cz - gv1.cz) / gv0.mpp, 26, DRAG_PX), 'place: one finger off the road pans', {})
+    ok((await p.sum()).pieces === before.pieces, 'place: and puts nothing down')
+    await p.ed('fit')
+    await sleep(100)
+    const off2 = (await offRoad(p)) ?? off
+    await p.tap(off2)
+    await sleep(150)
+    ok(/Click on the road/.test((await message(p)) ?? '') && (await p.sum()).pieces === before.pieces, 'place: a tap off the road says where to click', await message(p))
+  }
+  // Pieces that go anywhere show under the finger and go where it lifts.
+  for (const [digit, key, count] of [['9', 'props', 'props'], ['0', 'cores', 'cores']] as const) {
+    await pickPieceKey(p, digit)
+    const spot = (await offRoad(p)) ?? { x: 200, y: 100 }
+    const c0 = ((await p.sum()) as Record<string, number>)[count]
+    await p.down({ ...spot, id: 1 })
+    await toolHeard(p)
+    t = await touchOf(p)
+    ok(t.ghost?.kind === key, `${key}: pressing shows it under the finger`, { ghost: t.ghost?.kind, tool: (await p.sum()).tool, spot, fingerDown: t.fingerDown, phase: (await p.g()).phase, ev: await p.page.evaluate(() => (window as unknown as { __ev: string[] }).__ev.slice(-8)), touch: { ...t, shape: null } })
+    ok(((await p.sum()) as Record<string, number>)[count] === c0, `${key}: nothing placed yet`)
+    await p.lift()
+    await sleep(250)
+    ok(((await p.sum()) as Record<string, number>)[count] === c0 + 1, `${key}: lifting places it`, { added: ((await p.sum()) as Record<string, number>)[count] - c0 })
+    await p.undoTo(before.undoSteps)
+  }
+  // The lift: a crash prop rides 56 px above the finger, lands there; a wobble under 6 px places it right at the finger; a wall ride has no lift.
+  await pickPieceKey(p, '9')
+  const [spotA] = await freeSpots(p, 1)
+  const worldOf = async (q: World) => ((await p.ed('screen', [q.x, q.z])) as { sx: number; sy: number })
+  const propsNow = async () => ((await p.ed('file')) as { props?: World[] }).props ?? []
+  await p.down({ ...spotA, id: 1 })
+  await toolHeard(p)
+  await p.move({ x: spotA.x + 2, y: spotA.y + 2, id: 1 })
+  await sleep(60)
+  let tg = await touchOf(p)
+  let gs = tg.ghost ? await worldOf(tg.ghost.at) : null
+  ok(!!gs && Math.hypot(gs.sx - (spotA.x + 2), gs.sy - (spotA.y + 2)) < 3, 'place: a wobble under 6 px keeps the preview at the finger', gs)
+  const fingerB = { x: spotA.x + 6, y: spotA.y + 70 }
+  for (let i = 1; i <= 8; i++) {
+    await p.move({ x: spotA.x + (6 * i) / 8, y: spotA.y + (70 * i) / 8, id: 1 })
+    await sleep(14)
+  }
+  await sleep(250)
+  tg = await touchOf(p)
+  gs = tg.ghost ? await worldOf(tg.ghost.at) : null
+  ok(!!gs && close(gs.sx, fingerB.x, 1.5) && close(gs.sy, fingerB.y - 56, 1.5) && Math.abs(tg.lift + 56) < 0.01, 'place: the preview rides 56 px above the finger', { got: gs && [round(gs.sx), round(gs.sy)], want: [fingerB.x, fingerB.y - 56], lift: tg.lift })
+  const nProps = (await propsNow()).length
+  await p.lift()
+  await sleep(250)
+  const after = await propsNow()
+  const landed = after.length === nProps + 1 ? await worldOf(after[after.length - 1]) : null
+  ok(!!landed && close(landed.sx, fingerB.x, 1.5) && close(landed.sy, fingerB.y - 56, 1.5), 'place: and lands where it was shown', { landed: landed && [round(landed.sx), round(landed.sy)] })
+  await p.undoTo(before.undoSteps)
+  // A tap with a small wobble places it at the finger.
+  const nProps2 = (await propsNow()).length
+  await p.down({ ...spotA, id: 1 })
+  await toolHeard(p)
+  await p.move({ x: spotA.x + 3, y: spotA.y + 2, id: 1 })
+  await sleep(60)
+  await p.lift()
+  await sleep(250)
+  const after2 = await propsNow()
+  const tapped = after2.length === nProps2 + 1 ? await worldOf(after2[after2.length - 1]) : null
+  ok(!!tapped && Math.hypot(tapped.sx - (spotA.x + 3), tapped.sy - (spotA.y + 2)) < 3, 'place: a tap with a wobble puts it at the finger, no lift', { tapped: tapped && [round(tapped.sx), round(tapped.sy)] })
+  await p.undoTo(before.undoSteps)
+  // A wall ride: no lift, and the finger sliding along the road draws the length as before.
+  await pickPieceKey(p, '4')
+  await p.ed('fit')
+  await sleep(150)
+  const wr = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  await p.down({ ...wr, id: 1 })
+  await toolHeard(p)
+  await p.move({ x: wr.x + 12, y: wr.y + 8, id: 1 })
+  await sleep(100)
+  ok((await touchOf(p)).lift === 0, 'wall ride: no lift')
+  await p.lift()
+  await sleep(250)
+  await p.undoTo(before.undoSteps)
+  // A wall ride shows its whole wall on the press.
+  await p.ed('fit')
+  await sleep(150)
+  const roadNow = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  await pickPieceKey(p, '4')
+  await p.down({ ...roadNow, id: 1 })
+  await toolHeard(p)
+  t = await touchOf(p)
+  ok(!!t.ghost?.wall, 'wall ride: the whole wall shows on the press', { ghost: t.ghost, tool: (await p.sum()).tool, road: roadNow, fingerDown: t.fingerDown, phase: (await p.g()).phase, onMap: await p.onMap(road) })
+  await p.lift()
+  await sleep(250)
+  ok((await p.sum()).pieces === before.pieces + 1, 'wall ride: lifting places it')
+  await p.undoTo(before.undoSteps)
+  await p.ed('tool', 'select')
+}
+
+/** 15. How far from a thing a finger still grabs it: points 22, pieces 28, props and cores 26, crossings 24, road 20, label boxes plus 8. */
+async function reaches(p: Phone) {
+  await p.freshRoad()
+  const u00 = (await p.sum()).undoSteps
+  const sel = async () => JSON.stringify((await p.sum()).selection)
+  const [far, blank] = await freeSpots(p, 2)
+  ok(!!far && !!blank, 'two empty spots to work on', { far, blank })
+  const clear = async () => {
+    await p.tap(blank)
+    await sleep(380)
+  }
+  // ---- a road point, zoomed in so points show
+  await p.ed('tool', 'select')
+  const pt = (await p.roadPoints())[3]
+  await p.ed('view', [pt.x, pt.z, 0.5])
+  await sleep(150)
+  const ps = (await p.ed('screen', [pt.x, pt.z])) as { sx: number; sy: number }
+  for (const [d, wants] of [[15, true], [20, true], [26, false]] as const) {
+    await clear()
+    await p.tap({ x: ps.sx + d, y: ps.sy })
+    const got = (await p.sum()).selection
+    ok((got?.kind === 'point' && got.index === 3) === wants, `point: ${d} px away ${wants ? 'is' : 'is not'} grabbed (reach 22)`, got)
+  }
+  // ---- a prop, a core and a piece, each placed by a tap with its tool, then picked by a finger at distance
+  await p.ed('fit')
+  await p.ed('tool', 'select')
+  const road = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  await p.ed('tool', 'place')
+  await pickPieceKey(p, '9')
+  await p.tap(far)
+  await pickPieceKey(p, '1')
+  await p.tap(road)
+  await sleep(200)
+  const file = (await p.ed('file')) as { props?: unknown[]; pieces: unknown[] }
+  const s0 = await p.sum()
+  ok(s0.props >= 1 && s0.pieces >= 1, 'a prop and a piece to grab', { props: s0.props, pieces: s0.pieces })
+  void file
+  await p.ed('tool', 'select')
+  await sleep(380)
+  const grabAt = async (label: string, around: Spot, kind: string, hits: number[], misses: number[]) => {
+    for (const d of hits) {
+      await clear()
+      await p.tap({ x: around.x + d, y: around.y })
+      ok((await p.sum()).selection?.kind === kind, `${label}: ${d} px away is grabbed`, (await p.sum()).selection)
+    }
+    for (const d of misses) {
+      await clear()
+      await p.tap({ x: around.x + d, y: around.y })
+      ok((await p.sum()).selection?.kind !== kind, `${label}: ${d} px away is not`, (await p.sum()).selection)
+    }
+  }
+  await grabAt('prop (reach 26)', far, 'prop', [20, 25], [34])
+  // A piece sits on the road; reach along the screen's vertical so the road itself isn't what is hit.
+  const pieceSpot = road
+  for (const d of [22, 27]) {
+    await clear()
+    await p.tap({ x: pieceSpot.x, y: pieceSpot.y - d })
+    ok((await p.sum()).selection?.kind === 'piece', `piece: ${d} px away is grabbed (reach 28)`, (await p.sum()).selection)
+  }
+  await clear()
+  await p.tap({ x: pieceSpot.x, y: pieceSpot.y - 36 })
+  ok((await p.sum()).selection?.kind !== 'piece', 'piece: 36 px away is not', (await p.sum()).selection)
+  void sel
+  await p.undoTo(u00)
+
+  // ---- a core (the same radius as a prop, 26)
+  await p.ed('tool', 'place')
+  await pickPieceKey(p, '0')
+  await p.tap(far)
+  await p.ed('tool', 'select')
+  await sleep(380)
+  await grabAt('core (reach 26)', far, 'core', [20, 25], [34])
+  await p.undoTo(u00)
+
+  // ---- the road: a stretch tool picks from 20 px away, Bend takes hold
+  await p.ed('fit')
+  const rd = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  await p.ed('tool', 'height')
+  await clear()
+  const px = (await p.ed('screen', rd.at)) as { sx: number; sy: number }
+  void px
+  // Offset along whichever axis has more room: pick a direction away from the road by checking the road is further from the spot
+  const away = async (d: number): Promise<Spot> => {
+    for (const dir of [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }]) {
+      const s = { x: rd.x + dir.x * d, y: rd.y + dir.y * d }
+      const r = await p.roadNear(s.x, s.y)
+      const dist = Math.hypot(r.x - s.x, r.y - s.y)
+      if (Math.abs(dist - d) < 2.5) return s
+    }
+    return { x: rd.x, y: rd.y - d }
+  }
+  const mpp = (await p.g()).view.mpp
+  const g1 = await away(17)
+  await p.tap(g1)
+  ok((await p.sum()).selection?.kind === 'section', 'road: height picks a stretch from 17 px away (reach 20)', (await p.sum()).selection)
+  await clear()
+  const g2 = await away(32)
+  await p.tap(g2)
+  ok((await p.sum()).selection?.kind !== 'section', 'road: and not from 32 px away', (await p.sum()).selection)
+  void mpp
+  await p.ed('tool', 'bend')
+  const u0 = (await p.sum()).undoSteps
+  const road0 = await p.road()
+  const b1 = await away(17)
+  await p.down({ ...b1, id: 1 })
+  await toolHeard(p)
+  for (let i = 1; i <= 8; i++) {
+    await p.move({ x: b1.x + i * 3, y: b1.y + i * 2, id: 1 })
+    await sleep(12)
+  }
+  const bent = (await p.road()) !== road0
+  await p.lift()
+  await sleep(200)
+  ok(bent && (await p.sum()).undoSteps === u0 + 1, 'road: Bend takes hold from 17 px away', { undo: (await p.sum()).undoSteps - u0 })
+  await p.undoTo(u0)
+  await p.ed('tool', 'select')
+
+  // ---- a crossing's marker and its label box (a figure of eight crosses itself)
+  await p.ed('shape', 'eight')
+  await sleep(1500)
+  await p.ed('fit')
+  await sleep(300)
+  const cr0 = (await p.ed('crossings')) as { screen: { marker: { sx: number; sy: number }; label: { sx: number; sy: number } | null } | null }[]
+  const cr = Array.isArray(cr0) ? cr0.filter((c) => c.screen) : []
+  ok(Array.isArray(cr) && cr.length >= 1, 'a crossing to grab', { n: Array.isArray(cr) ? cr.length : cr })
+  if (Array.isArray(cr) && cr.length) {
+    const m = cr[0].screen!.marker
+    const l = cr[0].screen!.label
+    const probe = async (x: number, y: number) => {
+      await clear()
+      await p.tap({ x, y })
+      return (await p.sum()).selection?.kind === 'crossing'
+    }
+    // The label sits below the marker, so probe up and to the left, away from it, until nothing is grabbed.
+    const extent = async (from: Spot, dir: Spot, max: number) => {
+      let last = 0
+      for (let d = 0; d <= max; d += 3) if (await probe(from.x + dir.x * d, from.y + dir.y * d)) last = d
+      return last
+    }
+    const down = await extent({ x: m.sx, y: m.sy }, { x: 0, y: -1 }, 36)
+    const side = await extent({ x: m.sx, y: m.sy }, { x: -1, y: 0 }, 36)
+    ok(Math.max(down, side) >= 21 && Math.max(down, side) <= 27, "a crossing's marker is grabbed out to about 24 px", { down, side })
+    if (l) {
+      const out = await extent({ x: l.sx, y: l.sy }, { x: 0, y: -1 }, 50)
+      // The label's own box is a pill about 9 px either side of its middle; the finger reaches 8 more. Measured, not assumed: the same probe with the box edge found by the mouse is scenario 20.
+      ok(out >= 12, "the label's box reaches past its own edge", { px: out })
+    }
+  }
+  await p.ed('tool', 'select')
+}
+
+/** 16. A dragged thing eases up to ride 56 px above the finger, and nothing moves for a wobble. */
+async function liftWhileDragging(p: Phone) {
+  await p.freshRoad()
+  await p.ed('tool', 'select')
+  const idx = 3
+  const pt = (await p.roadPoints())[idx]
+  await p.ed('view', [pt.x, pt.z, 0.5])
+  await sleep(150)
+  const start = (await p.ed('screen', [pt.x, pt.z])) as { sx: number; sy: number }
+  const where = async () => {
+    const q = (await p.roadPoints())[idx]
+    const s = (await p.ed('screen', [q.x, q.z])) as { sx: number; sy: number }
+    return { x: s.sx, y: s.sy }
+  }
+  const u0 = (await p.sum()).undoSteps
+  // A tap, and a wobble under 6 px: the point stays exactly where it was.
+  await p.tap({ x: start.sx, y: start.sy })
+  await sleep(380)
+  let w = await where()
+  ok(Math.hypot(w.x - start.sx, w.y - start.sy) < 0.5 && (await p.sum()).undoSteps === u0, 'a tap leaves the point exactly where it was')
+  await p.down({ x: start.sx, y: start.sy, id: 1 })
+  await toolHeard(p)
+  for (const d of [2, -2, 3, -1]) {
+    await p.move({ x: start.sx + d, y: start.sy + d, id: 1 })
+    await sleep(20)
+  }
+  w = await where()
+  ok(Math.hypot(w.x - start.sx, w.y - start.sy) < 0.5, 'a wobble under 6 px moves nothing', { px: round(Math.hypot(w.x - start.sx, w.y - start.sy)) })
+  // Past 6 px: it eases up over 120 ms. Sampled while the finger is still.
+  const f = { x: start.sx + 14, y: start.sy + 30 }
+  await p.move({ ...f, id: 1 })
+  const lifts: number[] = []
+  for (let i = 0; i < 12; i++) {
+    lifts.push((await touchOf(p)).lift)
+    await sleep(16)
+  }
+  await sleep(200)
+  const end = (await touchOf(p)).lift
+  const climbing = lifts.every((v, i) => i === 0 || v <= lifts[i - 1] + 0.01)
+  ok(climbing && lifts[0] > -56 && end === -56, 'it eases up to 56 px above the finger, not in one jump', { first: lifts.slice(0, 5).map((v) => round(v, 10)), end })
+  w = await where()
+  ok(close(w.x, f.x, 1.5) && close(w.y, f.y - 56, 1.5), 'the point sits 56 px above the finger', { x: round(w.x), y: round(w.y), want: [f.x, f.y - 56] })
+  await p.lift()
+  await sleep(200)
+  w = await where()
+  ok(close(w.x, f.x, 1.5) && close(w.y, f.y - 56, 1.5) && (await p.sum()).undoSteps === u0 + 1, 'let go, it stays there, one Undo step', { x: round(w.x), y: round(w.y), undo: (await p.sum()).undoSteps - u0 })
+  await p.undoTo(u0)
+  // Near the top edge it goes below the finger.
+  await p.ed('view', [pt.x, pt.z, 0.5])
+  await sleep(150)
+  const s2 = (await p.ed('screen', [pt.x, pt.z])) as { sx: number; sy: number }
+  await p.down({ x: s2.sx, y: s2.sy, id: 1 })
+  await toolHeard(p)
+  const top = { x: s2.sx + 10, y: 40 }
+  for (let i = 1; i <= 10; i++) {
+    await p.move({ x: s2.sx + (10 * i) / 10, y: s2.sy + ((40 - s2.sy) * i) / 10, id: 1 })
+    await sleep(14)
+  }
+  await sleep(300)
+  w = await where()
+  const t = await touchOf(p)
+  ok(t.lift === 56 && close(w.y, top.y + 56, 1.5), 'near the top edge it rides below the finger', { lift: t.lift, y: round(w.y), want: top.y + 56 })
+  await p.lift()
+  await sleep(200)
+  await p.undoTo(u0)
+  // No lift for the Pencil: the line ends where the finger does.
+  await p.ed('fit')
+  await p.ed('tool', 'pencil')
+  await p.ed('steady', 0)
+  const a = { x: p.w / 2 - 80, y: p.h / 2 + 30 }
+  const path = Array.from({ length: 20 }, (_, i) => ({ x: a.x + i * 6, y: a.y + Math.sin(i / 3) * 10 }))
+  await p.drag(path)
+  const g = await p.g()
+  const last = (g.line as World[])[(g.line as World[]).length - 1]
+  const endPx = path[path.length - 1]
+  const lastScreen = { x: p.w / 2 + (last.x - g.view.cx) / g.view.mpp, y: p.h / 2 + (last.z - g.view.cz) / g.view.mpp }
+  ok(Math.hypot(lastScreen.x - endPx.x, lastScreen.y - endPx.y) < 3, 'Pencil: no lift, the line ends at the finger', { px: round(Math.hypot(lastScreen.x - endPx.x, lastScreen.y - endPx.y)) })
+  await p.undoTo(u0)
+  // No lift for Bend: the road under the grab follows the finger one for one.
+  await p.ed('tool', 'bend')
+  await p.ed('fit')
+  const rd = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  const un0 = (await p.sum()).undoSteps
+  await p.down({ x: rd.x, y: rd.y, id: 1 })
+  await toolHeard(p)
+  for (let i = 1; i <= 8; i++) {
+    await p.move({ x: rd.x + i * 3, y: rd.y + i * 2, id: 1 })
+    await sleep(14)
+  }
+  await sleep(100)
+  const after = (await p.ed('screen', rd.at)) as { sx: number; sy: number }
+  ok(Math.hypot(after.sx - (rd.x + 24), after.sy - (rd.y + 16)) < 3 && (await touchOf(p)).lift === 0, 'Bend: no lift, the grabbed road is under the finger', { px: round(Math.hypot(after.sx - (rd.x + 24), after.sy - (rd.y + 16))) })
+  await p.lift()
+  await sleep(200)
+  await p.undoTo(un0)
+
+  // A prop, lifted the same way, and landed where it is shown.
+  await p.ed('fit')
+  const far = (await freeSpots(p, 1))[0] ?? { x: 300, y: 100 }
+  await p.ed('tool', 'place')
+  await pickPieceKey(p, '9')
+  await p.tap(far)
+  await sleep(200)
+  await p.ed('tool', 'select')
+  await sleep(380)
+  const propAt = async () => {
+    const q = ((await p.ed('file')) as { props: { x: number; z: number }[] }).props.slice(-1)[0]
+    const s = (await p.ed('screen', [q.x, q.z])) as { sx: number; sy: number }
+    return { x: s.sx, y: s.sy }
+  }
+  const p0 = await propAt()
+  await p.down({ x: p0.x, y: p0.y, id: 1 })
+  await toolHeard(p)
+  // (Toward the middle of the map: the world's edge would stop a prop short.)
+  const dir = p0.x > p.w / 2 ? -1 : 1
+  const pf = { x: p0.x + 40 * dir, y: p0.y + 80 }
+  for (let i = 1; i <= 8; i++) {
+    await p.move({ x: p0.x + (40 * dir * i) / 8, y: p0.y + (80 * i) / 8, id: 1 })
+    await sleep(14)
+  }
+  await sleep(250)
+  const p1 = await propAt()
+  ok(close(p1.x, pf.x, 1.5) && close(p1.y, pf.y < 84 ? pf.y + 56 : pf.y - 56, 1.5), 'a prop rides 56 px above the finger too', { x: round(p1.x), y: round(p1.y), want: [pf.x, pf.y - 56] })
+  await p.lift()
+  await sleep(200)
+  await p.undoTo(un0)
+}
+
+/** 17. Double tap: 20 px for a finger. A mouse keeps 6 (scenario 20). A second finger after the second tap takes the point back. */
+async function doubleTapTolerance(p: Phone) {
+  await p.freshRoad()
+  await p.ed('tool', 'select')
+  const run = async (apart: number, label: string, wantAdded: number) => {
+    await p.ed('fit')
+    await sleep(380)
+    const spot = await p.roadNear(p.w / 2 - 60, p.h / 2)
+    const mid = (await p.ed('screen', Math.floor(spot.at) + 0.5)) as { sx: number; sy: number }
+    const first = { x: mid.sx, y: mid.sy }
+    const second = { x: mid.sx + apart, y: mid.sy }
+    const n0 = (await p.sum()).points
+    const u0 = (await p.sum()).undoSteps
+    await p.down({ ...first, id: 1 })
+    await sleep(60)
+    await p.lift()
+    await sleep(80)
+    await p.down({ ...second, id: 1 })
+    await sleep(60)
+    await p.lift()
+    await sleep(200)
+    const added = (await p.sum()).points - n0
+    ok(added === wantAdded, `double tap ${apart} px apart ${label}`, { added })
+    await p.undoTo(u0)
+    await sleep(400)
+  }
+  await run(8, 'adds a point', 1)
+  await run(18, 'adds a point (tolerance 20)', 1)
+  await run(32, 'does not', 0)
+  // The second tap's point is taken back when a second finger lands on it.
+  await p.ed('fit')
+  await sleep(380)
+  const spot = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  const mid = (await p.ed('screen', Math.floor(spot.at) + 0.5)) as { sx: number; sy: number }
+  const at = { x: mid.sx, y: mid.sy }
+  const before = await p.sum()
+  const road0 = await p.road()
+  await p.down({ ...at, id: 1 })
+  await sleep(60)
+  await p.lift()
+  await sleep(80)
+  await p.down({ ...at, id: 1 })
+  await toolHeard(p)
+  const added = (await p.sum()).points - before.points
+  await p.down({ ...at, id: 1 }, { x: at.x + 90, y: at.y, id: 2 })
+  await sleep(40)
+  await p.move({ ...at, x: at.x - 10, id: 1 }, { x: at.x + 100, y: at.y, id: 2 })
+  await sleep(60)
+  await p.lift()
+  await sleep(200)
+  const after = await p.sum()
+  ok(added === 1 && after.points === before.points && after.undoSteps === before.undoSteps && (await p.road()) === road0, 'a second finger on the double tap takes the new point back', { added, points: after.points - before.points, undo: after.undoSteps - before.undoSteps })
+}
+
+/** 18. One finger off the road pans for Height, Bank, Width and Place (a tap says what to do); the Pencil always draws. */
+async function offRoadPans(p: Phone) {
+  await p.freshRoad()
+  for (const tool of ['height', 'bank', 'width'] as const) {
+    await p.ed('fit')
+    await p.ed('tool', tool)
+    await sleep(380)
+    const off = await offRoad(p)
+    ok(off !== null, `${tool}: a spot off the road`)
+    if (!off) continue
+    // A stretch is picked first, so a tap off the road clearing it is seen.
+    const on = await p.roadNear(p.w / 2 - 60, p.h / 2)
+    await p.tap(on)
+    ok((await p.sum()).selection?.kind === 'section', `${tool}: a stretch is picked`)
+    const g0 = await p.g()
+    const road0 = await p.road()
+    const path = Array.from({ length: 16 }, (_, i) => ({ x: off.x + i * 5, y: off.y + i * 2 }))
+    await p.drag(path)
+    const g1 = await p.g()
+    ok(close((g0.view.cx - g1.view.cx) / g0.view.mpp, 75, DRAG_PX) && close((g0.view.cz - g1.view.cz) / g0.view.mpp, 30, DRAG_PX), `${tool}: one finger off the road pans, all its path`, { x: round((g0.view.cx - g1.view.cx) / g0.view.mpp), z: round((g0.view.cz - g1.view.cz) / g0.view.mpp) })
+    ok((await p.sum()).selection?.kind === 'section' && (await p.road()) === road0, `${tool}: the pick is kept and the road left alone`)
+    await p.ed('fit')
+    await sleep(380)
+    const off2 = (await offRoad(p)) ?? off
+    await p.tap(off2)
+    await sleep(150)
+    ok((await p.sum()).selection === null && /Drag along the road/.test((await message(p)) ?? ''), `${tool}: a tap there says what to do, as it did`, { sel: (await p.sum()).selection, said: await message(p) })
+  }
+  // The Pencil always draws, wherever the finger lands.
+  await p.ed('fit')
+  await p.ed('tool', 'pencil')
+  await sleep(380)
+  const off = await offRoad(p)
+  if (off) {
+    const g0 = await p.g()
+    const path = Array.from({ length: 16 }, (_, i) => ({ x: off.x + i * 5, y: off.y + i * 2 }))
+    const t0 = g0.toolStarts
+    await p.drag(path)
+    const g1 = await p.g()
+    ok(g1.toolStarts - t0 === 1 && g1.view.cx === g0.view.cx && g1.view.cz === g0.view.cz, 'Pencil: off the road it draws, and the map stays', { toolStarts: g1.toolStarts - t0 })
+  }
+  await p.ed('tool', 'select')
+}
+
+/** 19. The other thumb's buttons: Straight line (Shift's job) and less / more reach on Bend (the wheel's job). */
+async function thumbButtons(p: Phone) {
+  await p.freshRoad()
+  await p.hidePanels(false)
+  await p.page.addStyleTag({ content: '.sre-options, .sre-palette, .sre-tools, .sre-panel { pointer-events: none !important; opacity: 0 !important; }' })
+  await p.ed('fit')
+  const btn = async (id: string): Promise<Spot | null> =>
+    p.page.evaluate((i: string) => {
+      const r = document.querySelector(`[data-testid=${i}]`)?.getBoundingClientRect()
+      return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null
+    }, id)
+  const size = (id: string) => p.page.evaluate((i: string) => { const r = document.querySelector(`[data-testid=${i}]`)?.getBoundingClientRect(); return r ? [Math.round(r.width), Math.round(r.height)] : null }, id)
+  // Pencil: Straight line.
+  await p.ed('steady', 0)
+  await p.ed('newTrackNow')
+  await sleep(200)
+  await p.ed('tool', 'pencil')
+  await sleep(200)
+  const sb = await btn('thumb-straight')
+  ok(sb !== null, 'Pencil: the Straight line button shows')
+  const sz = await size('thumb-straight')
+  ok(!!sz && sz[0] >= 44 && sz[1] >= 44, 'and is at least 44 px each way', sz)
+  if (!sb) return
+  const pressed = () => p.page.evaluate(() => document.querySelector('[data-testid=thumb-straight]')?.getAttribute('aria-pressed'))
+  // A wobbly line: the first half freehand, then the thumb taps Straight line, and the second half wobbles on but comes out straight.
+  const pts: Spot[] = []
+  for (let i = 0; i <= 60; i++) pts.push({ x: p.w * 0.25 + i * 5, y: p.h * 0.5 + Math.sin(i / 2.2) * 28 })
+  await p.down({ ...pts[0], id: 1 })
+  await sleep(100)
+  for (let i = 1; i <= 30; i++) {
+    await p.move({ ...pts[i], id: 1 })
+    await sleep(10)
+  }
+  await p.down({ ...pts[30], id: 1 }, { ...sb, id: 2 })
+  await sleep(40)
+  await p.liftOne({ ...sb, id: 2 })
+  await sleep(60)
+  ok((await pressed()) === 'true', 'the thumb toggles Straight line on while a finger draws')
+  for (let i = 31; i <= 60; i++) {
+    await p.move({ ...pts[i], id: 1 })
+    await sleep(10)
+  }
+  await p.lift()
+  await sleep(300)
+  const line = ((await p.g()).line as World[]).slice()
+  const g = await p.g()
+  const n = line.length
+  const dev = (seg: World[]) => {
+    const [a, b] = [seg[0], seg[seg.length - 1]]
+    const vx = b.x - a.x
+    const vz = b.z - a.z
+    const len = Math.hypot(vx, vz) || 1
+    return Math.max(...seg.map((q) => Math.abs((q.x - a.x) * vz - (q.z - a.z) * vx) / len)) / g.view.mpp
+  }
+  const early = line.slice(0, Math.floor(n * 0.3))
+  const late = line.slice(Math.floor(n * 0.7))
+  ok(n > 20 && dev(early) > 3, 'the first part of the line is freehand', { px: round(dev(early)), points: n })
+  ok(dev(late) < 0.8, 'the part after the tap is dead straight', { px: round(dev(late)) })
+  ok((await pressed()) === 'false', 'Straight line is off again once the line is done (like Shift)')
+  // Tap it off mid-line: freehand again.
+  await p.ed('newTrackNow')
+  await sleep(200)
+  await p.down({ ...pts[0], id: 1 })
+  await sleep(100)
+  for (let i = 1; i <= 20; i++) {
+    await p.move({ ...pts[i], id: 1 })
+    await sleep(10)
+  }
+  await p.down({ ...pts[20], id: 1 }, { ...sb, id: 2 })
+  await sleep(30)
+  await p.liftOne({ ...sb, id: 2 })
+  await sleep(40)
+  for (let i = 21; i <= 36; i++) {
+    await p.move({ ...pts[i], id: 1 })
+    await sleep(10)
+  }
+  await p.down({ ...pts[36], id: 1 }, { ...sb, id: 2 })
+  await sleep(30)
+  await p.liftOne({ ...sb, id: 2 })
+  await sleep(40)
+  ok((await pressed()) === 'false', 'tapped again, Straight line is off')
+  for (let i = 37; i <= 60; i++) {
+    await p.move({ ...pts[i], id: 1 })
+    await sleep(10)
+  }
+  await p.lift()
+  await sleep(300)
+  const line2 = ((await p.g()).line as World[]).slice()
+  const tail = line2.slice(Math.floor(line2.length * 0.75))
+  ok(dev(tail) > 3, 'tapped off, the line carries on freehand', { px: round(dev(tail)) })
+
+  // Bend: less and more reach, while a finger holds the road.
+  await p.ed('random', 7)
+  await sleep(1500)
+  await p.ed('fit')
+  await p.ed('tool', 'bend')
+  await sleep(200)
+  const less = await btn('thumb-less')
+  const more = await btn('thumb-more')
+  ok(!!less && !!more, 'Bend: the minus and plus buttons show')
+  const sz2 = await size('thumb-more')
+  ok(!!sz2 && sz2[0] >= 44 && sz2[1] >= 44, 'and are at least 44 px each way', sz2)
+  if (!less || !more) return
+  const r0 = (await p.sum()).bendReach
+  const rd = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  const u0 = (await p.sum()).undoSteps
+  await p.down({ ...rd, id: 1 })
+  await toolHeard(p)
+  for (let i = 1; i <= 8; i++) {
+    await p.move({ x: rd.x + i * 3, y: rd.y + i * 2, id: 1 })
+    await sleep(12)
+  }
+  const road1 = await p.road()
+  const held = { x: rd.x + 24, y: rd.y + 16, id: 1 }
+  await p.down(held, { ...more, id: 2 })
+  await sleep(30)
+  await p.liftOne({ ...more, id: 2 })
+  await sleep(120)
+  const r1 = (await p.sum()).bendReach
+  ok(close(r1 / r0, 1.25, 0.03), 'plus brings 1.25 times the road along', { before: r0, after: r1 })
+  ok((await p.road()) !== road1, 'and the held road changes under the finger')
+  ok((await p.sum()).undoSteps === u0, 'with no Undo step until the finger lets go')
+  await p.down(held, { ...less, id: 2 })
+  await sleep(30)
+  await p.liftOne({ ...less, id: 2 })
+  await sleep(120)
+  const r2 = (await p.sum()).bendReach
+  ok(close(r2 / r1, 0.8, 0.03), 'minus takes it back by a step', { before: r1, after: r2 })
+  await p.lift()
+  await sleep(250)
+  ok((await p.sum()).undoSteps === u0 + 1, 'one Undo step for the whole bend', { undo: (await p.sum()).undoSteps - u0 })
+  await p.undoTo(u0)
+  // Other tools show neither.
+  await p.ed('tool', 'select')
+  await sleep(150)
+  ok(!(await btn('thumb-straight')) && !(await btn('thumb-more')), 'Select shows neither')
+  await p.ed('tool', 'pencil')
+}
+
+/** 20. A real mouse at 1920x1080 is what it was: no waiting, the old reach, a 6 px double click, no lift. */
+async function mouseUnchanged() {
+  const p = await openDesktop()
+  const m = p.page.mouse
+  await p.freshRoad()
+  const t0 = (await p.g()).touch as TouchView
+  // Curve: the third click acts on the press.
+  await p.ed('tool', 'curve')
+  const n = (await p.sum()).points
+  const c1 = await screenOf(p, 1.5)
+  const c2 = await screenOf(p, (1.5 + 4) % n)
+  await m.click(c1.x, c1.y)
+  await m.click(c2.x, c2.y)
+  const shaping = (await p.sum()).shaping
+  ok(shaping?.tool === 'curve' && shaping.b != null, 'curve: the mouse puts the ends in as it clicks', shaping)
+  const u0 = (await p.sum()).undoSteps
+  const road0 = await p.road()
+  const mid = { x: (c1.x + c2.x) / 2 + 14, y: (c1.y + c2.y) / 2 - 12 }
+  await m.move(mid.x, mid.y)
+  await m.down()
+  const acted = (await p.road()) !== road0 || (await p.sum()).undoSteps !== u0
+  await m.up()
+  ok(acted || /tight/i.test((await message(p)) ?? '') || (await p.sum()).shaping === null, 'curve: the third press acts at once', { undo: (await p.sum()).undoSteps - u0 })
+  await p.undoTo(u0 - 0)
+  // Reach: a road point is grabbed from 7 px, not from 12.
+  await p.ed('tool', 'select')
+  const pt = (await p.roadPoints())[3]
+  await p.ed('view', [pt.x, pt.z, 0.5])
+  await sleep(200)
+  const ps = (await p.ed('screen', [pt.x, pt.z])) as { sx: number; sy: number }
+  await m.click(ps.sx + 400, ps.sy + 200)
+  await m.click(ps.sx + 7, ps.sy)
+  ok((await p.sum()).selection?.kind === 'point', 'a mouse grabs a point from 7 px')
+  await m.click(ps.sx + 400, ps.sy + 200)
+  await sleep(400)
+  await m.click(ps.sx + 12, ps.sy)
+  ok((await p.sum()).selection?.kind !== 'point', 'and not from 12 px (a finger reaches 22)', (await p.sum()).selection)
+  // Dragging a point: no lift, it follows the mouse exactly.
+  await m.move(ps.sx, ps.sy)
+  await m.down()
+  for (let i = 1; i <= 10; i++) await m.move(ps.sx + i * 4, ps.sy + i * 3)
+  await m.up()
+  const q = (await p.roadPoints())[3]
+  const qs = (await p.ed('screen', [q.x, q.z])) as { sx: number; sy: number }
+  ok(Math.hypot(qs.sx - (ps.sx + 40), qs.sy - (ps.sy + 30)) < 1, 'a dragged point sits under the mouse, no lift', { dx: round(qs.sx - (ps.sx + 40)), dy: round(qs.sy - (ps.sy + 30)) })
+  await p.undoTo(u0)
+  // Double click: 6 px.
+  await p.ed('fit')
+  await sleep(500)
+  // The middle of the longest gap between two road points (points show at this zoom, and a click near one picks it).
+  let best = { gap: 0, at: 0 }
+  const nPts = (await p.sum()).points
+  for (let i = 0; i < nPts; i++) {
+    const a = (await p.ed('screen', i)) as { sx: number; sy: number }
+    const b = (await p.ed('screen', (i + 1) % nPts)) as { sx: number; sy: number }
+    const gap = Math.hypot(a.sx - b.sx, a.sy - b.sy)
+    if (gap > best.gap && a.sx > 500 && a.sx < 1200 && b.sx > 500 && b.sx < 1200) best = { gap, at: i + 0.5 }
+  }
+  // Zoomed right in, so the gap is wide and the middle of it is well clear of both points.
+  const w0 = (await p.ed('screen', best.at)) as { x: number; z: number }
+  await p.ed('view', [w0.x, w0.z, 0.3])
+  await sleep(300)
+  const mid2 = (await p.ed('screen', best.at)) as { sx: number; sy: number }
+  for (const [apart, want] of [[4, 1], [12, 0]] as const) {
+    await sleep(500)
+    const pts0 = (await p.sum()).points
+    await m.click(mid2.sx, mid2.sy)
+    await sleep(60)
+    await m.click(mid2.sx + apart, mid2.sy)
+    await sleep(200)
+    ok((await p.sum()).points - pts0 === want, `double click ${apart} px apart ${want ? 'adds a point' : 'does not (a finger gets 20)'}`, { added: (await p.sum()).points - pts0, gap: round(best.gap), at: best.at, tool: (await p.sum()).tool, said: await message(p) })
+    await p.undoTo(u0)
+  }
+  // Stretch tools: off the road does not pan with a mouse; it clears the pick and says so, as it always did.
+  await p.ed('fit')
+  await p.ed('tool', 'height')
+  const off = (await freeSpots(p, 1, 1200, 520))[0]
+  if (off) {
+    const v0 = (await p.g()).view
+    await m.move(off.x, off.y)
+    await m.down()
+    await m.move(off.x + 60, off.y + 20)
+    await m.up()
+    const v1 = (await p.g()).view
+    ok(v1.cx === v0.cx && v1.cz === v0.cz && /Drag along the road/.test((await message(p)) ?? ''), 'height: a mouse off the road does not pan, it says what to do', { said: await message(p) })
+  }
+  const t1 = (await p.g()).touch as TouchView
+  ok(t1.commits === t0.commits && t1.pendingLifts === t0.pendingLifts, 'none of it went through the finger side', { commits: t1.commits - t0.commits })
+  await p.page.close()
+}
+
+
 // ---------------------------------------------------------------- run
 
 const wanted = (n: string) => !only.length || only.includes(n)
 for (const name of windowNames) {
   windowName = name
   const { w, h } = WINDOWS[name]
-  const needsPhone = ['1', '2', '3', '4', '5', '6', '7', '8', '10', '12'].some(wanted)
+  const needsPhone = ['1', '2', '3', '4', '5', '6', '7', '8', '10', '12', '13', '14', '15', '16', '17', '18', '19'].some(wanted)
   if (needsPhone) {
     const p = await openPhone(name, 'editor=1&touch=1&nomusic=1&quality=low')
     scenario = '0 setup'
@@ -1494,6 +2471,13 @@ for (const name of windowNames) {
       ['8', '8 in 3D', () => in3d(p)],
       ['10', '10 the tool button', () => toolButton(p)],
       ['12', '12 New track over warnings', () => newTrackOverWarnings(p, 'finger')],
+      ['13', '13 Straight and Curve on lift', () => shapesOnLift(p)],
+      ['14', '14 Place on lift', () => placeOnLift(p)],
+      ['15', '15 how far a finger reaches', () => reaches(p)],
+      ['16', '16 lift while dragging', () => liftWhileDragging(p)],
+      ['17', '17 double tap', () => doubleTapTolerance(p)],
+      ['18', '18 off the road pans', () => offRoadPans(p)],
+      ['19', '19 the other thumb', () => thumbButtons(p)],
     ]
     for (const [n, label, run] of runs) {
       if (!wanted(n)) continue
@@ -1511,6 +2495,11 @@ if (wanted('9')) {
   windowName = 'desktop'
   scenario = '9 mouse and pen'
   await mouseAndPen().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+}
+if (wanted('20')) {
+  windowName = 'desktop'
+  scenario = '20 mouse unchanged'
+  await mouseUnchanged().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
 }
 if (wanted('12')) {
   windowName = 'desktop'
