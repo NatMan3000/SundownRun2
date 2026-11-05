@@ -223,8 +223,23 @@ export function PhoneEditor(p: { onLibrary: () => void; onExit: () => void }) {
       view.version++
     }
   })
+  // Road labels keep clear of the buttons round the map's edge: measured from the real elements after every render
+  // (a handful of rects, and the view only redraws when a box moved).
+  useLayoutEffect(() => {
+    const boxes: { x0: number; y0: number; x1: number; y1: number }[] = []
+    for (const e of document.querySelectorAll<HTMLElement>('.phone-tool, .phone-undo, .phone-stack > *')) {
+      if (!e.checkVisibility()) continue
+      const r = e.getBoundingClientRect()
+      if (r.width > 0 && r.height > 0) boxes.push({ x0: r.left, y0: r.top, x1: r.right, y1: r.bottom })
+    }
+    if (JSON.stringify(boxes) !== JSON.stringify(view.keepClear)) {
+      view.keepClear = boxes
+      view.version++
+    }
+  })
   useEffect(
     () => () => {
+      view.keepClear = []
       view.scaleX = 96
       view.scaleTop = null
       view.scaleMin = 80
