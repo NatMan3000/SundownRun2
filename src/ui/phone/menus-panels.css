@@ -87,7 +87,7 @@
 
 /* label | control | value | reset, in the same columns all the way down a tab. (Not the Garage or the mode options: their rows are laid out in menus-play.css.) */
 .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row {
-  grid-template-columns: minmax(0, 10.5em) minmax(0, 1fr) 5.6em 44px;
+  grid-template-columns: minmax(0, 10.5em) minmax(0, 1fr) minmax(5.6em, max-content) 44px; /* the value column grows for a long value ("Nightfall, 10:10 pm") rather than running into the reset button */
   gap: 0 0.7em;
   min-height: 46px;
   padding: 0 0 0 0.7em;
@@ -183,7 +183,7 @@
 .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .settings-rows:has(.row--swatches) .row { grid-template-columns: 80px minmax(0, 1fr) 4.6em 44px; gap: 0 6px; }
 /* A narrow phone: a tighter label column, and the swatches go on their own line under their label. */
 @media (max-width: 760px) and (orientation: landscape) {
-  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row { grid-template-columns: minmax(0, 7.4em) minmax(0, 1fr) 4.6em 44px; gap: 0 0.4em; }
+  .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row { grid-template-columns: minmax(0, 7.4em) minmax(0, 1fr) minmax(4.6em, max-content) 44px; gap: 0 0.4em; }
   .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .settings-rows:has(.row--swatches) .row--swatches { grid-template-columns: minmax(0, 1fr) 44px; }
   .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--swatches .swatches { grid-column: 1 / -1; grid-row: 2; }
   .sr-ui[data-touch] :is(.screen--settings, .screen--pause, .screen--report) .row--swatches .row__reset { grid-column: 2; grid-row: 1; }

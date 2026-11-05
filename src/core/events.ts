@@ -87,6 +87,7 @@ export interface GameEventMap {
   'race.start': { racers: number; laps: number }
   /** Player's race position changed (1 = leading). */
   'race.position': { from: number; to: number; of: number }
+  /** The player crossed the line and started another lap (never the finish). lap = laps COMPLETED so far, 1 to laps - 1: 1 means lap 2 has just begun, laps - 1 means the final lap has. Single player and multiplayer both send it this way. */
   'race.lap': { lap: number; laps: number; position: number }
   'race.finish': { position: number; of: number; ms: number; results: { name: string; ms: number | null; position: number }[] }
 

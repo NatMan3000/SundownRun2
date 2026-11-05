@@ -27,10 +27,19 @@ export function formatMult(v: number): string {
   return `${Math.round(v * 100)}%`
 }
 
-/** Time of day 0..1 in words, with the number for anyone tuning it. */
+/** Time of day 0..1 as a clock: 0 (sun on the horizon) is 6:00 pm, 1 (full night) is 12:00 am, to the nearest 5 minutes. "7:30 pm". */
+export function timeOfDayClock(v: number): string {
+  const x = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0
+  const mins = (Math.round((18 * 60 + x * 360) / 5) * 5) % (24 * 60)
+  const h24 = Math.floor(mins / 60)
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
+  return `${h12}:${String(mins % 60).padStart(2, '0')} ${h24 < 12 ? 'am' : 'pm'}`
+}
+
+/** Time of day 0..1 in words and a clock time, never the raw number: "Dusk, 7:30 pm". */
 export function formatTimeOfDay(v: number): string {
   const word = v < 0.15 ? 'Sundown' : v < 0.35 ? 'Dusk' : v < 0.6 ? 'Twilight' : v < 0.85 ? 'Nightfall' : 'Night'
-  return `${word} ${v.toFixed(2)}`
+  return `${word}, ${timeOfDayClock(v)}`
 }
 
 /** Ai difficulty 0..1 in words. */

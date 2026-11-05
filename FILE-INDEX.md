@@ -26,6 +26,8 @@
 | `scripts/phone-gate.ts` | `permanent` | Phone gate behind bun run phone:check |
 | `scripts/chrome.ts` | `permanent` | Finds which Chrome the dev tools drive: explicit path, $CHROME_PATH, puppeteer's cache, then an installed one |
 | `scripts/touch-check.ts` | `permanent` | Touch check behind bun run touch:check: drives the phone controls with real CDP touch events |
+| `scripts/lap-check.ts` | `permanent` | Lap check behind bun run lap:check: a real 3 lap race driven by the demo autopilot; the toasts must be "Lap 2 of 3" then "Final lap", none after the finish |
+| `scripts/format.test.ts` | `permanent` | Unit check behind bun run test:format: the Time of day row shows a clock time, never the 0 to 1 number |
 | `scripts/editor-touch-check.ts` | `permanent` | Editor touch check behind bun run editor:touch: drives the Road Editor's gesture layer with real multi-finger CDP touch events |
 | `public/manifest.webmanifest` | `permanent` | Home Screen app manifest |
 

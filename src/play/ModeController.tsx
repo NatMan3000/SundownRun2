@@ -251,7 +251,8 @@ const hooks: RaceBookHooks = {
   onLap(r: Racer) {
     if (!r.isPlayer) return
     const pos = sortRaceBook()
-    emit('race.lap', { lap: r.lapsDone + 1, laps: raceBook.laps, position: pos })
+    // onLap runs after lapsDone counted the lap just finished, so lapsDone is already the number of laps completed.
+    emit('race.lap', { lap: r.lapsDone, laps: raceBook.laps, position: pos })
   },
   onFinish(r: Racer) {
     if (r.isPlayer) finishRace(performance.now())
