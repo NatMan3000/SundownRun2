@@ -41,3 +41,17 @@
 | `scripts/learn-to-code.ts` | permanent | LEARN TO CODE - bun run learn |
 | `scripts/check-tracks.ts` | permanent | CHECK TRACKS - prove a track file works without opening the game |
 | `scripts/library-import.ts` | permanent | One-time import of the GitHub shared tracks into the online track library (admin, cloud/README.md step 7) |
+| `scripts/editor-backends.ts` | permanent | The two things the Library talks to (home, online), in-process, shared by the phone gate and the editor touch check so they run with no server, GitHub or Cloudflare |
+| `scripts/ios-sim/tap.sh` | permanent | iOS Simulator rig: a tap at points from the window's top-left, through XCUITest |
+| `scripts/ios-sim/sweep.sh` | permanent | iOS Simulator rig: real Safari one state at a time from a steps file, Safari restarted between them |
+| `scripts/ios-sim/sweep-server.ts` | permanent | iOS Simulator rig: serves a built game with a small script added so a URL can open any screen |
+| `scripts/ios-sim/rotate.sh` | permanent | iOS Simulator rig: sets the device orientation through XCUITest |
+| `scripts/ios-sim/_run.sh` | permanent | iOS Simulator rig: builds the XCUITest bundle when needed and runs a single test on the booted simulator |
+| `scripts/ios-sim/shot.sh` | permanent | iOS Simulator rig: opens a URL in Safari, waits 4 s, screenshots |
+| `scripts/ios-sim/sheet.ts` | permanent | iOS Simulator rig: lays sweep shots out as 874x292 cells on one sheet |
+| `scripts/ios-sim/_env.sh` | permanent | iOS Simulator rig: sourced by the scripts, finds the booted iPhone 17 Pro and the output folder |
+| `scripts/ios-sim/pinch.sh` | permanent | iOS Simulator rig: a two-finger pinch through XCUITest, on the page or on a labelled element |
+| `scripts/ios-sim/drag.sh` | permanent | iOS Simulator rig: a drag between two points, same coordinates as tap.sh |
+| `scripts/ios-sim/proj/project.yml` | permanent | iOS Simulator rig: project spec for the Host app and the UITests bundle |
+| `scripts/ios-sim/proj/Host/App.swift` | permanent | iOS Simulator rig: the empty SwiftUI host app the UI tests need |
+| `scripts/ios-sim/proj/UITests/RigTests.swift` | permanent | iOS Simulator rig: the XCUITest cases behind rotate, tap, drag and pinch, driving Safari |
