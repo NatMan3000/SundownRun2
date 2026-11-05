@@ -26,6 +26,7 @@
 
 import { useEffect } from 'react'
 import { addAfterEffect, addEffect, useThree } from '@react-three/fiber'
+import { useGlLife } from './glLife'
 
 export type QualityPreset = 'low' | 'medium' | 'high'
 
@@ -277,6 +278,8 @@ interface PendingQuery {
 /** Mount once inside <Canvas>. Renders nothing. */
 export function PerfProbe(): null {
   const gl = useThree((s) => s.gl)
+  // A lost context takes the timer queries with it: a new pool once it is back (no timer at all until then).
+  const glGeneration = useGlLife((s) => s.generation)
 
   useEffect(() => {
     const ctx = gl.getContext() as WebGL2RenderingContext
@@ -285,6 +288,7 @@ export function PerfProbe(): null {
       GPU_DISJOINT_EXT: number
     } | null)
     frameStats.gpuSupported = !!ext
+    frameStats.gpuMs = -1
     gl.info.autoReset = false
 
     const POOL = 12
@@ -377,7 +381,7 @@ export function PerfProbe(): null {
       if (ext) for (const p of pool) ctx.deleteQuery(p.q)
       gl.info.autoReset = true
     }
-  }, [gl])
+  }, [gl, glGeneration])
 
   return null
 }
