@@ -34,7 +34,7 @@ import { FONTS, PALETTE } from '../core/palette'
 import { play } from '../core/api'
 import { cars, telemetry } from '../core/telemetry'
 import { TRACK_DEFAULTS, type Piece, type RoadPoint } from '../track/schema'
-import type { BendView, EditorState } from './draft'
+import type { BendView, EditorState, EditorTool } from './draft'
 import { BRIDGE_GAP, type RoadCrossing, bridgeShape } from './bridges'
 import type { StretchMarks, StretchRun } from './stretchRuns'
 import { NO_NOTES, problemsOf } from './problems'
@@ -42,7 +42,7 @@ import { type P } from './geom'
 import { pieceColour, pieceFootprint, pieceLabel, piecePlace, toolFor, type PlaceKind } from './pieces'
 import { type RedrawPlan, type RoadCurve, PER, advanceAt, frameAt, metresBetween, roadCurve, wrapAt } from './road'
 import { roadLine, stretchOf } from './shape'
-import { view } from './view'
+import { onPhone, view } from './view'
 import { in3d, mppAt, pointToScreen, screenDir, viewMpp, worldToScreen } from './look3dSpace'
 import { WALL_RAMP, WALL_REACH } from '../track/road'
 import { TUNNEL_WALL } from '../track/tunnels'
@@ -189,6 +189,8 @@ function placePill(ctx: CanvasRenderingContext2D, text: string, sx: number, sy: 
   for (const off of offsets) {
     const r = { x0: sx - w / 2 - 2, y0: sy + off - 12, x1: sx + w / 2 + 2, y1: sy + off + 12 }
     if (labelBoxes.some((q) => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0)) continue
+    // A phone's map is small: a label half off the edge can't be read or pressed, so it stays hidden.
+    if (onPhone() && (r.x0 < 0 || r.y0 < 0 || r.x1 > view.width || r.y1 > view.height)) continue
     labelBoxes.push(r)
     pill(ctx, text, sx, sy + off, colour)
     return r
@@ -198,7 +200,10 @@ function placePill(ctx: CanvasRenderingContext2D, text: string, sx: number, sy: 
 
 export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExtras): void {
   const d = s.draft
-  labelBoxes = []
+  // A phone keeps road labels clear of the buttons round the map's edge: they start as taken ground (P10).
+  labelBoxes = onPhone() ? view.keepClear.map((b) => ({ ...b })) : []
+  // (The scale bar is drawn last, so its box is last frame's; it only moves with the layout.)
+  if (onPhone() && scaleBarBox.x1 > scaleBarBox.x0) labelBoxes.push({ x0: scaleBarBox.x0 - 4, y0: scaleBarBox.y0 - 4, x1: scaleBarBox.x1 + 4, y1: scaleBarBox.y1 + 4 })
   ctx.clearRect(0, 0, view.width, view.height)
   const g = roadGeometry(d.points, d.width)
 
@@ -209,16 +214,18 @@ export function drawMap(ctx: CanvasRenderingContext2D, s: EditorState, x: MapExt
     if ((!in3d() && view.mpp > 0.55) || x.bend?.dragging) drawRoadOutline(ctx, g.left, g.right, d.environment.palette?.edge ?? PALETTE.roadEdge)
     markTargets = []
     if (x.marks) {
-      drawRaisedRuns(ctx, g.rc, x.marks.raised, x.crossings, s.mode === 'edit')
-      drawWidthRuns(ctx, g, x.marks.width, s.mode === 'edit')
-      drawBankRuns(ctx, g.rc, x.marks.bank, s.mode === 'edit')
+      // A phone shows a stretch's pill only with the tool that changes it (the dashes and dots stay): P10, keep the road map clear.
+      const pill = (tool: EditorTool) => !onPhone() || s.tool === tool
+      drawRaisedRuns(ctx, g.rc, x.marks.raised, x.crossings, s.mode === 'edit', pill('height'))
+      drawWidthRuns(ctx, g, x.marks.width, s.mode === 'edit', pill('width'))
+      drawBankRuns(ctx, g.rc, x.marks.bank, s.mode === 'edit', pill('bank'))
     }
     if (x.stretchHover) drawStretchHover(ctx, g.rc, x.stretchHover, d.width)
     if (s.selection?.kind === 'section') drawSection(ctx, g.rc, s.selection.from, s.selection.to)
     if (x.bend) drawBend(ctx, x.bend.view, x.bend.dragging, d.width)
     if (x.shape) drawShape(ctx, x.shape, d.width)
     if (!in3d()) drawDirectionArrows(ctx, g.rc.curve)
-    drawBridges(ctx, d.points, x.crossings, d.width, s.mode === 'edit' && s.selection?.kind === 'crossing' ? s.selection : null, x.hoverPick?.kind === 'crossing' ? x.hoverPick : null)
+    drawBridges(ctx, d.points, x.crossings, d.width, s.mode === 'edit' && s.selection?.kind === 'crossing' ? s.selection : null, x.hoverPick?.kind === 'crossing' ? x.hoverPick : null, !onPhone() || s.tool === 'select')
     drawPieces(ctx, g.rc, d.pieces, d.width, s.selection, x.hoverPick)
     drawStartLine(ctx, g.rc, d.startAt, d.width)
     if (pointsVisible(s)) drawControlPoints(ctx, d.points, s.selection, x.hoverPick, x.marks?.raisedPoint ?? null)
@@ -771,12 +778,13 @@ export function crossingAtScreen(sx: number, sy: number, labelOnly = false, reac
 }
 
 /** Where each crossing's marker and BRIDGE label were drawn last frame, screen pixels (so a probe can click them). */
-export function crossingScreens(): { x: number; z: number; marker: { sx: number; sy: number }; label: { sx: number; sy: number } | null }[] {
+export function crossingScreens(): { x: number; z: number; marker: { sx: number; sy: number }; label: { sx: number; sy: number } | null; box: { x0: number; y0: number; x1: number; y1: number } | null }[] {
   return crossingTargets.map((t) => ({
     x: t.spot.x,
     z: t.spot.z,
     marker: { sx: t.sx, sy: t.sy },
     label: t.box ? { sx: (t.box.x0 + t.box.x1) / 2, sy: (t.box.y0 + t.box.y1) / 2 } : null,
+    box: t.box ? { ...t.box } : null,
   }))
 }
 
@@ -803,6 +811,7 @@ function drawBridges(
   width: number,
   selected: { x: number; z: number } | null,
   hover: { x: number; z: number } | null,
+  pills = true,
 ): void {
   crossingTargets = []
   // (Road raised by hand away from any crossing has its own RAISED label: drawRaisedRuns.)
@@ -843,7 +852,8 @@ function drawBridges(
       uz = sd.y
     }
     const text = c.kind === 'tunnel' ? 'TUNNEL' : good ? `${c.kind === 'underpass' ? 'UNDERPASS' : 'BRIDGE'} ${Math.round(c.gap)} m` : c.over !== null ? `LOW BRIDGE ${c.gap.toFixed(1)} m` : 'ROADS MEET'
-    const box = placePill(ctx, text, sx + ux * 46, sy + uz * 46, [0, 24, -24, 48], isSel ? PALETTE.uiText : colour)
+    // Hidden pill: no box either, so a press on that spot is a press on bare road.
+    const box = pills ? placePill(ctx, text, sx + ux * 46, sy + uz * 46, [0, 24, -24, 48], isSel ? PALETTE.uiText : colour) : null
     crossingTargets.push({ spot: c.at, sx, sy, box })
   }
   for (const l of roadLabels) placePill(ctx, l.text, l.sx, l.sy, [0, 24, -24, 48], l.colour)
@@ -910,8 +920,8 @@ export function markAtScreen(sx: number, sy: number, reach: Reach = MOUSE_REACH)
 }
 
 /** Every RAISED, BANK and WIDTH label as drawn last frame (so a probe can click one with the real mouse). */
-export function markScreens(): { tool: StretchRun['tool']; from: number; to: number; value: number; label: { sx: number; sy: number } }[] {
-  return markTargets.map((t) => ({ tool: t.run.tool, from: t.run.from, to: t.run.to, value: t.run.value, label: { sx: (t.box.x0 + t.box.x1) / 2, sy: (t.box.y0 + t.box.y1) / 2 } }))
+export function markScreens(): { tool: StretchRun['tool']; from: number; to: number; value: number; label: { sx: number; sy: number }; box: { x0: number; y0: number; x1: number; y1: number } }[] {
+  return markTargets.map((t) => ({ tool: t.run.tool, from: t.run.from, to: t.run.to, value: t.run.value, label: { sx: (t.box.x0 + t.box.x1) / 2, sy: (t.box.y0 + t.box.y1) / 2 }, box: { ...t.box } }))
 }
 
 /** The road's centreline over a run (from point `first` to point `last`, `pad` points either side), from the drawn curve. */
@@ -927,7 +937,8 @@ function runLine(rc: RoadCurve, run: StretchRun, pad: number): P[] {
 }
 
 /** A run's label: on a pill beside the road at its label point (`side` -1 left, +1 right), stepping round other labels; clickable while editing. */
-function runLabel(ctx: CanvasRenderingContext2D, rc: RoadCurve, run: StretchRun, text: string, colour: string, side: number, clickable: boolean): void {
+function runLabel(ctx: CanvasRenderingContext2D, rc: RoadCurve, run: StretchRun, text: string, colour: string, side: number, clickable: boolean, pill = true): void {
+  if (!pill) return
   const f = frameAt(rc, run.labelPoint)
   const { sx, sy } = worldToScreen(f.p.x, f.p.z, f.dir)
   const out = screenDir(f.p, f.right, f.dir)
@@ -946,7 +957,7 @@ function heightWords(v: number): string {
  * the whole raised stretch (its ramps too), and a RAISED label at its top. A
  * bridge over a crossing has the crossing's BRIDGE label instead.
  */
-function drawRaisedRuns(ctx: CanvasRenderingContext2D, rc: RoadCurve, runs: readonly StretchRun[], crossings: readonly RoadCrossing[], clickable: boolean): void {
+function drawRaisedRuns(ctx: CanvasRenderingContext2D, rc: RoadCurve, runs: readonly StretchRun[], crossings: readonly RoadCrossing[], clickable: boolean, pills: boolean): void {
   ctx.save()
   ctx.fillStyle = PALETTE.wallRide
   ctx.shadowColor = PALETTE.wallRide
@@ -987,12 +998,12 @@ function drawRaisedRuns(ctx: CanvasRenderingContext2D, rc: RoadCurve, runs: read
   for (const run of runs) {
     const top = rc.points[run.labelPoint]
     if (crossings.some((c) => c.over !== null && Math.hypot(c.at.x - top.x, c.at.z - top.z) < 150)) continue
-    runLabel(ctx, rc, run, run.value < 0 ? `DUG ${heightWords(-run.value)}` : `RAISED ${heightWords(run.value)}`, PALETTE.wallRide, 1, clickable)
+    runLabel(ctx, rc, run, run.value < 0 ? `DUG ${heightWords(-run.value)}` : `RAISED ${heightWords(run.value)}`, PALETTE.wallRide, 1, clickable, pills)
   }
 }
 
 /** Stretches with a bank set by hand: an amber dashed line along the road, and its BANK label. */
-function drawBankRuns(ctx: CanvasRenderingContext2D, rc: RoadCurve, runs: readonly StretchRun[], clickable: boolean): void {
+function drawBankRuns(ctx: CanvasRenderingContext2D, rc: RoadCurve, runs: readonly StretchRun[], clickable: boolean, pills: boolean): void {
   ctx.save()
   ctx.strokeStyle = PALETTE.chevron
   ctx.lineWidth = 3
@@ -1002,11 +1013,11 @@ function drawBankRuns(ctx: CanvasRenderingContext2D, rc: RoadCurve, runs: readon
     ctx.stroke()
   }
   ctx.restore()
-  for (const run of runs) runLabel(ctx, rc, run, `BANK ${Math.round(run.value)}°`, PALETTE.chevron, -1, clickable)
+  for (const run of runs) runLabel(ctx, rc, run, `BANK ${Math.round(run.value)}°`, PALETTE.chevron, -1, clickable, pills)
 }
 
 /** Stretches with a width set by hand: both road edges traced with a light dashed line, and a WIDTH label. */
-function drawWidthRuns(ctx: CanvasRenderingContext2D, g: { rc: RoadCurve; left: P[]; right: P[] }, runs: readonly StretchRun[], clickable: boolean): void {
+function drawWidthRuns(ctx: CanvasRenderingContext2D, g: { rc: RoadCurve; left: P[]; right: P[] }, runs: readonly StretchRun[], clickable: boolean, pills: boolean): void {
   const n = g.rc.points.length
   const len = g.left.length
   ctx.save()
@@ -1026,7 +1037,7 @@ function drawWidthRuns(ctx: CanvasRenderingContext2D, g: { rc: RoadCurve; left: 
     }
   }
   ctx.restore()
-  for (const run of runs) runLabel(ctx, g.rc, run, `WIDTH ${Math.round(run.value)} m`, PALETTE.uiText, 1, clickable)
+  for (const run of runs) runLabel(ctx, g.rc, run, `WIDTH ${Math.round(run.value)} m`, PALETTE.uiText, 1, clickable, pills)
 }
 
 /** The road from `from` forward to `to`, from the drawn curve (both ends exactly). */

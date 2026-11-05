@@ -88,6 +88,8 @@
 //    __dev.editor('marks')                 the RAISED, BANK and WIDTH labels on screen (to click them)
 //    __dev.editor('raise', [from, to, h])  set the middle of that stretch to h metres above the ground
 //                                          (the Height tool's slider); returns ok and the status line
+//    __dev.editor('bank', [from, to, deg])   the Bank tool's slider on that stretch (null deg clears it)
+//    __dev.editor('width', [from, to, m])    the Width tool's slider on that stretch (null m clears it)
 //    __dev.editor('raisePoint', [i, h])    the same smooth hump centred on road point i (editor8's point slider)
 //    __dev.editor('smoothBumps', [from, to])  press Smooth the bumps here on that stretch (or the selected
 //                                          one); returns ok, what it said and the selection (editor12)
@@ -147,6 +149,8 @@ import {
   setBendReach,
   setSteady,
   setTool,
+  setSectionBank,
+  setSectionWidth,
   smoothRoad,
   testDrive,
   undo,
@@ -264,7 +268,7 @@ function crossingsSummary() {
 function editorCommand(cmd: string, arg?: unknown): unknown {
   switch (cmd) {
     case 'help':
-      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | under [i,pass] | makeBridge [i,pass] | tunnel [i,pass] | stretchTunnel | roofOff | tunnelHere [x,z] | lastFit | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
+      return 'stroke [[x,z]...] | shape circle|eight|square|hairpin|kidney | file | save | saveAsNew | testDrive | new [baseWorld] | open id | undo | redo | newTrack [world] | newTrackNow [world] | ask | answer save|discard|cancel|yes | library | clear | clearYes | clearNo | clearNow | random [seed] | askRandom | pencilPlan [[x,z]...] | fit | view [cx,cz,mpp] or pointIndex | drive | driveFeed [[x,z]...] | driveFinish | driveCancel | driveClear | map | mapClose | selftest | checks | state | smooth | roughness | bend [at,dx,dz,reach] | straight [from,to] | curve [from,to,x,z] | corners | corner [i] or [i,radius] | screen at|[x,z] | tool name | steady 0..3 | crossings | selectCrossing i | swap i|[x,z] | under [i,pass] | makeBridge [i,pass] | tunnel [i,pass] | stretchTunnel | roofOff | tunnelHere [x,z] | lastFit | stretch [from,to,tool] | pickStretch [tool,at] | limits | marks | bank [from,to,deg] | width [from,to,m] | raise [from,to,h] | raisePoint [i,h] | smoothBumps [from,to] | problems | findFixes | selectProblem key|i | fix key|i | fixAll | pins'
     case 'stroke':
       return strokeResult(toPoints(arg))
     case 'shape':
@@ -435,6 +439,15 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       const id = s.savedId ?? draftId(s.draft)
       const t = getTrack()
       return heightLimits(s.draft, sel.from, sel.to, { id, pointGround: pointGroundFor(s.draft), params: t && t.id === id ? { ...t.params } : {} })
+    }
+    case 'bank':
+    case 'width': {
+      const [a, b, v] = Array.isArray(arg) ? arg : []
+      if (![a, b].every((n) => Number.isFinite(Number(n)))) return `${cmd} needs [fromAt, toAt, value]`
+      const val = v === null || v === undefined ? null : Number(v)
+      if (cmd === 'bank') setSectionBank(Number(a), Number(b), val)
+      else setSectionWidth(Number(a), Number(b), val)
+      return useEditor.getState().message?.text ?? 'done'
     }
     case 'marks':
       return markScreens()
