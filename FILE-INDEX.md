@@ -30,6 +30,7 @@
 | `scripts/format.test.ts` | `permanent` | Unit check behind bun run test:format: the Time of day row shows a clock time, never the 0 to 1 number |
 | `scripts/editor-touch-check.ts` | `permanent` | Editor touch check behind bun run editor:touch: drives the Road Editor's gesture layer with real multi-finger CDP touch events |
 | `public/manifest.webmanifest` | `permanent` | Home Screen app manifest |
+| `research/2026-11-05-ponytail-sundownrun2-audit.md` | `reference` | Read-only code audit of main at 3c6b1cd (18 findings, 4 must-fix) with Kai's spot-check and five findings of his own |
 
 ## `scripts/` (Warden 2026-10-15)
 
