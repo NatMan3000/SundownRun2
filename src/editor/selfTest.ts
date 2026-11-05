@@ -69,6 +69,7 @@ import { setSmoothTools, smoothRows } from './selfTestSmooth'
 import { builderRows } from './selfTestBuilder'
 import { setTrackModules, trackRows } from './selfTestTracks'
 import { pieceRows } from './selfTestPieces'
+import { wordsRows } from './selfTestWords'
 import { underpassRows } from './selfTestUnder'
 import { tunnelRows } from './selfTestTunnel'
 import { setTunnelStretchTools, tunnelCrossingRows } from './selfTestTunnelCrossing'
@@ -1644,6 +1645,7 @@ export function runEditorSelfTest(store?: EditorStore): CheckResult[] {
   // ---------------------------------------------------------------- placing pieces by their middle, and Auto bank's angle (selfTestPieces.ts)
 
   pieceRows(check, store)
+  wordsRows(check)
 
   // ---------------------------------------------------------------- underpasses and digging down (selfTestUnder.ts)
 

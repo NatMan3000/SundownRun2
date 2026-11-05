@@ -40,48 +40,6 @@ const EXCEPTIONS: { rule: number; screen: string; text: RegExp; detail?: RegExp;
     detail: /road band/,
     reason: 'Ruling (lead, 5 Nov 2026): Hunt Turns\' between-turns card, same reason as the countdown. Overlap with other panels still fails.',
   },
-  {
-    // Temporary, until piece 6 (spec/phone-editor/plan.md): one function at the point of display says these for a phone.
-    // Each entry is a message or a line the Road Editor shares with the desktop, by its opening words. A new one fails.
-    rule: 8,
-    screen: 'editor',
-    text: new RegExp(
-      '^"(' +
-        [
-          // ToolOptions and its steps, EditorUi.tsx: the tool card
-          'Your line trails a little behind the mou',
-          'Hold Shift while you draw',
-          'How much road comes with your hand\\. Shor',
-          'Click the road where',
-          'Click where it ends',
-          'Pull the middle out, then click',
-          'The ends ease into the road',
-          'The curve joins the road',
-          'Red means too tight',
-          'Drag along the road to pick',
-          'Set how high its middle goes, or press',
-          'Violet dots on the road',
-          'An amber line with a BANK',
-          'A WIDTH label',
-          // Panel.tsx, the card
-          'Drag it on the map to reshape',
-          'Not ready yet',
-          // Legend, Panel.tsx: Menu > Map key
-          'Click it to',
-          // messages said from draft.ts and stretchTools.ts
-          'Smoothed: the road is',
-          'Picked the raised road',
-          'New track "',
-          'Hold the mouse button down',
-          // the empty map's note, EditorUi.tsx
-          'Draw a loop with the pencil, or press',
-          // Look3dUi.tsx LOOK_HINT, shared with piece 8
-          'Right-drag to look round',
-        ].join('|') +
-        ')',
-    ),
-    reason: 'Words shared with the desktop: piece 6 of spec/phone-editor/plan.md rewrites them at the point of display. Stored messages stay as they are, so a computer reads the same.',
-  },
 ]
 
 const RULE_NAME: Record<number, string> = {

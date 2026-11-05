@@ -39,6 +39,7 @@ import { deleteDrawnTrack, saveDrawnTrack } from '../track/registry'
 import type { RoadPoint } from '../track/schema'
 import { cleanStroke, CLEANUP } from './cleanup'
 import { draftFile, isEmptyDraft, roadBound, smallLoop } from './draftFile'
+import { words } from './phoneWords'
 import { type Draft, commit, pointGroundFor, say, useEditor } from './draft'
 import { create } from 'zustand'
 
@@ -342,7 +343,7 @@ export function EditorDriveUi() {
     <div role="status" style={driveBarStyle}>
       <span style={kickerStyle}>Drive to draw</span>
       <span style={metresStyle}>{s.metres} m laid</span>
-      <span style={textStyle}>{s.note ?? (enough ? 'Drive back to where you started to close the loop, or press Finish.' : `Drive anywhere! Lay at least ${CLEANUP.minLength} m of road.`)}</span>
+      <span style={textStyle}>{words(s.note ?? (enough ? 'Drive back to where you started to close the loop, or press Finish.' : `Drive anywhere! Lay at least ${CLEANUP.minLength} m of road.`))}</span>
       <button type="button" style={buttonStyle('primary')} onClick={() => finishDriveToDraw()}>
         Finish
       </button>

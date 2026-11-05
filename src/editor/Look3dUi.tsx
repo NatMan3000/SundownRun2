@@ -28,6 +28,7 @@ import { inputState } from '../core/controls'
 import { registerDev } from '../core/devHandles'
 import { useGame } from '../core/store'
 import { useEditor } from './draft'
+import { words } from './phoneWords'
 import { look, closeLook3d, lookSummary, openLook3d, slideLook, toggleLook3d, turnLook, useLook3d, zoomLook, resetLook3d } from './look3d'
 import { setMarksCanvas, marksSummary } from './look3dMarks'
 import { frame3dStats, pick3d, pickStats, pose, roadUnder, worldToScreen, worldToScreenY } from './look3dSpace'
@@ -101,7 +102,7 @@ export function Look3dUi() {
       {on && (
         <div className="sre-look-note" role="note" data-testid="editor-3d-note">
           <span className="sre-look-kicker">3D view</span>
-          <span className="sre-look-text">{LOOK_HINT}</span>
+          <span className="sre-look-text">{words(LOOK_HINT)}</span>
           <button type="button" className="sre-btn is-primary" onClick={() => closeLook3d()} data-testid="editor-3d-back">
             Back to the map
           </button>
