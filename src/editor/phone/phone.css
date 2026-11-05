@@ -415,6 +415,10 @@
   .sre.is-3d .sre-look-note {
     right: calc(var(--edge-r) + var(--stack-w) + 52px) !important;
   }
+  /* ...and with a card open the card's edge is the limit, not the compass's (the card covers both). */
+  .sre.is-3d:has(.phone-card-slot:not([hidden])) .sre-look-note {
+    right: calc(var(--edge-r) + var(--card-w) + 8px) !important;
+  }
 }
 
 /* ---------------------------------------------------------------- the card */
@@ -879,11 +883,37 @@
 .sre[data-touch] .sre-look-kicker {
   flex: none;
 }
-.sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-look-note {
-  right: calc(var(--edge-r) + var(--card-w) + 8px);
-}
-.sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-look-text {
+/* P8: the note is only a hint, so on a phone it is one short line, no button (the Map button in the right column is the way
+   back), that never takes a touch and fades away after a few seconds. With a card open it is not there at all. */
+.sre[data-touch] .sre-look-kicker,
+.sre[data-touch] .sre-look-note .sre-btn {
   display: none;
+}
+.sre[data-touch] .sre-look-note {
+  width: fit-content;
+  max-width: calc(100% - var(--edge-l) - var(--edge-r) - var(--stack-w) - 60px);
+  margin-inline: auto;
+  padding: 4px 12px;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+  animation: phone-note-away 7s ease-in forwards;
+}
+.sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-look-note {
+  display: none;
+}
+@keyframes phone-note-away {
+  0%, 70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+/* The tool tray is its own little menu over the map: the note steps back while it is open (the Map button in the right column is still there). */
+.sre[data-touch]:has(.phone-tray) .sre-look-note {
+  visibility: hidden;
 }
 
 /* The questions (Menu's New track, Random track, Exit): the words and the answers fit a Safari tab. */
@@ -911,9 +941,229 @@
   box-sizing: border-box;
 }
 
-/* The Library's own layout on a phone is piece 7. This much is so its Close stays on screen in a Safari tab. */
+/* ---------------------------------------------------------------- the Library, Share and the online tracks (piece 7)
+
+   A box over the whole editor, inside the safe area. Title, tabs and Close are one strip that stays put; everything under it
+   (Now editing, New track, the rows, Import and Export) is one page that scrolls by a finger. At a Safari tab's 292 px the
+   strip takes 48 and the first screen still has Now editing and Start drawing. */
+
+.sre[data-touch] .sre-modal:not(.sre-ask-modal) {
+  box-sizing: border-box;
+  padding: 6px var(--edge-r) calc(var(--safe-b) + 6px) var(--edge-l);
+  /* No blur over the map: a phone has no frame time for it. */
+  backdrop-filter: none;
+  background: color-mix(in srgb, var(--panel-solid) 88%, transparent);
+}
+/* A keyboard is up: the home bar is behind it, so its room goes (Report's useKeyboardFit sets the attribute). */
+.sre[data-touch] .sre-modal[data-keyboard] {
+  padding-bottom: 6px;
+}
 .sre[data-touch] .sre-library {
-  max-height: calc(100dvh - 12px);
+  width: min(680px, 100%);
+  max-height: 100%;
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  border-radius: 14px;
+  background: var(--panel-solid);
+  font-size: 14px;
+}
+.sre[data-touch] .sre-lib-top {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 6px 2px 14px;
+  background: var(--panel-solid);
+  border-bottom: 1px solid var(--line);
+  /* It never scrolls, and a finger on it must not move the page: only the page under it takes a swipe. */
+  touch-action: none;
+}
+.sre[data-touch] .sre-lib-head {
+  display: contents;
+}
+.sre[data-touch] .sre-lib-head h2 {
+  order: 1;
+  flex: none;
+  font-size: 17px;
+}
+.sre[data-touch] .sre-lib-head .sre-btn {
+  order: 3;
+  flex: none;
+}
+.sre[data-touch] .sr-lib-tabs {
+  order: 2;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border-bottom: 0;
+  gap: 4px;
+}
+.sre[data-touch] .sr-lib-tab {
+  min-height: 44px;
+  margin: 0;
+  padding: 0 14px;
+  border-radius: 10px;
+  border-bottom: 1px solid transparent;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.sre[data-touch] .sr-lib-tab.is-on {
+  border-color: var(--line);
+}
+.sre[data-touch] .sre-lib-now {
+  padding: 6px 14px;
+  gap: 2px 10px;
+  align-items: center;
+}
+.sre[data-touch] .sre-lib-now .sre-help {
+  flex-basis: auto;
+}
+.sre[data-touch] .sre-lib-new {
+  padding: 8px 14px;
+  gap: 8px 12px;
+}
+.sre[data-touch] .sre-lib-new > div {
+  gap: 2px;
+  min-width: 0;
+}
+.sre[data-touch] .sre-lib-list {
+  overflow: visible;
+  padding: 2px 8px;
+}
+.sre[data-touch] .sre-lib-row {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 6px 6px;
+  min-height: 56px;
+}
+.sre[data-touch] .sre-lib-name {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sre[data-touch] .sre-lib-name span {
+  font-size: 12px;
+}
+.sre[data-touch] .sre-lib-acts .sre-btn {
+  /* 46, not 44: rows sit on half pixels, and a 44 px box there can leave a thumb only 43. */
+  min-height: 46px;
+}
+.sre[data-touch] .sre-lib-acts {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.sre[data-touch] .sre-lib-foot {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
+}
+/* Your tracks online: the sync line and Download, Import, Refresh notices. */
+.sre[data-touch] .sr-sync-line,
+.sre[data-touch] .sr-lib-notice {
+  margin: 6px 14px 0;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+/* The second tab: Shared tracks (home) or Everyone's tracks (online). */
+.sre[data-touch] .sr-shared {
+  display: block;
+}
+.sre[data-touch] .sr-shared-head {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 6px 14px 2px;
+}
+.sre[data-touch] .sr-shared-line {
+  padding: 10px 14px;
+}
+.sre[data-touch] .sr-shared-thumb {
+  width: 84px;
+  height: 52px;
+}
+.sre[data-touch] .sr-shared-row {
+  align-items: center;
+}
+
+/* The Share box: two columns on the wide screen (the warning and the name on the left, the track on the right), Cancel and
+   Share it pinned along the bottom. With the keyboard up there is no room to pin anything, so they scroll with the rest. */
+.sre[data-touch] .sr-share {
+  width: min(720px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px 0;
+  background: var(--panel-solid);
+}
+.sre[data-touch] .sr-share > * {
+  flex: none;
+}
+.sre[data-touch] .sr-share-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 14px;
+  align-items: start;
+}
+.sre[data-touch] .sr-share-left {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.sre[data-touch] .sr-share-public {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.sre[data-touch] .sr-share-by {
+  gap: 6px;
+}
+.sre[data-touch] .sr-share-card {
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 12px;
+  padding: 6px;
+  min-width: 0;
+}
+.sre[data-touch] .sr-share-facts strong {
+  font-size: 14px;
+}
+.sre[data-touch] .sr-share-facts span,
+.sre[data-touch] .sr-share-note {
+  font-size: 12px;
+}
+.sre[data-touch] .sr-share > .sre-confirm-acts .sre-btn {
+  min-height: 46px;
+}
+.sre[data-touch] .sr-share > .sre-confirm-acts {
+  position: sticky;
+  bottom: 0;
+  margin: 0 -14px;
+  padding: 6px 14px 8px;
+  background: var(--panel-solid);
+  border-top: 1px solid var(--line);
+}
+.sre[data-touch] .sre-modal[data-keyboard] .sr-share > .sre-confirm-acts {
+  position: static;
+}
+/* With the keyboard up the room is a strip: the name box and what it is for stay, the little preview of the track goes until the keyboard does. */
+.sre[data-touch] .sre-modal[data-keyboard] .sr-share-card {
+  display: none;
+}
+.sre[data-touch] .sr-share-answer {
+  padding-bottom: 6px;
+}
+.sre[data-touch] .sr-share-link,
+.sre[data-touch] .sr-share-answer .sre-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
 }
 
 /* ---------------------------------------------------------------- the Menu */

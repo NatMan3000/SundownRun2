@@ -22,7 +22,10 @@
 
 import puppeteer, { type CDPSession, type Page } from 'puppeteer-core'
 import { mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { writeFileSync } from 'node:fs'
 import { findChrome } from './chrome'
+import { ONLINE_ORIGIN, sampleTrack, startBackends, type Backends } from './editor-backends'
 
 const arg = (name: string, fallback: string) => {
   const i = process.argv.indexOf(`--${name}`)
@@ -210,9 +213,15 @@ function watchWords() {
 /** A step that crashes the game on purpose: the error reaches the page's error event even though the boundary catches it. */
 let crashOnPurpose = false
 
-async function openPhone(name: string, query: string, ready = '[data-testid=editor-ui], .touch'): Promise<Phone> {
+let backends: Backends | null = null
+/** Home: Share and Shared tracks go through the real post office to the fake GitHub. Online: the page is on https and the real library rules answer (scripts/editor-backends.ts). */
+async function openPhone(name: string, query: string, ready = '[data-testid=editor-ui], .touch', backend?: 'home' | 'online'): Promise<Phone> {
   const { w, h, insets } = WINDOWS[name]
   const page = await browser.newPage()
+  if (backend) {
+    backends ??= await startBackends()
+    await backends.serve(page, port)
+  }
   await page.bringToFront()
   page.on('pageerror', (e) => {
     if (!crashOnPurpose) ok(false, 'page error', String((e as Error).stack ?? (e as Error).message).slice(0, 600))
@@ -229,7 +238,7 @@ async function openPhone(name: string, query: string, ready = '[data-testid=edit
     sessionStorage.setItem('check-fresh', '1')
     localStorage.removeItem('sr2.editor.working.v1')
   })
-  await page.goto(`http://localhost:${port}/?${query}`, { waitUntil: 'load' })
+  await page.goto(`${backend === 'online' ? ONLINE_ORIGIN : `http://localhost:${port}`}/?${query}`, { waitUntil: 'load' })
   for (let i = 0; i < 80; i++) {
     if (await page.evaluate((s: string) => !!document.querySelector(s), ready).catch(() => false)) break
     await sleep(250)
@@ -3383,6 +3392,343 @@ async function labelsByTool(p: Phone, phone: boolean) {
 }
 
 
+// ---------------------------------------------------------------- 26. Library, Share, the 3D note and Drive to draw, under a thumb
+
+type Box = { x0: number; y0: number; x1: number; y1: number }
+/** Where an element is on screen, or null if it isn't showing. */
+const roomBox = (p: Phone, sel: string, nth = 0): Promise<Box | null> =>
+  p.page.evaluate(
+    (s: string, n: number) => {
+      const e = [...document.querySelectorAll(s)].filter((x) => (x as HTMLElement).checkVisibility())[n]
+      if (!e) return null
+      const b = e.getBoundingClientRect()
+      return { x0: b.left, y0: b.top, x1: b.right, y1: b.bottom }
+    },
+    sel,
+    nth,
+  )
+const centre = (b: Box): Spot => ({ x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 })
+/** Is the whole box inside the safe part of the window (the notch and home bar left clear)? */
+const safe = (b: Box, name: string) => {
+  const { w, h, insets } = WINDOWS[name]
+  return b.x0 >= insets.left - 0.5 && b.x1 <= w - insets.right + 0.5 && b.y0 >= insets.top - 0.5 && b.y1 <= h - insets.bottom + 0.5
+}
+/** A real finger on an element, if a finger can reach it as it is (nothing scrolled for it). False if it isn't on screen. */
+async function tapSel(p: Phone, sel: string, nth = 0): Promise<boolean> {
+  const b = await roomBox(p, sel, nth)
+  if (!b) return false
+  await p.tap(centre(b))
+  await sleep(250)
+  return true
+}
+/** Is a real finger on this element's middle really on this element (not under something else)? */
+const reachable = (p: Phone, sel: string, name: string, nth = 0) =>
+  p.page.evaluate(
+    (s: string, n: number, w: number, h: number, ins: { left: number; right: number; bottom: number }) => {
+      const e = [...document.querySelectorAll(s)].filter((x) => (x as HTMLElement).checkVisibility())[n]
+      if (!e) return 'not on screen'
+      const b = e.getBoundingClientRect()
+      const x = b.left + b.width / 2
+      const y = b.top + b.height / 2
+      if (x < ins.left || x > w - ins.right || y < 0 || y > h - ins.bottom) return `off the safe part (${Math.round(x)},${Math.round(y)})`
+      const hit = document.elementFromPoint(x, y)
+      return hit && e.contains(hit) ? 'ok' : `covered by ${hit?.tagName.toLowerCase()}.${String(hit?.className).split(' ')[0]}`
+    },
+    sel,
+    nth,
+    WINDOWS[name].w,
+    WINDOWS[name].h,
+    WINDOWS[name].insets,
+  )
+/** One finger swipes up the middle of a box (a row, not a scrollbar): the finger starts ON a row. */
+async function swipeUp(p: Phone, from: Spot, px: number) {
+  await p.down({ ...from, id: 1 })
+  for (let i = 1; i <= 8; i++) {
+    await sleep(14)
+    await p.move({ x: from.x, y: from.y - (px * i) / 8, id: 1 })
+  }
+  await p.lift()
+  await sleep(400)
+}
+const libraryTop = (p: Phone) => p.page.evaluate(() => document.querySelector('.sre-library')?.scrollTop ?? -1)
+const pageMoved = (p: Phone) => p.page.evaluate(() => scrollY + scrollX + document.scrollingElement!.scrollTop)
+
+async function openLibrary(p: Phone) {
+  ok(await tapSel(p, '[data-testid=phone-menu-open]'), 'Menu is under a finger')
+  await sleep(300)
+  ok(await tapSel(p, '[data-testid=editor-library]'), 'Library is under a finger')
+  await sleep(400)
+  ok(!!(await roomBox(p, '.sre-library')), 'a tap on Library opens it')
+}
+
+async function rooms(name: string) {
+  const q = 'editor=1&touch=1&nomusic=1&quality=low'
+  // ---- home: Your tracks, Share, Shared tracks
+  let p = await openPhone(name, q, '[data-testid=editor-ui], .touch', 'home')
+  await p.ed('open', 'afterglow')
+  await sleep(2500)
+  await p.ed('saveAsNew')
+  await p.ed('saveAsNew')
+  await sleep(300)
+  await openLibrary(p)
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-1-library.png` })
+  const strip = await roomBox(p, '.sre-lib-top')
+  const close = await roomBox(p, '.sre-lib-head .sre-btn')
+  ok(!!close && safe(close, name), 'Close is on the first screen, inside the safe part', close)
+  ok(!!strip && !!close && close.y1 <= strip.y1, 'Close sits in the strip that stays put', { strip, close })
+  const start = await roomBox(p, '.sre-lib-new .sre-btn.is-primary')
+  ok(!!start && safe(start, name), 'Start drawing is on the first screen too', start)
+  // A swipe that starts on a row scrolls the page of tracks, presses nothing, and moves nothing else.
+  const row = await roomBox(p, '.sre-lib-row', 1)
+  const top0 = await libraryTop(p)
+  const scrollable = await p.page.evaluate(() => {
+    const e = document.querySelector('.sre-library')!
+    return e.scrollHeight > e.clientHeight + 1
+  })
+  ok(scrollable, 'there are more tracks than the first screen shows, so the list has to scroll')
+  const draft0 = JSON.stringify(await p.sum())
+  const notes0 = await p.page.evaluate(() => document.querySelectorAll('[data-testid=share-box], .sre-confirm').length)
+  if (row) {
+    const from = { x: row.x0 + 40, y: Math.min(row.y1 - 8, (WINDOWS[name].h - WINDOWS[name].insets.bottom) - 20) }
+    await swipeUp(p, from, 90)
+  }
+  const top1 = await libraryTop(p)
+  ok(top1 > top0 + 20, 'a swipe up from a row scrolls the tracks', { from: top0, to: top1 })
+  ok((await pageMoved(p)) === 0, 'and the page behind does not move')
+  ok(JSON.stringify(await p.sum()) === draft0 && (await p.page.evaluate(() => document.querySelectorAll('[data-testid=share-box], .sre-confirm').length)) === notes0, 'and the swipe pressed nothing')
+  // All the way down: the strip is still there, and so is the last row's Export.
+  for (let i = 0; i < 6; i++) await swipeUp(p, { x: WINDOWS[name].w / 2, y: WINDOWS[name].h - WINDOWS[name].insets.bottom - 30 }, 120)
+  const closeLow = await roomBox(p, '.sre-lib-head .sre-btn')
+  ok(!!closeLow && safe(closeLow, name), 'at the bottom of the list Close is still on screen', closeLow)
+  const exp = await roomBox(p, '.sre-lib-foot .sre-btn', 0)
+  ok(!!exp && safe(exp, name), "and Import a track file is under a thumb at the bottom", exp)
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-2-library-bottom.png` })
+  // Share on one of your own tracks: swipe the list until one is really under a finger (not behind the strip), then a real tap.
+  let shareAt = -1
+  for (let i = 0; i < 12 && shareAt < 0; i++) {
+    const count = await p.page.evaluate(() => [...document.querySelectorAll('[data-testid=lib-share]')].filter((x) => (x as HTMLElement).checkVisibility()).length)
+    for (let n = 0; n < count && shareAt < 0; n++) if ((await reachable(p, '[data-testid=lib-share]', name, n)) === 'ok') shareAt = n
+    if (shareAt < 0) await swipeUp(p, { x: WINDOWS[name].w / 2, y: WINDOWS[name].insets.top + 200 }, i < 6 ? -90 : 90)
+  }
+  const sh = shareAt >= 0 ? await roomBox(p, '[data-testid=lib-share]', shareAt) : null
+  ok(!!sh && sh.y1 - sh.y0 >= 43.5, "Share on a track is under a finger and a thumb's size", sh)
+  if (sh) await p.tap(centre(sh))
+  await sleep(700)
+  const boxes = await p.page.evaluate(() => document.querySelectorAll('[data-testid=share-box]').length)
+  ok(boxes === 1, 'one tap on Share opens the Share box, once', boxes)
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-3-share.png` })
+  const go = await roomBox(p, '[data-testid=share-go]')
+  const cancel = await roomBox(p, '[data-testid=share-box] .sre-confirm-acts .sre-btn', 0)
+  ok(!!go && safe(go, name), 'Share it is on screen and inside the safe part with no scrolling', go)
+  ok(!!cancel && safe(cancel, name), 'and so is Cancel', cancel)
+  // Share it: the real post office posts it to the fake GitHub; the answer has a Done under a thumb.
+  ok(await tapSel(p, '[data-testid=share-go]'), 'Share it is under a finger')
+  await p.page.waitForFunction(() => !!document.querySelector('[data-testid=share-answer]'), { timeout: 8000 }).catch(() => undefined)
+  const answer = await p.page.evaluate(() => document.querySelector('[data-testid=share-answer]')?.getAttribute('data-status') ?? null)
+  ok(answer === 'sent', 'the fake GitHub took it', answer)
+  const done = await roomBox(p, '[data-testid=share-answer] .sre-btn')
+  ok(!!done && safe(done, name), 'Done is inside the safe part', done)
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-4-share-done.png` })
+  await tapSel(p, '[data-testid=share-answer] .sre-btn')
+  ok(!(await roomBox(p, '[data-testid=share-box]')), 'a tap on Done closes the box')
+  // The second tab, one finger each way, then Close.
+  ok(await tapSel(p, '[data-testid=lib-tab-shared]'), 'Shared tracks tab is under a finger')
+  await p.page.waitForFunction(() => !!document.querySelector('[data-testid=shared-row]'), { timeout: 8000 }).catch(() => undefined)
+  const rowsShared = await p.page.evaluate(() => document.querySelectorAll('[data-testid=shared-row]').length)
+  ok(rowsShared >= 1, 'it lists what was just shared', rowsShared)
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-5-shared.png` })
+  const dl = await reachable(p, '[data-testid=shared-download], [data-testid=shared-open]', name)
+  ok(dl === 'ok', 'its Download is reachable by a finger', dl)
+  ok(await tapSel(p, '[data-testid=lib-tab-mine]'), 'Your tracks tab is under a finger')
+  ok(await tapSel(p, '.sre-lib-head .sre-btn'), 'Close is under a finger')
+  await sleep(300)
+  ok(!(await roomBox(p, '.sre-library')), 'a tap on Close closes the Library')
+
+  // ---- the 3D note
+  scenario = '26 3D note'
+  ok(await tapSel(p, '[data-testid=editor-3d-button]'), '3D is under a finger')
+  await sleep(1500)
+  // The note is one short line with no button of its own: the right column's button (now Map) is the way back.
+  const note = await roomBox(p, '[data-testid=editor-3d-note]')
+  ok(!!note && note.y1 - note.y0 < 40 && safe(note, name), 'the 3D note is one short line, inside the safe part', note)
+  ok(!(await roomBox(p, '[data-testid=editor-3d-back]')), 'and has no button of its own')
+  ok(await p.page.evaluate(() => getComputedStyle(document.querySelector('[data-testid=editor-3d-note]')!).pointerEvents === 'none'), 'and takes no touch')
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-6-3d-note.png` })
+  let back = await reachable(p, '[data-testid=editor-3d-button]', name)
+  ok(back === 'ok', 'the right column button is under a finger in 3D', back)
+  ok(await tapSel(p, '[data-testid=editor-3d-button]'), 'and a tap on it')
+  await sleep(500)
+  ok(!(await roomBox(p, '[data-testid=editor-3d-note]')), 'takes you back to the map')
+  ok(await tapSel(p, '[data-testid=editor-3d-button]'), '3D again')
+  await sleep(1200)
+  await p.ed('pickStretch', ['height', 3])
+  await sleep(1500)
+  ok(!!(await roomBox(p, '[data-testid=phone-card]')), 'a stretch picked in 3D opens its card')
+  ok(!(await roomBox(p, '[data-testid=editor-3d-note]')), 'and the note is gone, not under the card')
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-6-3d-card.png` })
+  ok(await tapSel(p, '[data-testid=phone-done]'), 'Done closes the card')
+  ok(await tapSel(p, '[data-testid=editor-3d-button]'), 'and the button takes you back to the map')
+  await sleep(500)
+  ok(!(await roomBox(p, '[data-testid=editor-3d-note]')), 'the map is back')
+
+  // ---- Drive to draw
+  scenario = '26 Drive to draw'
+  await p.ed('newTrackNow')
+  await sleep(800)
+  await p.ed('drive')
+  await p.page.waitForFunction(() => !!document.querySelector('.sr-drive-bar'), { timeout: 15000 }).catch(() => undefined)
+  await sleep(1500)
+  ok(!!(await roomBox(p, '.sr-drive-bar')), 'Drive to draw is under way with its bar up')
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-7-drive.png` })
+  const bar = await roomBox(p, '.sr-drive-bar')
+  ok(!!bar && safe(bar, name), 'the bar is inside the safe part', bar)
+  ok(!!bar && bar.y1 - bar.y0 <= 52, 'the bar is one short row, not a panel', bar)
+  const car = { x0: WINDOWS[name].w * 0.38, x1: WINDOWS[name].w * 0.62, y0: WINDOWS[name].h * 0.51, y1: WINDOWS[name].h * 0.76 }
+  ok(!!bar && !(bar.x0 < car.x1 && bar.x1 > car.x0 && bar.y0 < car.y1 && bar.y1 > car.y0), 'and it is not on the car', { bar, car })
+  ok(!!(await roomBox(p, '[data-testid=drive-help]')), 'the help line is up when the drive starts')
+  const covered = await p.page.evaluate(() => {
+    const bar = document.querySelector('.sr-drive-bar')!
+    const bad: string[] = []
+    for (const e of document.querySelectorAll('.touch-pedal, .touch-stick, .touch-top')) {
+      const b = e.getBoundingClientRect()
+      const x = b.left + b.width / 2
+      const y = b.top + b.height / 2
+      const hit = document.elementFromPoint(x, y)
+      // a round pedal's middle, and the point nearest the bar, must not be under it
+      if (hit && bar.contains(hit)) bad.push(`${e.className} middle`)
+      const nb = bar.getBoundingClientRect()
+      const nx = Math.max(nb.left, Math.min(x, nb.right))
+      const ny = Math.max(nb.top, Math.min(y, nb.bottom))
+      const r = Math.min(b.width, b.height) / 2
+      if (e.classList.contains('touch-pedal') || e.classList.contains('touch-stick') ? Math.hypot(x - nx, y - ny) < r - 0.5 : x >= nb.left && x <= nb.right && y >= nb.top && y <= nb.bottom) bad.push(String(e.className).split(' ').slice(0, 2).join('.'))
+    }
+    return bad
+  })
+  ok(covered.length === 0, 'the bar sits on no pedal, stick or top button', covered)
+  for (const t of ['drive-finish', 'drive-cancel']) {
+    const r = await reachable(p, `[data-testid=${t}]`, name)
+    ok(r === 'ok', `${t} is under a finger`, r)
+    const b = await roomBox(p, `[data-testid=${t}]`)
+    ok(!!b && b.y1 - b.y0 >= 43.5 && b.x1 - b.x0 >= 43.5, `${t} is at least 44 px each way`, b)
+  }
+  await sleep(5200)
+  ok(!(await roomBox(p, '[data-testid=drive-help]')), 'and gone a few seconds later, the row stays')
+  ok(!!(await roomBox(p, '[data-testid=drive-finish]')), 'with Finish still there')
+  // Finish with nothing laid yet: the bar says keep driving, and stays.
+  ok(await tapSel(p, '[data-testid=drive-finish]'), 'a tap on Finish')
+  ok(!!(await roomBox(p, '.sr-drive-bar')), 'with nothing laid it stays up')
+  await p.ed('driveFeed', Array.from({ length: 100 }, (_, i) => [i * 4, 0]))
+  await sleep(1300)
+  const clearBtn = await reachable(p, '[data-testid=drive-clear]', name)
+  ok(clearBtn === 'ok', 'once there is road, Clear is under a finger too', clearBtn)
+  ok(await tapSel(p, '[data-testid=drive-clear]'), 'a tap on Clear')
+  ok(!!(await roomBox(p, '[data-testid=drive-clear-yes]')), 'it asks first')
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-8-drive-ask.png` })
+  for (const t of ['drive-clear-yes', 'drive-clear-no']) {
+    const r = await reachable(p, `[data-testid=${t}]`, name)
+    ok(r === 'ok', `${t} is under a finger`, r)
+  }
+  ok(await tapSel(p, '[data-testid=drive-clear-no]'), 'Keep it')
+  ok(!!(await roomBox(p, '[data-testid=drive-finish]')), 'puts the bar back, the road kept')
+  ok(await tapSel(p, '[data-testid=drive-cancel]'), 'a tap on Cancel')
+  await sleep(1200)
+  ok(!(await roomBox(p, '.sr-drive-bar')) && !!(await roomBox(p, '[data-testid=editor-ui]')), 'takes you back to the editor')
+  await p.page.close()
+
+  // ---- online: Your tracks with the sync line, then Everyone's tracks
+  scenario = "26 online library"
+  backends!.otherPlayer('ALI', sampleTrack('canyon-run', 'Canyon Run', 'ember-pass'))
+  backends!.otherPlayer('JOSH', sampleTrack('josh-loop', 'Josh Loop With A Rather Long Name', 'neon-pocket'))
+  p = await openPhone(name, q, '[data-testid=editor-ui], .touch', 'online')
+  await p.ed('open', 'afterglow')
+  await sleep(2500)
+  await p.ed('saveAsNew')
+  await sleep(500)
+  await openLibrary(p)
+  await p.page.waitForFunction(() => document.querySelector('[data-testid=library-sync-line]')?.getAttribute('data-state') === 'ok', { timeout: 8000 }).catch(() => undefined)
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-9-online.png` })
+  const sync = await roomBox(p, '[data-testid=library-sync-line]')
+  ok(!!sync && safe(sync, name), 'the sync line is inside the safe part (no cut-off words)', sync)
+  ok(await tapSel(p, '[data-testid=lib-tab-everyone]'), "Everyone's tracks tab is under a finger")
+  await p.page.waitForFunction(() => document.querySelectorAll('[data-testid=everyone-row]').length >= 2, { timeout: 8000 }).catch(() => undefined)
+  await p.page.screenshot({ path: `${OUT}/rooms-${name}-10-everyone.png` })
+  const copyBtn = await reachable(p, '[data-testid=everyone-copy]', name)
+  ok(copyBtn === 'ok', "a stranger's track has Copy and edit under a finger", copyBtn)
+  ok(await tapSel(p, '[data-testid=everyone-copy]'), 'a tap on Copy and edit')
+  await sleep(700)
+  ok(!(await roomBox(p, '.sre-library')), 'opens it as your own copy and the Library closes')
+  await p.page.close()
+
+  // ---- the computer, unchanged: element pictures hashed, so a run on the build before and this one can be compared
+}
+
+/** The Library, the Share box, the online library and the drive bar at 1920x1080 with a mouse, as pictures of just those elements. */
+async function desktopRooms() {
+  const hashes: Record<string, string> = {}
+  const hash = async (page: Page, sel: string, key: string) => {
+    const el = await page.$(sel)
+    if (!el) return void ok(false, `desktop: ${key} is there to picture`)
+    const png = (await el.screenshot()) as Uint8Array
+    hashes[key] = createHash('sha1').update(png).digest('hex')
+    writeFileSync(`${OUT}/rooms-desktop-${key}.png`, png)
+  }
+  const open = async (backend: 'home' | 'online') => {
+    const page = await browser.newPage()
+    backends ??= await startBackends()
+    await backends.serve(page, port)
+    await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 })
+    await page.evaluateOnNewDocument(() => localStorage.removeItem('sr2.editor.working.v1'))
+    await page.goto(`${backend === 'online' ? ONLINE_ORIGIN : `http://localhost:${port}`}/?editor=1&nomusic=1&quality=low`, { waitUntil: 'load' })
+    for (let i = 0; i < 80 && !(await page.evaluate(() => !!document.querySelector('[data-testid=editor-ui]')).catch(() => false)); i++) await sleep(250)
+    await sleep(2000)
+    return new Phone(page, await page.createCDPSession(), 1920, 1080)
+  }
+  const click = async (p: Phone, sel: string) => {
+    await p.page.click(sel)
+    await sleep(500)
+  }
+  let p = await open('home')
+  await p.ed('open', 'afterglow')
+  await sleep(2500)
+  await p.ed('saveAsNew')
+  await click(p, '[data-testid=editor-library]')
+  await hash(p.page, '.sre-library', 'library')
+  await p.page.click('[data-testid=lib-share]')
+  await sleep(900)
+  await hash(p.page, '[data-testid=share-box]', 'share')
+  await p.page.click('[data-testid=share-box] .sre-confirm-acts .sre-btn')
+  await sleep(300)
+  await p.ed('driveCancel')
+  await p.page.close()
+  p = await open('online')
+  await p.ed('open', 'afterglow')
+  await sleep(2500)
+  await p.ed('saveAsNew')
+  await click(p, '[data-testid=editor-library]')
+  await p.page.waitForFunction(() => document.querySelector('[data-testid=library-sync-line]')?.getAttribute('data-state') === 'ok', { timeout: 8000 }).catch(() => undefined)
+  await sleep(500)
+  // (the sync line says "as RACER ..." with a random name, and the dates move: only the frame is compared)
+  await p.page.evaluate(() => document.querySelectorAll('.sre-lib-name span, [data-testid=library-sync-line]').forEach((e) => ((e as HTMLElement).textContent = 'x')))
+  await hash(p.page, '.sre-library', 'online')
+  await p.page.close()
+  p = await open('home')
+  await p.ed('newTrackNow')
+  await sleep(800)
+  await p.ed('drive')
+  await p.page.waitForFunction(() => !!document.querySelector('.sr-drive-bar'), { timeout: 15000 }).catch(() => undefined)
+  await sleep(1500)
+  await hash(p.page, '.sr-drive-bar', 'drive')
+  await p.ed('driveFeed', Array.from({ length: 100 }, (_, i) => [i * 4, 0]))
+  await sleep(1300)
+  await p.page.click('[data-testid=drive-clear]').catch(() => undefined)
+  await sleep(300)
+  await hash(p.page, '.sr-drive-bar', 'drive-ask')
+  await p.ed('driveCancel')
+  await p.page.close()
+  writeFileSync(`${OUT}/rooms-desktop-hashes.json`, JSON.stringify(hashes, null, 2))
+  ok(Object.keys(hashes).length === 5, 'five pictures of the computer layout taken', hashes)
+}
+
 // ---------------------------------------------------------------- 25. the words
 
 /** What no line on a phone may say: a mouse, a key, a wheel, the computer's "panel on the right" (spec/phone-landscape-standard.md rule 8, plus the editor's own). */
@@ -3770,6 +4116,12 @@ async function wordsOnDesktop() {
 // ---------------------------------------------------------------- run
 
 const wanted = (n: string) => !only.length || only.includes(n)
+if (wanted('26')) {
+  // First, on fresh backends, so the pictures don't depend on what a phone window shared before (nothing has been shared yet).
+  windowName = 'desktop'
+  scenario = '26 the computer, unchanged'
+  await desktopRooms().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+}
 for (const name of windowNames) {
   windowName = name
   const { w, h } = WINDOWS[name]
@@ -3828,6 +4180,11 @@ for (const name of windowNames) {
     scenario = '11 world map'
     await worldMap(name).catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
   }
+  if (wanted('26')) {
+    scenario = '26 Library and Share'
+    await rooms(name).catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+    windowName = name
+  }
   if (wanted('24')) {
     scenario = '24 the picture goes away'
     await contextLost(name).catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
@@ -3884,5 +4241,6 @@ if (wanted('24')) {
   await crashScreenDesktop().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
 }
 await browser.close()
+backends?.stop()
 console.log(fails ? `\n${fails} FAILED. Red scenarios: ${[...red].sort((a, b) => Number(a) - Number(b)).join(', ')}` : '\nALL PASS')
 process.exit(fails ? 1 : 0)

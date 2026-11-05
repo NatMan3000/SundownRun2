@@ -21,6 +21,7 @@
 import puppeteer from 'puppeteer-core'
 import { mkdirSync } from 'node:fs'
 import { findChrome } from './chrome'
+import { ONLINE_ORIGIN, sampleTrack, startBackends, type Backends } from './editor-backends'
 
 // ---------------------------------------------------------------- exceptions
 // An unavoidable exception is named here with its reason. Two lead rulings, both for the road band only.
@@ -57,6 +58,7 @@ const RULE_NAME: Record<number, string> = {
   12: 'map-clear',
   13: 'one-line',
   14: 'scale-clear',
+  15: 'car-clear',
 }
 
 type Insets = { l: number; r: number; t: number; b: number }
@@ -67,7 +69,7 @@ interface Win {
   touch: boolean
   rules: number[]
 }
-const LAND = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
+const LAND = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15]
 const WINS: Record<string, Win> = {
   pwa: { w: 874, h: 402, ins: { l: 62, r: 62, t: 0, b: 20 }, touch: true, rules: LAND },
   safari: { w: 874, h: 292, ins: { l: 62, r: 62, t: 0, b: 20 }, touch: true, rules: LAND },
@@ -178,7 +180,9 @@ function measure(o) {
   const saved = new Map()
   const badReach = new Set(), badSafe = new Set()
   // A question box is up: what is behind it can't be pressed, so only the box is measured.
-  const root = document.querySelector('.sre-modal') || document.querySelector('.sr-ui') || document.body
+  const modals = document.querySelectorAll('.sre-modal')
+  // Drive to draw's bar sits beside the game's UI, not in it: when it is up, the whole page is measured.
+  const root = modals[modals.length - 1] || (document.querySelector('.sr-drive-bar') ? document.body : document.querySelector('.sr-ui') || document.body)
 
   // page must not scroll under a finger
   scrollTo(0, 60); scrollTo(60, 0)
@@ -245,6 +249,12 @@ function measure(o) {
     if (hy && p.scrollHeight > p.clientHeight + 1) add(9, label(p), 'text overflows its box: scrollHeight ' + p.scrollHeight + ' > clientHeight ' + p.clientHeight)
   }
   for (const g of root.querySelectorAll('.glyph')) if (vis(g) && R(g).width > 0) add(8, 'glyph ' + (g.textContent || g.getAttribute('aria-label') || '').trim().slice(0, 20), 'a .glyph shows while touch is the device')
+  // a box under 16 px makes Safari zoom the whole page when it gets the focus (the editor's boxes)
+  if (root.closest('.sre')) for (const i of root.querySelectorAll('input, select, textarea')) {
+    if (!vis(i) || /^(range|checkbox|radio|file|hidden)$/.test(i.type)) continue
+    const f = parseFloat(getComputedStyle(i).fontSize)
+    if (f < 15.99) add(9, label(i), 'font ' + rd(f) + ' px: under 16 px Safari zooms the page when the box gets the focus')
+  }
   for (const i of root.querySelectorAll('input[placeholder], textarea[placeholder]')) if (vis(i) && KEYWORDS.test(i.getAttribute('placeholder'))) add(8, '"' + i.getAttribute('placeholder').slice(0, 40) + '"', 'placeholder names a key')
 
   // ---------- HUD, and on menus the same "nothing sits on top of anything else" rule
@@ -341,6 +351,30 @@ function menuOverlap(taps, root, add) {
     const w = Math.min(a.v.r, b.v.r) - Math.max(a.v.l, b.v.l), h = Math.min(a.v.b, b.v.b) - Math.max(a.v.t, b.v.t)
     if (w > 1.5 && h > 1.5) add(7, label(a.e) + ' / ' + label(b.e), 'sit on each other: overlap ' + rd(w) + 'x' + rd(h) + ' px')
   }
+  // Words never run over the edge of a box they are not in (a line wider than its column across a neighbouring card's border).
+  if (root.closest && root.closest('.sre')) {
+    // (what is pinned over a scrolling page, Cancel and Share it, covers it by design)
+    const boxes = [...root.querySelectorAll('.sr-share-card, .sr-share-public, .sre-input, .sre-btn, .sr-sync-line, .sr-lib-notice')].filter((e) => vis(e) && R(e).width > 2 && !e.closest('.sre-confirm-acts, .sre-lib-top')).map((e) => ({ e, v: visibleBox(e) }))
+    const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const seen = new Set()
+    for (let n = tw.nextNode(); n; n = tw.nextNode()) {
+      const t = (n.nodeValue || '').replace(/\s+/g, ' ').trim()
+      const pe = n.parentElement
+      if (!t || !pe || !vis(pe) || /^(SCRIPT|STYLE|OPTION)$/.test(pe.tagName) || pe.closest('.sre-confirm-acts, .sre-lib-top')) continue
+      const rg = document.createRange(); rg.selectNodeContents(n)
+      const tb = rg.getBoundingClientRect()
+      if (tb.width < 2 || tb.height < 2) continue
+      const vb = visibleBox(pe)
+      const tv = { l: Math.max(tb.left, vb.l), t: Math.max(tb.top, vb.t), r: Math.min(tb.right, vb.r), b: Math.min(tb.bottom, vb.b) }
+      if (tv.r - tv.l < 2 || tv.b - tv.t < 2) continue
+      for (const bx of boxes) {
+        if (bx.e.contains(pe)) continue
+        const w = Math.min(tv.r, bx.v.r) - Math.max(tv.l, bx.v.l), h = Math.min(tv.b, bx.v.b) - Math.max(tv.t, bx.v.t)
+        const key = t + '|' + desc(bx.e)
+        if (w > 1.5 && h > 1.5 && !seen.has(key)) { seen.add(key); add(7, '"' + t.slice(0, 40) + '" / ' + label(bx.e), 'text runs over the edge of a box it is not in: overlap ' + rd(w) + 'x' + rd(h) + ' px') }
+      }
+    }
+  }
 }
 
 // ---------- rule 7: HUD panels never overlap, nothing covers the road's middle band
@@ -348,7 +382,7 @@ const HUD_SEL = [
   ['panel', '.hud-panel'], ['speed', '.hud-speed'], ['toast', '.hud-toast'], ['pop', '.hud-pop'], ['countdown', '.hud-count'],
   ['cue', '.hud-cue'], ['trap', '.hud-trap'], ['turnscard', '.hud-turnscard'], ['hint', '.hud-hint'], ['rewind', '.hud-rewind'],
   ['rewind-tag', '.hud-rewind-refused, .hud-refused'], ['fps', '.hud-fps'], ['sound', '.sound-hint'],
-  ['top', '.touch-top'], ['pulse', '.touch-pulse'],
+  ['top', '.touch-top'], ['pulse', '.touch-pulse'], ['drive', '.sr-drive-bar'],
 ]
 const HUD_ROUND = [['pedal', '.touch-pedal'], ['stick', '.touch-stick']]
 function hud(o, add) {
@@ -356,7 +390,7 @@ function hud(o, add) {
   const seenEl = new Set()
   const take = (kind, sel, round) => {
     for (const e of document.querySelectorAll(sel)) {
-      if (seenEl.has(e) || !e.closest('.sr-ui') || !vis(e)) continue
+      if (seenEl.has(e) || !e.closest('.sr-ui, .sr-drive-bar') || !vis(e)) continue
       const b = R(e)
       if (b.width < 2 || b.height < 2) continue
       seenEl.add(e)
@@ -459,6 +493,21 @@ function mapClear(allow) {
   return out
 }
 
+// ---------- rule 15: the car, seen from the chase camera, is in the same place in every window (read off the shots: x 38..62% of the width,
+// y from the horizon-side roof at 51% to the body's lower edge at 76%); nothing of ours sits on it while driving.
+function carClear() {
+  W = innerWidth; H = innerHeight
+  const car = { l: W * 0.38, r: W * 0.62, t: H * 0.51, b: H * 0.76 }
+  const out = []
+  for (const e of document.querySelectorAll('.sr-drive-bar, .sr-drive-bar button')) {
+    if (!vis(e)) continue
+    const b = R(e)
+    const w = Math.min(b.right, car.r) - Math.max(b.left, car.l), h = Math.min(b.bottom, car.b) - Math.max(b.top, car.t)
+    if (w > 1 && h > 1) { out.push({ text: label(e), detail: 'covers the car (x ' + rd(car.l) + '..' + rd(car.r) + ', y ' + rd(car.t) + '..' + rd(car.b) + '): overlap ' + rd(w) + 'x' + rd(h) + ' px, box ' + rd(b.left) + ',' + rd(b.top) + ',' + rd(b.right) + ',' + rd(b.bottom) }); break }
+  }
+  return out
+}
+
 // ---------- rule 13: how many lines the status line takes
 function statusLines() {
   const e = document.querySelector('.sre-status')
@@ -470,6 +519,8 @@ function statusLines() {
 
 // ---------- rule 14: the scale bar at the top left of the map, clear of the notch and the top edge, and nothing on top of it
 function scaleClear(ins) {
+  // 3D draws no scale bar (the map's canvas is not on screen), so there is nothing there to keep clear.
+  if (document.querySelector('.sre-look-surface')) return []
   const v = window.__dev.editor('view')
   const b = v.scaleBox
   W = innerWidth; H = innerHeight
@@ -490,7 +541,9 @@ function scaleClear(ins) {
 let scrollers = []
 function findScrollers() {
   scrollers = []
-  const root = document.querySelector('.sr-ui') || document.body
+  // A box over the screen (the Library, Share) covers everything behind it: only what is inside the top one can be swiped.
+  const modals = document.querySelectorAll('.sre-modal')
+  const root = modals[modals.length - 1] || document.querySelector('.sr-ui') || document.body
   const out = []
   for (const a of root.querySelectorAll('*')) {
     if (!vis(a)) continue
@@ -534,7 +587,23 @@ function state() {
 window.__clicks = []
 document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.sr-ui, .sre')) window.__clicks.push(performance.now()) }, true)
 const accepts = (t0) => window.__clicks.filter((t) => t >= t0).length
-window.__gate = { shim, measure, primary, primaryAll, mapClear, statusLines, scaleClear, findScrollers, pos, setPos, state, accepts }
+// with a keyboard up (a stand-in visualViewport): the box being typed in, and the card round it, are inside what is left above it
+function inView(sel, card) {
+  const vh = window.visualViewport.height, ins = window.__gateIns
+  const out = []
+  const e = [...document.querySelectorAll(sel)].find((x) => vis(x))
+  if (!e) return [{ text: sel, detail: 'not found' }]
+  const chk = (el, name) => {
+    const b = R(el)
+    if (b.top < -0.5 || b.bottom > vh + 0.5 || b.left < ins.l - 0.5 || b.right > innerWidth - ins.r + 0.5)
+      out.push({ text: name + ' [' + desc(el) + ']', detail: 'not inside the part above the keyboard: y ' + rd(b.top) + '..' + rd(b.bottom) + ' of ' + rd(vh) + ', x ' + rd(b.left) + '..' + rd(b.right) })
+  }
+  chk(e, 'the box being typed in')
+  const k = document.querySelector(card)
+  if (k) { const b = R(k); if (b.bottom > vh + 0.5 || b.top < -0.5) { if (!(k.scrollHeight > k.clientHeight + 1)) out.push({ text: 'card [' + desc(k) + ']', detail: 'runs past the part above the keyboard and cannot scroll: y ' + rd(b.top) + '..' + rd(b.bottom) + ' of ' + rd(vh) } ) } }
+  return out
+}
+window.__gate = { carClear, inView, shim, measure, primary, primaryAll, mapClear, statusLines, scaleClear, findScrollers, pos, setPos, state, accepts }
 })()`
 
 // ---------------------------------------------------------------- break injections (--break <rule>)
@@ -567,17 +636,22 @@ const BREAKS: Record<number, string> = {
 const cssBreak = (css: string) => `(()=>{let s=document.getElementById('gate-break');if(!s){s=document.createElement('style');s.id='gate-break';document.head.append(s)}s.textContent=${JSON.stringify(css)}})()`
 const BREAKS_EDITOR: Record<number, string> = {
   // the card and the Menu stop scrolling, so what overflows is clipped for good
-  1: cssBreak('.phone-card-body,.phone-menu-body,.phone-menu-nav{overflow:hidden !important}'),
+  1: cssBreak('.phone-card-body,.phone-menu-body,.phone-menu-nav,.sre-library,.sr-share{overflow:hidden !important}'),
   // the buttons shrink to 40%
   2: cssBreak('.sre[data-touch] button,.sre[data-touch] input{transform:scale(.4) !important}'),
   3: BREAKS[3],
   // the left cluster, the right stack and the card slide 80 px towards the notch
   4: cssBreak('.phone-left{transform:translate(-60px,0) !important}.phone-stack,.phone-card{transform:translate(60px,0) !important}'),
   // the primary action drops off the first screen
-  5: cssBreak('[data-testid=editor-test-drive],[data-rail=select],[data-rail=fit],.phone-card .sre-range-hit,.phone-card .sre-btn,[data-testid=editor-empty-random]{position:relative;top:400px}'),
+  5: cssBreak('[data-testid=editor-test-drive],[data-rail=select],[data-rail=fit],.phone-card .sre-range-hit,.phone-card .sre-btn,[data-testid=editor-empty-random],[data-testid=share-go],[data-testid=share-madeby],.sre-lib-head .sre-btn{position:relative;top:400px}'),
   6: BREAKS[6],
   // the Undo pair sits on the tool button, and the stack on the status line
-  7: cssBreak('.phone-tool{margin-top:-40px !important}.sre[data-touch] .sre-status{right:0 !important}'),
+  // (and Drive to draw's bar goes back across the top of the screen, over the lap panel and the buttons)
+  // 16: the Share box's left column grows over the track card, the way a too-long line did
+  16: cssBreak('.sr-share-left{width:200% !important;position:relative;z-index:1}'),
+  // 15: the drive bar climbs onto the car
+  15: cssBreak('.sr-drive-bar{bottom:auto !important;top:46% !important}'),
+  7: cssBreak('.phone-tool{margin-top:-40px !important}.sre[data-touch] .sre-status{right:0 !important}.sr-drive-bar{top:10px !important;bottom:auto !important;left:60px !important;right:60px !important}'),
   8: BREAKS[8],
   // words shrink to 7 px and one label is cut off
   9: cssBreak('.phone-tool-name,.phone-stack span{font-size:7px !important}.sre-btn.is-primary{display:inline-block;width:1.2em !important;overflow:hidden !important;white-space:nowrap !important}'),
@@ -616,6 +690,10 @@ interface Step {
   firstAll?: string
   /** Only that it opens: its layout is another piece's */
   reachOnly?: boolean
+  /** The page talks to the in-process backends (scripts/editor-backends.ts): home = Share and Shared tracks through the real post office and the fake GitHub; online = the page is on https and the real library rules answer */
+  backend?: 'home' | 'online'
+  /** Rule 15: nothing of ours on the car (Drive to draw) */
+  car?: true
   /** Rule 12: nothing on the map but the map and the status line. A string: what else is allowed here, by selector, and why it says so at the step */
   clearMap?: true | string
 }
@@ -660,15 +738,18 @@ async function edTap(c: Ctx, sel: string, what: string) {
 }
 /** Everything closed by its own button, a road on the map, Pencil in hand. */
 async function edFront(c: Ctx, road = true) {
+  await ed(c, 'driveCancel') // (nothing, unless a Drive to draw is under way)
   for (let i = 0; i < 6; i++) {
     const on = await c.page.evaluate(() => ({
       ask: !!document.querySelector('[data-testid=editor-ask]'),
+      share: !!document.querySelector('[data-testid=share-box]'),
       lib: !!document.querySelector('.sre-library'),
       menu: !!document.querySelector('[data-testid=phone-menu]'),
       card: !!document.querySelector('[data-testid=phone-done]'),
       tray: !!document.querySelector('[data-testid=phone-tray]'),
     }))
     if (on.ask) await tapSel(c, '[data-testid=editor-ask-cancel]')
+    else if (on.share) await tapSel(c, '[data-testid=share-box] .sre-confirm-acts .sre-btn, [data-testid=share-answer] .sre-btn')
     else if (on.lib) await tapSel(c, '.sre-lib-head .sre-btn')
     else if (on.menu) await tapSel(c, '[data-testid=phone-menu-back]')
     else if (on.card) await tapSel(c, '[data-testid=phone-done]')
@@ -731,6 +812,75 @@ async function edProblem(c: Ctx): Promise<string | null> {
   const rows: any[] = Array.isArray(list) ? list : (list?.items ?? list?.problems ?? [])
   const fix = rows.find((p) => p.offer === 'found' || p.fix === 'found' || p.canFix)
   return (fix ?? rows[0])?.key ?? null
+}
+/** Two tracks of your own in the Library, so a row has all its buttons. */
+async function edSaved(c: Ctx) {
+  await edFront(c)
+  // (Whatever an earlier step left in this page's Library counts, so a step run alone and a whole run see the same rows.)
+  const have = ((await ed(c, 'library')) as { tracks: unknown[] }).tracks.length
+  for (let i = have; i < 2; i++) {
+    await ed(c, 'saveAsNew')
+    await sleep(300)
+  }
+}
+/** The Library, opened the way a thumb does: Menu, then Library. */
+async function edLibrary(c: Ctx) {
+  await edFront(c, false)
+  await edTap(c, '[data-testid=phone-menu-open]', 'Menu')
+  await edTap(c, '[data-testid=editor-library]', 'Library')
+  await sleep(300)
+  if (!(await c.page.evaluate(() => !!document.querySelector('.sre-library')))) c.fail(1, 'Library', 'Menu > Library did not open it')
+}
+/**
+ * A phone's keyboard, as iOS does it: the layout viewport keeps its size and the visual viewport shrinks to what is left above the keyboard
+ * (178 px on a Home Screen copy, 68 in a Safari tab, spec/phone-landscape-standard.md "Known"). Chrome headless has no keyboard, so a stand-in
+ * for window.visualViewport says so, installed before the box that reads it opens.
+ */
+async function fakeKeyboard(c: Ctx) {
+  await c.page.evaluate(() => {
+    const w = window as any
+    if (w.__kb) return
+    const on: Record<string, (() => void)[]> = { resize: [], scroll: [] }
+    const vv: any = {
+      height: innerHeight,
+      width: innerWidth,
+      offsetTop: 0,
+      offsetLeft: 0,
+      scale: 1,
+      addEventListener: (t: string, f: () => void) => on[t]?.push(f),
+      removeEventListener: (t: string, f: () => void) => (on[t] = (on[t] ?? []).filter((x) => x !== f)),
+    }
+    w.__kb = (h: number) => {
+      vv.height = h
+      for (const f of on.resize) f()
+    }
+    Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
+  })
+}
+const keyboardLeft = (c: Ctx) => (c.win.h >= 400 ? 178 : 68)
+async function keyboardUp(c: Ctx, sel: string) {
+  await c.page.evaluate((s: string, h: number) => {
+    ;(document.querySelector(s) as HTMLElement | null)?.focus()
+    ;(window as any).__kb(h)
+  }, sel, keyboardLeft(c))
+  await sleep(400)
+}
+async function keyboardDown(c: Ctx) {
+  await c.page.evaluate(() => (window as any).__kb(innerHeight))
+  await sleep(200)
+}
+/** Drive to draw under way on a new track, `points` recorded (4 m apart), the bar up. */
+async function edDrive(c: Ctx, points: number) {
+  await edFront(c, false)
+  await ed(c, 'newTrackNow')
+  await sleep(800)
+  await ed(c, 'drive')
+  await c.page.waitForFunction(() => !!document.querySelector('.sr-drive-bar'), { timeout: 15000 }).catch(() => c.fail(1, 'Drive to draw', 'its bar did not come up'))
+  await sleep(1500)
+  if (points) {
+    await ed(c, 'driveFeed', Array.from({ length: points }, (_, i) => [i * 4, 0]))
+    await sleep(1200)
+  }
 }
 const CARD_FIRST = '.phone-card .sre-range-hit, .phone-card .sre-seg, .phone-card-body > .sre-btn, .phone-card-body > .sre-field > .sre-btn, [data-testid=phone-done]'
 const edStep = (name: string, s: Omit<Step, 'name' | 'editor' | 'mode'>): Step => ({ name: `editor-${name}`, editor: true, mode: 'editor', ...s })
@@ -925,15 +1075,100 @@ const EDITOR_STEPS: Step[] = [
       await edTap(c, '[data-testid=phone-menu-key]', 'Map key')
     },
   }),
+  // The Library (piece 7), home copy: Your tracks, Share, Shared tracks. The post office is the real one, posting to the fake GitHub.
   edStep('library', {
-    reachOnly: true,
+    backend: 'home',
+    primary: '.sre-lib-head .sre-btn',
     setup: async (c) => {
-      await edFront(c)
-      await edTap(c, '[data-testid=phone-menu-open]', 'Menu')
-      await edTap(c, '[data-testid=editor-library]', 'Library')
-      await sleep(300)
-      if (!(await c.page.evaluate(() => !!document.querySelector('.sre-library')))) c.fail(1, 'Library', 'Menu > Library did not open it')
+      await edSaved(c)
+      await edLibrary(c)
+    },
+    extra: async (c) => {
+      // the two tabs and Close are one tap each
+      if (!(await tapSel(c, '[data-testid=lib-tab-shared]'))) return c.fail(6, 'Shared tracks tab', 'not found to tap')
+      if (!(await c.page.evaluate(() => !!document.querySelector('[data-testid=shared-tracks]')))) c.fail(6, 'Shared tracks tab', 'a tap did not open it')
+      await tapSel(c, '[data-testid=lib-tab-mine]')
       await tapSel(c, '.sre-lib-head .sre-btn')
+      if (await c.page.evaluate(() => !!document.querySelector('.sre-library'))) c.fail(6, 'Close', 'a tap did not close the Library')
+    },
+  }),
+  edStep('library-share', {
+    backend: 'home',
+    primary: '[data-testid=share-go]',
+    setup: async (c) => {
+      await edSaved(c)
+      await edLibrary(c)
+      await edTap(c, '[data-testid=lib-share]', 'Share')
+      await c.page.waitForFunction(() => !!document.querySelector('[data-testid=share-box]'), { timeout: 3000 }).catch(() => c.fail(1, 'Share', 'a tap did not open the Share box'))
+      await sleep(600)
+    },
+  }),
+  // Typing in the Made by box: the page's visual viewport shrinks to what a Home Screen copy has above the keyboard.
+  edStep('library-share-typing', {
+    backend: 'home',
+    primary: '[data-testid=share-madeby]',
+    setup: async (c) => {
+      await edSaved(c)
+      await edLibrary(c)
+      await fakeKeyboard(c)
+      await edTap(c, '[data-testid=lib-share]', 'Share')
+      await sleep(600)
+      await keyboardUp(c, '[data-testid=share-madeby]')
+    },
+    extra: async (c) => {
+      const seen = await c.page.evaluate(() => (window as any).__gate.inView('[data-testid=share-madeby]', '[data-testid=share-box]'))
+      for (const s of seen) c.fail(1, s.text, s.detail)
+      await keyboardDown(c)
+    },
+  }),
+  edStep('library-share-done', {
+    backend: 'home',
+    primary: '[data-testid=share-answer] .sre-btn',
+    setup: async (c) => {
+      await edSaved(c)
+      await edLibrary(c)
+      await edTap(c, '[data-testid=lib-share]', 'Share')
+      await sleep(500)
+      await edTap(c, '[data-testid=share-go]', 'Share it')
+      await c.page.waitForFunction(() => !!document.querySelector('[data-testid=share-answer]'), { timeout: 8000 }).catch(() => c.fail(1, 'Share it', 'the fake GitHub did not answer'))
+      await sleep(300)
+    },
+  }),
+  edStep('library-shared', {
+    backend: 'home',
+    primary: '.sre-lib-head .sre-btn',
+    setup: async (c) => {
+      await edSaved(c)
+      await edLibrary(c)
+      await edTap(c, '[data-testid=lib-tab-shared]', 'Shared tracks tab')
+      await c.page.waitForFunction(() => !!document.querySelector('[data-testid=shared-row]'), { timeout: 8000 }).catch(() => c.fail(1, 'Shared tracks', 'no shared track came back from the fake GitHub'))
+      await sleep(300)
+    },
+  }),
+  // The Library online (the page is on https; the real library rules answer): your tracks with their chips, then everyone's.
+  edStep('library-online', {
+    backend: 'online',
+    ownPage: true,
+    primary: '.sre-lib-head .sre-btn',
+    setup: async (c) => {
+      await edSaved(c)
+      await edLibrary(c)
+      await c.page.waitForFunction(() => document.querySelector('[data-testid=library-sync-line]')?.getAttribute('data-state') === 'ok', { timeout: 8000 }).catch(() => c.fail(1, 'Library', 'the online library did not answer'))
+      await sleep(500)
+    },
+  }),
+  edStep('library-everyone', {
+    backend: 'online',
+    ownPage: true,
+    primary: '.sre-lib-head .sre-btn',
+    setup: async (c) => {
+      await edSaved(c)
+      backends!.otherPlayer('ALI', sampleTrack('canyon-run', 'Canyon Run', 'ember-pass'))
+      backends!.otherPlayer('JOSH', sampleTrack('josh-loop', 'Josh Loop With A Rather Long Name', 'neon-pocket'))
+      await edLibrary(c)
+      await edTap(c, '[data-testid=lib-tab-everyone]', "Everyone's tracks tab")
+      await c.page.waitForFunction(() => document.querySelectorAll('[data-testid=everyone-row]').length >= 2, { timeout: 8000 }).catch(() => c.fail(1, "Everyone's tracks", 'no other player track came back'))
+      await sleep(600)
     },
   }),
   edStep('ask-random', {
@@ -954,11 +1189,59 @@ const EDITOR_STEPS: Step[] = [
       await sleep(300)
     },
   }),
+  // The 3D view (piece 8): its note across the top, clear of everything else; the map's only mark is the status line (P8).
   edStep('3d', {
+    primary: '[data-testid=editor-3d-button]',
+    clearMap: '.sre-look-note, .sre-look-note *',
     setup: async (c) => {
       await edFront(c)
       await edTap(c, '[data-testid=editor-3d-button]', '3D')
       await sleep(1400)
+    },
+  }),
+  // 3D with the tool button's tray, and with a card open: the note gives way, never sits on them.
+  edStep('3d-tray', {
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=editor-3d-button]', '3D')
+      await sleep(1000)
+      await edTap(c, '[data-testid=phone-tool]', 'tool button')
+    },
+  }),
+  edStep('3d-card', {
+    clearMap: '.sre-look-note, .sre-look-note *',
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=editor-3d-button]', '3D')
+      await sleep(1000)
+      await ed(c, 'pickStretch', ['height', 3])
+      await sleep(1500)
+      await edCardUp(c, 'a stretch in 3D')
+    },
+  }),
+  // Drive to draw (piece 9): the bar over the game's own touch controls.
+  edStep('drive', {
+    hud: true,
+    car: true,
+    setup: async (c) => edDrive(c, 0),
+    extra: async (c) => {
+      // the help line is not permanent: it is gone 5 seconds on (the bar itself stays)
+      await sleep(5500)
+      if (await c.page.evaluate(() => !!document.querySelector('[data-testid=drive-help]'))) c.fail(6, 'help line', 'still showing 5.5 seconds after it came up')
+      if (!(await c.page.evaluate(() => !!document.querySelector('[data-testid=drive-finish]')))) c.fail(6, 'bar', 'the bar went with the help line')
+    },
+  }),
+  edStep('drive-laid', {
+    hud: true,
+    car: true,
+    setup: async (c) => edDrive(c, 100),
+  }),
+  edStep('drive-ask', {
+    hud: true,
+    setup: async (c) => {
+      await edDrive(c, 100)
+      await edTap(c, '[data-testid=drive-clear]', 'Clear')
+      await sleep(300)
     },
   }),
   // Picking each tool says one line, at every window (Nathan: "Try to keep the track field clear"). The full words are its card.
@@ -1223,8 +1506,13 @@ const seenKeys = new Set<string>()
 const infos: { win: string; text: string }[] = []
 let current = ''
 
-async function boot(wname: string, win: Win, mode: string, music = false): Promise<Ctx> {
+let backends: Backends | null = null
+async function boot(wname: string, win: Win, mode: string, music = false, backend?: 'home' | 'online'): Promise<Ctx> {
   const page = await browser.newPage()
+  if (backend) {
+    backends ??= await startBackends()
+    await backends.serve(page, PORT)
+  }
   page.on('pageerror', (e: Error) => console.error(`PAGEERROR ${wname}: ${e.message}`))
   if (win.touch) await page.setUserAgent(UA)
   await page.setViewport({ width: win.w, height: win.h, deviceScaleFactor: win.touch ? 2 : 1, isMobile: win.touch, hasTouch: win.touch })
@@ -1249,7 +1537,7 @@ async function boot(wname: string, win: Win, mode: string, music = false): Promi
   const ctx: Ctx = { page, cdp, win, wname, fail: (rule, text, detail) => record(wname, current, rule, text, detail) }
   // The Road Editor opens from the title, so no track (?track= skips the title), and each page starts with no working copy.
   if (mode === 'editor') await page.evaluateOnNewDocument(() => localStorage.removeItem('sr2.editor.working.v1'))
-  await page.goto(`http://localhost:${PORT}/?${win.touch ? 'touch=1&' : ''}${music ? '' : 'nomusic=1&'}quality=low&${mode === 'editor' ? 'editor=1' : `track=afterglow&mode=${mode}`}`, { waitUntil: 'load' })
+  await page.goto(`${backend === 'online' ? ONLINE_ORIGIN : `http://localhost:${PORT}`}/?${win.touch ? 'touch=1&' : ''}${music ? '' : 'nomusic=1&'}quality=low&${mode === 'editor' ? 'editor=1' : `track=afterglow&mode=${mode}`}`, { waitUntil: 'load' })
   await page.waitForFunction(() => !!(window as any).__dev?.ui && !!(window as any).__game?.get, { timeout: 60000 })
   if (mode === 'editor') {
     await page.waitForFunction(() => !!document.querySelector('[data-testid=editor-ui]'), { timeout: 60000 })
@@ -1343,10 +1631,10 @@ for (const wname of WINDOWS) {
     for (const step of steps) {
       current = step.name
       const mode = step.mode ?? 'free'
-      const key = mode + (step.music ? '+music' : '') + (step.ownPage ? `+${step.name}` : '')
+      const key = mode + (step.music ? '+music' : '') + (step.backend ? `+${step.backend}` : '') + (step.ownPage ? `+${step.name}` : '')
       if (!ctx || ctxMode !== key) {
         await ctx?.page.close()
-        ctx = await boot(wname, win, mode, !!step.music)
+        ctx = await boot(wname, win, mode, !!step.music, step.backend)
         ctxMode = key
       }
       const c = ctx
@@ -1395,6 +1683,10 @@ for (const wname of WINDOWS) {
           if (p.missing) c.fail(5, step.primary, 'primary action not found')
           else if (p.detail) c.fail(5, p.text, p.detail)
         }
+        if (win.rules.includes(15) && step.car) {
+          const onCar: { text: string; detail: string }[] = await c.page.evaluate(() => (window as any).__gate.carClear())
+          for (const m of onCar) c.fail(15, m.text, m.detail)
+        }
         if (win.rules.includes(12) && step.clearMap) {
           const onMap: { text: string; detail: string }[] = await c.page.evaluate((a: string) => (window as any).__gate.mapClear(a), step.clearMap === true ? '' : step.clearMap)
           for (const m of onMap) c.fail(12, m.text, m.detail)
@@ -1420,6 +1712,7 @@ for (const wname of WINDOWS) {
   }
 }
 await browser.close()
+backends?.stop()
 
 // windows were asked for rules; filter portrait to reach only, desktop to guard only
 const shown = failures.filter((f) => f.text === 'SETUP' || (f.rule !== 11 && WINS[f.win].rules.includes(f.rule)))

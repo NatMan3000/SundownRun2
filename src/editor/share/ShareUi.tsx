@@ -21,6 +21,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { audio } from '../../core/api'
+import { useGame } from '../../core/store'
+import { useKeyboardFit } from '../../ui/screens/Report'
 import type { TrackFile } from '../../track/schema'
 import { getTrackFile } from '../../track/registry'
 import { TrackThumb } from '../../ui/TrackThumb'
@@ -44,6 +46,9 @@ export function ShareBox(props: { file: TrackFile; changedNotSaved: boolean; rea
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ShareResult | null>(null)
   const input = useRef<HTMLInputElement>(null)
+  const root = useRef<HTMLDivElement>(null)
+  // A phone's keyboard covers the page: the box keeps to the part still showing, so the name being typed stays in sight.
+  useKeyboardFit(root, useGame((s) => s.inputDevice) === 'touch')
   const can = useMemo(() => canShare(file, madeBy), [file, madeBy])
   const facts = useMemo(() => trackFacts(file), [file])
   const shown = madeBy.trim() || '(no name)'
@@ -65,13 +70,16 @@ export function ShareBox(props: { file: TrackFile; changedNotSaved: boolean; rea
   }
 
   return (
-    <div className="sre-modal sr-share-modal" role="dialog" aria-modal="true" aria-label={`Share ${file.name}`} onPointerDown={(e) => e.target === e.currentTarget && !busy && props.onClose(result?.status === 'sent')}>
+    <div ref={root} className="sre-modal sr-share-modal" role="dialog" aria-modal="true" aria-label={`Share ${file.name}`} onPointerDown={(e) => e.target === e.currentTarget && !busy && props.onClose(result?.status === 'sent')}>
       <div className="sre-confirm sr-share" data-testid="share-box">
         {result ? (
           <ShareAnswer result={result} name={file.name} onDone={() => props.onClose(result.status === 'sent')} />
         ) : (
           <>
             <h2>Share "{file.name}"?</h2>
+            {/* One row of two on a phone (the warning and the name, then the track); on a computer these wrappers have no box. */}
+            <div className="sr-share-top">
+            <div className="sr-share-left">
             <p className="sr-share-public" data-testid="share-public">
               Anyone can see shared tracks on GitHub, with the name in Made by: <b>{shown}</b>. Use a nickname, not your real name.
             </p>
@@ -90,6 +98,7 @@ export function ShareBox(props: { file: TrackFile; changedNotSaved: boolean; rea
                 }}
               />
             </label>
+            </div>
             <div className="sr-share-card">
               <TrackThumb file={file} width={120} height={76} className="sr-share-thumb" />
               <div className="sr-share-facts">
@@ -100,6 +109,7 @@ export function ShareBox(props: { file: TrackFile; changedNotSaved: boolean; rea
                 <span>Pieces: {facts.pieces}</span>
                 {file.description && <span className="sr-share-about">{file.description}</span>}
               </div>
+            </div>
             </div>
             {can.ok && can.again !== null && (
               <p className="sr-share-note">
