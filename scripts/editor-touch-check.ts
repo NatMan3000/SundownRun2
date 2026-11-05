@@ -1199,9 +1199,7 @@ async function toolButton(p: Phone) {
     return Math.max((Math.max(...xs) - Math.min(...xs)) / (fr2.right - fr2.left), (Math.max(...ys) - Math.min(...ys)) / (fr2.bottom - 6))
   }
   ok((await fills()) >= 0.85, 'and fills it', { share: round(await fills()) })
-  const v = (await p.ed('view')) as { scaleX: number; scaleUp: number }
-  const fr = await free()
-  ok(v.scaleX >= fr.left && v.scaleX + 245 <= fr.right && v.scaleUp >= 20, 'the scale bar sits inside the free map, clear of the home bar', v)
+  // (Where the scale bar sits: scenario 21.)
   // A square track at the shortest window: Afterglow.
   await p.ed('open', 'afterglow')
   await sleep(2500)
@@ -1363,6 +1361,266 @@ async function toolButton(p: Phone) {
   await press('[data-testid=phone-menu-back]')
   ok(!(await box('[data-testid=phone-menu]')), 'and Back to the map closes it')
   await p.hidePanels(true)
+}
+
+/**
+ * 21. Nathan: "Move the scale up to the top left on the editor. Try to keep the track field clear". The bar is
+ * read off the map's own canvas, so it can't pass by a number alone. And picking a tool says one short line.
+ */
+async function scaleAndWords(p: Phone) {
+  await p.hidePanels(false)
+  await p.freshRoad()
+  await p.ed('tool', 'pencil')
+  await sleep(300)
+  type V = { scaleTop: number | null; scaleX: number; scaleBox: { x0: number; y0: number; x1: number; y1: number; lineY: number; lineX1: number } }
+  const scale = async () => (await p.ed('view')) as V
+  /** How much of a level line on the map's canvas is drawn in, 0 to 1. */
+  const inked = (x0: number, x1: number, y: number) =>
+    p.page.evaluate(
+      (a: number, b: number, c: number) => {
+        const cv = document.querySelector('.sre-overlay') as HTMLCanvasElement
+        const k = cv.width / innerWidth
+        const w = Math.max(1, Math.round((b - a) * k))
+        const d = cv.getContext('2d')!.getImageData(Math.round(a * k), Math.round(c * k) - 2, w, 5).data
+        let hit = 0
+        for (let i = 0; i < w; i++) {
+          let any = false
+          for (let r = 0; r < 5; r++) if (d[(r * w + i) * 4 + 3] > 150) any = true
+          if (any) hit++
+        }
+        return hit / w
+      },
+      x0,
+      x1,
+      y,
+    )
+  const box = (sel: string) =>
+    p.page.evaluate((s: string) => {
+      const e = document.querySelector(s)
+      if (!e || !(e as HTMLElement).checkVisibility()) return null
+      const r = e.getBoundingClientRect()
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    }, sel)
+  const v = await scale()
+  ok(v.scaleTop !== null, 'the scale bar is told to sit at the top', v.scaleTop)
+  ok(v.scaleBox.y1 <= p.h / 4, 'it is at the top of the map', v.scaleBox)
+  ok(v.scaleBox.y0 >= 0 && v.scaleBox.x0 >= 62, 'clear of the top edge and the notch', v.scaleBox)
+  const left = (await box('.phone-left'))!
+  ok(v.scaleBox.x0 <= left.right, 'at the left, over the tool button column', { x0: v.scaleBox.x0, column: left.right })
+  ok(v.scaleBox.x1 <= 240, 'and short: it ends well before the middle of the map', { x1: v.scaleBox.x1 })
+  ok((await inked(v.scaleBox.x0 + 2, v.scaleBox.lineX1 - 2, v.scaleBox.lineY)) >= 0.9, 'the line really is drawn up there', { share: await inked(v.scaleBox.x0 + 2, v.scaleBox.lineX1 - 2, v.scaleBox.lineY) })
+  ok((await inked(left.right + 14, left.right + 14 + (v.scaleBox.lineX1 - v.scaleBox.x0), left.bottom - 6)) < 0.6, 'and not where it used to be, along the bottom', { share: await inked(left.right + 14, left.right + 14 + (v.scaleBox.lineX1 - v.scaleBox.x0), left.bottom - 6) })
+  // The other thumb's row keeps its place by the tool button now the bar has gone from there.
+  const [emptySpot] = await freeSpots(p, 1)
+  await p.down({ ...emptySpot, id: 1 })
+  for (let i = 1; i <= 8; i++) {
+    await p.move({ x: emptySpot.x + i * 5, y: emptySpot.y, id: 1 })
+    await sleep(14)
+  }
+  await sleep(100)
+  const thumb = await box('.sre-thumb')
+  ok(!!thumb && Math.abs(thumb.bottom - left.bottom) <= 1, 'Straight line sits level with the tool button', thumb)
+  await p.cancel()
+  await sleep(300)
+
+  // Picking a tool says one short line, in a thumb's words.
+  const press = async (sel: string) => {
+    const b = await box(sel)
+    if (!b) return ok(false, `${sel} is there to press`)
+    await p.tap({ x: b.x, y: b.y })
+    await sleep(80)
+  }
+  const said = () => p.page.evaluate(() => (window as unknown as { __game: { get(k: string): string | null } }).__game.get('editorMsg') ?? '')
+  const lines = () =>
+    p.page.evaluate(() => {
+      const e = document.querySelector('.sre-status')
+      if (!e) return 0
+      const r = document.createRange()
+      r.selectNodeContents(e)
+      return new Set([...r.getClientRects()].map((q) => Math.round(q.top))).size
+    })
+  for (const t of TOOLS) {
+    await p.ed('tool', t === 'select' ? 'pencil' : 'select')
+    await sleep(120)
+    await press('[data-testid=phone-tool]')
+    await press(`[data-testid=phone-tray] [data-rail=${t}]`)
+    await sleep(120)
+    const words = await said()
+    ok(words.length > 10 && words.length <= 52, `${t}: picking it says about 50 letters`, words)
+    ok(!/click|mouse|panel|shift|esc\b|wheel|press/i.test(words), `${t}: in a thumb's words`, words)
+    ok((await lines()) === 1, `${t}: on one line`, { lines: await lines() })
+    if (t === 'place') await p.page.evaluate(() => (document.querySelector('[data-testid=phone-done]') as HTMLElement | null)?.click())
+  }
+  // The full explanation is still the tool's card.
+  await press('[data-testid=phone-tool]')
+  await press('[data-testid=phone-tray] [data-rail=height]')
+  await press('[data-testid=phone-tool]')
+  await press('[data-testid=phone-tool-row]')
+  const card = await p.page.evaluate(() => document.querySelector('.phone-card')?.textContent ?? '')
+  ok(/Drag along the road/.test(card) && /A tunnel needs a long stretch of plain road/.test(card), "the full words are on the tool's card", card.slice(0, 80))
+  await press('[data-testid=phone-done]')
+  // On the empty map too.
+  await p.ed('newTrackNow')
+  await sleep(300)
+  await press('[data-testid=phone-tool]')
+  await press('[data-testid=phone-tray] [data-rail=height]')
+  await sleep(120)
+  ok(/no road yet/.test(await said()) && (await lines()) === 1, 'on an empty map it says so, on one line', await said())
+  await p.freshRoad()
+  await p.hidePanels(true)
+}
+
+/** 21, a computer: the bar along the bottom at 96 px, as ever, and the long words. */
+async function scaleOnDesktop() {
+  const p = await openDesktop()
+  await p.freshRoad()
+  await sleep(300)
+  const v = (await p.ed('view')) as { scaleTop: number | null; scaleBox: { x0: number; y1: number; lineY: number; lineX1: number } }
+  ok(v.scaleTop === null && v.scaleBox.x0 === 96 && v.scaleBox.lineY === p.h - 28, 'a computer: the scale bar along the bottom, 96 px in', v)
+  ok(v.scaleBox.lineX1 - v.scaleBox.x0 >= 80, 'and at least 80 px long', v.scaleBox)
+  const b = await p.page.evaluate(() => {
+    const r = document.querySelector('[data-rail=height]')!.getBoundingClientRect()
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+  })
+  await p.page.mouse.click(b.x, b.y)
+  await sleep(150)
+  const words = (await p.page.evaluate(() => (window as unknown as { __game: { get(k: string): string | null } }).__game.get('editorMsg'))) ?? ''
+  ok(/drag along the road/.test(words) && /A tunnel needs a long stretch of plain road/.test(words), "and Height's long tip", words.slice(0, 60))
+  await p.page.close()
+}
+
+/**
+ * 22. The tunnel's footprint is a lot to put on the road, so a thumb only sees it while held on Make it a tunnel.
+ * Finger down previews, finger up on the button acts, sliding off lets go, and what can't fit does nothing.
+ */
+async function tunnelHold(p: Phone) {
+  await p.hidePanels(false)
+  await p.freshRoad()
+  const box = () =>
+    p.page.evaluate(() => {
+      const e = document.querySelector('[data-testid=editor-make-tunnel]')
+      if (!e || !(e as HTMLElement).checkVisibility()) return null
+      const r = e.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    })
+  const footprint = async () => (await p.sum()).tunnelPreview
+  const why = () => p.page.evaluate(() => document.querySelector('[data-testid=editor-tunnel-why]')?.textContent ?? null)
+  const n = (await p.sum()).points
+  let fits: number | null = null
+  let noFit: number | null = null
+  for (let i = 0; i < 28 && (fits === null || noFit === null); i++) {
+    const at = ((i + 0.5) / 28) * n
+    await p.ed('pickStretch', ['height', at])
+    await sleep(350)
+    if (!(await box())) continue
+    if (await why()) noFit ??= at
+    else fits ??= at
+  }
+  ok(fits !== null && noFit !== null, 'a stretch a tunnel fits on, and one it does not', { fits, noFit })
+  if (fits === null || noFit === null) return
+  const pick = async (at: number) => {
+    await p.ed('pickStretch', ['height', at])
+    await sleep(400)
+    return (await box())!
+  }
+  // Picking a stretch: the road stays clear.
+  let b = await pick(fits)
+  ok(!(await footprint()), 'a stretch picked, its card open: no footprint on the road', await footprint())
+  const before = await p.sum()
+  const same = async () => {
+    const now = await p.sum()
+    return now.pieces === before.pieces && now.undoSteps === before.undoSteps
+  }
+  // Held: it shows, however long the hold, and nothing is done.
+  await p.down({ x: b.x, y: b.y, id: 1 })
+  await sleep(120)
+  ok(!!(await footprint()), 'a thumb held on the button: the footprint shows', await footprint())
+  await sleep(800)
+  ok(!!(await footprint()) && (await same()), 'for as long as it is held, and nothing is done yet')
+  // Slid off: it goes, and the lift does nothing.
+  for (let i = 1; i <= 6; i++) {
+    await p.move({ x: b.x - i * 34, y: b.y, id: 1 })
+    await sleep(16)
+  }
+  await sleep(60)
+  ok(!(await footprint()), 'slid off the button: it goes')
+  await p.lift()
+  await sleep(250)
+  ok((await same()) && !(await footprint()), 'and the lift does nothing: that is how to look without doing')
+  // Up the card: the card's own scroll, and nothing is done.
+  b = (await box())!
+  await p.drag(Array.from({ length: 9 }, (_, i) => ({ x: b.x, y: b.y - i * 8 })), 14)
+  await sleep(250)
+  ok((await same()) && !(await footprint()), 'a swipe up from the button does nothing either')
+  await p.page.evaluate(() => {
+    const c = document.querySelector('.phone-card-body')
+    if (c) c.scrollTop = 0
+  })
+  // Can't fit: it shows, the words say why with no promise of another spot, and the lift does nothing.
+  b = await pick(noFit)
+  const words = (await why()) ?? ''
+  ok(/won't fit/.test(words) && !/nearest spot/.test(words), "where it can't fit the words say so, and promise nothing else", words.slice(0, 70))
+  const beforeNoFit = await p.sum()
+  await p.down({ x: b.x, y: b.y, id: 1 })
+  await sleep(700)
+  ok(!!(await footprint()), "held where it can't fit: the footprint shows")
+  await p.lift()
+  await sleep(400)
+  const afterNoFit = await p.sum()
+  ok(afterNoFit.pieces === beforeNoFit.pieces && afterNoFit.undoSteps === beforeNoFit.undoSteps && !(await footprint()), "and the lift does nothing", { pieces: afterNoFit.pieces - beforeNoFit.pieces })
+  // Let go on it, after a hold and after a quick tap: it acts, once. Each is one Undo step.
+  for (const [label, holdMs] of [['a long hold', 800], ['a quick tap', 40]] as const) {
+    b = await pick(fits)
+    const u0 = await p.sum()
+    await p.down({ x: b.x, y: b.y, id: 1 })
+    await sleep(holdMs)
+    await p.lift()
+    await sleep(900)
+    const u1 = await p.sum()
+    ok(u1.pieces === u0.pieces + 1 && u1.undoSteps === u0.undoSteps + 1 && !u1.tunnelPreview, `${label}, let go on the button: a tunnel, once`, { pieces: u1.pieces - u0.pieces, undo: u1.undoSteps - u0.undoSteps })
+    await p.undoTo(u0.undoSteps)
+    await sleep(500)
+  }
+  await p.ed('tool', 'select')
+  await p.hidePanels(true)
+}
+
+/** 22, a computer: hovering shows the footprint as it always has, and a click acts. */
+async function tunnelHoverDesktop() {
+  const p = await openDesktop()
+  await p.freshRoad()
+  const n = (await p.sum()).points
+  const spot = () => p.page.evaluate(() => {
+    const e = document.querySelector('[data-testid=editor-make-tunnel]')
+    const fits = !document.querySelector('[data-testid=editor-tunnel-why]')
+    if (!e) return null
+    const r = e.getBoundingClientRect()
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, fits }
+  })
+  let b: Awaited<ReturnType<typeof spot>> = null
+  for (let i = 0; i < 28; i++) {
+    await p.ed('pickStretch', ['height', ((i + 0.5) / 28) * n])
+    await sleep(350)
+    b = await spot()
+    if (b?.fits) break
+  }
+  ok(!!b?.fits, 'a stretch a tunnel fits on', b)
+  if (!b) return
+  await p.page.mouse.move(40, 40)
+  await sleep(100)
+  ok(!(await p.sum()).tunnelPreview, 'a computer: no footprint until the mouse is over the button')
+  await p.page.mouse.move(b.x, b.y)
+  await sleep(150)
+  ok(!!(await p.sum()).tunnelPreview, 'hovering shows it')
+  await p.page.mouse.move(40, 40)
+  await sleep(150)
+  ok(!(await p.sum()).tunnelPreview, 'leaving takes it away')
+  const u0 = await p.sum()
+  await p.page.mouse.click(b.x, b.y)
+  await sleep(900)
+  const u1 = await p.sum()
+  ok(u1.pieces === u0.pieces + 1 && u1.undoSteps === u0.undoSteps + 1, 'a click acts, once', { pieces: u1.pieces - u0.pieces, undo: u1.undoSteps - u0.undoSteps })
+  await p.page.close()
 }
 
 /** 11. The world map goes through the same handlers: pinch works there too, and one finger still pans. */
@@ -2639,7 +2897,7 @@ const wanted = (n: string) => !only.length || only.includes(n)
 for (const name of windowNames) {
   windowName = name
   const { w, h } = WINDOWS[name]
-  const needsPhone = ['1', '2', '3', '4', '5', '6', '7', '8', '10', '12', '13', '14', '15', '16', '17', '18', '19'].some(wanted)
+  const needsPhone = ['1', '2', '3', '4', '5', '6', '7', '8', '10', '12', '13', '14', '15', '16', '17', '18', '19', '21', '22'].some(wanted)
   if (needsPhone) {
     const p = await openPhone(name, 'editor=1&touch=1&nomusic=1&quality=low')
     scenario = '0 setup'
@@ -2678,6 +2936,8 @@ for (const name of windowNames) {
       ['17', '17 double tap', () => doubleTapTolerance(p)],
       ['18', '18 off the road pans', () => offRoadPans(p)],
       ['19', '19 the other thumb', () => thumbButtons(p)],
+      ['21', '21 the scale and the tool words', () => scaleAndWords(p)],
+      ['22', '22 the tunnel footprint under a thumb', () => tunnelHold(p)],
     ]
     for (const [n, label, run] of runs) {
       if (!wanted(n)) continue
@@ -2695,6 +2955,16 @@ if (wanted('9')) {
   windowName = 'desktop'
   scenario = '9 mouse and pen'
   await mouseAndPen().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+}
+if (wanted('22')) {
+  windowName = 'desktop'
+  scenario = '22 the tunnel footprint under a thumb'
+  await tunnelHoverDesktop().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+}
+if (wanted('21')) {
+  windowName = 'desktop'
+  scenario = '21 the scale and the tool words'
+  await scaleOnDesktop().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
 }
 if (wanted('20')) {
   windowName = 'desktop'

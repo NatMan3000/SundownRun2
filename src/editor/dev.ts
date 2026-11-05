@@ -154,7 +154,7 @@ import {
 } from './draft'
 import { fitToDraft, lastPencilLine, touchState } from './Overlay'
 import { gestureStats } from './mapGestures'
-import { crossingScreens, markScreens, pinScreens } from './mapDraw'
+import { crossingScreens, markScreens, pinScreens, scaleBarBox } from './mapDraw'
 import { heightLimits } from './raise'
 import { type StretchTool, isStretchTool } from './stretchRuns'
 import { pickStretchAt, smoothStretch, stretchHoverLabel, stretchToPick } from './stretchTools'
@@ -332,7 +332,7 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
         if (p) setView(p.x, p.z, 0.25)
       }
       // width/height: the map's size in CSS pixels, so a checker can turn world points into clicks.
-      return { cx: view.cx, cz: view.cz, mpp: view.mpp, width: view.width, height: view.height, scaleX: view.scaleX, scaleUp: view.scaleUp }
+      return { cx: view.cx, cz: view.cz, mpp: view.mpp, width: view.width, height: view.height, scaleX: view.scaleX, scaleUp: view.scaleUp, scaleTop: view.scaleTop, scaleBox: { ...scaleBarBox } }
     }
     case 'fit':
       fitToDraft()

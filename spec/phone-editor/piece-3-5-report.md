@@ -41,6 +41,31 @@ Not one check was loosened: every threshold is what it was, and the new rows onl
 - New gate rule 12, `map-clear`: on `road`, every `hand-*`, `pieces-chip` and `empty`, between the tool button's column and the right stack there is the map and the status line and nothing else. **The empty map's note stays allowed, named at the step:** it is where Random track and Drive to draw live. If Nathan meant that too, it needs a new home. The scale bar is drawn on the map's own canvas, so it is part of the map.
 - `spec/phone-editor/inventory.md`'s last section says all this. I didn't touch the ledger row: "Ledger P8" read as yours.
 
+## Nathan's second ruling: the scale, the words, the footprint
+
+"Move the scale up to the top left on the editor. Try to keep the track field clear" (second time he said it). Built on top of 355b6a3, uncommitted.
+
+- **Scale bar:** on a phone it and the x, z readout sit at the top left of the map, clear of the notch and the top edge (`view.scaleTop`, read from a `.phone-scale-spot` mark), and shorter: `view.scaleMin` 40 px, so 40 to 100 px and not 80 to 200. A computer stays at 96 px along the bottom. The status line now starts past the bar so it can't sit on it; stood up it goes under the bar. The other thumb's row is back level with the tool button. Fit reserves nothing.
+- **Tool words:** on touch, picking a tool says one line in a thumb's words (`TOOL_TIPS_TOUCH`, `EditorUi.tsx`), 50 letters at most, one line at every window. `TOOL_TIPS` is unchanged for a computer. The full words stay on the tool's card; the one thing only the long tip said, what a tunnel needs, is now on Height's card too (`TUNNEL_NEEDS`). Select has no card, so "Delete removes it" and "double tap adds a point" only show on a point's card. This slice is out of piece 6, and its word exceptions are gone from the gate.
+- **Tunnel footprint:** on touch it shows only while a thumb is held on Make it a tunnel. Letting go on the button acts; sliding off lets go without acting, a swipe up is the card's scroll; where it can't fit, the press shows the footprint and the lift does nothing, and the card's words no longer promise the nearest spot. A computer's hover and click are unchanged. Real Safari hasn't seen this one: a long hold is why the lift acts on `pointerup`, not `click`.
+- **Found by the new step:** on an empty map a card opened over the note, whose buttons sat under the palette. The note now steps aside while a card is up. Real overlap, gate R7 caught it.
+
+Proof on the final build: `editor:touch --only 10,21` 347 pass and `--only 22` 39 pass, at both windows and the desktop; `phone:check --only editor` ALL PASS at five windows with new rules 13 `one-line` and 14 `scale-clear`; typecheck clean. Scenario 21 reads the bar off the map's own canvas.
+
+| Break, source really broken | Red |
+|---|---|
+| Scale bar back along the bottom | 4 in 21, 1 R14 |
+| Picking a tool says the long words | 27 in 21, 12 in the gate (R13, R8) |
+| Status line starts at the left, over the bar | R14 on `empty` |
+| Note stays under a card on an empty map | 7 R7 |
+| `--break 13` status squeezed, `--break 14` Undo pair over the bar | 2 R13, 2 R14 |
+| Footprint as soon as the card opens, as it was | 1 in 22 |
+| Tunnel acts as the thumb lands | 4 in 22 |
+| Sliding off doesn't let go | 3 in 22 |
+| What can't fit goes to the nearest spot anyway | 2 in 22 |
+| The click after the lift acts again | 2 in 22 |
+| A thumb's press shows nothing | 3 in 22 |
+
 ## Narrowed, as you asked
 
 - **Cancel:** a finger only moving the map isn't the tool working. Undo stays Undo through a one-finger pan, and a card stays up through it too, where before it hid. `touchState.panning`, read each frame by `useToolFinger`.
@@ -225,7 +250,7 @@ Everything in `spec/phone-editor/inventory.md` was walked: all nine tools, the t
 
 Named, temporary exceptions in `scripts/phone-gate.ts`, top of the file: rule 8, screen `editor`, by opening words. A new line that names a key still fails.
 
-- `TOOL_TIPS` (`EditorUi.tsx`), all nine. They are also long: Height's is six lines at 874 and nine at 667, on the status line for 4.5 s. Worth shortening when they are rewritten.
+- `TOOL_TIPS` on touch: done, see the second ruling. A computer's are unchanged.
 - `ToolOptions` and its steps: "behind the mouse", "Hold Shift", "mouse wheel, or [ and ]", "Click the road", "then click", "Esc starts again", "click them", "click it", and "in the panel on the right" (it is the card now).
 - Panel: "Double-click the road", "click one to see how", every "Click it to" in the Map key. Also "panel" throughout the stretch messages.
 - Messages: `Smoothed: ... Press it again`, `Picked the raised road ... press On the ground`, `New track "...": ... press Random track`, `Hold the mouse button down and draw`, the empty note's "press Random track".

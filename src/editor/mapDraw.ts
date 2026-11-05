@@ -1646,18 +1646,21 @@ export function issueLocation(path: string, d: EditorState['draft'], rc?: RoadCu
   return spot ? { x: spot.x, z: spot.z } : null
 }
 
+/** Where the scale bar and its words were drawn last, pixels (for checkers: `__dev.editor('view')`). */
+export const scaleBarBox = { x0: 0, y0: 0, x1: 0, y1: 0, lineY: 0, lineX1: 0 }
+
 function drawScaleBar(ctx: CanvasRenderingContext2D): void {
   const choices = [10, 20, 50, 100, 200, 500, 1000]
   let metres = choices[choices.length - 1]
   for (const c of choices) {
-    if (c / view.mpp >= 80) {
+    if (c / view.mpp >= view.scaleMin) {
       metres = c
       break
     }
   }
   const px = metres / view.mpp
   const x = view.scaleX
-  const y = view.height - view.scaleUp
+  const y = view.scaleTop ?? view.height - view.scaleUp
   ctx.save()
   ctx.strokeStyle = PALETTE.uiText
   ctx.lineWidth = 2
@@ -1670,7 +1673,14 @@ function drawScaleBar(ctx: CanvasRenderingContext2D): void {
   ctx.font = `600 12px ${FONTS.body}`
   ctx.fillStyle = PALETTE.uiText
   ctx.textBaseline = 'bottom'
-  ctx.fillText(metres >= 1000 ? `${metres / 1000} km` : `${metres} m`, x + px + 8, y + 2)
+  const words = metres >= 1000 ? `${metres / 1000} km` : `${metres} m`
+  ctx.fillText(words, x + px + 8, y + 2)
+  scaleBarBox.x0 = x
+  scaleBarBox.y0 = y - 12
+  scaleBarBox.x1 = x + px + 8 + ctx.measureText(words).width
+  scaleBarBox.y1 = y + 3
+  scaleBarBox.lineY = y
+  scaleBarBox.lineX1 = x + px
   ctx.restore()
 }
 
@@ -1679,7 +1689,9 @@ function drawReadout(ctx: CanvasRenderingContext2D, hover: P): void {
   ctx.font = `500 12px ${FONTS.mono}`
   ctx.fillStyle = PALETTE.uiDim
   ctx.textBaseline = 'bottom'
-  ctx.fillText(`x ${hover.x.toFixed(0)}  z ${hover.z.toFixed(0)}`, view.scaleX, view.height - view.scaleUp - 16)
+  // Above the bar along the bottom. Under it at the top of the map, where in 3D it also keeps below the 3D note.
+  const y = view.scaleTop === null ? view.height - view.scaleUp - 16 : view.scaleTop + 18 + (in3d() ? 50 : 0)
+  ctx.fillText(`x ${hover.x.toFixed(0)}  z ${hover.z.toFixed(0)}`, view.scaleX, y)
   ctx.restore()
 }
 

@@ -10,6 +10,7 @@
 //                  all nine tools, in the computer's order, the setting of
 //                  the one you hold, and View. Nothing else sits on the map
 //                  (P8), bar the other thumb's buttons while a finger works
+//    top left      the scale bar, drawn on the map (mapDraw.ts)
 //    down the right  compass, Menu, 3D, Checks, Save, Test drive
 //    on the right  the card, over the stack: the chosen tool's settings,
 //                  the Checks list, or whatever is picked on the map
@@ -27,7 +28,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { audio } from '../../core/api'
 import { type EditorTool, type Selection, SAVE_STATE_WORDS, cancelBend, cancelShaping, hasUnsavedWork, redo, saveDraft, saveState, say, sectionPoints, testDrive, undo, useEditor } from '../draft'
 import { isEmptyDraft } from '../draftFile'
-import { Palette, RAIL, ToolOptions, pickTool } from '../EditorUi'
+import { Palette, RAIL, TUNNEL_NEEDS, ToolOptions, pickTool } from '../EditorUi'
 import { BankIcon, BendIcon, CurveIcon, FitIcon, GlobeIcon, HeightIcon, MinusIcon, PencilIcon, PiecesIcon, PlusIcon, SelectIcon, StraightIcon, UndoIcon, WidthIcon } from '../icons'
 import { currentProblems } from '../fixActions'
 import { closeLook3d, toggleLook3d, useLook3d } from '../look3d'
@@ -61,6 +62,9 @@ const TOOLS: { id: EditorTool; icon: ReactNode }[] = [
 
 /** A tray cell is too narrow for "Place pieces"; the card still says it in full. */
 const toolName = (tool: EditorTool) => (tool === 'place' ? 'Pieces' : RAIL[tool].name)
+
+/** The shortest the scale bar draws on a phone, pixels (at most 2.5 times that): one thin line in the corner. */
+const SCALE_MIN_PX = 40
 
 /** A finger working the tool this long, milliseconds, is more than a slow tap: the card steps aside and Undo offers Cancel. */
 const WORKING_MS = 150
@@ -199,22 +203,31 @@ export function PhoneEditor(p: { onLibrary: () => void; onExit: () => void }) {
     }
   }, [])
 
-  // The scale bar sits in the free map: beside the tool button, along the bottom.
+  // The scale bar sits at the top left of the map, clear of the notch and the top edge, and short: "Keep the track
+  // field clear" (Nathan). Read from a mark placed by phone.css, again when the phone is turned.
+  const [, turned] = useState(0)
+  useEffect(() => {
+    const onResize = () => turned((n) => n + 1)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
   useLayoutEffect(() => {
-    const left = document.querySelector('.phone-left')?.getBoundingClientRect()
-    if (!left) return
-    const x = left.right + 12
-    const up = window.innerHeight - left.bottom + 6
-    if (x !== view.scaleX || up !== view.scaleUp) {
+    const spot = document.querySelector('.phone-scale-spot')?.getBoundingClientRect()
+    if (!spot) return
+    const x = spot.left + 2
+    const top = spot.top + 12
+    if (x !== view.scaleX || top !== view.scaleTop || view.scaleMin !== SCALE_MIN_PX) {
       view.scaleX = x
-      view.scaleUp = up
+      view.scaleTop = top
+      view.scaleMin = SCALE_MIN_PX
       view.version++
     }
   })
   useEffect(
     () => () => {
       view.scaleX = 96
-      view.scaleUp = 28
+      view.scaleTop = null
+      view.scaleMin = 80
       view.version++
     },
     [],
@@ -226,6 +239,7 @@ export function PhoneEditor(p: { onLibrary: () => void; onExit: () => void }) {
 
   return (
     <>
+      <i className="phone-scale-spot" aria-hidden />
       <div className="phone-left">
         <UndoRedo fingerWorking={finger === 'working'} />
         <button
@@ -644,6 +658,8 @@ function ToolCard(p: { tool: EditorTool; onDone: () => void }) {
   return (
     <CardFrame title={RAIL[p.tool].name} kind="tool" onDone={p.onDone}>
       <ToolOptions />
+      {/* The part of Height's long explanation that only the computer's status line says. */}
+      {p.tool === 'height' && <p className="sre-help">{TUNNEL_NEEDS}</p>}
     </CardFrame>
   )
 }

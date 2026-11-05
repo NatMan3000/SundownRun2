@@ -118,6 +118,9 @@ export const RAIL = {
   library: { name: 'Library', tip: 'Open, copy, import or export your tracks.', key: '' },
 } as const
 
+/** What a tunnel asks of the road: the end of Height's long tip, and on a phone in its card. */
+export const TUNNEL_NEEDS = 'A tunnel needs a long stretch of plain road: a ramp down at each end as well as the covered part, with no loop, jump, wall ride, start line or other road on it.'
+
 /** What each tool does, said once on the status line when you pick it. */
 const TOOL_TIPS: Record<EditorTool, string> = {
   pencil: 'Pencil: start on the road and end back on the road to redraw the bit in between. Hold Shift while you draw for a straight line. On an empty map, draw a loop.',
@@ -125,10 +128,27 @@ const TOOL_TIPS: Record<EditorTool, string> = {
   straight: 'Straight: click the road where the straight starts, then click where it ends.',
   curve: 'Curve: click the road where the curve starts, then where it ends, then pull the middle out and click. The road between becomes one even curve.',
   select: 'Select: click a piece or road point, drag to move it, Delete removes it. Double-click the road to add a point.',
-  height: "Height: drag along the road to pick a stretch (or click the road), then set how high its middle goes in the panel, or press Make it a tunnel to put it underground. A tunnel needs a long stretch of plain road: a ramp down at each end as well as the covered part, with no loop, jump, wall ride, start line or other road on it.",
+  height: `Height: drag along the road to pick a stretch (or click the road), then set how high its middle goes in the panel, or press Make it a tunnel to put it underground. ${TUNNEL_NEEDS}`,
   bank: 'Bank: drag along the road to pick a stretch (or click a corner, or a BANK label), then set its tilt in the panel.',
   width: 'Width: drag along the road to pick a stretch (or click the road), then set how wide it is in the panel.',
   place: 'Place pieces: pick a piece, then click where it goes.',
+}
+
+/**
+ * The same on a phone: one line in a thumb's words, over the road for a moment. About 50 letters at most, so it
+ * stays one line at every window; the full explanation is the tool's card, from the tray's row. (Nathan:
+ * "Try to keep the track field clear".) Only 30 for Pieces: its palette opens beside it, and the line is narrower.
+ */
+const TOOL_TIPS_TOUCH: Record<EditorTool, string> = {
+  select: 'Select: tap a piece or point, drag to move it',
+  pencil: 'Pencil: draw from the road back onto the road',
+  straight: 'Straight: tap where it starts, then where it ends',
+  curve: 'Curve: tap both ends, then pull the middle out',
+  bend: 'Bend: grab the road and pull it',
+  bank: 'Bank: pick a stretch of road, then set its tilt',
+  height: 'Height: pick a stretch of road, then set how high',
+  width: 'Width: pick a stretch of road, then set how wide',
+  place: 'Pieces: pick one, tap the road',
 }
 
 /** The tools that only work on a road (all but the pencil): on an empty map they say so instead. */
@@ -233,7 +253,12 @@ export function pickTool(tool: EditorTool, kind?: PlaceKind): void {
   const before = useEditor.getState().tool
   setTool(tool, kind)
   if (before === tool) return
-  say(needsRoad(tool) && isEmptyDraft(useEditor.getState().draft) ? `${TOOL_TIPS[tool]} ${EMPTY_MAP_HINT}` : TOOL_TIPS[tool], 'info')
+  const noRoad = needsRoad(tool) && isEmptyDraft(useEditor.getState().draft)
+  if (useGame.getState().inputDevice === 'touch') {
+    say(noRoad ? (tool === 'place' ? 'Pieces: draw a road first' : `${RAIL[tool].name}: no road yet, draw a loop first`) : TOOL_TIPS_TOUCH[tool], 'info')
+    return
+  }
+  say(noRoad ? `${TOOL_TIPS[tool]} ${EMPTY_MAP_HINT}` : TOOL_TIPS[tool], 'info')
 }
 
 /**

@@ -8,7 +8,7 @@
 //
 //    bunx vite build --outDir /tmp/x && bunx vite preview --outDir /tmp/x --port 5220 --strictPort
 //    bun scripts/phone-gate.ts --port 5220 [--only title,settings:audio,hud] [--window pwa,safari,small,portrait,desktop]
-//                              [--out /tmp/sr2/phone/shots/gate] [--break <rule 1-12>] [--list]
+//                              [--out /tmp/sr2/phone/shots/gate] [--break <rule 1-14>] [--list]
 //
 //  --break <n> injects CSS/JS into the page (never the UI source) that breaks rule n on purpose, so
 //  a gate nobody has seen fail is never trusted.
@@ -48,16 +48,6 @@ const EXCEPTIONS: { rule: number; screen: string; text: RegExp; detail?: RegExp;
     text: new RegExp(
       '^"(' +
         [
-          // TOOL_TIPS, EditorUi.tsx: said on the status line when a tool is picked
-          'Pencil: start on the road',
-          'Select: click',
-          'Straight: click',
-          'Curve: click',
-          'Bend: grab',
-          'Bank: drag',
-          'Height: drag',
-          'Width: drag',
-          'Place pieces: pick a piece',
           // ToolOptions and its steps, EditorUi.tsx: the tool card
           'Your line trails a little behind the mou',
           'Hold Shift while you draw',
@@ -107,6 +97,8 @@ const RULE_NAME: Record<number, string> = {
   10: 'desktop-guard',
   11: 'vh-units',
   12: 'map-clear',
+  13: 'one-line',
+  14: 'scale-clear',
 }
 
 type Insets = { l: number; r: number; t: number; b: number }
@@ -117,12 +109,12 @@ interface Win {
   touch: boolean
   rules: number[]
 }
-const LAND = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12]
+const LAND = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
 const WINS: Record<string, Win> = {
   pwa: { w: 874, h: 402, ins: { l: 62, r: 62, t: 0, b: 20 }, touch: true, rules: LAND },
   safari: { w: 874, h: 292, ins: { l: 62, r: 62, t: 0, b: 20 }, touch: true, rules: LAND },
   small: { w: 667, h: 331, ins: { l: 0, r: 0, t: 0, b: 0 }, touch: true, rules: LAND },
-  portrait: { w: 390, h: 844, ins: { l: 0, r: 0, t: 47, b: 34 }, touch: true, rules: [1] },
+  portrait: { w: 390, h: 844, ins: { l: 0, r: 0, t: 47, b: 34 }, touch: true, rules: [1, 13, 14] },
   desktop: { w: 1920, h: 1080, ins: { l: 0, r: 0, t: 0, b: 0 }, touch: false, rules: [10] },
 }
 
@@ -509,6 +501,33 @@ function mapClear(allow) {
   return out
 }
 
+// ---------- rule 13: how many lines the status line takes
+function statusLines() {
+  const e = document.querySelector('.sre-status')
+  if (!e || !vis(e)) return { shown: false, lines: 0, text: '' }
+  const range = document.createRange()
+  range.selectNodeContents(e)
+  return { shown: true, lines: new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size, text: e.textContent }
+}
+
+// ---------- rule 14: the scale bar at the top left of the map, clear of the notch and the top edge, and nothing on top of it
+function scaleClear(ins) {
+  const v = window.__dev.editor('view')
+  const b = v.scaleBox
+  W = innerWidth; H = innerHeight
+  const out = []
+  if (v.scaleTop === null) out.push({ text: 'scale bar', detail: 'not at the top: scaleTop is null' })
+  if (b.y1 > H / 3) out.push({ text: 'scale bar', detail: 'not at the top of the map: y ' + rd(b.y0) + '..' + rd(b.y1) + ' in ' + H })
+  if (b.x0 < ins.l || b.y0 < ins.t || b.x1 > W - ins.r) out.push({ text: 'scale bar', detail: 'x ' + rd(b.x0) + '..' + rd(b.x1) + ', y ' + rd(b.y0) + '..' + rd(b.y1) + ' vs safe x ' + ins.l + '..' + (W - ins.r) + ', y from ' + ins.t })
+  for (const e of document.querySelectorAll('.sre *')) {
+    if (e.matches('.sre-overlay, .sre-look-surface, .sre-look-surface *, .phone-scale-spot') || !vis(e)) continue
+    const q = R(e)
+    if (q.width < 2 || q.height < 2) continue
+    if (q.left < b.x1 && q.right > b.x0 && q.top < b.y1 && q.bottom > b.y0) { out.push({ text: label(e), detail: 'sits on the scale bar: ' + rd(q.left) + ',' + rd(q.top) + ',' + rd(q.right) + ',' + rd(q.bottom) + ' vs ' + rd(b.x0) + ',' + rd(b.y0) + ',' + rd(b.x1) + ',' + rd(b.y1) }); break }
+  }
+  return out
+}
+
 // ---------- scrollers, for the swipe test
 let scrollers = []
 function findScrollers() {
@@ -557,7 +576,7 @@ function state() {
 window.__clicks = []
 document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.sr-ui, .sre')) window.__clicks.push(performance.now()) }, true)
 const accepts = (t0) => window.__clicks.filter((t) => t >= t0).length
-window.__gate = { shim, measure, primary, primaryAll, mapClear, findScrollers, pos, setPos, state, accepts }
+window.__gate = { shim, measure, primary, primaryAll, mapClear, statusLines, scaleClear, findScrollers, pos, setPos, state, accepts }
 })()`
 
 // ---------------------------------------------------------------- break injections (--break <rule>)
@@ -605,6 +624,10 @@ const BREAKS_EDITOR: Record<number, string> = {
   // words shrink to 7 px and one label is cut off
   9: cssBreak('.phone-tool-name,.phone-stack span{font-size:7px !important}.sre-btn.is-primary{display:inline-block;width:1.2em !important;overflow:hidden !important;white-space:nowrap !important}'),
   // a chip comes back beside the tool button, the way it was before P8
+  // the status line squeezed until a short line wraps
+  13: cssBreak('.sre[data-touch] .sre-status{max-width:150px !important}'),
+  // the Undo pair and the tool button climb to the top left, over the scale bar
+  14: cssBreak('.phone-left{top:0 !important;bottom:auto !important}'),
   12: `(()=>{if(document.getElementById('gate-chip'))return;const b=document.createElement('button');b.id='gate-chip';b.className='sre-btn';b.textContent='Steady hand: Some';b.style.cssText='position:absolute;left:180px;bottom:30px;min-height:44px;z-index:3';document.querySelector('.sre').append(b)})()`,
 }
 
@@ -980,6 +1003,19 @@ const EDITOR_STEPS: Step[] = [
       await sleep(1400)
     },
   }),
+  // Picking each tool says one line, at every window (Nathan: "Try to keep the track field clear"). The full words are its card.
+  edStep('tips', {
+    setup: async (c) => {
+      await edFront(c)
+      for (const tool of ['select', 'pencil', 'straight', 'curve', 'bend', 'bank', 'height', 'width', 'place']) {
+        await edTool(c, tool)
+        await sleep(300)
+        const s = await c.page.evaluate(() => (window as any).__gate.statusLines())
+        if (!s.shown) c.fail(13, tool, 'picking it said nothing')
+        else if (s.lines > 1) c.fail(13, `"${s.text.slice(0, 40)}"`, `${s.lines} lines after picking ${tool}, ${s.text.length} letters`)
+      }
+    },
+  }),
   edStep('empty', {
     primary: '[data-testid=editor-empty-random]',
     // Its note is the way to a road: Random track and Drive to draw. Nothing else.
@@ -994,6 +1030,20 @@ const EDITOR_STEPS: Step[] = [
   edStep('empty-tray', {
     setup: async (c) => {
       await edTap(c, '[data-testid=phone-tool]', 'tool button')
+    },
+  }),
+  // A tool that needs a road, on the empty map: still one line.
+  edStep('tips-empty', {
+    setup: async (c) => {
+      await tapSel(c, '[data-testid=phone-tool]')
+      await edFront(c, false)
+      for (const tool of ['height', 'place']) {
+        await edTool(c, tool)
+        await sleep(300)
+        const s = await c.page.evaluate(() => (window as any).__gate.statusLines())
+        if (!s.shown) c.fail(13, tool, 'picking it said nothing')
+        else if (s.lines > 1) c.fail(13, `"${s.text.slice(0, 40)}"`, `${s.lines} lines after picking ${tool} on the empty map`)
+      }
     },
   }),
 ]
@@ -1390,6 +1440,10 @@ for (const wname of WINDOWS) {
         if (win.rules.includes(12) && step.clearMap) {
           const onMap: { text: string; detail: string }[] = await c.page.evaluate((a: string) => (window as any).__gate.mapClear(a), step.clearMap === true ? '' : step.clearMap)
           for (const m of onMap) c.fail(12, m.text, m.detail)
+        }
+        if (win.rules.includes(14) && (step.clearMap || step.firstAll)) {
+          const onScale: { text: string; detail: string }[] = await c.page.evaluate((i: Insets) => (window as any).__gate.scaleClear(i), win.ins)
+          for (const m of onScale) c.fail(14, m.text, m.detail)
         }
         if (win.rules.includes(5) && step.firstAll) {
           const late: { text: string; detail: string }[] = await c.page.evaluate((s: string) => (window as any).__gate.primaryAll(s), step.firstAll)

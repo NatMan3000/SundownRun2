@@ -19,6 +19,7 @@
 // ============================================================
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { audio } from '../core/api'
 import { PALETTE } from '../core/palette'
 import { listTracks } from '../track/registry'
 import { TRACK_DEFAULTS, type Piece } from '../track/schema'
@@ -527,13 +528,17 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
 function TunnelToggle(p: { from: number; to: number; draft: Draft }) {
   const on = tunnelsOnStretch(p.draft, p.from, p.to)
   const piece = on.length ? p.draft.pieces[on[0]] : null
-  // Nothing can hover on a phone: the footprint shows for as long as the button is on screen.
-  const footprintWhileShown = useGame((s) => s.inputDevice === 'touch') && piece?.type !== 'tunnel'
-  useEffect(() => {
-    if (!footprintWhileShown) return
-    useEditor.setState({ tunnelPreview: { from: p.from, to: p.to } })
-    return () => useEditor.setState({ tunnelPreview: null })
-  }, [footprintWhileShown, p.from, p.to])
+  // A thumb can't hover, and the footprint is a lot to leave on the road ("Try to keep the track field clear"): it shows
+  // only while a thumb is held on Make it a tunnel. Letting go on the button acts; sliding off lets go without acting.
+  const touch = useGame((s) => s.inputDevice === 'touch')
+  const thumb = useRef<number | null>(null)
+  const thumbHadIt = useRef(false)
+  useEffect(
+    () => () => {
+      if (thumb.current !== null) useEditor.setState({ tunnelPreview: null })
+    },
+    [],
+  )
   if (piece?.type === 'tunnel') {
     return (
       <div className="sre-field" data-testid="editor-height-tunnel">
@@ -560,23 +565,56 @@ function TunnelToggle(p: { from: number; to: number; draft: Draft }) {
   const q = tunnelVerdictAt(span.at, span.length)
   const w = q.ok ? null : tunnelWhy(q, span.length)
   const preview = (on: boolean) => useEditor.setState({ tunnelPreview: on ? { from: p.from, to: p.to } : null })
+  const letGo = () => {
+    thumb.current = null
+    preview(false)
+  }
   return (
     <div className="sre-field" data-testid="editor-height-tunnel">
       <button
         type="button"
         className="sre-btn"
-        onClick={() => tunnelOnStretch(p.from, p.to)}
-        onMouseEnter={() => preview(true)}
-        onMouseLeave={() => preview(false)}
-        onFocus={() => preview(true)}
-        onBlur={() => preview(false)}
+        onClick={(e) => {
+          // A thumb has already had its say as it lifted (and a long hold sends no click at all).
+          if (thumbHadIt.current && e.detail !== 0) return
+          tunnelOnStretch(p.from, p.to)
+        }}
+        onMouseEnter={() => !touch && preview(true)}
+        onMouseLeave={() => !touch && preview(false)}
+        onFocus={() => !touch && preview(true)}
+        onBlur={() => !touch && preview(false)}
+        onPointerDown={(e) => {
+          thumbHadIt.current = e.pointerType === 'touch'
+          if (e.pointerType !== 'touch' || thumb.current !== null) return
+          thumb.current = e.pointerId
+          e.currentTarget.setPointerCapture(e.pointerId)
+          preview(true)
+        }}
+        onPointerMove={(e) => {
+          if (e.pointerId !== thumb.current) return
+          const r = e.currentTarget.getBoundingClientRect()
+          if (e.clientX < r.left - 6 || e.clientX > r.right + 6 || e.clientY < r.top - 6 || e.clientY > r.bottom + 6) letGo()
+        }}
+        onPointerUp={(e) => {
+          if (e.pointerId !== thumb.current) return
+          letGo()
+          // It can't fit: the footprint said so while it was held, and so do the words under the button.
+          if (q.ok) tunnelOnStretch(p.from, p.to)
+          else audio.ui('error')
+        }}
+        // Up or down the browser takes it for the card's scroll.
+        onPointerCancel={(e) => {
+          if (e.pointerId === thumb.current) letGo()
+        }}
+        onContextMenu={(e) => touch && e.preventDefault()}
         data-testid="editor-make-tunnel"
       >
         Make it a tunnel
       </button>
       {w ? (
         <p className="sre-help" data-testid="editor-tunnel-why">
-          It won't fit right here: {w.why}. Pressing it puts one at the nearest spot that fits, if there is one. {w.tryThis}
+          It won't fit right here: {w.why}. {!touch && 'Pressing it puts one at the nearest spot that fits, if there is one. '}
+          {w.tryThis}
         </p>
       ) : (
         <p className="sre-help">

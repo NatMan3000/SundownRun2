@@ -80,7 +80,7 @@ Rulings this inventory stays inside:
 | Stop a drag, a line, a bend, a half-made shape | Esc | "Cancel" takes the Undo button's place while a finger is on the map (other thumb); "Start again" on the status line for a half-made shape | MOVE |
 | What a tool would do, before you press | hover | shown while the finger is down, before it lifts | MOVE |
 | x, z readout | hover | shown while a finger is on the map | MOVE |
-| Scale bar | always, 96 px from the left | always, inside the free map (today it would sit under the rail) | MOVE |
+| Scale bar | always, 96 px from the left | always, at the top left of the map, clear of the notch and the top edge, and shorter (Nathan, 5 Nov 2026) | MOVE |
 | Compass | beside the 3D button | above the right stack; dropped under 300 px height on the map, where it never turns, and shown in 3D | MOVE |
 
 ## The panel, today one tall column
@@ -91,7 +91,7 @@ Rulings this inventory stays inside:
 | Boost: Kick, Length, Across the road. Ramp: Height, Length, Across the road. Loop: Size. Wall ride: side, Length, Wall height. Speed trap note. Tunnel: Length. Delete, Done | panel when picked | card when picked | MOVE |
 | Crash props: What's in the pile, How many. Energy core: Height. Delete, Done | panel when picked | card when picked | MOVE |
 | Crossing: Swap, Send under, Make a bridge, Make an underpass, Put one in a tunnel, Make it a bridge instead, Make it an open cutting instead, and the words for each | panel when picked | card when picked; buttons first, the long words under them | MOVE |
-| Height: Make it a tunnel (hover shows the footprint), Tunnel length, Take the roof off, slider, On the ground, Make the stretch N m long, Smooth the bumps here, Change this stretch's | panel when picked | card when picked, slider first; the footprint shows while that button is on screen | MOVE |
+| Height: Make it a tunnel (hover shows the footprint), Tunnel length, Take the roof off, slider, On the ground, Make the stretch N m long, Smooth the bumps here, Change this stretch's | panel when picked | card when picked, slider first; the footprint shows only while a thumb is held on Make it a tunnel: letting go on the button acts, sliding off lets go without acting, and if it can't fit the words under the button say so and the lift does nothing (Nathan: "Try to keep the track field clear") | MOVE |
 | Bank: slider, Auto, Change this stretch's. Width: slider, Track width, Change this stretch's | panel when picked | card when picked | MOVE |
 | "Show it on the map" (press the selected thing's title) | panel | card, same | KEEP |
 | Problem: words, Fix it, Show me, by-hand words | panel when picked | card when picked, Fix it above the long words | MOVE |
@@ -192,4 +192,5 @@ Pad and keyboard stay exactly as they are; a pad plugged into a phone still work
 | The tool's setting: Steady hand, Reach, Straight's and Curve's steps, how Height, Bank and Width pick a stretch | STEP, STEP: tap the tool button, then the row above View in the tray, in the same words ("Steady hand: Some"). It opens the card. Tapping the tool you already hold in the tray opens it too. Select has no setting, so no row |
 | Which piece you are placing | The tool button names it ("Boost pad", with the Pieces icon). Tool button, then the tray's row, opens the palette to change it |
 | Pencil's Straight line, Bend's minus and plus | Only while a finger is on the map working that tool; they go when it lifts. They sit beside the tool button and act on the second finger's press |
+| What a tool does, when you pick it | One line in a thumb's words, about 50 letters, one line at every window. The full explanation is the tool's card, from the tray's row. A computer keeps its long tips (`TOOL_TIPS_TOUCH`, `TOOL_TIPS`, `EditorUi.tsx`) |
 | Stop a half-made Straight or Curve | Cancel in Undo's place, for as long as the shape is half made (the status line still says the step) |

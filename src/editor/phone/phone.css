@@ -74,6 +74,18 @@
   touch-action: none;
 }
 
+/* ---------------------------------------------------------------- top left: where the scale bar is drawn (mapDraw.ts) */
+
+/* Only a mark for PhoneEditor.tsx to read: the corner, clear of the notch and the top edge. */
+.phone-scale-spot {
+  position: absolute;
+  top: var(--edge-t);
+  left: var(--edge-l);
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
 /* ---------------------------------------------------------------- bottom left */
 
 .phone-left {
@@ -165,12 +177,11 @@
   color: var(--panel-solid);
 }
 
-/* The other thumb's buttons, only while one finger works the map (ThumbButtons.tsx): where the second thumb
-   already is, just clear of the scale bar and the x, z readout along the bottom of the map. */
+/* The other thumb's buttons, only while one finger works the map (ThumbButtons.tsx): where the second thumb already is. */
 .sre[data-touch] .sre-thumb {
   position: absolute;
   left: var(--beside-tool);
-  bottom: calc(var(--edge-b) + 32px);
+  bottom: var(--edge-b);
   z-index: 3;
   display: flex;
   align-items: center;
@@ -769,11 +780,11 @@
 
 /* ---------------------------------------------------------------- what EditorUi.tsx still draws */
 
-/* One line along the top of the free map, in the same strip with or without a card. */
+/* One line along the top of the free map, in the same strip with or without a card, starting past the scale bar. */
 .sre[data-touch] .sre-status {
   top: var(--edge-t);
   bottom: auto;
-  left: calc(var(--edge-l) + 4px);
+  left: calc(var(--edge-l) + 156px);
   right: calc(var(--edge-r) + var(--stack-w) + 8px);
   transform: translateY(-6px);
   padding: 6px 14px;
@@ -788,7 +799,6 @@
   transform: none;
 }
 .sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-status {
-  left: var(--beside-tool);
   right: calc(var(--edge-r) + var(--card-w) + 8px);
 }
 .sre[data-touch]:has(.phone-tray) .sre-status {
@@ -836,7 +846,8 @@
 .sre[data-touch] .sre-empty .sre-btn:not(.is-primary) {
   justify-self: start;
 }
-.sre[data-touch]:has(.phone-tray) .sre-empty {
+.sre[data-touch]:has(.phone-tray) .sre-empty,
+.sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-empty {
   visibility: hidden;
 }
 
@@ -1080,12 +1091,12 @@
     right: 6px;
     width: auto;
   }
+  /* Stood up the line has the whole width, so it goes under the scale bar. */
+  .sre[data-touch] .sre-status,
   .sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-status {
+    top: calc(var(--safe-t) + 30px);
     left: 8px;
     right: 8px;
-  }
-  .sre[data-touch] .sre-status {
-    top: calc(var(--safe-t) + 6px);
   }
   .phone-menu {
     grid-template-columns: minmax(0, 1fr);
@@ -1112,7 +1123,7 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .sre[data-touch] .sre-empty {
-    top: calc(var(--safe-t) + 60px);
+    top: calc(var(--safe-t) + 96px);
     left: 8px;
     right: 8px;
   }

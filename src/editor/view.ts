@@ -24,9 +24,13 @@ export const view = {
   height: 1080,
   /** Bumped on every change, so drawers know to redraw. */
   version: 0,
-  /** Where the scale bar starts, pixels from the left, and how far it sits above the window's bottom edge (a phone moves it into its free map: phone/PhoneEditor.tsx). */
+  /** Where the scale bar starts, pixels from the left, and how far it sits above the window's bottom edge. */
   scaleX: 96,
   scaleUp: 28,
+  /** A phone keeps the road's world clear: the bar's line this far below the top of the window, and it may be shorter (phone/PhoneEditor.tsx). Null: along the bottom. */
+  scaleTop: null as number | null,
+  /** The shortest the bar draws, pixels. */
+  scaleMin: 80,
 }
 
 export const ZOOM = {
