@@ -728,18 +728,43 @@ function drawStartLine(ctx: CanvasRenderingContext2D, rc: RoadCurve, startAt: nu
  */
 let crossingTargets: { spot: P; sx: number; sy: number; box: { x0: number; y0: number; x1: number; y1: number } | null }[] = []
 
+// ---- how close a press has to be to grab something (Nathan's thumb is the judge of the touch column) ----
+/** How far from a thing a press still grabs it, screen pixels. The nearest thing wins, so crowded neighbours still work. */
+export interface Reach {
+  /** A road point. */
+  point: number
+  /** A piece on the road. */
+  piece: number
+  /** A prop (crash props). */
+  prop: number
+  /** An energy core. */
+  core: number
+  /** A crossing's marker. */
+  crossing: number
+  /** A problem's pin. */
+  pin: number
+  /** The road itself, for picking a stretch, bending, placing and the Straight and Curve ends. */
+  road: number
+  /** Grown around a label's box (BRIDGE, RAISED, BANK, WIDTH, a problem's tag). */
+  box: number
+}
+/** A mouse, to the pixel. */
+export const MOUSE_REACH: Reach = { point: 9, piece: 18, prop: 16, core: 14, crossing: 12, pin: 12, road: 12, box: 0 }
+/** A finger is about 40 px across and hides what it presses. Points show only when zoomed in, so pinch first for a crowded corner. */
+export const TOUCH_REACH: Reach = { point: 22, piece: 28, prop: 26, core: 26, crossing: 24, pin: 24, road: 20, box: 8 }
+
 /**
  * The crossing under screen point (sx, sy), as drawn last frame: on its
- * BRIDGE label (distance 0), or within 12 px of its marker (that distance).
+ * BRIDGE label (distance 0), or within `reach.crossing` px of its marker (that distance).
  * `labelOnly` ignores the marker (the drawing tools, where a press on the road
  * itself must still draw).
  */
-export function crossingAtScreen(sx: number, sy: number, labelOnly = false): { spot: P; d: number } | null {
+export function crossingAtScreen(sx: number, sy: number, labelOnly = false, reach: Reach = MOUSE_REACH): { spot: P; d: number } | null {
   let best: { spot: P; d: number } | null = null
   for (const t of crossingTargets) {
-    const inBox = !!t.box && sx >= t.box.x0 && sx <= t.box.x1 && sy >= t.box.y0 && sy <= t.box.y1
+    const inBox = !!t.box && sx >= t.box.x0 - reach.box && sx <= t.box.x1 + reach.box && sy >= t.box.y0 - reach.box && sy <= t.box.y1 + reach.box
     const d = inBox ? 0 : Math.hypot(sx - t.sx, sy - t.sy)
-    if (!inBox && (labelOnly || d > 12)) continue
+    if (!inBox && (labelOnly || d > reach.crossing)) continue
     if (!best || d < best.d) best = { spot: t.spot, d }
   }
   return best
@@ -875,10 +900,11 @@ function drawCrossingRoads(
 let markTargets: { run: StretchRun; box: { x0: number; y0: number; x1: number; y1: number } }[] = []
 
 /** The stretch whose RAISED, BANK or WIDTH label is under screen point (sx, sy), as drawn last frame. */
-export function markAtScreen(sx: number, sy: number): StretchRun | null {
+export function markAtScreen(sx: number, sy: number, reach: Reach = MOUSE_REACH): StretchRun | null {
+  const m = reach.box
   for (let i = markTargets.length - 1; i >= 0; i--) {
     const b = markTargets[i].box
-    if (sx >= b.x0 && sx <= b.x1 && sy >= b.y0 && sy <= b.y1) return markTargets[i].run
+    if (sx >= b.x0 - m && sx <= b.x1 + m && sy >= b.y0 - m && sy <= b.y1 + m) return markTargets[i].run
   }
   return null
 }
@@ -1581,12 +1607,13 @@ export function setPinTargets3d(list: typeof pinTargets): void {
   pinTargets = list
 }
 
-/** The problem whose pin (within 12 px) or tag is under screen point (sx, sy), as drawn last frame. */
-export function problemAtScreen(sx: number, sy: number): string | null {
+/** The problem whose pin (within `reach.pin` px) or tag is under screen point (sx, sy), as drawn last frame. */
+export function problemAtScreen(sx: number, sy: number, reach: Reach = MOUSE_REACH): string | null {
   let best: string | null = null
-  let bestD = 12
+  let bestD = reach.pin
+  const m = reach.box
   for (const t of pinTargets) {
-    const inBox = !!t.box && sx >= t.box.x0 && sx <= t.box.x1 && sy >= t.box.y0 && sy <= t.box.y1
+    const inBox = !!t.box && sx >= t.box.x0 - m && sx <= t.box.x1 + m && sy >= t.box.y0 - m && sy <= t.box.y1 + m
     const d = inBox ? 0 : Math.hypot(sx - t.sx, sy - t.sy)
     if (d <= bestD) {
       bestD = d

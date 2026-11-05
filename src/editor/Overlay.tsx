@@ -70,6 +70,14 @@
 //  the tool, two fingers are always the map (so no Pan tool on a phone
 //  either). A mouse or a pen goes straight through.
 //
+//  On a finger, the tools that a mouse tries by hovering try it by pressing:
+//  Straight, Curve and Place show where they would end up while the finger is
+//  down, move it as the finger slides, and do it when the finger lifts. A second
+//  finger or a cancel leaves nothing. Things are grabbed from further away
+//  (mapDraw.ts TOUCH_REACH), a dragged point, piece, prop or core rides above
+//  the finger so it can be seen, and one finger off the road pans for Height,
+//  Bank, Width and Place as it does for Select, Bend, Straight and Curve.
+//
 //  The drawing itself is in mapDraw.ts.
 // ============================================================
 
@@ -118,7 +126,7 @@ import {
   useEditor,
 } from './draft'
 import { type P } from './geom'
-import { type MapExtras, type Pick, type ShapeView, crossingAtScreen, drawMap, markAtScreen, pieceScreen, pointsVisible, problemAtScreen, roadGeometry } from './mapDraw'
+import { MOUSE_REACH, type MapExtras, type Pick, type Reach, type ShapeView, TOUCH_REACH, crossingAtScreen, drawMap, markAtScreen, pieceScreen, pointsVisible, problemAtScreen, roadGeometry } from './mapDraw'
 import { selectProblem } from './fixActions'
 import { isStretchTool, runAt } from './stretchRuns'
 import { marksOf, pickStretchAt, selectRun, stretchHoverLabel, stretchToPick } from './stretchTools'
@@ -128,6 +136,7 @@ import { view, panBy, setView, zoomAt, fitBox } from './view'
 import { groundAt, look3dOn, turnLook } from './look3d'
 import { dragView, heightAt, in3d, mppAt, onPosed, pick3d, pose, roadNearest, roadUnder, setDragPlane, setRoadShown, toWorld, worldToScreen, zoomViewAt } from './look3dSpace'
 import { attachMapGestures } from './mapGestures'
+import { ThumbButtons, thumbHands, useThumb } from './ThumbButtons'
 
 /** Pixels the pointer must move before the pencil adds another point. */
 const PENCIL_STEP_PX = 3
@@ -135,6 +144,18 @@ const PENCIL_STEP_PX = 3
 const PLACE_DRAG_PX = 6
 /** Held-key pan speed, screen pixels per second. */
 const KEY_PAN_PX = 700
+
+// ---- the numbers a thumb might want changed (Nathan's phone is the judge of these; the grab distances are in mapDraw.ts TOUCH_REACH) ----
+/** A dragged point, piece, prop or core rides this far above the finger, pixels, so the finger does not hide it. */
+const LIFT_PX = 56
+/** It eases to that over this long, milliseconds. */
+const LIFT_MS = 120
+/** Near the top edge it would ride out of sight: it sits below the finger instead when the lifted spot would be nearer the top than this, pixels. */
+const LIFT_EDGE_PX = 28
+/** A finger dragging a thing moves nothing until it has gone this far, pixels, so a tap that wobbles can't throw a point 56 px. */
+const LIFT_AFTER_PX = 6
+/** A second tap this close to the first, pixels, is a double tap (a mouse: 6). A fingertip lands further off than a mouse. */
+const DOUBLE_TAP_PX = 20
 
 export function fitToDraft(): void {
   const pts = useEditor.getState().draft.points
@@ -177,7 +198,7 @@ function typing(e: KeyboardEvent): boolean {
 }
 
 /** The thing under screen point (sx, sy) that the select tool can grab, nearest first. */
-export function pickAt(sx: number, sy: number): Pick | null {
+export function pickAt(sx: number, sy: number, reach: Reach = MOUSE_REACH): Pick | null {
   const s = useEditor.getState()
   const d = s.draft
   const g = roadGeometry(d.points, d.width)
@@ -192,31 +213,49 @@ export function pickAt(sx: number, sy: number): Pick | null {
   }
   d.pieces.forEach((p, i) => {
     const at = pieceScreen(g.rc, p)
-    consider({ kind: 'piece', index: i }, at.sx, at.sy, 18)
+    consider({ kind: 'piece', index: i }, at.sx, at.sy, reach.piece)
   })
   d.props.forEach((p, i) => {
     const at = worldToScreen(p.x, p.z, 'ground')
-    consider({ kind: 'prop', index: i }, at.sx, at.sy, 16)
+    consider({ kind: 'prop', index: i }, at.sx, at.sy, reach.prop)
   })
   d.cores.forEach((c, i) => {
     const at = worldToScreen(c.x, c.z, 'ground')
-    consider({ kind: 'core', index: i }, at.sx, at.sy, 14)
+    consider({ kind: 'core', index: i }, at.sx, at.sy, reach.core)
   })
   if (pointsVisible(s)) {
     d.points.forEach((p, i) => {
       const at = worldToScreen(p.x, p.z, in3d() ? frameAt(g.rc, i).dir : null)
       // Points lose to pieces sitting on top of them.
-      consider({ kind: 'point', index: i }, at.sx + 0.01, at.sy, 9)
+      consider({ kind: 'point', index: i }, at.sx + 0.01, at.sy, reach.point)
     })
   }
   // A crossing: its marker where the roads cross, or its BRIDGE label (which always wins: it sits off the road).
-  const crossing = crossingAtScreen(sx, sy)
+  const crossing = crossingAtScreen(sx, sy, false, reach)
   if (crossing && crossing.d < bestD) best = { kind: 'crossing', x: crossing.spot.x, z: crossing.spot.z }
   return best
 }
 
 /** The pencil's last finished line, as it reached the tool (for checkers: `__game.get('editorGesture')`). */
 export const lastPencilLine = { points: [] as readonly P[] }
+
+/** What a finger's tools are showing, for checkers (`__game.get('editorGesture')`). Updated as it changes; nothing allocates in the frame. */
+export const touchState = {
+  /** A tool finger is on the glass. */
+  fingerDown: false,
+  /** Where the tools last saw the finger, screen pixels. Set on press, moved by the slide, never wiped on lift. */
+  pointerX: 0,
+  pointerY: 0,
+  /** Straight or Curve: what the preview shows now (null: nothing). */
+  shape: null as ShapeView | null,
+  /** Place: the see-through piece (null: none). */
+  ghost: null as MapExtras['ghost'],
+  /** How far a dragged thing sits above its finger now, pixels (negative: above). */
+  lift: 0,
+  /** Presses that will act when the finger lifts (Straight, Curve, Place), and those that did. */
+  pendingLifts: 0,
+  commits: 0,
+}
 
 /** Esc while a drag or a half-drawn pencil line is going on: stop it (set by the mounted Overlay). */
 let cancelGestureNow: (() => boolean) | null = null
@@ -286,8 +325,23 @@ export function Overlay() {
     let shapeDirty = false
     let shapeSaid = ''
     let pointer = { x: 0, y: 0 }
-    // A press off the road with Straight or Curve pans; a click there (no drag) says what to do.
-    let hintOnClick: { x: number; y: number } | null = null
+    // The last pointer that spoke was a finger: things are grabbed from further off and nothing is previewed by hovering.
+    let touching = false
+    const reachNow = (): Reach => (touching ? TOUCH_REACH : MOUSE_REACH)
+    // A finger is on the glass with the tool (the preview shows only while it is).
+    let fingerDown = false
+    // Straight or Curve, a finger pressed on the road (or anywhere, for a curve's last step): it acts when the finger lifts.
+    let shapePress = false
+    // Place, a finger pressed: the piece goes where the finger lifts.
+    let placePress = false
+    // A dragged point, piece, prop or core under a finger: where the finger went down, whether it has gone far enough to start, and the ease to riding above it.
+    let dragFinger = { x: 0, y: 0, moved: false }
+    let liftNow = 0
+    let liftFrom = 0
+    let liftTo = 0
+    let liftSince = 0
+    // A press off the road with Straight, Curve, Height, Bank, Width or Place pans; a click there (no drag) says what to do.
+    let hintOnClick: { x: number; y: number; kind: 'shape' | 'stretch' | 'place' } | null = null
     const held = new Set<string>()
     let needsDraw = true
     let drawnVersion = -1
@@ -371,8 +425,10 @@ export function Overlay() {
       // 3D: the road you see under the mouse (or within 12 pixels of it), never one behind a hill.
       if (in3d()) return roadUnder(roadGeometry(d.points, d.width).rc, sx, sy)
       const hit = nearestOnRoad(roadGeometry(d.points, d.width).rc, toWorld(sx, sy))
-      return hit.distance <= d.width / 2 + Math.max(4, 12 * view.mpp) ? hit : null
+      return hit.distance <= d.width / 2 + Math.max(4, reachNow().road * view.mpp) ? hit : null
     }
+    /** Metres of slack round the road for the tools that test the road by distance: a finger gets at least its reach in pixels. */
+    const roadSlack = (q: P, metres: number) => (touching ? Math.max(metres, TOUCH_REACH.road * mppAt(q.x, q.z)) : metres)
 
     /**
      * Select: a click on the road where Josh changed something (a bank, a width,
@@ -406,7 +462,8 @@ export function Overlay() {
     /** Height, Bank or Width, before pressing: the stretch a click here would pick, with its length. */
     const stretchHover = (): MapExtras['stretchHover'] => {
       const s = useEditor.getState()
-      if (!isStretchTool(s.tool) || s.mode !== 'edit' || sectionAnchor !== null || mapIsEmpty()) return null
+      // (A finger can't hover: the pick shows after the tap.)
+      if (touching || !isStretchTool(s.tool) || s.mode !== 'edit' || sectionAnchor !== null || mapIsEmpty()) return null
       const hit = roadHitAt(pointer.x, pointer.y)
       if (!hit) return null
       const pick = stretchToPick(s.tool, s.draft, hit.at)
@@ -419,7 +476,8 @@ export function Overlay() {
     /** Bend, before pressing: light up the stretch that would come with your hand. */
     const bendHover = () => {
       const s = useEditor.getState()
-      const hit = s.tool === 'bend' && !bending ? roadHitAt(pointer.x, pointer.y) : null
+      // (A finger can't hover: Bend lights its stretch when the finger presses.)
+      const hit = s.tool === 'bend' && !bending && !touching ? roadHitAt(pointer.x, pointer.y) : null
       if (!hit) {
         bendShown = null
         return
@@ -438,7 +496,8 @@ export function Overlay() {
       if ((s.tool !== 'straight' && s.tool !== 'curve') || s.mode !== 'edit') return null
       const d = s.draft
       const sh = s.shaping?.tool === s.tool ? s.shaping : null
-      const hit = roadHitAt(pointer.x, pointer.y)
+      // A finger previews while it is down; once it lifts there is nothing under it to show.
+      const hit = touching && !fingerDown ? null : roadHitAt(pointer.x, pointer.y)
       if (!sh) return hit ? { marks: [hit.p], pull: null, old: [], preview: [], ok: true, tight: null } : null
       const line = roadLine(d.points)
       const sA = sOf(line, sh.a)
@@ -461,6 +520,7 @@ export function Overlay() {
       }
       const sB = sOf(line, sh.b)
       const B = posOf(line, sB)
+      if (touching && !fingerDown) return { marks: [A, B], pull: null, old: between(sB), preview: [], ok: true, tight: null }
       const pull = toWorld(pointer.x, pointer.y)
       const res = curveStretch(d.points, sh.a, sh.b, pull, shapeWorld(d))
       tell(res.ok ? '' : (res.reason ?? ''), 'Click to make the curve.')
@@ -515,6 +575,107 @@ export function Overlay() {
       }
     }
 
+    /**
+     * Straight and Curve, one press of the road: the first end, the second end, or (a curve) where the middle goes.
+     * A mouse does it as the button goes down. A finger does it as it lifts, at `fromLift`: then a miss says what to do
+     * (a press off the road panned instead).
+     */
+    const shapeClick = (cx: number, cy: number, q: P, fromLift: boolean) => {
+      const s = useEditor.getState()
+      const sh = s.shaping?.tool === s.tool ? s.shaping : null
+      if (sh && sh.tool === 'curve' && sh.b !== null) {
+        // Third click (anywhere): the curve goes through here.
+        applyCurve(sh.a, sh.b, q)
+        shapeDirty = true
+        needsDraw = true
+        return
+      }
+      const hit = roadHitAt(cx, cy)
+      if (!hit) {
+        if (fromLift) {
+          say(s.tool === 'curve' ? 'Click on the road where the curve should start.' : 'Click on the road where the straight should start.', 'info')
+          shapeDirty = true
+          needsDraw = true
+          return
+        }
+        panning = true
+        hintOnClick = { x: cx, y: cy, kind: 'shape' }
+        setCursor()
+        return
+      }
+      if (!sh) {
+        useEditor.setState({ shaping: { tool: s.tool as 'straight' | 'curve', a: hit.at, b: null } })
+        say(s.tool === 'straight' ? 'Now click the road where the straight should end.' : 'Now click the road where the curve should end.', 'info')
+        audio.ui('select')
+      } else if (sh.tool === 'straight') {
+        applyStraight(sh.a, hit.at)
+      } else {
+        const line = roadLine(s.draft.points)
+        if (alongRoad(sOf(line, sh.a), sOf(line, hit.at), line.length) < 30) {
+          say('Pick a spot further along the road (at least 30 m from the first one).', 'warn')
+          audio.ui('error')
+        } else {
+          useEditor.setState({ shaping: { ...sh, b: hit.at } })
+          say('Now move the mouse to pull the middle of the curve out, and click.', 'info')
+          audio.ui('select')
+        }
+      }
+      shapeSaid = ''
+      shapeDirty = true
+      needsDraw = true
+    }
+
+    /** Place: the see-through piece for a pointer (or a finger) at world point q; null off the road for a piece that sits on it. */
+    const placeGhostAt = (q: P, snapAnywhere = false): MapExtras['ghost'] => {
+      const s = useEditor.getState()
+      const tool = toolFor(s.placeKind)
+      if (!tool.onRoad) return { kind: s.placeKind, at: q, dir: { x: 1, z: 0 } }
+      const g = roadGeometry(s.draft.points, s.draft.width)
+      const hit = roadNearest(g.rc, q)
+      if (!snapAnywhere && !(hit.distance < s.draft.width / 2 + roadSlack(q, 12))) return null
+      // A wall ride shows the whole wall a click would place, its middle under the pointer.
+      const side = wallRideSide(s.placeKind)
+      const length = TRACK_DEFAULTS.wallride.length
+      const wall = side ? { at: wallRideStartFor(g.rc, hit.at, length), length, side, dragged: null, cut: null } : undefined
+      // A tunnel shows the stretch a click would cover, its middle under the pointer.
+      const tl = TRACK_DEFAULTS.tunnelLength
+      const tunnel = s.placeKind === 'tunnel' ? { at: tunnelStartFor(g.rc, hit.at, tl), length: tl, cut: null } : undefined
+      return { kind: s.placeKind, at: hit.p, dir: frameAt(g.rc, hit.at).dir, wall, tunnel }
+    }
+
+    /**
+     * Place, a finger lifted at world point q: the piece goes there, snapped onto the road if the finger was near enough to it.
+     * `snapAnywhere`: the piece was riding above the finger, snapped to the nearest road wherever that was (as the preview showed), so it lands there.
+     */
+    const placeNow = (q: P, snapAnywhere = false) => {
+      const s = useEditor.getState()
+      const rc = roadGeometry(s.draft.points, s.draft.width).rc
+      let at = q
+      if (toolFor(s.placeKind).onRoad && !mapIsEmpty()) {
+        const hit = roadNearest(rc, q)
+        if (snapAnywhere || hit.distance <= s.draft.width / 2 + roadSlack(q, 12)) at = hit.p
+      }
+      // 3D: on the road you clicked (at a crossing, the one you're looking at).
+      placeAt(at, in3d() ? roadNearest(rc, at) : undefined)
+    }
+
+    /**
+     * Where a dragged thing sits when the finger is at dragFinger: the finger's spot, lifted. The lift eases to LIFT_PX above the finger
+     * over LIFT_MS (below it near the top edge, where above would be out of sight), and starts over from where it is if that flips.
+     */
+    const liftedWorld = (now: number, settled = false): P => {
+      const want = dragFinger.y - LIFT_PX < LIFT_EDGE_PX ? LIFT_PX : -LIFT_PX
+      if (want !== liftTo) {
+        liftFrom = liftNow
+        liftTo = want
+        liftSince = now
+      }
+      const t = settled ? 1 : Math.min(1, (now - liftSince) / LIFT_MS)
+      liftNow = liftFrom + (liftTo - liftFrom) * (1 - (1 - t) * (1 - t) * (1 - t))
+      touchState.lift = liftNow
+      return toWorld(dragFinger.x, dragFinger.y + liftNow)
+    }
+
     // ---- pointer ----
     const onDown = (e: PointerEvent) => {
       // Clicking the map takes the keyboard back from any panel control.
@@ -523,6 +684,17 @@ export function Overlay() {
       if (e.pointerType !== 'touch') canvas.setPointerCapture(e.pointerId)
       lastX = e.clientX
       lastY = e.clientY
+      touching = e.pointerType === 'touch'
+      if (touching) {
+        // The tools see the finger from the moment it lands, and still do after it lifts (nothing wipes it).
+        fingerDown = true
+        pointer = { x: e.clientX, y: e.clientY }
+        touchState.fingerDown = true
+        touchState.lift = 0
+        touchState.pointerX = e.clientX
+        touchState.pointerY = e.clientY
+      }
+      const R = reachNow()
       const s = useEditor.getState()
       setDragPlane(null)
       setRoadShown(!mapIsEmpty())
@@ -538,7 +710,7 @@ export function Overlay() {
       }
       if (e.button !== 0) return
       // A problem's pin (or its tag) works with every tool: select that problem (the panel shows what to do).
-      const pin = problemAtScreen(e.clientX, e.clientY)
+      const pin = problemAtScreen(e.clientX, e.clientY, R)
       if (pin && selectProblem(pin, false)) {
         needsDraw = true
         return
@@ -546,20 +718,20 @@ export function Overlay() {
       if (s.tool !== 'pencil' && mapIsEmpty()) {
         // No road for this tool to work on: drag the map, and a click says how to get a road.
         panning = true
-        hintOnClick = { x: e.clientX, y: e.clientY }
+        hintOnClick = { x: e.clientX, y: e.clientY, kind: 'shape' }
         setCursor()
         return
       }
       // A BRIDGE label works with every tool: select that crossing (the panel shows its Swap button).
       if (s.tool !== 'select') {
-        const label = crossingAtScreen(e.clientX, e.clientY, true)
+        const label = crossingAtScreen(e.clientX, e.clientY, true, R)
         if (label && selectCrossing(label.spot)) {
           needsDraw = true
           return
         }
       }
       // A RAISED, BANK or WIDTH label works with every tool: pick that stretch up in its own tool.
-      const mark = markAtScreen(e.clientX, e.clientY)
+      const mark = markAtScreen(e.clientX, e.clientY, R)
       if (mark) {
         selectRun(mark)
         needsDraw = true
@@ -604,51 +776,57 @@ export function Overlay() {
         return
       }
       if (s.tool === 'straight' || s.tool === 'curve') {
-        const sh = s.shaping?.tool === s.tool ? s.shaping : null
-        if (sh && sh.tool === 'curve' && sh.b !== null) {
-          // Third click (anywhere): the curve goes through here.
-          applyCurve(sh.a, sh.b, q)
+        if (touching) {
+          // A finger previews while it is down and acts when it lifts. Off the road (and not a curve's last step, which can be anywhere) it pans.
+          const sh = s.shaping?.tool === s.tool ? s.shaping : null
+          const lastStep = sh?.tool === 'curve' && sh.b !== null
+          if (!lastStep && !roadHitAt(e.clientX, e.clientY)) {
+            panning = true
+            hintOnClick = { x: e.clientX, y: e.clientY, kind: 'shape' }
+            setCursor()
+            return
+          }
+          shapePress = true
+          touchState.pendingLifts++
           shapeDirty = true
           needsDraw = true
           return
         }
-        const hit = roadHitAt(e.clientX, e.clientY)
-        if (!hit) {
-          panning = true
-          hintOnClick = { x: e.clientX, y: e.clientY }
-          setCursor()
-          return
-        }
-        if (!sh) {
-          useEditor.setState({ shaping: { tool: s.tool, a: hit.at, b: null } })
-          say(s.tool === 'straight' ? 'Now click the road where the straight should end.' : 'Now click the road where the curve should end.', 'info')
-          audio.ui('select')
-        } else if (sh.tool === 'straight') {
-          applyStraight(sh.a, hit.at)
-        } else {
-          const line = roadLine(s.draft.points)
-          if (alongRoad(sOf(line, sh.a), sOf(line, hit.at), line.length) < 30) {
-            say('Pick a spot further along the road (at least 30 m from the first one).', 'warn')
-            audio.ui('error')
-          } else {
-            useEditor.setState({ shaping: { ...sh, b: hit.at } })
-            say('Now move the mouse to pull the middle of the curve out, and click.', 'info')
-            audio.ui('select')
-          }
-        }
-        shapeSaid = ''
-        shapeDirty = true
-        needsDraw = true
+        shapeClick(e.clientX, e.clientY, q, false)
         return
       }
       if (s.tool === 'place') {
         // A wall ride or tunnel: a click puts its middle here, a drag along the road draws how long it is (decided when the button comes up).
         if (wallRideSide(s.placeKind) || s.placeKind === 'tunnel') {
           const hit = roadNearest(roadGeometry(s.draft.points, s.draft.width).rc, q)
-          if (hit.distance <= s.draft.width / 2 + 12) {
-            placeDrag = { at: hit.at, q, x: e.clientX, y: e.clientY, moved: false }
+          if (hit.distance <= s.draft.width / 2 + roadSlack(q, 12)) {
+            // (A finger: the spot snaps onto the road, which it was near enough to, and the piece shows already.)
+            placeDrag = { at: hit.at, q: touching ? hit.p : q, x: e.clientX, y: e.clientY, moved: false }
+            if (touching) {
+              ghost = placeGhostAt(q)
+              touchState.ghost = ghost
+              needsDraw = true
+            }
             return
           }
+        }
+        if (touching) {
+          // A finger previews where the piece would go and puts it down as it lifts. A piece that sits on the road, pressed off the road, pans instead.
+          if (toolFor(s.placeKind).onRoad && roadNearest(roadGeometry(s.draft.points, s.draft.width).rc, q).distance > s.draft.width / 2 + roadSlack(q, 12)) {
+            panning = true
+            hintOnClick = { x: e.clientX, y: e.clientY, kind: 'place' }
+            setCursor()
+            return
+          }
+          placePress = true
+          touchState.pendingLifts++
+          // (It rides above the finger once the finger has gone a little way, like a dragged thing.)
+          dragFinger = { x: e.clientX, y: e.clientY, moved: false }
+          liftNow = liftFrom = liftTo = 0
+          ghost = placeGhostAt(q)
+          touchState.ghost = ghost
+          needsDraw = true
+          return
         }
         // 3D: on the road you clicked (at a crossing, the one you're looking at).
         placeAt(q, in3d() ? roadNearest(roadGeometry(s.draft.points, s.draft.width).rc, q) : undefined)
@@ -658,7 +836,14 @@ export function Overlay() {
       if (isStretchTool(s.tool)) {
         const g = roadGeometry(s.draft.points, s.draft.width)
         const hit = roadNearest(g.rc, q)
-        if (hit.distance > s.draft.width / 2 + 14) {
+        if (hit.distance > s.draft.width / 2 + roadSlack(q, 14)) {
+          if (touching) {
+            // Nothing to pick here: the finger pans, and a tap says what to do (the pick clears then).
+            panning = true
+            hintOnClick = { x: e.clientX, y: e.clientY, kind: 'stretch' }
+            setCursor()
+            return
+          }
           useEditor.setState({ selection: null })
           say('Drag along the road to pick a stretch of it, or click the road.', 'info')
           return
@@ -671,14 +856,14 @@ export function Overlay() {
       // Select tool. A second press within 350 ms on the same spot is a double-click: add a road point.
       // (A finger reaches this a moment after it landed, so the time it really landed counts.)
       const now = e.pointerType === 'touch' ? e.timeStamp : performance.now()
-      const isDouble = now - lastDown.t < 350 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 6
+      const isDouble = now - lastDown.t < 350 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < (touching ? DOUBLE_TAP_PX : 6)
       lastDown = { t: isDouble ? 0 : now, x: e.clientX, y: e.clientY }
       if (isDouble) {
         panning = false
         onDouble(e)
         return
       }
-      const pick = pickAt(e.clientX, e.clientY)
+      const pick = pickAt(e.clientX, e.clientY, R)
       if (pick?.kind === 'crossing') {
         // A crossing can't be dragged: select it, and the panel offers the swap.
         selectCrossing(pick)
@@ -693,6 +878,10 @@ export function Overlay() {
           q = toWorld(e.clientX, e.clientY)
         }
         dragOffset = anchor ? { x: q.x - anchor.x, z: q.z - anchor.z } : { x: 0, z: 0 }
+        // (A finger: it rides above the finger once it has gone a little way. Nothing is lifted yet.)
+        dragFinger = { x: e.clientX, y: e.clientY, moved: false }
+        liftNow = liftFrom = liftTo = 0
+        touchState.lift = 0
         dragStart = d
         if (d) beginGesture()
       } else {
@@ -705,10 +894,14 @@ export function Overlay() {
     const onMove = (e: PointerEvent) => {
       // 3D, drawing with the steady hand: only the pen's spot is picked (once a frame); the mouse's own
       // spot is picked when the button comes up, where the line ends (see onUp).
-      const penOnly = drawing && shiftFrom === null && !e.shiftKey && !!pen && pen.stringPx > 0 && in3d() && !!penAt
+      const shift = e.shiftKey || useThumb.getState().straightLine
+      const penOnly = drawing && shiftFrom === null && !shift && !!pen && pen.stringPx > 0 && in3d() && !!penAt
+      touching = e.pointerType === 'touch'
       const q = penOnly && penAt ? penAt : toWorld(e.clientX, e.clientY)
       hover = q
       pointer = { x: e.clientX, y: e.clientY }
+      touchState.pointerX = e.clientX
+      touchState.pointerY = e.clientY
       const s = useEditor.getState()
       if (panning) {
         dragView(panKind, e.clientX - lastX, e.clientY - lastY)
@@ -716,7 +909,7 @@ export function Overlay() {
         lastY = e.clientY
         return
       }
-      if (drawing && (e.shiftKey || shiftFrom !== null)) pencilShift(e.shiftKey, q, e.clientX, e.clientY)
+      if (drawing && (shift || shiftFrom !== null)) pencilShift(shift, q, e.clientX, e.clientY)
       if (drawing && shiftFrom !== null) {
         // Shift is held: the straight line already follows the pointer.
       } else if (drawing) {
@@ -750,7 +943,16 @@ export function Overlay() {
       } else if (isStretchTool(s.tool) && sectionAnchor === null) {
         stretchDirty = true
       } else if (dragging) {
-        dragTo(q)
+        if (!touching) dragTo(q)
+        else {
+          // A finger: nothing moves until it has gone a little way, then the thing eases up to ride above it.
+          if (!dragFinger.moved && Math.hypot(e.clientX - dragFinger.x, e.clientY - dragFinger.y) >= LIFT_AFTER_PX) dragFinger.moved = true
+          if (dragFinger.moved) {
+            dragFinger.x = e.clientX
+            dragFinger.y = e.clientY
+            dragTo(liftedWorld(performance.now()))
+          }
+        }
       } else if (sectionAnchor !== null) {
         const g = roadGeometry(s.draft.points, s.draft.width)
         const hit = roadNearest(g.rc, q)
@@ -780,21 +982,15 @@ export function Overlay() {
           ghost = { kind: s.placeKind, at: f.p, dir: f.dir, tunnel: { at: span.at, length: span.length, cut: span.cut } }
         }
       } else if (s.tool === 'place') {
-        const tool = toolFor(s.placeKind)
-        if (tool.onRoad) {
-          const g = roadGeometry(s.draft.points, s.draft.width)
-          const hit = roadNearest(g.rc, q)
-          if (hit.distance < s.draft.width / 2 + 12) {
-            // A wall ride shows the whole wall a click would place, its middle under the pointer.
-            const side = wallRideSide(s.placeKind)
-            const length = TRACK_DEFAULTS.wallride.length
-            const wall = side ? { at: wallRideStartFor(g.rc, hit.at, length), length, side, dragged: null, cut: null } : undefined
-            // A tunnel shows the stretch a click would cover, its middle under the pointer.
-            const tl = TRACK_DEFAULTS.tunnelLength
-            const tunnel = s.placeKind === 'tunnel' ? { at: tunnelStartFor(g.rc, hit.at, tl), length: tl, cut: null } : undefined
-            ghost = { kind: s.placeKind, at: hit.p, dir: frameAt(g.rc, hit.at).dir, wall, tunnel }
-          } else ghost = null
-        } else ghost = { kind: s.placeKind, at: q, dir: { x: 1, z: 0 } }
+        if (placePress) {
+          if (!dragFinger.moved && Math.hypot(e.clientX - dragFinger.x, e.clientY - dragFinger.y) >= LIFT_AFTER_PX) dragFinger.moved = true
+          if (dragFinger.moved) {
+            dragFinger.x = e.clientX
+            dragFinger.y = e.clientY
+          }
+        }
+        ghost = placePress && dragFinger.moved ? placeGhostAt(liftedWorld(performance.now()), true) : placeGhostAt(q)
+        touchState.ghost = ghost
       }
       needsDraw = true
     }
@@ -802,7 +998,41 @@ export function Overlay() {
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
       // (Read where the button came up first, on the sheet if dragging, then let go of the sheet.)
       const upAt = toWorld(e.clientX, e.clientY)
+      if (e.pointerType === 'touch') {
+        touching = true
+        fingerDown = false
+        touchState.fingerDown = false
+      }
+      // A finger lifting a dragged thing lets go of it where it is shown (riding above the finger), the ease finished.
+      let dropAt: P | null = null
+      if (dragging && touching && dragFinger.moved) {
+        dragFinger.x = e.clientX
+        dragFinger.y = e.clientY
+        dropAt = liftedWorld(performance.now(), true)
+      }
       setDragPlane(null)
+      if (shapePress) {
+        // Straight and Curve, a finger: the press did nothing but show; lifting does it.
+        shapePress = false
+        touchState.commits++
+        shapeClick(e.clientX, e.clientY, upAt, true)
+        return
+      }
+      if (placePress) {
+        // Place, a finger: the piece goes where the finger lifted.
+        placePress = false
+        touchState.commits++
+        ghost = null
+        touchState.ghost = null
+        // What was shown is where it lands: lifted if the finger went far enough, else right where the finger is.
+        if (dragFinger.moved) {
+          dragFinger.x = e.clientX
+          dragFinger.y = e.clientY
+          placeNow(liftedWorld(performance.now(), true), true)
+        } else placeNow(upAt)
+        needsDraw = true
+        return
+      }
       if (panning) {
         panning = false
         // Select: a click (not a drag) on a raised stretch, an amber bank line or a width mark picks that stretch up.
@@ -813,6 +1043,10 @@ export function Overlay() {
         if (hintOnClick && Math.hypot(e.clientX - hintOnClick.x, e.clientY - hintOnClick.y) < 5) {
           const tool = useEditor.getState().tool
           if (mapIsEmpty()) say(EMPTY_MAP_HINT, 'info')
+          else if (hintOnClick.kind === 'stretch') {
+            useEditor.setState({ selection: null })
+            say('Drag along the road to pick a stretch of it, or click the road.', 'info')
+          } else if (hintOnClick.kind === 'place') placeAt(upAt)
           else say(tool === 'curve' ? 'Click on the road where the curve should start.' : 'Click on the road where the straight should start.', 'info')
         }
         hintOnClick = null
@@ -847,6 +1081,7 @@ export function Overlay() {
         const was = dragging
         dragging = null
         dragStart = null
+        if (dropAt) dragTo(dropAt)
         // A dragged loop settles on the nearest straight, level stretch (or goes back if there is none).
         // A click that only selected it (no move) leaves it exactly where it is.
         if (was.kind === 'piece') {
@@ -886,6 +1121,8 @@ export function Overlay() {
       }
       if (!drawing) return
       drawing = false
+      // (Like Shift, the thumb's Straight line is for the line it was pressed in.)
+      if (useThumb.getState().straightLine) useThumb.setState({ straightLine: false })
       const done = stroke
       lastPencilLine.points = done
       // The pen trails the pointer: finish the line where the pointer let go, so a
@@ -914,10 +1151,11 @@ export function Overlay() {
     function onDouble(e: PointerEvent) {
       const s = useEditor.getState()
       if (s.tool !== 'select' || s.mode !== 'edit') return
-      if (pickAt(e.clientX, e.clientY)?.kind === 'point') return
+      if (pickAt(e.clientX, e.clientY, reachNow())?.kind === 'point') return
       const g = roadGeometry(s.draft.points, s.draft.width)
-      const hit = roadNearest(g.rc, toWorld(e.clientX, e.clientY))
-      if (hit.distance <= s.draft.width / 2 + 4) insertPointAt(hit.at)
+      const q = toWorld(e.clientX, e.clientY)
+      const hit = roadNearest(g.rc, q)
+      if (hit.distance <= s.draft.width / 2 + roadSlack(q, 4)) insertPointAt(hit.at)
     }
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
@@ -935,15 +1173,38 @@ export function Overlay() {
       if (useEditor.getState().tool === 'bend') bendHover()
     }
     const onContext = (e: Event) => e.preventDefault()
-    const onLeave = () => {
+    const onLeave = (e?: PointerEvent) => {
       ghost = null
+      touchState.ghost = null
       hover = null
       if (!bending) bendShown = null
       stretchShown = null
       shapeDirty = true
-      pointer = { x: -9999, y: -9999 }
+      // A mouse that leaves the map is nowhere. A finger that lifts was somewhere: the tools still read where (Curve warned "off the edge of the world" after two taps when this wiped it).
+      if (e?.pointerType !== 'touch') pointer = { x: -9999, y: -9999 }
+      touchState.pointerX = pointer.x
+      touchState.pointerY = pointer.y
       needsDraw = true
     }
+
+    /** Bend: a step more or less road comes along (the keys [ and ], and the thumb's minus and plus), also while the road is held. */
+    const stepBendReach = (more: boolean) => {
+      const s = useEditor.getState()
+      setBendReach(s.bendReach * (more ? 1.25 : 1 / 1.25))
+      if (bending && isBending()) {
+        bendShown = moveBend()
+        // (The wheel tells too tight and fine again; so does this, which only a finger uses mid-bend.)
+        if (touching) bendWarn()
+      } else bendHover()
+      say(`Bend reach: ${useEditor.getState().bendReach} m each way.`, 'info')
+      needsDraw = true
+    }
+    thumbHands.bendReach = stepBendReach
+    // The thumb's Straight line: Shift's job. Pressed while a line is going, the line goes straight from here; pressed again, freehand from there.
+    const unsubThumb = useThumb.subscribe((t, prev) => {
+      if (t.straightLine === prev.straightLine || !drawing) return
+      pencilShift(t.straightLine, toWorld(pointer.x, pointer.y), pointer.x, pointer.y)
+    })
 
     // ---- keyboard ----
     const toolKeys: Record<string, EditorTool> = { KeyP: 'pencil', KeyG: 'bend', KeyL: 'straight', KeyC: 'curve', KeyV: 'select', KeyH: 'height', KeyB: 'bank', KeyN: 'width' }
@@ -997,14 +1258,7 @@ export function Overlay() {
         if (toolKeys[e.code] !== 'pencil' && before !== toolKeys[e.code] && mapIsEmpty()) say(EMPTY_MAP_HINT, 'info')
       }
       // [ and ] change how much road Bend moves (also while dragging).
-      if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && useEditor.getState().tool === 'bend') {
-        const s = useEditor.getState()
-        setBendReach(s.bendReach * (e.code === 'BracketRight' ? 1.25 : 1 / 1.25))
-        if (bending && isBending()) bendShown = moveBend()
-        else bendHover()
-        say(`Bend reach: ${useEditor.getState().bendReach} m each way.`, 'info')
-        needsDraw = true
-      }
+      if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && useEditor.getState().tool === 'bend') stepBendReach(e.code === 'BracketRight')
       const digit = /^Digit(\d)$/.exec(e.code)
       if (digit) {
         const tool = PLACE_TOOLS.find((t) => t.key === digit[1])
@@ -1129,6 +1383,15 @@ export function Overlay() {
     const frameWork = () => {
       // 3D: an empty map's hidden stand-in road is never picked or drawn on.
       setRoadShown(!mapIsEmpty())
+      // A dragged thing (or a Place preview) still easing up to ride above a finger that has stopped moving.
+      if ((dragging || placePress) && touching && dragFinger.moved && liftNow !== liftTo) {
+        if (dragging) dragTo(liftedWorld(performance.now()))
+        else {
+          ghost = placeGhostAt(liftedWorld(performance.now()), true)
+          touchState.ghost = ghost
+        }
+        needsDraw = true
+      }
       // The pencil's "what will letting go do?": once a frame at most, on the line so far plus where the pointer is.
       if (drawing && pencilDirty) {
         pencilDirty = false
@@ -1145,6 +1408,7 @@ export function Overlay() {
       if (shapeDirty || (viewMoved() && shapeShown)) {
         shapeDirty = false
         shapeShown = shapePreview()
+        touchState.shape = shapeShown
         needsDraw = true
       }
       // The world map follows moving cars, so it redraws every frame.
@@ -1206,6 +1470,7 @@ export function Overlay() {
     cancelGestureNow = () => {
       if (drawing) {
         drawing = false
+        if (useThumb.getState().straightLine) useThumb.setState({ straightLine: false })
         stroke = []
         pen = null
         penTo = null
@@ -1257,6 +1522,9 @@ export function Overlay() {
       roadClick = null
       hintOnClick = null
       lastDown = { t: 0, x: 0, y: 0 }
+      fingerDown = shapePress = placePress = false
+      touchState.fingerDown = false
+      touchState.ghost = null
       if (bending) {
         bending = false
         bendShown = null
@@ -1266,8 +1534,7 @@ export function Overlay() {
       setDragPlane(null)
       ghost = null
       if (was) {
-        // Straight, Curve and Place act the moment they hear the press: that made an Undo step, so it comes off again.
-        if (useEditor.getState().past !== was.past) undo()
+        // (Straight, Curve and Place only act when the finger lifts, so a press called off has made nothing to undo.)
         useEditor.setState({ draft: was.draft, past: was.past, future: was.future, dirty: was.dirty, savedId: was.savedId, notes: was.notes, selection: was.selection, shaping: was.shaping, tool: was.tool, message: was.message })
       }
       shapeDirty = stretchDirty = needsDraw = true
@@ -1299,6 +1566,8 @@ export function Overlay() {
     return () => {
       cancelAnimationFrame(raf)
       unsub()
+      unsubThumb()
+      thumbHands.bendReach = () => {}
       onPosed(null)
       cancelGestureNow = null
       setDragPlane(null)
@@ -1314,7 +1583,12 @@ export function Overlay() {
     }
   }, [])
 
-  return <canvas ref={canvasRef} className="sre-overlay" data-testid="editor-overlay" />
+  return (
+    <>
+      <canvas ref={canvasRef} className="sre-overlay" data-testid="editor-overlay" />
+      <ThumbButtons />
+    </>
+  )
 }
 
 /** 3D: how high a picked thing sits (its drag sheet): props and cores on the ground, the rest on their road. */
