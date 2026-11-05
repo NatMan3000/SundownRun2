@@ -76,7 +76,7 @@ Rulings this inventory stays inside:
 | Curve | click, click, move, click | tap the start; tap the end; press, slide to pull, let go to do it | KEEP |
 | Height, Bank, Width: pick a stretch | drag along the road, or click | same, one finger | KEEP |
 | Place a piece | click (acts on button down); wall ride or tunnel: click or drag | press shows the preview, slide to move it, let go places it; wall ride and tunnel: drag draws the length, as today | KEEP |
-| Click a BRIDGE, RAISED, BANK or WIDTH label, or a problem's pin, with any tool | click | tap, boxes grown by 8 px | KEEP |
+| Click a BRIDGE, RAISED, BANK or WIDTH label, or a problem's pin, with any tool | click | tap, boxes grown by 8 px. A problem's pin: any tool. The labels only with the tool that changes them (P8, Nathan, 5 Nov 2026): RAISED and DUG with Height, BANK with Bank, WIDTH with Width, the crossing's pill (BRIDGE, UNDERPASS, TUNNEL, LOW BRIDGE, ROADS MEET) with Select. A hidden label has no tap target, so the shortcut from other tools goes. The dashed lines and dots stay. Desktop unchanged | MOVE |
 | Stop a drag, a line, a bend, a half-made shape | Esc | "Cancel" takes the Undo button's place while a finger is on the map (other thumb); "Start again" on the status line for a half-made shape | MOVE |
 | What a tool would do, before you press | hover | shown while the finger is down, before it lifts | MOVE |
 | x, z readout | hover | shown while a finger is on the map | MOVE |

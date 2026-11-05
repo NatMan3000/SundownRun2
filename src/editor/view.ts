@@ -31,7 +31,12 @@ export const view = {
   scaleTop: null as number | null,
   /** The shortest the bar draws, pixels. */
   scaleMin: 80,
+  /** A phone: the screen boxes of the buttons fixed round the map's edge (tool button, Undo and Redo, the right column, the compass) and the scale bar. A road label never sits under one (mapDraw.ts placePill). Measured from the real elements (phone/PhoneEditor.tsx). */
+  keepClear: [] as { x0: number; y0: number; x1: number; y1: number }[],
 }
+
+/** True on the phone layout (layout C): its editor has set the scale bar's top. The one test of what a phone is. */
+export const onPhone = () => view.scaleTop !== null
 
 export const ZOOM = {
   /** Most zoomed in: 0.15 m per pixel (a car is about 30 px long). */

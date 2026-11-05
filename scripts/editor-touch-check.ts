@@ -2349,6 +2349,9 @@ async function reaches(p: Phone) {
     // A spot that is empty on this road: picking a thing a card would cover slides the map, and these spots would go stale.
     const [emptyHere] = await freeSpots(p, 1)
     const probe = async (x: number, y: number) => {
+      // (The BRIDGE pill only shows, and only grabs, with Select in hand; a tap near the road can have picked a stretch in its own tool.)
+      await p.ed('tool', 'select')
+      await sleep(120)
       await p.tap(emptyHere)
       await sleep(380)
       await p.tap({ x, y })
@@ -2891,13 +2894,173 @@ async function mouseUnchanged() {
 }
 
 
+/**
+ * 23. Nathan, 5 Nov 2026 (P8): on a phone each road label shows only with the tool that changes it. RAISED and DUG with Height,
+ * BANK with Bank, WIDTH with Width, the crossing's pill with Select. A hidden label can't be tapped either, so a tap where it
+ * would be acts as the tool in hand does on bare road. A computer keeps every label with every tool.
+ */
+async function labelsByTool(p: Phone, phone: boolean) {
+  await p.hidePanels(false)
+  await p.ed('newTrackNow')
+  await sleep(300)
+  await p.ed('shape', 'eight')
+  await sleep(1500)
+  await p.ed('fit')
+  await p.ed('tool', 'select')
+  await sleep(300)
+  type Mark = { tool: string; from: number; to: number; value: number; label: { sx: number; sy: number } }
+  const marks = async () => (await p.ed('marks')) as Mark[]
+  const n = (await p.sum()).points as number
+  // One stretch of each kind on stretches of road of their own (the dice may refuse a spot: try the next).
+  const kinds: [string, string, number][] = [['raise', 'height', 5], ['raise', 'height', -2], ['bank', 'bank', 14], ['width', 'width', 20]]
+  let at = 1
+  for (const [cmd, tool, v] of kinds) {
+    for (; at < n; at += 2) {
+      const before = await p.road()
+      await p.ed(cmd, [at, at + (cmd === 'raise' ? 6 : 2), v])
+      await sleep(120)
+      if ((await p.road()) === before) continue
+      // Landed only if its own label shows with its own tool (a raised stretch by a crossing gets the crossing's BRIDGE instead).
+      await p.ed('tool', tool)
+      await sleep(150)
+      const got = (await marks()).some((m) => m.tool === tool && Math.sign(m.value) === Math.sign(v))
+      if (got) break
+      await p.ed('undo')
+    }
+    at += Math.round(n / 5)
+  }
+  await p.ed('tool', 'select')
+  await sleep(300)
+  const crossings = async () => ((await p.ed('crossings')) as { screen: { label: { sx: number; sy: number } | null } | null }[]).filter((c) => c.screen)
+  // (Select shows the crossing's pill and, with nothing else from the three kinds, none of theirs: the allMarks below are read per tool.)
+  const read = async (tool: string) => {
+    await p.ed('tool', tool)
+    await sleep(250)
+    return { marks: await marks(), pills: (await crossings()).filter((c) => c.screen!.label).length }
+  }
+  const per: Record<string, Awaited<ReturnType<typeof read>>> = {}
+  for (const tool of TOOLS) per[tool] = await read(tool)
+  // (Every label that exists: on a phone each tool only shows its own, so the union of the tools.)
+  const all = TOOLS.flatMap((tool) => per[tool].marks).filter((m, i, a) => a.findIndex((x) => x.from === m.from && x.to === m.to && x.tool === m.tool) === i)
+  const hasKinds = ['height', 'bank', 'width'].every((k) => all.some((m) => m.tool === k)) && all.some((m) => m.tool === 'height' && m.value < 0) && all.some((m) => m.tool === 'height' && m.value > 0)
+  ok(hasKinds && (await crossings()).length >= 1, 'a road with a raised stretch, a dug one, a banked one, a width one and a crossing', { marks: all.length, crossings: (await crossings()).length })
+  const kindsIn = (tool: string) => [...new Set(per[tool].marks.map((m) => m.tool + (m.tool === 'height' ? (m.value < 0 ? '-' : '+') : '')))].sort().join(',')
+  if (!phone) {
+    for (const tool of TOOLS) ok(kindsIn(tool) === 'bank,height+,height-,width' && per[tool].pills >= 1, `a computer, ${tool}: every label shows`, { kinds: kindsIn(tool), pills: per[tool].pills })
+    return
+  }
+  for (const tool of TOOLS) {
+    const want = tool === 'height' ? 'height+,height-' : tool === 'bank' ? 'bank' : tool === 'width' ? 'width' : ''
+    ok(kindsIn(tool) === want, `${tool}: the labels drawn (and tappable) are ${want || 'none'}`, { got: kindsIn(tool) })
+    ok(per[tool].pills === (tool === 'select' ? (await crossings()).length : 0), `${tool}: ${tool === 'select' ? "the crossing's pill shows" : 'no crossing pill'}`, { pills: per[tool].pills })
+  }
+  // The right tool in hand: a tap on the label does what it did.
+  const jump = async (tool: string, m: Mark) => {
+    await p.ed('tool', tool)
+    await sleep(250)
+    const spot = (await marks()).find((x) => x.from === m.from && x.to === m.to)!.label
+    await p.tap({ x: spot.sx, y: spot.sy })
+    await sleep(250)
+    const s = await p.sum()
+    const good = s.selection?.kind === 'section' && Math.abs(s.selection.from - m.from) < 0.01
+    if (!good) console.log('  tap missed', tool, JSON.stringify({ spot, onMap: await p.onMap({ x: spot.sx, y: spot.sy }), sel: s.selection }))
+    return good
+  }
+  for (const k of ['height', 'bank', 'width']) {
+    const m = all.find((x) => x.tool === k)!
+    ok(await jump(k, m), `${k}: a tap on its own label picks that stretch up`)
+  }
+  // Tap-through: the label's spot read with its tool, then another tool in hand and a finger on that spot.
+  const road0 = await p.road()
+  for (const [from, k] of [['height', 'straight'], ['height', 'pencil'], ['bank', 'curve'], ['width', 'bend']] as const) {
+    const m = all.find((x) => x.tool === from)!
+    await p.ed('tool', from)
+    await sleep(250)
+    const spot = (await marks()).find((x) => x.from === m.from && x.to === m.to)!.label
+    await p.ed('tool', k)
+    await sleep(250)
+    await p.tap({ x: spot.sx, y: spot.sy })
+    await sleep(300)
+    const s = await p.sum()
+    ok(s.tool === k && s.selection?.kind !== 'section', `${k} on a hidden ${from} label's spot: the ${k} tool acts, nothing jumps`, { tool: s.tool, selection: s.selection?.kind ?? null })
+  }
+  await p.ed('tool', 'select')
+  await sleep(250)
+  const cl = (await crossings()).find((c) => c.screen!.label)!.screen!.label!
+  await p.ed('tool', 'straight')
+  await sleep(250)
+  await p.tap({ x: cl.sx, y: cl.sy })
+  await sleep(300)
+  const sc = await p.sum()
+  ok(sc.tool === 'straight' && sc.selection?.kind !== 'crossing', "straight on a hidden crossing pill's spot: nothing is selected", { tool: sc.tool, selection: sc.selection?.kind ?? null })
+  await p.ed('tool', 'select')
+  await sleep(250)
+  const cl2 = (await crossings()).find((c) => c.screen!.label)!.screen!.label!
+  await p.tap({ x: cl2.sx, y: cl2.sy })
+  await sleep(300)
+  ok((await p.sum()).selection?.kind === 'crossing', 'select: a tap on the crossing pill selects it')
+  await p.ed('tool', 'pencil')
+  await sleep(250)
+  ok((await p.sum()).selection === null, 'and a tool change lets it go: no card is left open on a crossing with no pill')
+
+  // A road label never sits under a button round the map's edge (P10): slide the map so each label falls on each fixed element in turn.
+  type Rect = { x0: number; y0: number; x1: number; y1: number }
+  const fixed = async (): Promise<{ name: string; r: Rect }[]> => {
+    const dom = await p.page.evaluate(() => {
+      const out: { name: string; r: Rect }[] = []
+      const add = (name: string, e: Element | null) => {
+        if (!e || !(e as HTMLElement).checkVisibility()) return
+        const b = e.getBoundingClientRect()
+        out.push({ name, r: { x0: b.left, y0: b.top, x1: b.right, y1: b.bottom } })
+      }
+      add('tool button', document.querySelector('.phone-tool'))
+      add('undo and redo', document.querySelector('.phone-undo'))
+      document.querySelectorAll('.phone-stack > *').forEach((e, i) => add(`right column ${i}`, e))
+      return out
+    })
+    const v = (await p.ed('view')) as { scaleBox: Rect }
+    return [...dom, { name: 'scale', r: v.scaleBox }]
+  }
+  const hit = (a: Rect, b: Rect) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
+  const pillBoxes = async (tool: string) => {
+    await p.ed('tool', tool)
+    await sleep(250)
+    if (tool === 'select') return ((await p.ed('crossings')) as { screen: { box: Rect | null } | null }[]).flatMap((c) => (c.screen?.box ? [c.screen.box] : []))
+    return (await marks()).map((m) => (m as Mark & { box: Rect }).box)
+  }
+  let landed = 0
+  const shown: string[] = []
+  for (const tool of ['height', 'bank', 'width', 'select']) {
+    for (const el of await fixed()) {
+      await p.ed('fit')
+      await sleep(200)
+      const from = (await pillBoxes(tool))[0]
+      if (!from) continue
+      const v0 = (await p.ed('view')) as { cx: number; cz: number; mpp: number }
+      const dx = (el.r.x0 + el.r.x1) / 2 - (from.x0 + from.x1) / 2
+      const dy = (el.r.y0 + el.r.y1) / 2 - (from.y0 + from.y1) / 2
+      await p.ed('view', [v0.cx - dx * v0.mpp, v0.cz - dy * v0.mpp, v0.mpp])
+      await sleep(300)
+      const now = await pillBoxes(tool)
+      const under = [...now.entries()].filter(([, b]) => (b ? hit(b, el.r) : false))
+      if (now.length) landed++
+      shown.push(`${tool}@${el.name}:${now.length}`)
+      ok(under.length === 0, `${tool}: slid onto the ${el.name}, no label sits under it`, { under: under.length, boxes: now.length })
+    }
+  }
+  ok(landed >= 4, 'and the labels do still show where there is room (not every one hidden)', { landed, shown: shown.join(' ') })
+  await p.ed('fit')
+  void road0
+}
+
+
 // ---------------------------------------------------------------- run
 
 const wanted = (n: string) => !only.length || only.includes(n)
 for (const name of windowNames) {
   windowName = name
   const { w, h } = WINDOWS[name]
-  const needsPhone = ['1', '2', '3', '4', '5', '6', '7', '8', '10', '12', '13', '14', '15', '16', '17', '18', '19', '21', '22'].some(wanted)
+  const needsPhone = ['1', '2', '3', '4', '5', '6', '7', '8', '10', '12', '13', '14', '15', '16', '17', '18', '19', '21', '22', '23'].some(wanted)
   if (needsPhone) {
     const p = await openPhone(name, 'editor=1&touch=1&nomusic=1&quality=low')
     scenario = '0 setup'
@@ -2938,6 +3101,7 @@ for (const name of windowNames) {
       ['19', '19 the other thumb', () => thumbButtons(p)],
       ['21', '21 the scale and the tool words', () => scaleAndWords(p)],
       ['22', '22 the tunnel footprint under a thumb', () => tunnelHold(p)],
+      ['23', '23 road labels with their own tool', () => labelsByTool(p, true)],
     ]
     for (const [n, label, run] of runs) {
       if (!wanted(n)) continue
@@ -2960,6 +3124,16 @@ if (wanted('22')) {
   windowName = 'desktop'
   scenario = '22 the tunnel footprint under a thumb'
   await tunnelHoverDesktop().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+}
+if (wanted('23')) {
+  windowName = 'desktop'
+  scenario = '23 road labels on a computer'
+  await openDesktop()
+    .then(async (p) => {
+      await labelsByTool(p, false)
+      await p.page.close()
+    })
+    .catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
 }
 if (wanted('21')) {
   windowName = 'desktop'
