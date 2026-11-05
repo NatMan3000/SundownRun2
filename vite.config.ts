@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -25,7 +26,25 @@ function inlineTouchIcon(): Plugin {
 // Share and Shared tracks use /api/tracks on the same plugin (server/trackShare.ts).
 export default defineConfig({
   plugins: [react(), reportPlugin(), inlineTouchIcon()],
-  server: { port: 5201, strictPort: true },
+  server: {
+    port: 5201,
+    strictPort: true,
+    // `bun run mp` serves this folder to the whole wifi (--host). Giving `deny` REPLACES Vite's own list, so
+    // its defaults are repeated here. The GitHub key (github-token*) and the waiting reports must never be served.
+    // A pattern with a "/" is matched against the whole path, so reports/ is spelled out from this folder.
+    fs: {
+      deny: [
+        '.env',
+        '.env.*',
+        '*.{crt,pem,key,p12,pfx,cer,der}',
+        '.npmrc',
+        '.yarnrc.yml',
+        '**/.git/**',
+        'github-token*',
+        fileURLToPath(new URL('./reports/**', import.meta.url)),
+      ],
+    },
+  },
   preview: { port: 5201, strictPort: true },
   build: { chunkSizeWarningLimit: 4000 },
 })

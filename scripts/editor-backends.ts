@@ -37,6 +37,14 @@ export interface Backends {
   serve: (page: Page, port: string) => Promise<void>
   /** Put a track in the online library as another player (so Everyone's tracks has rows). */
   otherPlayer: (name: string, file: TrackFile) => void
+  /** The library answers the list as if it were empty (reset, or a server bug that still says ok); everything else is as it was. */
+  hideEveryTrack: (on: boolean) => void
+  /** Save a new version of one of the page's own tracks from "another computer" (the page's next sync finds it changed there). */
+  changeMine: (id: string, edit: (file: TrackFile) => TrackFile) => void
+  /** Delete one of the page's own tracks from "another computer". */
+  removeMine: (id: string) => void
+  /** The ids of the page's own tracks the library holds now. */
+  mineIds: () => string[]
   stop: () => void
 }
 
@@ -66,10 +74,14 @@ export function startBackends(): Promise<Backends> {
     randomSuffix: () => `r${n++}`,
   })
   const ME = 'me@example.com'
+  let hidden = false
 
   /** The Worker's routes (cloud/libraryApi.ts) minus the Access login, on the real store. */
   const library = (method: string, path: string, body: Record<string, unknown> | null): unknown => {
-    if (path === '/api/library') return { status: 'ok', ...store.list(ME) }
+    if (path === '/api/library') {
+      const all = store.list(ME)
+      return { status: 'ok', ...all, tracks: hidden ? [] : all.tracks }
+    }
     if (path === '/api/library/tracks' && method === 'POST') return store.create(ME, String(body?.playerName ?? ''), body?.file as TrackFile)
     const one = /^\/api\/library\/tracks\/([^/]+)$/.exec(path)
     if (!one) return { status: 'refused', code: 'not-found', message: 'There is nothing at that address.' }
@@ -118,6 +130,22 @@ export function startBackends(): Promise<Backends> {
         otherPlayer(name, file) {
           const slug = name.toLowerCase()
           store.create(`${slug}@example.com`, name, file)
+        },
+        hideEveryTrack(on) {
+          hidden = on
+        },
+        changeMine(id, edit) {
+          const got = store.get(ME, id)
+          if (got.status !== 'ok') throw new Error(`changeMine: no track "${id}" online (${got.status})`)
+          const done = store.update(ME, 'ME', id, edit(JSON.parse(got.track.file) as TrackFile), got.track.rev)
+          if (done.status !== 'ok') throw new Error(`changeMine: ${done.status}`)
+        },
+        mineIds() {
+          return store.list(ME).tracks.filter((t) => t.mine).map((t) => t.id)
+        },
+        removeMine(id) {
+          const done = store.remove(ME, id)
+          if (done.status !== 'ok') throw new Error(`removeMine: ${done.status}`)
         },
         stop() {
           fake.stop()

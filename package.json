@@ -22,6 +22,7 @@
     "test:relay": "bun test server/relay.test.ts",
     "test:format": "bun test scripts/format.test.ts",
     "lap:check": "bun scripts/lap-check.ts",
+    "dev:check": "bun scripts/dev-server-check.ts",
     "test:share": "bun test server/trackShare.test.ts",
     "test:cloud": "bun test cloud/",
     "cloud:dev": "bun run build && wrangler dev -c cloud/wrangler.jsonc --port 5211 --local-protocol https",

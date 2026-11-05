@@ -37,6 +37,7 @@ import { validateTrack } from '../track/validate'
 import { ROAD_SMOOTHING_MAX, ROAD_SMOOTHING_MIN } from '../track/terrain'
 import { startSession } from '../core/session'
 import { audio } from '../core/api'
+import { dropAllGhosts } from '../core/ghostStore'
 import { BASE_WORLDS, DEFAULT_BASE_WORLD, clearedDraft, cloneJson, draftFromFile, emptyWorldFile, fileOfDraft, isBlankDraft, isEmptyDraft, pointGroundOf, roadBound, worldForCopy } from './draftFile'
 import { randomTrack } from './randomTrack'
 import { cleanStroke, type CleanResult, type Crossing, type StrokeIssue } from './cleanup'
@@ -251,10 +252,19 @@ function readWorking(): { draft: Draft; savedId: string | null; dirty: boolean }
 }
 
 function writeWorking(s: Pick<EditorState, 'draft' | 'savedId' | 'dirty'>): void {
+  const text = JSON.stringify({ draft: s.draft, savedId: s.savedId, dirty: s.dirty })
   try {
-    localStorage.setItem(WORKING_KEY, JSON.stringify({ draft: s.draft, savedId: s.savedId, dirty: s.dirty }))
+    localStorage.setItem(WORKING_KEY, text)
   } catch (err) {
-    console.warn('[editor] could not keep the working copy (browser storage full?)', err)
+    // Full: old ghost laps give way first. If that is not enough, say so, because the crash screen promises the road is kept.
+    try {
+      if (dropAllGhosts() === 0) throw err
+      localStorage.setItem(WORKING_KEY, text)
+    } catch {
+      console.warn('[editor] could not keep the working copy (browser storage full?)', err)
+      // A moment later, so the message of the action that just made the change doesn't cover it.
+      setTimeout(() => say("This browser is full, so your drawing is NOT being kept if the page closes. Save it to your Library, or delete a track you don't need.", 'bad'), 0)
+    }
   }
 }
 

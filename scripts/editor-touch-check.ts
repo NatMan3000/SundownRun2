@@ -3662,6 +3662,167 @@ async function rooms(name: string) {
   // ---- the computer, unchanged: element pictures hashed, so a run on the build before and this one can be compared
 }
 
+/**
+ * 27. Full browser storage and the online library (audit 5 Nov 2026, must-fix 2 to 4):
+ *   - one ghost lap per track, however many versions of the road were driven;
+ *   - a full browser drops old ghosts for a drawing (and keeps it over a reload), and says so when nothing is left to drop;
+ *   - a track changed on two computers is left alone when the copy can't be kept;
+ *   - a library that suddenly lists none of several tracks deletes nothing here, while one deleted elsewhere still goes.
+ */
+async function storageAndSync() {
+  const logs: string[] = []
+  const open = async (backend: 'home' | 'online') => {
+    const page = await browser.newPage()
+    backends ??= await startBackends()
+    await backends.serve(page, port)
+    page.on('pageerror', (e) => ok(false, 'page error', String((e as Error).stack ?? (e as Error).message).slice(0, 600)))
+    page.on('console', (m) => logs.push(m.text()))
+    await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 })
+    const url = `${backend === 'online' ? ONLINE_ORIGIN : `http://localhost:${port}`}/?editor=1&nomusic=1&quality=low`
+    const ready = async () => {
+      for (let i = 0; i < 80 && !(await page.evaluate(() => !!document.querySelector('[data-testid=editor-ui]')).catch(() => false)); i++) await sleep(250)
+      await sleep(2000)
+    }
+    await page.goto(url, { waitUntil: 'load' })
+    await ready()
+    // A browser with nothing in it (other scenarios left tracks and the working copy behind), then the page again.
+    await page.evaluate(() => localStorage.clear())
+    await page.reload({ waitUntil: 'load' })
+    await ready()
+    return new Phone(page, await page.createCDPSession(), 1920, 1080)
+  }
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const fill = (p: Phone) =>
+    p.page.evaluate(() => {
+      let n = 0
+      for (const size of [100000, 10000, 1000, 100, 10, 1]) {
+        for (;;) {
+          try {
+            localStorage.setItem(`junk.${n}`, 'x'.repeat(size))
+            n++
+          } catch {
+            break
+          }
+        }
+      }
+      return n
+    })
+  const unfill = (p: Phone) => p.page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('junk.')).forEach((k) => localStorage.removeItem(k)))
+  const canWrite = (p: Phone, chars: number) =>
+    p.page.evaluate((n: number) => {
+      try {
+        localStorage.setItem('probe', 'y'.repeat(n))
+        localStorage.removeItem('probe')
+        return true
+      } catch {
+        return false
+      }
+    }, chars)
+  const ghosts = (p: Phone) => p.page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('sr2.ghost.')).sort())
+  const saveGhost = (p: Phone, key: string, samples: number) => p.page.evaluate((k: string, n: number) => (window as any).__dev.ghost(k, n), key, samples)
+  const said = (p: Phone) => p.page.evaluate(() => (window as any).__game.get('editorMsg') as string | null)
+  const drawn = (p: Phone) =>
+    p.page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('sr2.tracks.drawn.v1') ?? '{}') as Record<string, { id: string; name: string; description?: string }>))
+  const library = (p: Phone, cmd: string) => p.page.evaluate((c: string) => (window as any).__dev.library(c), cmd)
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  // ---- ghosts: one per track, and they give way when the browser is full
+  let p = await open('home')
+  for (const h of ['aaaa0001', 'aaaa0002', 'aaaa0003']) await saveGhost(p, `trk@${h}`, 40)
+  await saveGhost(p, 'other@bbbb0001', 40)
+  const kept = await ghosts(p)
+  ok(JSON.stringify(kept) === JSON.stringify(['sr2.ghost.other@bbbb0001', 'sr2.ghost.trk@aaaa0003']), 'three versions of one road leave one ghost, the other track keeps its own', kept)
+
+  for (const id of ['big1', 'big2', 'big3']) await saveGhost(p, `${id}@cccc0001`, 4000)
+  ok((await ghosts(p)).length === 5, 'ghosts of other tracks are all kept (5 now)', await ghosts(p))
+  await p.ed('newTrackNow', 'neon-valley')
+  await sleep(800)
+  await fill(p)
+  ok(!(await canWrite(p, 3000)), 'the browser is full (not even 3000 more characters fit)')
+  await p.ed('random', 7)
+  await sleep(1500)
+  const roadPoints = (await p.sum()).points
+  const working = await p.page.evaluate(() => JSON.parse(localStorage.getItem('sr2.editor.working.v1') ?? 'null'))
+  ok(roadPoints > 10 && working?.draft?.points?.length === roadPoints, 'the new road was kept in the working copy although the browser was full', { roadPoints, kept: working?.draft?.points?.length })
+  ok((await ghosts(p)).length === 0, 'to make room every old ghost was dropped', await ghosts(p))
+  await p.page.reload({ waitUntil: 'load' })
+  await sleep(3000)
+  ok((await p.sum()).points === roadPoints, 'and the road is still there after a reload', { before: roadPoints, after: (await p.sum()).points })
+
+  // Nothing left to drop and still no room: the status line says so, in plain words.
+  await p.ed('newTrackNow', 'neon-valley')
+  await sleep(800)
+  await unfill(p)
+  await fill(p)
+  await p.ed('random', 7)
+  await sleep(1500)
+  const words = (await said(p)) ?? ''
+  ok(/NOT being kept/.test(words), 'a drawing that cannot be kept says so on the status line', words)
+  const shown = await p.page.evaluate(() => document.querySelector('.sre-status')?.textContent ?? '')
+  ok(/NOT being kept/.test(shown), 'and it is on the screen', shown)
+  await unfill(p)
+  await p.page.close()
+
+  // ---- online: a conflict with a full browser
+  backends ??= await startBackends()
+  for (const gone of backends.mineIds()) backends.removeMine(gone) // an empty library, so a fresh browser starts from nothing
+  p = await open('online')
+  await p.ed('open', 'afterglow')
+  await sleep(2500)
+  await p.ed('saveAsNew')
+  await sleep(500)
+  await library(p, 'sync')
+  const st1 = (await library(p, 'state')) as { state: { uploaded: Record<string, unknown> } }
+  const id = Object.keys(st1.state.uploaded)[0]
+  ok(!!id && (await drawn(p)).length === 1, 'one track saved here and uploaded', { id, drawn: (await drawn(p)).length })
+  backends!.changeMine(id, (f) => ({ ...f, description: 'changed on the other computer' }))
+  const LOCAL = ' LOCAL EDIT, SHOULD SURVIVE'
+  await p.page.evaluate((trackId: string, add: string) => {
+    const all = JSON.parse(localStorage.getItem('sr2.tracks.drawn.v1')!)
+    all[trackId].description = (all[trackId].description ?? '') + add.repeat(40)
+    localStorage.setItem('sr2.tracks.drawn.v1', JSON.stringify(all))
+  }, id, LOCAL)
+  await fill(p)
+  ok(!(await canWrite(p, 3000)), 'the browser is full')
+  logs.length = 0
+  await library(p, 'sync')
+  const after = await drawn(p)
+  ok(after.length === 1 && after[0].id === id && (after[0].description ?? '').includes('LOCAL EDIT'), "with no room for a copy, this computer's version is left alone", after.map((t) => ({ id: t.id, d: (t.description ?? '').slice(0, 40) })))
+  ok(logs.some((l) => /could not keep a copy/.test(l)), 'and it was logged', logs.filter((l) => l.includes('[library]')))
+  await unfill(p)
+  await library(p, 'sync')
+  await library(p, 'sync')
+  const healed = await drawn(p)
+  ok(healed.length === 2 && healed.some((t) => /\(this computer\)/.test(t.name) && (t.description ?? '').includes('LOCAL EDIT')) && healed.some((t) => t.description === 'changed on the other computer'), 'once there is room the conflict sorts itself out: both versions kept', healed.map((t) => ({ n: t.name, d: (t.description ?? '').slice(0, 30) })))
+  await p.page.close()
+
+  // ---- online: the library suddenly lists nothing
+  for (const gone of backends.mineIds()) backends.removeMine(gone)
+  p = await open('online')
+  for (let i = 0; i < 2; i++) {
+    await p.ed('open', 'afterglow')
+    await sleep(2500)
+    await p.ed('saveAsNew')
+    await sleep(500)
+  }
+  await library(p, 'sync')
+  const up = Object.keys(((await library(p, 'state')) as { state: { uploaded: Record<string, unknown> } }).state.uploaded)
+  ok(up.length === 2 && (await drawn(p)).length === 2, 'two tracks saved here and both uploaded', { up, drawn: (await drawn(p)).length })
+  backends!.hideEveryTrack(true)
+  logs.length = 0
+  await library(p, 'sync')
+  const status = ((await library(p, 'status')) as { status: { state: string; message?: string } }).status
+  ok((await drawn(p)).length === 2, 'the library lists nothing: no track here was deleted', (await drawn(p)).map((t) => t.id))
+  ok(status.state === 'offline' && /looks empty/.test(status.message ?? ''), 'and the sync line says so', status)
+  ok(logs.some((l) => /lists none of your 2 uploaded tracks/.test(l)), 'and the console does too', logs.filter((l) => l.includes('[library]')))
+  backends!.hideEveryTrack(false)
+  backends!.removeMine(up[0])
+  await library(p, 'sync')
+  const left = (await drawn(p)).map((t) => t.id)
+  ok(left.length === 1 && left[0] === up[1], 'one track deleted from another computer is still deleted here, the other stays', { left, wasDeleted: up[0] })
+  await p.page.close()
+}
+
 /** The Library, the Share box, the online library and the drive bar at 1920x1080 with a mouse, as pictures of just those elements. */
 async function desktopRooms() {
   const hashes: Record<string, string> = {}
@@ -4194,6 +4355,11 @@ if (wanted('9')) {
   windowName = 'desktop'
   scenario = '9 mouse and pen'
   await mouseAndPen().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+}
+if (wanted('27')) {
+  windowName = 'desktop'
+  scenario = '27 full storage and the online library'
+  await storageAndSync().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
 }
 if (wanted('22')) {
   windowName = 'desktop'

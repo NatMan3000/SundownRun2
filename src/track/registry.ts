@@ -18,6 +18,7 @@
 //  onDrawnTracksChanged listeners (the online library uploads it).
 // ============================================================
 
+import { dropAllGhosts } from '../core/ghostStore'
 import type { TrackFile, ValidationResult } from './schema'
 import { validateTrack } from './validate'
 
@@ -79,10 +80,20 @@ function readDrawn(): Record<string, TrackFile> {
 }
 
 function writeDrawn(all: Record<string, TrackFile>): boolean {
+  const text = JSON.stringify(all)
   try {
-    localStorage.setItem(DRAWN_KEY, JSON.stringify(all))
+    localStorage.setItem(DRAWN_KEY, text)
     return true
   } catch (err) {
+    // Full: old ghost laps are what gives way, a saved track never does. Try once more with them gone.
+    if (dropAllGhosts() > 0) {
+      try {
+        localStorage.setItem(DRAWN_KEY, text)
+        return true
+      } catch {
+        // fall through to the report below
+      }
+    }
     console.error('[tracks] could not save drawn tracks (storage full or unavailable)', err)
     return false
   }

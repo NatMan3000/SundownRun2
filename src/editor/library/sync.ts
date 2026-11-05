@@ -240,10 +240,10 @@ async function call<T extends { status: string }>(method: string, path: string, 
 let quiet = false
 
 /** Save or delete a drawn track here for the library's own reasons (no upload is set off). */
-function quietly(fn: () => void): void {
+function quietly<T>(fn: () => T): T {
   quiet = true
   try {
-    fn()
+    return fn()
   } finally {
     quiet = false
   }
@@ -348,6 +348,18 @@ async function syncOnce(): Promise<void> {
     } else return stopped(r)
   }
 
+  // A library that shows none of this login's tracks while this browser remembers several uploaded under it is more likely
+  // reset or wrong than deleted from another computer: delete nothing here, say so, and look again later.
+  const remembered = Object.entries(st.uploaded).filter(([, u]) => u.owner === key)
+  if (remembered.length > 1 && !remembered.some(([id]) => mineOnline.has(id))) {
+    console.error(`[library] the library lists none of your ${remembered.length} uploaded tracks: nothing is deleted here, the sync stopped`)
+    return stopped({
+      status: 'refused',
+      code: 'error',
+      message: `The online library looks empty, but ${remembered.length} of your tracks were saved there. Your tracks are still safe in this browser. It will look again soon.`,
+    })
+  }
+
   // 2. Every track in this browser.
   for (const file of listDrawnTracks()) {
     if (file.id === DRIVE_TRACK_ID) continue
@@ -392,12 +404,19 @@ async function syncOnce(): Promise<void> {
         // Changed here as well: keep this one as a copy, which uploads as a new track below.
         const copyName = freeName(`${file.name} (this computer)`)
         const copy: TrackFile = { ...file, id: freeIdFor(copyName), name: copyName }
-        quietly(() => saveDrawnTrack(copy))
+        if (!quietly(() => saveDrawnTrack(copy))) {
+          // No room for the copy: the other version would replace the only one of this computer's. Leave the track alone.
+          console.warn(`[library] "${file.name}" changed here and on another computer, but this browser is full and could not keep a copy: left as it is`)
+          continue
+        }
         followRenamedTrack(file.id, copy.id)
         again = true
         console.warn(`[library] "${file.name}" changed here and on another computer: this computer's version is now "${copyName}"`)
       }
-      quietly(() => saveDrawnTrack(got.file))
+      if (!quietly(() => saveDrawnTrack(got.file))) {
+        console.warn(`[library] "${file.name}": the newer version could not be kept (browser storage full), left as it is`)
+        continue
+      }
       st.uploaded[file.id] = { owner: key, rev: got.meta.rev, check: checkOf(got.file) }
       save()
       continue
@@ -414,10 +433,12 @@ async function syncOnce(): Promise<void> {
       if (r.id !== file.id) {
         // The library gave it another id (its own was taken): move it here too.
         now = { ...file, id: r.id }
-        quietly(() => {
-          saveDrawnTrack(now)
-          deleteDrawnTrack(file.id)
-        })
+        // Only drop the old id once the new one is safely kept.
+        const kept = quietly(() => saveDrawnTrack(now) && (deleteDrawnTrack(file.id), true))
+        if (!kept) {
+          console.warn(`[library] "${file.name}" got a new id online but could not be kept under it here (browser storage full): left as it is`)
+          continue
+        }
         followRenamedTrack(file.id, r.id)
         delete st.uploaded[file.id]
       }

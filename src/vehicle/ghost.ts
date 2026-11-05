@@ -20,6 +20,8 @@
 import type * as THREE from 'three'
 import { useGame } from '../core/store'
 import { DT } from './tuning'
+import { GHOST_PREFIX, dropOtherGhostsOfTrack } from '../core/ghostStore'
+import { registerDev } from '../core/devHandles'
 
 /** Samples per second. Physics is 60 Hz, so record every second step. */
 export const GHOST_HZ = 30
@@ -40,7 +42,7 @@ export interface GhostTrace {
 }
 
 function storageKey(trackKey: string): string {
-  return `sr2.ghost.${trackKey}`
+  return GHOST_PREFIX + trackKey
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -95,6 +97,8 @@ export function loadGhost(trackKey: string): GhostTrace | null {
 
 function saveGhost(trackKey: string, trace: GhostTrace): void {
   try {
+    // One ghost per track: the older versions of this road's ghost are of no use any more.
+    dropOtherGhostsOfTrack(trackKey)
     const bytes = new Uint8Array(trace.data.buffer, trace.data.byteOffset, trace.count * FLOATS * 4)
     localStorage.setItem(
       storageKey(trackKey),
@@ -183,3 +187,19 @@ export function sampleGhost(trace: GhostTrace, t: number, outPos: THREE.Vector3,
   outQuat.slerpQuaternions(qa, qb, a)
   return true
 }
+
+// For checkers: record a short pretend lap and save it as a track's ghost.
+registerDev(
+  'ghost',
+  ((trackKey: string, samples = 60) => {
+    ghostRecorder.start('dart')
+    const p = { x: 0, y: 0, z: 0 } as THREE.Vector3
+    const q = { x: 0, y: 0, z: 0, w: 1 } as THREE.Quaternion
+    for (let i = 0; i < samples * STEP_EVERY; i++) {
+      p.z = i
+      ghostRecorder.sample(p, q)
+    }
+    return ghostRecorder.commit(String(trackKey), 30000)
+  }) as (...args: never[]) => unknown,
+  "ghost lap: __dev.ghost('<track id>@<hash>', samples) saves a pretend best lap",
+)
