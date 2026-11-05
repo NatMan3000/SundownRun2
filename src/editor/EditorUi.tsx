@@ -34,6 +34,9 @@
 //  Beside the rail, the chosen tool's own settings (ToolOptions): the
 //  pencil's steady hand, Bend's reach, the steps of Straight and Curve,
 //  and how to pick a stretch for Height, Bank and Width.
+//
+//  On a phone none of that layout shows: phone/PhoneEditor.tsx puts the
+//  same parts in a new home for thumbs (spec/phone-editor/).
 // ============================================================
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
@@ -62,6 +65,8 @@ import { startDriveToDraw } from './driveToDraw'
 import { SliderField } from './fields'
 import { BEND_REACH, STEADY_NAMES, STEADY_STRING } from './shape'
 import './editor.css'
+// After editor.css, so its own styles (phone/phone.css) come later and win.
+import { PhoneEditor } from './phone/PhoneEditor'
 
 /** CSS custom properties from the palette, so the stylesheet never holds a colour of its own. */
 const cssVars = {
@@ -92,7 +97,7 @@ const cssVars = {
  * line (shown the moment the mouse is over it), and its key. The tools say a
  * longer line on the status line when picked (TOOL_TIPS).
  */
-const RAIL = {
+export const RAIL = {
   select: { name: 'Select', tip: 'Click a piece or a road point to pick it, then drag to move it.', key: 'V' },
   pencil: { name: 'Pencil', tip: 'Draw a new bit of road: start on the road and end back on it. Hold Shift for a straight line.', key: 'P' },
   straight: { name: 'Straight', tip: 'Click two spots on the road: the road between them goes dead straight.', key: 'L' },
@@ -174,10 +179,16 @@ export function EditorUi() {
       <Overlay />
       <Look3dUi />
       <EmptyMapNote />
-      <Toolbar onLibrary={() => setLibrary(true)} />
-      <Palette />
-      <ToolOptions />
-      <Panel onLibrary={() => setLibrary(true)} onExit={leaveEditor} />
+      {editOnPhone ? (
+        <PhoneEditor onLibrary={() => setLibrary(true)} onExit={leaveEditor} />
+      ) : (
+        <>
+          <Toolbar onLibrary={() => setLibrary(true)} />
+          <Palette />
+          <ToolOptions />
+          <Panel onLibrary={() => setLibrary(true)} onExit={leaveEditor} />
+        </>
+      )}
       <StatusLine />
       {library && <Library onClose={() => setLibrary(false)} />}
       <AskFirstDialog />
@@ -218,7 +229,7 @@ function restoreRealTrack(): void {
   if (id) loadTrackById(id)
 }
 
-function pickTool(tool: EditorTool, kind?: PlaceKind): void {
+export function pickTool(tool: EditorTool, kind?: PlaceKind): void {
   const before = useEditor.getState().tool
   setTool(tool, kind)
   if (before === tool) return
@@ -325,7 +336,7 @@ function ToolButton(p: { id: keyof typeof RAIL; active?: boolean; disabled?: boo
 }
 
 /** The piece palette: shown beside the rail while the place tool is on. */
-function Palette() {
+export function Palette() {
   const tool = useEditor((s) => s.tool)
   const kind = useEditor((s) => s.placeKind)
   const mode = useEditor((s) => s.mode)
@@ -370,7 +381,7 @@ const SHAPE_STEPS: Record<'straight' | 'curve', string[]> = {
  * Bend's reach, and the steps of a Straight or Curve with the one you are
  * on lit up.
  */
-function ToolOptions() {
+export function ToolOptions() {
   const tool = useEditor((s) => s.tool)
   const mode = useEditor((s) => s.mode)
   const steady = useEditor((s) => s.steady)

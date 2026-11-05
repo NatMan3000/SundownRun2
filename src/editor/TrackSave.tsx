@@ -53,16 +53,19 @@ export function SaveStateLine() {
   )
 }
 
-/** The panel's bottom buttons, and the line above them that says what Save does. */
-export function TrackActions(p: { onLibrary: () => void; onExit: () => void }) {
+/** The name the track is saved under (read from the Library only when that can have changed, not on every edit). */
+function useSavedName(): string | null {
+  const savedId = useEditor((s) => s.savedId)
+  const dirty = useEditor((s) => s.dirty)
+  return useMemo(() => savedName(savedId), [savedId, dirty])
+}
+
+/** The line that says exactly what Save will do. */
+export function SaveSays() {
   const state = useEditor((s) => saveState(s))
   const empty = useEditor((s) => isEmptyDraft(s.draft))
   const name = useEditor((s) => s.draft.name.trim() || 'My Track')
-  const savedId = useEditor((s) => s.savedId)
-  const dirty = useEditor((s) => s.dirty)
-  const unsaved = useEditor((s) => hasUnsavedWork(s))
-  // The name it is saved under (read from the Library only when that can have changed, not on every edit).
-  const was = useMemo(() => savedName(savedId), [savedId, dirty])
+  const was = useSavedName()
 
   const says = empty
     ? 'Draw a road first, then you can save it and test drive it.'
@@ -75,23 +78,51 @@ export function TrackActions(p: { onLibrary: () => void; onExit: () => void }) {
           : `Save updates "${name}" in your Library.`
 
   return (
+    <p className="sre-help sre-actions-why" data-testid="editor-save-says">
+      {says}
+    </p>
+  )
+}
+
+/** Save: this track, never another. */
+export function SaveButton() {
+  const empty = useEditor((s) => isEmptyDraft(s.draft))
+  const unsaved = useEditor((s) => hasUnsavedWork(s))
+  return (
+    <button type="button" className={`sre-btn${unsaved ? ' is-due' : ''}`} onClick={() => saveDraft() && audio.ui('select')} disabled={empty} data-testid="editor-save">
+      Save
+    </button>
+  )
+}
+
+/** Save as new track: a copy under a new name, and you carry on with the copy. */
+export function SaveAsNewButton() {
+  const state = useEditor((s) => saveState(s))
+  const empty = useEditor((s) => isEmptyDraft(s.draft))
+  const name = useEditor((s) => s.draft.name.trim() || 'My Track')
+  const was = useSavedName()
+  return (
+    <button
+      type="button"
+      className="sre-btn is-quiet sre-save-new"
+      onClick={() => saveAsNewTrack() && audio.ui('select')}
+      disabled={empty || state === 'new'}
+      title={state === 'new' ? "This track isn't saved yet, so Save already makes it a new track." : `Saves a copy under a new name and you carry on with the copy. "${was ?? name}" stays as you last saved it.`}
+      data-testid="editor-save-new"
+    >
+      Save as new track
+    </button>
+  )
+}
+
+/** The panel's bottom buttons, and the line above them that says what Save does. */
+export function TrackActions(p: { onLibrary: () => void; onExit: () => void }) {
+  const empty = useEditor((s) => isEmptyDraft(s.draft))
+  return (
     <div className="sre-actions">
-      <p className="sre-help sre-actions-why" data-testid="editor-save-says">
-        {says}
-      </p>
-      <button type="button" className={`sre-btn${unsaved ? ' is-due' : ''}`} onClick={() => saveDraft() && audio.ui('select')} disabled={empty} data-testid="editor-save">
-        Save
-      </button>
-      <button
-        type="button"
-        className="sre-btn is-quiet sre-save-new"
-        onClick={() => saveAsNewTrack() && audio.ui('select')}
-        disabled={empty || state === 'new'}
-        title={state === 'new' ? "This track isn't saved yet, so Save already makes it a new track." : `Saves a copy under a new name and you carry on with the copy. "${was ?? name}" stays as you last saved it.`}
-        data-testid="editor-save-new"
-      >
-        Save as new track
-      </button>
+      <SaveSays />
+      <SaveButton />
+      <SaveAsNewButton />
       <button type="button" className="sre-btn is-primary" onClick={testDrive} disabled={empty} data-testid="editor-test-drive">
         Test drive
       </button>

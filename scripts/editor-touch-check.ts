@@ -7,8 +7,8 @@
 //  events. Every scenario asserts on the editor's real state (the
 //  view, the Undo count, the road), never on "nothing threw". The
 //  layout's panels are hidden from the fingers, because this checks
-//  the map's gestures and the layout is changing round them; scenario
-//  10 uses the real rail, 9 a real mouse at 1920x1080, 12 both.
+//  the map's gestures; scenario 10 uses the real tool button and tray
+//  (layout C), 9 a real mouse at 1920x1080, 12 both.
 //
 //    bunx vite build --outDir /tmp/x && bunx vite preview --outDir /tmp/x --port 5212 --strictPort
 //    bun run editor:touch -- --port 5212 [--window pwa,safari] [--only 1,2,3] [--out /tmp/sr2/editor-touch]
@@ -154,7 +154,7 @@ class Phone {
       if (!on) return
       const style = document.createElement('style')
       style.id = 'check-hide'
-      style.textContent = '.sre > :not(.sre-overlay) { pointer-events: none !important; opacity: 0 !important; }'
+      style.textContent = '.sre > :not(.sre-overlay), .sre > :not(.sre-overlay) * { pointer-events: none !important; } .sre > :not(.sre-overlay) { opacity: 0 !important; }'
       document.head.append(style)
     }, hide)
   }
@@ -1012,48 +1012,258 @@ async function mouseAndPen() {
   await page.close()
 }
 
-/** 10. The trial's rail: Select and Pencil can be reached by a finger, every tool by a swipe, on the real layout. */
-async function rail(p: Phone) {
+/**
+ * 10. The tool button (layout C) by real fingers on the real layout: it opens the tray, the tray holds the nine
+ * tools in the computer's order and View, a tap on the map only closes it, and two fingers are the map with
+ * every panel open. The card's slider, Undo and Redo, Cancel for the other thumb, the Menu.
+ */
+async function toolButton(p: Phone) {
   await p.hidePanels(false)
-  await sleep(100)
+  await p.freshRoad()
+  await p.ed('tool', 'pencil')
+  await sleep(200)
   const box = (sel: string) =>
     p.page.evaluate((s: string) => {
       const e = document.querySelector(s)
-      if (!e) return null
+      if (!e || !(e as HTMLElement).checkVisibility()) return null
       const r = e.getBoundingClientRect()
-      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, w: r.width, h: r.height, x: r.left + r.width / 2, y: r.top + r.height / 2, text: (e as HTMLElement).innerText }
     }, sel)
-  const tool = async () => (await p.sum()).tool
-  const railBox = (await box('.sre-tools'))!
-  ok(railBox.top >= 0 && railBox.bottom <= p.h, 'the rail fits the window', { top: railBox.top, bottom: railBox.bottom })
-  ok(railBox.left >= 62, 'and clears the notch', { left: railBox.left })
-  for (const [name, want] of [['pencil', 'pencil'], ['select', 'select'], ['straight', 'straight']] as const) {
-    const b = (await box(`[data-rail=${name}]`))!
-    ok(b.top >= railBox.top && b.bottom <= railBox.bottom, `${name}'s button is on screen`, { top: b.top, bottom: b.bottom })
-    ok(b.bottom - b.top >= 40, `${name}'s button is big enough for a thumb`, { h: b.bottom - b.top })
+  const press = async (sel: string) => {
+    const b = await box(sel)
+    if (!b) return ok(false, `${sel} is there to press`)
     await p.tap({ x: b.x, y: b.y })
     await sleep(80)
-    ok((await tool()) === want, `a tap on ${name} picks it`, await tool())
   }
-  await p.ed('tool', 'pencil')
-  const swipeX = railBox.left + (railBox.right - railBox.left) / 2
+  const tool = async () => (await p.sum()).tool
+  const trayUp = async () => !!(await box('[data-testid=phone-tray]'))
+  const inset = 62
+  const b = (await box('[data-testid=phone-tool]'))!
+  ok(!!b, 'the tool button is there')
+  ok(b.top >= 0 && b.bottom <= p.h - 20, 'it fits, clear of the home bar', { top: b.top, bottom: b.bottom })
+  ok(b.left >= inset, 'and clears the notch', { left: b.left })
+  ok(b.h >= 44 && b.w >= 44, 'it is big enough for a thumb', { w: b.w, h: b.h })
+  ok(/Pencil/.test(b.text), 'it says the tool in your hand', b.text)
+  ok(!(await trayUp()), 'the tray starts shut')
+
+  await p.tap({ x: b.x, y: b.y })
+  ok(await trayUp(), 'one tap opens the tray, at once')
+  const cells = await p.page.evaluate(() => [...document.querySelectorAll('[data-testid=phone-tray] [data-rail]')].map((e) => (e as HTMLElement).dataset.rail))
+  ok(JSON.stringify(cells) === JSON.stringify(TOOLS), "nine tools, in the computer's order", cells)
+  const sizes = await p.page.evaluate(() => [...document.querySelectorAll('[data-testid=phone-tray] button')].map((e) => { const r = e.getBoundingClientRect(); return { h: r.height, w: r.width, top: r.top, bottom: r.bottom, left: r.left } }))
+  ok(sizes.every((s) => s.h >= 44 && s.w >= 44), 'every cell and View is big enough for a thumb', sizes.map((s) => Math.round(s.h)))
+  ok(sizes.every((s) => s.top >= 0 && s.bottom <= p.h - 20 && s.left >= inset), 'and all of the tray is on screen')
+  // Every tool, by its own tap.
+  for (const t of TOOLS) {
+    if (!(await trayUp())) await press('[data-testid=phone-tool]')
+    await press(`[data-testid=phone-tray] [data-rail=${t}]`)
+    ok((await tool()) === t, `a tap on ${t} picks it`, await tool())
+    ok(!(await trayUp()), 'and folds the tray')
+    const name = (await box('[data-testid=phone-tool]'))!.text
+    ok(new RegExp(t === 'place' ? 'Pieces' : t, 'i').test(name), 'and the button says so', name)
+    if (t === 'place') {
+      ok(!!(await box('.phone-card .sre-palette')), 'Place opens on its palette')
+      await press('.phone-card .sre-piece')
+      ok(!(await box('.phone-card')), 'picking a piece folds the card')
+      ok(/Boost/.test((await box('[data-testid=phone-chip]'))?.text ?? ''), 'to a chip naming the piece', (await box('[data-testid=phone-chip]'))?.text)
+    }
+  }
+
+  // A tap on the map with the tray open only closes it: Place in hand, a real road under the finger.
+  const spot = await p.roadNear(p.w * 0.62, p.h * 0.5)
   const road0 = await p.road()
-  await p.drag(Array.from({ length: 14 }, (_, i) => ({ x: swipeX, y: railBox.bottom - 20 - i * 16 })), 14)
-  await sleep(300)
-  const scrolled = await p.page.evaluate(() => document.querySelector('.sre-tools')!.scrollTop)
-  ok(scrolled > 50, 'a swipe scrolls the rail', { scrollTop: scrolled })
-  ok((await tool()) === 'pencil' && (await p.road()) === road0, 'and picks nothing, draws nothing', await tool())
-  await p.page.screenshot({ path: `${OUT}/${windowName}-10-rail-scrolled.png` })
-  await p.page.evaluate(() => {
-    document.querySelector('.sre-tools')!.scrollTop = 1e4
-  })
+  const g0 = await p.g()
+  await press('[data-testid=phone-tool]')
+  ok(await trayUp(), 'the tray is open again')
+  ok(await p.onMap(spot), 'the road spot is on the map, clear of the tray', spot)
+  await p.tap(spot)
+  await sleep(150)
+  ok(!(await trayUp()), 'a tap on the map closes the tray')
+  const g1 = await p.g()
+  ok(g1.toolStarts === g0.toolStarts && (await p.road()) === road0, 'and the tool never heard: no piece placed', { toolStarts: g1.toolStarts - g0.toolStarts })
+  // The same with a drag: Pencil in hand, nothing drawn.
+  await p.ed('tool', 'pencil')
+  await sleep(150)
+  await press('[data-testid=phone-tool]')
+  ok(await p.onMap(spot), 'the map again')
+  await p.drag(Array.from({ length: 12 }, (_, i) => ({ x: spot.x - i * 4, y: spot.y + i * 2 })))
+  ok(!(await trayUp()), 'a finger dragged on the map closes it too')
+  ok((await p.road()) === road0, 'and draws nothing', { undo: (await p.sum()).undoSteps, toolStarts: (await p.g()).toolStarts - g0.toolStarts })
+
+  // Two fingers are always the map: with the tray open.
+  await press('[data-testid=phone-tool]')
+  const free = async () => p.page.evaluate(() => { const l = document.querySelector('.phone-left')!.getBoundingClientRect(); const c = document.querySelector('.phone-card'); const s = (c ?? document.querySelector('.phone-stack'))!.getBoundingClientRect(); return { left: l.right, right: s.left, bottom: l.bottom } })
+  // (Clear of the tray, and of the card to come.)
+  const midX = 490
+  const midY = p.h * 0.45
+  const pinchHere = async (what: string) => {
+    const g = await p.g()
+    const road = await p.road()
+    const w = { x: g.view.cx + (midX - p.w / 2) * g.view.mpp, z: g.view.cz + (midY - p.h / 2) * g.view.mpp }
+    const path = pinchPath(midX, midY, 60, 120)
+    ok(await p.onMap(path.a0) && await p.onMap(path.b0), `${what}: both fingers land on the map`)
+    await twoFingers(p, path.a0, path.b0, 30, 14, path.at)
+    await sleep(100)
+    const g2 = await p.g()
+    ok(close(g2.view.mpp / g.view.mpp, 0.5, 0.03), `${what}: a pinch zooms`, { ratio: round(g2.view.mpp / g.view.mpp, 1000) })
+    const off = Math.hypot((w.x - g2.view.cx) / g2.view.mpp + p.w / 2 - midX, (w.z - g2.view.cz) / g2.view.mpp + p.h / 2 - midY)
+    ok(off <= SPOT_PX + 1, `${what}: at the fingers`, { px: round(off) })
+    ok(g2.toolStarts === g.toolStarts && (await p.road()) === road, `${what}: and the tool never heard`, { toolStarts: g2.toolStarts - g.toolStarts })
+    return g2
+  }
+  const dragHere = async (what: string) => {
+    const g = await p.g()
+    const a0 = { x: midX - 40, y: midY }
+    const b0 = { x: midX + 40, y: midY }
+    await twoFingers(p, a0, b0, 30, 12, (t) => [{ x: a0.x + 30 * t, y: a0.y + 12 * t }, { x: b0.x + 30 * t, y: b0.y + 12 * t }])
+    await sleep(100)
+    const g2 = await p.g()
+    const dx = (g.view.cx - g2.view.cx) / g.view.mpp
+    ok(close(dx, 30, DRAG_PX + 1) && g2.toolStarts === g.toolStarts, `${what}: two fingers drag the map`, { dx: round(dx) })
+  }
+  await pinchHere('tray open')
+  ok(!(await trayUp()), 'and the pinch closed the tray')
+  await p.ed('fit')
+
+  // View.
+  await press('[data-testid=phone-tool]')
+  await press('[data-testid=phone-tray-view]')
+  const mpp0 = (await p.g()).view.mpp
+  await press('[data-rail=zoomIn]')
+  ok(close((await p.g()).view.mpp / mpp0, 1 / 1.4, 0.01), 'Zoom in zooms in', { mpp: (await p.g()).view.mpp })
+  ok(await trayUp(), 'and stays open for another tap')
+  await press('[data-rail=zoomOut]')
+  ok(close((await p.g()).view.mpp / mpp0, 1, 0.01), 'Zoom out puts it back')
+  await press('[data-rail=world]')
+  ok(!(await trayUp()), 'Whole world folds the tray')
+  const inFree = async (points: World[], what: string) => {
+    const fr = await free()
+    const seen = (await Promise.all(points.map((q) => p.ed('screen', [q.x, q.z])))) as { sx: number; sy: number }[]
+    const worst = seen.reduce((m, q) => Math.max(m, fr.left - q.sx, q.sx - fr.right, -q.sy, q.sy - fr.bottom), -Infinity)
+    ok(worst <= 1, `${what} fits the free map`, { past: round(worst), mpp: round((await p.g()).view.mpp) })
+  }
+  await inFree([{ x: -850, z: -850 }, { x: 850, z: -850 }, { x: -850, z: 850 }, { x: 850, z: 850 }], 'the whole world')
+  await press('[data-testid=phone-tool]')
+  await press('[data-testid=phone-tray-view]')
+  await press('[data-rail=fit]')
+  await inFree(await p.roadPoints(), 'Fit track: the whole road')
+  // And it uses the room: along its tighter side the road nearly fills the free map.
+  const fills = async () => {
+    const fr2 = await free()
+    const seen = (await Promise.all((await p.roadPoints()).map((q) => p.ed('screen', [q.x, q.z])))) as { sx: number; sy: number }[]
+    const xs = seen.map((q) => q.sx)
+    const ys = seen.map((q) => q.sy)
+    return Math.max((Math.max(...xs) - Math.min(...xs)) / (fr2.right - fr2.left), (Math.max(...ys) - Math.min(...ys)) / (fr2.bottom - 6))
+  }
+  ok((await fills()) >= 0.85, 'and fills it', { share: round(await fills()) })
+  const v = (await p.ed('view')) as { scaleX: number; scaleUp: number }
+  const fr = await free()
+  ok(v.scaleX >= fr.left && v.scaleX + 245 <= fr.right && v.scaleUp >= 20, 'the scale bar sits inside the free map, clear of the home bar', v)
+  // A square track at the shortest window: Afterglow.
+  await p.ed('open', 'afterglow')
+  await sleep(2500)
+  await p.ed('fit')
   await sleep(100)
-  const lib = (await box('[data-rail=library]'))!
-  const fin = (await box('.sre-tools'))!
-  ok(lib.bottom <= fin.bottom + 1, 'the last button can be reached', { bottom: lib.bottom, rail: fin.bottom })
-  await p.page.evaluate(() => {
-    document.querySelector('.sre-tools')!.scrollTop = 0
+  await inFree(await p.roadPoints(), 'Afterglow')
+  await p.freshRoad()
+
+  // The card: a stretch picked. The map moves over for it, the second finger still works, Fit reads the smaller map.
+  await p.ed('tool', 'width')
+  await sleep(100)
+  const onRoad = await p.roadNear(p.w * 0.4, p.h * 0.5)
+  await p.tap(onRoad)
+  await sleep(600)
+  ok(!!(await box('.phone-card')), 'a stretch picked by a tap opens the card')
+  ok(!(await box('[data-testid=editor-test-drive]')), 'over the stack')
+  const card = (await box('.phone-card'))!
+  ok(card.right <= p.w - inset && card.bottom <= p.h - 20 && card.top >= 0, 'the card fits, clear of the notch and the home bar', card)
+  await pinchHere('card open')
+  await dragHere('card open')
+  await p.ed('fit')
+  await sleep(100)
+  await inFree(await p.roadPoints(), 'Fit with the card open: the whole road')
+  // Its slider: sideways sets it, one Undo step; a swipe up from it scrolls the card and leaves it alone.
+  const slider = await p.page.evaluate(() => {
+    const r = document.querySelector('.phone-card input[type=range]') as HTMLInputElement
+    const b = r.getBoundingClientRect()
+    return { y: b.top + b.height / 2, left: b.left, width: b.width, value: Number(r.value), min: Number(r.min), max: Number(r.max) }
   })
+  ok(slider.y + 22 <= p.h - 20, 'the slider is on the first screen', slider)
+  const thumbX = slider.left + 22 + (slider.width - 44) * ((slider.value - slider.min) / (slider.max - slider.min))
+  const undo0 = (await p.sum()).undoSteps
+  await p.drag(Array.from({ length: 10 }, (_, i) => ({ x: thumbX + i * 6, y: slider.y })), 16)
+  await sleep(400)
+  const after = await p.page.evaluate(() => Number((document.querySelector('.phone-card input[type=range]') as HTMLInputElement).value))
+  ok(after !== slider.value, 'a sideways drag moves the slider', { from: slider.value, to: after })
+  ok((await p.sum()).undoSteps === undo0 + 1, 'one Undo step', { steps: (await p.sum()).undoSteps - undo0 })
+  const bodyScroll = () => p.page.evaluate(() => document.querySelector('.phone-card-body')!.scrollTop)
+  const canScroll = await p.page.evaluate(() => { const b = document.querySelector('.phone-card-body')!; return b.scrollHeight > b.clientHeight + 8 })
+  if (canScroll) {
+    await p.drag(Array.from({ length: 10 }, (_, i) => ({ x: thumbX + 50, y: slider.y - i * 7 + 60 })), 16)
+    await sleep(300)
+    ok((await bodyScroll()) > 4, 'a swipe up scrolls the card', { scrollTop: await bodyScroll() })
+    ok((await p.sum()).undoSteps === undo0 + 1, 'and changes nothing')
+    await p.page.evaluate(() => { document.querySelector('.phone-card-body')!.scrollTop = 0 })
+  }
+  await press('[data-testid=phone-done]')
+  ok(!(await box('.phone-card')), 'Done closes the card')
+  ok(!!(await box('[data-testid=editor-test-drive]')), 'and the stack is back')
+  ok((await p.sum()).selection === null, 'and nothing is picked')
+
+  // Undo and Redo, by tap.
+  const steps = (await p.sum()).undoSteps
+  await press('[data-rail=undo]')
+  ok((await p.sum()).undoSteps === steps - 1, 'Undo undoes')
+  await press('[data-rail=redo]')
+  ok((await p.sum()).undoSteps === steps, 'Redo puts it back')
+
+  // Cancel, for the other thumb, while a finger is on the road. A press, not a click: Chrome sends none for a second finger.
+  await p.ed('tool', 'pencil')
+  await p.ed('steady', 0)
+  await sleep(150)
+  // A line that leaves the road and comes back onto it, so it really lands when it is let go: proved first.
+  const n = (await p.sum()).points
+  const from = (await p.ed('screen', n * 0.2)) as { sx: number; sy: number }
+  const to = (await p.ed('screen', n * 0.28)) as { sx: number; sy: number }
+  const line = Array.from({ length: 22 }, (_, i) => {
+    const t = i / 21
+    const bulge = Math.sin(t * Math.PI) * 22
+    const len = Math.hypot(to.sx - from.sx, to.sy - from.sy) || 1
+    return { x: from.sx + (to.sx - from.sx) * t - ((to.sy - from.sy) / len) * bulge, y: from.sy + (to.sy - from.sy) * t + ((to.sx - from.sx) / len) * bulge }
+  })
+  const r0 = await p.road()
+  const u0 = (await p.sum()).undoSteps
+  await p.drag(line, 14)
+  await sleep(500)
+  ok((await p.sum()).undoSteps === u0 + 1 && (await p.road()) !== r0, 'a line off the road and back lands when it is let go', { undo: (await p.sum()).undoSteps - u0 })
+  await p.undoTo(u0)
+  await p.down({ ...line[0], id: 1 })
+  for (const q of line.slice(1)) {
+    await p.move({ ...q, id: 1 })
+    await sleep(14)
+  }
+  await sleep(250)
+  const cancel = await box('[data-testid=phone-cancel]')
+  ok(!!cancel, 'a finger working the tool: Undo offers Cancel')
+  if (cancel) {
+    const fin = line[line.length - 1]
+    await p.down({ ...fin, id: 1 }, { x: cancel.x, y: cancel.y, id: 2 })
+    await sleep(60)
+    await p.liftOne({ x: cancel.x, y: cancel.y, id: 2 })
+    await sleep(60)
+  }
+  await p.lift()
+  await sleep(400)
+  ok((await p.road()) === r0 && (await p.sum()).undoSteps === u0, 'Cancel with the other thumb: the same line is gone', { undo: (await p.sum()).undoSteps - u0 })
+  ok(!(await box('[data-testid=phone-cancel]')), 'and Undo is back')
+  await p.ed('steady', 2)
+
+  // The Menu.
+  await press('[data-testid=phone-menu-open]')
+  ok(!!(await box('[data-testid=phone-menu]')), 'Menu opens')
+  ok(!!(await box('[data-testid=phone-menu-back]')), 'with a way back on its first screen')
+  await press('[data-testid=phone-menu-back]')
+  ok(!(await box('[data-testid=phone-menu]')), 'and Back to the map closes it')
   await p.hidePanels(true)
 }
 
@@ -1067,7 +1277,7 @@ async function worldMap(name: string) {
   await sleep(1500)
   const s = await p.sum()
   ok(s.mode === 'map', 'the world map is open', s.mode)
-  ok(await p.page.evaluate(() => { const e = document.querySelector('.sre'); return !!e && e.hasAttribute('data-map-touch') && !e.hasAttribute('data-touch') }), "it keeps its own phone layout, not the trial's rail")
+  ok(await p.page.evaluate(() => { const e = document.querySelector('.sre'); return !!e && e.hasAttribute('data-map-touch') && !e.hasAttribute('data-touch') }), "it keeps its own phone layout, not the editor's")
   await p.hidePanels(true)
   await p.page.screenshot({ path: `${OUT}/${windowName}-11-map.png` })
   const cx = (p.w - 200) / 2
@@ -1143,6 +1353,8 @@ async function newTrackOverWarnings(p: Phone, input: 'finger' | 'mouse') {
     for (const line of lines) {
       await p.ed('newTrackNow')
       await p.ed('fit')
+      // A phone's empty map frames the whole world in its free part, and a coarser zoom smooths these lines clean away.
+      if (input === 'finger') await p.ed('view', [0, 0, 4])
       await p.ed('tool', 'pencil')
       await p.ed('steady', 0)
       await sleep(500)
@@ -1166,7 +1378,8 @@ async function newTrackOverWarnings(p: Phone, input: 'finger' | 'mouse') {
   // The real thing: the rail's New track, and Don't save.
   await p.hidePanels(false)
   await sleep(100)
-  ok(await pressEl('[data-rail=newTrack]'), 'the rail has New track')
+  if (input === 'finger') ok(await pressEl('[data-testid=phone-menu-open]'), 'the Menu is there')
+  ok(await pressEl('[data-rail=newTrack]'), input === 'finger' ? 'the Menu has New track' : 'the rail has New track')
   const asked = (await p.ed('ask')) as { open: boolean }
   if (asked.open) ok(await pressEl('[data-testid="editor-ask"] button', "Don't save"), "the question has Don't save")
   await sleep(700)
@@ -1279,7 +1492,7 @@ for (const name of windowNames) {
       ['6', '6 touch cancelled', () => cancelled(p)],
       ['7', '7 one finger as before', () => oneFinger(p)],
       ['8', '8 in 3D', () => in3d(p)],
-      ['10', '10 the rail', () => rail(p)],
+      ['10', '10 the tool button', () => toolButton(p)],
       ['12', '12 New track over warnings', () => newTrackOverWarnings(p, 'finger')],
     ]
     for (const [n, label, run] of runs) {

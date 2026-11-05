@@ -30,6 +30,8 @@
 //    mapDraw.ts     everything drawn on the map
 //    EditorUi.tsx   tool rail, piece palette, status line
 //    Panel.tsx      this track, the selected thing, checks, map key
+//    phone/         the same parts in a home for thumbs (layout C, One
+//                   tool button): PhoneEditor.tsx, PhoneMenu.tsx, phone.css
 //    Library.tsx    open, new, copy, import, export
 //    importTrack.ts the one way in for a track file (Import, and Download)
 //    share/         Share a track on GitHub and the Shared tracks list:

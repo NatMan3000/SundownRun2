@@ -26,6 +26,7 @@
 import { useEffect, useRef } from 'react'
 import { inputState } from '../core/controls'
 import { registerDev } from '../core/devHandles'
+import { useGame } from '../core/store'
 import { useEditor } from './draft'
 import { look, closeLook3d, lookSummary, openLook3d, slideLook, toggleLook3d, turnLook, useLook3d, zoomLook, resetLook3d } from './look3d'
 import { setMarksCanvas, marksSummary } from './look3dMarks'
@@ -57,6 +58,8 @@ export function Look3dUi() {
   const editing = useEditor((s) => s.mode === 'edit')
   const mode = useLook3d((s) => s.mode)
   const on = mode !== 'map'
+  // A phone's compass and 3D button live in its right stack (phone/PhoneEditor.tsx).
+  const phone = useGame((s) => s.inputDevice === 'touch' && !s.mapOpen)
 
   // T: open or close the 3D view (on the map's edit mode only, never while a mouse button is held).
   useEffect(() => {
@@ -94,7 +97,7 @@ export function Look3dUi() {
   return (
     <>
       {on && <LookSurface />}
-      <ViewCorner show3d={editing} on={mode === 'opening' || mode === '3d'} />
+      {!phone && <ViewCorner show3d={editing} on={mode === 'opening' || mode === '3d'} />}
       {on && (
         <div className="sre-look-note" role="note" data-testid="editor-3d-note">
           <span className="sre-look-kicker">3D view</span>
@@ -110,6 +113,29 @@ export function Look3dUi() {
 
 /** Top right of the map: the compass, and the 3D button beside it. */
 function ViewCorner(p: { show3d: boolean; on: boolean }) {
+  return (
+    <div className="sre-look-corner">
+      <Compass />
+      {p.show3d && (
+        <button
+          type="button"
+          className={`sre-btn sre-look-btn${p.on ? ' is-on' : ''}`}
+          aria-pressed={p.on}
+          aria-label={p.on ? 'Back to the map (T)' : 'See it in 3D (T)'}
+          data-testid="editor-3d-button"
+          onClick={() => toggleLook3d()}
+        >
+          {p.on ? <MapIcon /> : <CubeIcon />}
+          <span>{p.on ? 'Map' : '3D'}</span>
+          <kbd>T</kbd>
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** The compass: north is always where its pointer says. */
+export function Compass() {
   const needle = useRef<SVGGElement>(null)
 
   // The compass turns as you look round in 3D (north is always where its pointer says). Only
@@ -130,36 +156,20 @@ function ViewCorner(p: { show3d: boolean; on: boolean }) {
   }, [])
 
   return (
-    <div className="sre-look-corner">
-      <svg className="sre-compass" viewBox="0 0 36 36" width="36" height="36" role="img" aria-label="Compass: the pointer shows north">
-        <circle cx="18" cy="18" r="17" className="sre-compass-face" />
-        <g ref={needle}>
-          <path d="M18 5 L13 18 L23 18 Z" className="sre-compass-north" />
-          <text x="18" y="27" textAnchor="middle" className="sre-compass-n">
-            N
-          </text>
-        </g>
-      </svg>
-      {p.show3d && (
-        <button
-          type="button"
-          className={`sre-btn sre-look-btn${p.on ? ' is-on' : ''}`}
-          aria-pressed={p.on}
-          aria-label={p.on ? 'Back to the map (T)' : 'See it in 3D (T)'}
-          data-testid="editor-3d-button"
-          onClick={() => toggleLook3d()}
-        >
-          {p.on ? <MapIcon /> : <CubeIcon />}
-          <span>{p.on ? 'Map' : '3D'}</span>
-          <kbd>T</kbd>
-        </button>
-      )}
-    </div>
+    <svg className="sre-compass" viewBox="0 0 36 36" width="36" height="36" role="img" aria-label="Compass: the pointer shows north">
+      <circle cx="18" cy="18" r="17" className="sre-compass-face" />
+      <g ref={needle}>
+        <path d="M18 5 L13 18 L23 18 Z" className="sre-compass-north" />
+        <text x="18" y="27" textAnchor="middle" className="sre-compass-n">
+          N
+        </text>
+      </g>
+    </svg>
   )
 }
 
 /** A cube in three faces: the 3D view. */
-function CubeIcon() {
+export function CubeIcon() {
   return (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
@@ -169,7 +179,7 @@ function CubeIcon() {
 }
 
 /** A folded paper map: back to the map. */
-function MapIcon() {
+export function MapIcon() {
   return (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M3 6.5l6-2.5 6 2.5 6-2.5v13.5l-6 2.5-6-2.5-6 2.5V6.5z" />

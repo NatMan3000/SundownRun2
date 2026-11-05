@@ -332,7 +332,7 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
         if (p) setView(p.x, p.z, 0.25)
       }
       // width/height: the map's size in CSS pixels, so a checker can turn world points into clicks.
-      return { cx: view.cx, cz: view.cz, mpp: view.mpp, width: view.width, height: view.height }
+      return { cx: view.cx, cz: view.cz, mpp: view.mpp, width: view.width, height: view.height, scaleX: view.scaleX, scaleUp: view.scaleUp }
     }
     case 'fit':
       fitToDraft()
@@ -364,6 +364,9 @@ function editorCommand(cmd: string, arg?: unknown): unknown {
       return runEditorSelfTest()
     case 'crossings':
       return crossingsSummary()
+    case 'selectPiece':
+      useEditor.setState({ selection: { kind: 'piece', index: Number(arg) } })
+      return useEditor.getState().selection
     case 'selectCrossing': {
       const c = draftCrossings()[Number(arg)]
       return c ? selectCrossing(c.at) : `no crossing ${String(arg)}`

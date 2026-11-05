@@ -15,6 +15,7 @@
 //  --break 11 injects `.sr-ui[data-touch] .pause-panel, .settings-panel {height: 80vh !important}`: fits in pwa, too tall in the safari window once vh is Safari's 402. Proofs are in /tmp/sr2/phone/gate-report.md.
 //  Rules 5 and 6 run only in the three landscape windows; `portrait` runs the reach rule (R1) only;
 //  `desktop` (1920x1080, no touch) runs the desktop guard (R10) only.
+//  The Road Editor's own states are the `editor-*` steps (`--only editor`): layout C, spec/phone-editor/.
 // ============================================================
 
 import puppeteer from 'puppeteer-core'
@@ -38,6 +39,58 @@ const EXCEPTIONS: { rule: number; screen: string; text: RegExp; detail?: RegExp;
     text: /^turnscard /,
     detail: /road band/,
     reason: 'Ruling (lead, 5 Nov 2026): Hunt Turns\' between-turns card, same reason as the countdown. Overlap with other panels still fails.',
+  },
+  {
+    // Temporary, until piece 6 (spec/phone-editor/plan.md): one function at the point of display says these for a phone.
+    // Each entry is a message or a line the Road Editor shares with the desktop, by its opening words. A new one fails.
+    rule: 8,
+    screen: 'editor',
+    text: new RegExp(
+      '^"(' +
+        [
+          // TOOL_TIPS, EditorUi.tsx: said on the status line when a tool is picked
+          'Pencil: start on the road',
+          'Select: click',
+          'Straight: click',
+          'Curve: click',
+          'Bend: grab',
+          'Bank: drag',
+          'Height: drag',
+          'Width: drag',
+          'Place pieces: pick a piece',
+          // ToolOptions and its steps, EditorUi.tsx: the tool card
+          'Your line trails a little behind the mou',
+          'Hold Shift while you draw',
+          'How much road comes with your hand\\. Shor',
+          'Click the road where',
+          'Click where it ends',
+          'Pull the middle out, then click',
+          'The ends ease into the road',
+          'The curve joins the road',
+          'Red means too tight',
+          'Drag along the road to pick',
+          'Set how high its middle goes, or press',
+          'Violet dots on the road',
+          'An amber line with a BANK',
+          'A WIDTH label',
+          // Panel.tsx, the card
+          'Drag it on the map to reshape',
+          'Not ready yet',
+          // Legend, Panel.tsx: Menu > Map key
+          'Click it to',
+          // messages said from draft.ts and stretchTools.ts
+          'Smoothed: the road is',
+          'Picked the raised road',
+          'New track "',
+          'Hold the mouse button down',
+          // the empty map's note, EditorUi.tsx
+          'Draw a loop with the pencil, or press',
+          // Look3dUi.tsx LOOK_HINT, shared with piece 8
+          'Right-drag to look round',
+        ].join('|') +
+        ')',
+    ),
+    reason: 'Words shared with the desktop: piece 6 of spec/phone-editor/plan.md rewrites them at the point of display. Stored messages stay as they are, so a computer reads the same.',
   },
 ]
 
@@ -89,7 +142,7 @@ const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/6
 // ---------------------------------------------------------------- in the page
 // Plain JS, installed as window.__gate after every load.
 const PAGE = String.raw`(() => {
-const SEL_TAP = 'button, a, [data-nav], [role=tab], [role=radio], [role=button], input, textarea, select, .touch-pedal, .touch-stick, .touch-top, .touch-pulse'
+const SEL_TAP = 'button, a, [data-nav], [role=tab], [role=radio], [role=button], input, textarea, select, .touch-pedal, .touch-stick, .touch-top, .touch-pulse, .sre-range-hit'
 const R = (e) => e.getBoundingClientRect()
 const rd = (n) => Math.round(n * 10) / 10
 const vis = (e) => { try { return e.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true, opacityProperty: true, visibilityProperty: true }) } catch (_) { return true } }
@@ -173,7 +226,8 @@ function measure(o) {
   const add = (rule, text, detail) => fails.push({ rule, text, detail })
   const saved = new Map()
   const badReach = new Set(), badSafe = new Set()
-  const root = document.querySelector('.sr-ui') || document.body
+  // A question box is up: what is behind it can't be pressed, so only the box is measured.
+  const root = document.querySelector('.sre-modal') || document.querySelector('.sr-ui') || document.body
 
   // page must not scroll under a finger
   scrollTo(0, 60); scrollTo(60, 0)
@@ -328,7 +382,7 @@ function visibleBox(e) {
   return v
 }
 function menuOverlap(taps, root, add) {
-  const blocks = [...root.querySelectorAll('.panel, .touch-back, .hintbar--touch, .notice, .hud-toast')].filter((e) => vis(e) && R(e).width > 2)
+  const blocks = [...root.querySelectorAll('.panel, .touch-back, .hintbar--touch, .notice, .hud-toast, .phone-card, .phone-tray, .phone-stack, .phone-left, .phone-chips, .sre-empty, .sre-look-note, .sre-status.is-on')].filter((e) => vis(e) && R(e).width > 2)
   const all = [...new Set([...taps, ...blocks])].map((e) => ({ e, v: visibleBox(e) })).filter((x) => x.v.r - x.v.l > 2 && x.v.b - x.v.t > 2)
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
     const a = all[i], b = all[j]
@@ -416,6 +470,25 @@ function primary(sel) {
   return {}
 }
 
+// every visible match of a selector is on the first screen (its scroller at the top)
+function primaryAll(sel) {
+  const out = []
+  for (const e of document.querySelectorAll(sel)) {
+    if (!vis(e) || R(e).width < 2) continue
+    for (const c of clipsFrom(e.parentElement)) if (c.sy) c.a.scrollTop = 0
+    const p = R(e), ins = window.__gateIns
+    W = innerWidth; H = innerHeight
+    let why = null
+    if (p.top < ins.t - 0.5 || p.bottom > H - ins.b + 0.5) why = 'y ' + rd(p.top) + '..' + rd(p.bottom) + ' vs safe y ' + ins.t + '..' + (H - ins.b)
+    for (const c of clipsFrom(e.parentElement)) {
+      const ar = R(c.a)
+      if (c.cy && (p.top < ar.top - 1 || p.bottom > ar.bottom + 1)) why = 'below the fold of ' + desc(c.a) + ': y ' + rd(p.top) + '..' + rd(p.bottom) + ' in ' + rd(ar.top) + '..' + rd(ar.bottom)
+    }
+    if (why) out.push({ text: label(e), detail: why })
+  }
+  return out
+}
+
 // ---------- scrollers, for the swipe test
 let scrollers = []
 function findScrollers() {
@@ -428,6 +501,8 @@ function findScrollers() {
     const sy = (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && a.scrollHeight > a.clientHeight + 1
     const sx = (cs.overflowX === 'auto' || cs.overflowX === 'scroll') && a.scrollWidth > a.clientWidth + 1
     if (!sy && !sx) continue
+    // A scroller inside a scroller, down below the fold: a finger scrolls the outer one first to reach it.
+    if (a.parentElement && a.parentElement.closest('.phone-menu-body, .phone-card-body')) a.scrollIntoView({ block: 'nearest' })
     const ar = R(a)
     if (ar.width < 4 || ar.height < 4) continue
     const axis = sy ? 'y' : 'x'
@@ -460,9 +535,9 @@ function state() {
   })
 }
 window.__clicks = []
-document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.sr-ui')) window.__clicks.push(performance.now()) }, true)
+document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.sr-ui, .sre')) window.__clicks.push(performance.now()) }, true)
 const accepts = (t0) => window.__clicks.filter((t) => t >= t0).length
-window.__gate = { shim, measure, primary, findScrollers, pos, setPos, state, accepts }
+window.__gate = { shim, measure, primary, primaryAll, findScrollers, pos, setPos, state, accepts }
 })()`
 
 // ---------------------------------------------------------------- break injections (--break <rule>)
@@ -491,6 +566,26 @@ const BREAKS: Record<number, string> = {
   10: `(()=>{const r=document.querySelector('.sr-ui');if(!r)return;r.setAttribute('data-touch','1');if(!document.getElementById('gate-touch')){const d=document.createElement('div');d.id='gate-touch';d.className='touch';r.append(d)}})()`,
 }
 
+// The same breaks for the Road Editor's phone layout, whose root is .sre, not .sr-ui.
+const cssBreak = (css: string) => `(()=>{let s=document.getElementById('gate-break');if(!s){s=document.createElement('style');s.id='gate-break';document.head.append(s)}s.textContent=${JSON.stringify(css)}})()`
+const BREAKS_EDITOR: Record<number, string> = {
+  // the card and the Menu stop scrolling, so what overflows is clipped for good
+  1: cssBreak('.phone-card-body,.phone-menu-body,.phone-menu-nav{overflow:hidden !important}'),
+  // the buttons shrink to 40%
+  2: cssBreak('.sre[data-touch] button,.sre[data-touch] input{transform:scale(.4) !important}'),
+  3: BREAKS[3],
+  // the left cluster, the right stack and the card slide 80 px towards the notch
+  4: cssBreak('.phone-left,.phone-chips{transform:translate(-60px,0) !important}.phone-stack,.phone-card{transform:translate(60px,0) !important}'),
+  // the primary action drops off the first screen
+  5: cssBreak('[data-testid=editor-test-drive],[data-rail=select],[data-rail=fit],.phone-card .sre-range-hit,.phone-card .sre-btn,[data-testid=editor-empty-random]{position:relative;top:400px}'),
+  6: BREAKS[6],
+  // the Undo pair sits on the tool button, and the stack on the status line
+  7: cssBreak('.phone-tool{margin-top:-40px !important}.sre[data-touch] .sre-status{right:0 !important}.phone-chips{left:0 !important}'),
+  8: BREAKS[8],
+  // words shrink to 7 px and one label is cut off
+  9: cssBreak('.phone-tool-name,.phone-stack span{font-size:7px !important}.sre-btn.is-primary{display:inline-block;width:1.2em !important;overflow:hidden !important;white-space:nowrap !important}'),
+}
+
 // ---------------------------------------------------------------- steps
 interface Ctx {
   page: any
@@ -512,6 +607,12 @@ interface Step {
   extra?: (c: Ctx) => Promise<void>
   /** Only these windows (default: all) */
   only?: string[]
+  /** A Road Editor state: boots on ?editor=1 and skips the menu screen checks */
+  editor?: boolean
+  /** Rule 5, every visible match: the card's sliders and buttons are all on its first screen */
+  firstAll?: string
+  /** Only that it opens: its layout is another piece's */
+  reachOnly?: boolean
 }
 
 const call = (c: Ctx, expr: string) => c.page.evaluate(expr)
@@ -543,6 +644,317 @@ async function tapSel(c: Ctx, sel: string): Promise<boolean> {
   await tapAt(c, p.x, p.y)
   return true
 }
+
+// ---- the Road Editor (layout C) ----
+const ed = (c: Ctx, cmd: string, a?: unknown) => c.page.evaluate((x: string, y: unknown) => (window as any).__dev.editor(x, y), cmd, a as never)
+const look = (c: Ctx, cmd: string, a?: unknown) => c.page.evaluate((x: string, y: unknown) => (window as any).__dev.look3d(x, y), cmd, a as never)
+const edGone = (c: Ctx, sel: string) => c.page.waitForFunction((s: string) => !document.querySelector(s), { timeout: 3000 }, sel).catch(() => {})
+/** A real tap on a real button, or a failure saying the state can't be reached. */
+async function edTap(c: Ctx, sel: string, what: string) {
+  if (!(await tapSel(c, sel))) c.fail(1, what, `no ${what} to tap (${sel})`)
+}
+/** Everything closed by its own button, a road on the map, Pencil in hand. */
+async function edFront(c: Ctx, road = true) {
+  for (let i = 0; i < 6; i++) {
+    const on = await c.page.evaluate(() => ({
+      ask: !!document.querySelector('[data-testid=editor-ask]'),
+      lib: !!document.querySelector('.sre-library'),
+      menu: !!document.querySelector('[data-testid=phone-menu]'),
+      card: !!document.querySelector('[data-testid=phone-done]'),
+      tray: !!document.querySelector('[data-testid=phone-tray]'),
+    }))
+    if (on.ask) await tapSel(c, '[data-testid=editor-ask-cancel]')
+    else if (on.lib) await tapSel(c, '.sre-lib-head .sre-btn')
+    else if (on.menu) await tapSel(c, '[data-testid=phone-menu-back]')
+    else if (on.card) await tapSel(c, '[data-testid=phone-done]')
+    else if (on.tray) await tapSel(c, '[data-testid=phone-tool]')
+    else break
+  }
+  await look(c, 'close')
+  await ed(c, 'tool', 'select')
+  await ed(c, 'tool', 'pencil')
+  if (road && (await ed(c, 'state')).name !== 'Afterglow Valley') {
+    await ed(c, 'open', 'afterglow')
+    await sleep(2500)
+  }
+  await ed(c, 'fit')
+  await sleep(100)
+}
+/** Tap the tool button, then the tool in the tray (on today's layout, the rail). */
+async function edTool(c: Ctx, tool: string) {
+  const hasTray = await c.page.evaluate(() => !!document.querySelector('[data-testid=phone-tool]'))
+  if (hasTray) {
+    await edTap(c, '[data-testid=phone-tool]', 'tool button')
+    await edTap(c, `[data-testid=phone-tray] [data-rail=${tool}]`, `${tool} in the tray`)
+  } else {
+    c.fail(1, 'tool button', 'no tool button to open the tray with')
+    await ed(c, 'tool', tool)
+  }
+  await sleep(150)
+}
+/** A real finger on a world spot (a road point, a piece, a prop). */
+async function edTapWorld(c: Ctx, x: number, z: number) {
+  const s = await ed(c, 'screen', [x, z])
+  await tapAt(c, s.sx, s.sy)
+}
+/** Zoomed in on the spot in the free part of the map, the tool in hand, a real tap on it. */
+async function edPick(c: Ctx, tool: string, spot: { x: number; z: number }, mpp = 0.5) {
+  await ed(c, 'tool', tool)
+  await ed(c, 'view', [spot.x, spot.z, mpp])
+  await sleep(200)
+  await edTapWorld(c, spot.x, spot.z)
+  await sleep(300)
+}
+/** A card state with no card measures nothing: say so. */
+async function edCardUp(c: Ctx, what: string) {
+  await sleep(200)
+  if (!(await c.page.evaluate(() => !!document.querySelector('[data-testid=phone-card]')))) c.fail(1, what, 'its card did not open')
+}
+const roadFile = (c: Ctx) => ed(c, 'file') as Promise<{ road: { points: { x: number; z: number }[] }; pieces: { type: string; at: number }[]; props: { x: number; z: number }[]; cores: { x: number; z: number }[] }>
+/** Bank a stretch to the limit, so the road has a real problem with a real Fix it (the one in comp-c-fix.png). */
+async function edProblem(c: Ctx): Promise<string | null> {
+  await ed(c, 'stretch', [14.2, 15.0, 'bank'])
+  await sleep(500)
+  await c.page.evaluate(() => {
+    const r = [...document.querySelectorAll('input[type=range]')].find((e) => (e as HTMLElement).getAttribute('aria-label') === 'Bank (tilt)') as HTMLInputElement | undefined
+    if (!r) return
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(r, '45')
+    r.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await sleep(2500)
+  const list: any = await ed(c, 'findFixes')
+  const rows: any[] = Array.isArray(list) ? list : (list?.items ?? list?.problems ?? [])
+  const fix = rows.find((p) => p.offer === 'found' || p.fix === 'found' || p.canFix)
+  return (fix ?? rows[0])?.key ?? null
+}
+const CARD_FIRST = '.phone-card .sre-range-hit, .phone-card .sre-seg, .phone-card-body > .sre-btn, .phone-card-body > .sre-field > .sre-btn, [data-testid=phone-done]'
+const edStep = (name: string, s: Omit<Step, 'name' | 'editor' | 'mode'>): Step => ({ name: `editor-${name}`, editor: true, mode: 'editor', ...s })
+const EDITOR_STEPS: Step[] = [
+  edStep('road', {
+    primary: '[data-testid=editor-test-drive]',
+    setup: async (c) => edFront(c),
+    extra: async (c) => {
+      // one tap on the tool button opens the tray, at once and once
+      await edFront(c)
+      const t0 = await c.page.evaluate(() => performance.now())
+      if (!(await tapSel(c, '[data-testid=phone-tool]'))) return c.fail(6, 'tool button', 'not found to tap')
+      const n = await c.page.evaluate((t: number) => (window as any).__gate.accepts(t), t0)
+      if (!(await c.page.evaluate(() => !!document.querySelector('[data-testid=phone-tray]')))) c.fail(6, 'tool button', 'a tap did not open the tray')
+      else if (n !== 1) c.fail(6, 'tool button', `one tap acted ${n} times`)
+    },
+  }),
+  edStep('tray', {
+    primary: '[data-testid=phone-tray] [data-rail=select]',
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=phone-tool]', 'tool button')
+    },
+    extra: async (c) => {
+      // a tap on a tool picks it and folds the tray, one tap
+      await edFront(c)
+      await edTap(c, '[data-testid=phone-tool]', 'tool button')
+      await edTap(c, '[data-testid=phone-tray] [data-rail=select]', 'Select in the tray')
+      const st = await ed(c, 'state')
+      if (st.tool !== 'select') c.fail(6, 'Select', `a tap did not pick it (tool is ${st.tool})`)
+      if (await c.page.evaluate(() => !!document.querySelector('[data-testid=phone-tray]'))) c.fail(6, 'Select', 'the tray stayed open after picking a tool')
+    },
+  }),
+  edStep('view', {
+    primary: '[data-testid=phone-tray] [data-rail=fit]',
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=phone-tool]', 'tool button')
+      await edTap(c, '[data-testid=phone-tray-view]', 'View in the tray')
+    },
+  }),
+  ...['bend', 'straight', 'curve', 'height', 'bank', 'width'].map((tool) =>
+    edStep(`chip-${tool}`, {
+      setup: async (c) => {
+        await edFront(c)
+        await edTool(c, tool)
+      },
+    }),
+  ),
+  ...['pencil', 'bend', 'straight', 'curve', 'height', 'bank', 'width'].map((tool) =>
+    edStep(`tool-${tool}`, {
+      firstAll: CARD_FIRST,
+      setup: async (c) => {
+        await edFront(c)
+        if (tool !== 'pencil') await edTool(c, tool)
+        await edTap(c, '[data-testid=phone-chip]', `${tool}'s chip`)
+        await edCardUp(c, `${tool}'s settings`)
+      },
+    }),
+  ),
+  ...(['height', 'bank', 'width'] as const).map((tool) =>
+    edStep(`stretch-${tool}`, {
+      firstAll: CARD_FIRST,
+      setup: async (c) => {
+        await edFront(c)
+        await ed(c, 'pickStretch', [tool, 3])
+        await sleep(2000)
+        await edCardUp(c, `${tool} of a stretch`)
+      },
+    }),
+  ),
+  edStep('point', {
+    firstAll: CARD_FIRST,
+    setup: async (c) => {
+      await edFront(c)
+      const p = (await roadFile(c)).road.points[8]
+      await edPick(c, 'select', p, 0.3)
+      await edCardUp(c, 'a road point')
+    },
+  }),
+  ...(['boost', 'ramp', 'loop', 'wallride'] as const).map((type) =>
+    edStep(`piece-${type}`, {
+      firstAll: CARD_FIRST,
+      setup: async (c) => {
+        await edFront(c)
+        const f = await roadFile(c)
+        const index = f.pieces.findIndex((x) => x.type === type)
+        if (index < 0) return c.fail(1, type, `Afterglow has no ${type} to pick`)
+        // (A wall ride is picked at its middle, so this asks for the piece: the card is what is measured here.)
+        await ed(c, 'tool', 'select')
+        await ed(c, 'selectPiece', index)
+        await edCardUp(c, `a ${type}`)
+      },
+    }),
+  ),
+  edStep('props', {
+    firstAll: CARD_FIRST,
+    setup: async (c) => {
+      await edFront(c)
+      await edPick(c, 'select', (await roadFile(c)).props[0], 0.3)
+      await edCardUp(c, 'a pile of crash props')
+    },
+  }),
+  edStep('core', {
+    firstAll: CARD_FIRST,
+    setup: async (c) => {
+      await edFront(c)
+      await edPick(c, 'select', (await roadFile(c)).cores[0], 0.3)
+      await edCardUp(c, 'an energy core')
+    },
+  }),
+  edStep('crossing', {
+    firstAll: CARD_FIRST,
+    setup: async (c) => {
+      await edFront(c)
+      await ed(c, 'tool', 'select')
+      await ed(c, 'selectCrossing', 0)
+      await edCardUp(c, 'a crossing')
+    },
+  }),
+  edStep('pieces', {
+    primary: '.phone-card .sre-piece',
+    setup: async (c) => {
+      await edFront(c)
+      await edTool(c, 'place')
+      await edCardUp(c, 'the palette')
+    },
+  }),
+  edStep('pieces-chip', {
+    setup: async (c) => {
+      await edFront(c)
+      await edTool(c, 'place')
+      await edTap(c, '.phone-card .sre-piece', 'a piece')
+      await sleep(200)
+    },
+  }),
+  edStep('problem', {
+    primary: '[data-testid=editor-fix-it]',
+    setup: async (c) => {
+      await edFront(c)
+      const key = await edProblem(c)
+      if (!key) return c.fail(1, 'problem', 'could not make a road with a problem')
+      await ed(c, 'selectProblem', key)
+      await sleep(300)
+      await edCardUp(c, 'a problem')
+    },
+  }),
+  edStep('checks', {
+    setup: async (c) => {
+      // the road from the step before still has its problem
+      await edFront(c)
+      await edTap(c, '[data-testid=phone-checks]', 'Checks')
+      await edCardUp(c, 'Checks')
+    },
+  }),
+  edStep('building', {
+    setup: async (c) => {
+      await edFront(c)
+      await ed(c, 'undo')
+      await ed(c, 'smooth')
+      if (!(await c.page.evaluate(() => /Building/.test(document.querySelector('[data-testid=phone-checks]')?.textContent ?? '')))) c.fail(6, 'Checks', 'the Checks button does not say the road is building')
+    },
+  }),
+  edStep('menu', {
+    primary: '[data-testid=phone-menu-back]',
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=phone-menu-open]', 'Menu')
+    },
+  }),
+  edStep('menu-key', {
+    primary: '[data-testid=phone-menu-back]',
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=phone-menu-open]', 'Menu')
+      await edTap(c, '[data-testid=phone-menu-key]', 'Map key')
+    },
+  }),
+  edStep('library', {
+    reachOnly: true,
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=phone-menu-open]', 'Menu')
+      await edTap(c, '[data-testid=editor-library]', 'Library')
+      await sleep(300)
+      if (!(await c.page.evaluate(() => !!document.querySelector('.sre-library')))) c.fail(1, 'Library', 'Menu > Library did not open it')
+      await tapSel(c, '.sre-lib-head .sre-btn')
+    },
+  }),
+  edStep('ask-random', {
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=phone-menu-open]', 'Menu')
+      await edTap(c, '[data-rail=random]', 'Random track')
+      await sleep(300)
+    },
+  }),
+  edStep('ask-save', {
+    setup: async (c) => {
+      await edFront(c)
+      await ed(c, 'smooth')
+      await sleep(300)
+      await edTap(c, '[data-testid=phone-menu-open]', 'Menu')
+      await edTap(c, '[data-rail=newTrack]', 'New track')
+      await sleep(300)
+    },
+  }),
+  edStep('3d', {
+    setup: async (c) => {
+      await edFront(c)
+      await edTap(c, '[data-testid=editor-3d-button]', '3D')
+      await sleep(1400)
+    },
+  }),
+  edStep('empty', {
+    primary: '[data-testid=editor-empty-random]',
+    setup: async (c) => {
+      await edFront(c, false)
+      await ed(c, 'newTrackNow')
+      await sleep(1200)
+      await ed(c, 'fit')
+    },
+  }),
+  edStep('empty-tray', {
+    setup: async (c) => {
+      await edTap(c, '[data-testid=phone-tool]', 'tool button')
+    },
+  }),
+]
 
 const SETTINGS_TABS = ['car', 'handling', 'camera', 'audio', 'world', 'racing', 'track', 'graphics', 'fun', 'multiplayer']
 
@@ -723,6 +1135,7 @@ const STEPS: Step[] = [
     }),
   ),
   { name: 'hud-timetrial', hud: true, mode: 'timetrial', setup: async (c) => void (await toHud(c)) },
+  ...EDITOR_STEPS,
 ]
 
 // A page.evaluate'd function is serialised by its source, so the shapes above stay plain.
@@ -768,8 +1181,14 @@ async function boot(wname: string, win: Win, mode: string, music = false): Promi
   const cdp = await page.createCDPSession()
   if (win.touch) await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: win.ins.t, left: win.ins.l, bottom: win.ins.b, right: win.ins.r } })
   const ctx: Ctx = { page, cdp, win, wname, fail: (rule, text, detail) => record(wname, current, rule, text, detail) }
-  await page.goto(`http://localhost:${PORT}/?${win.touch ? 'touch=1&' : ''}${music ? '' : 'nomusic=1&'}quality=low&track=afterglow&mode=${mode}`, { waitUntil: 'load' })
+  // The Road Editor opens from the title, so no track (?track= skips the title), and each page starts with no working copy.
+  if (mode === 'editor') await page.evaluateOnNewDocument(() => localStorage.removeItem('sr2.editor.working.v1'))
+  await page.goto(`http://localhost:${PORT}/?${win.touch ? 'touch=1&' : ''}${music ? '' : 'nomusic=1&'}quality=low&${mode === 'editor' ? 'editor=1' : `track=afterglow&mode=${mode}`}`, { waitUntil: 'load' })
   await page.waitForFunction(() => !!(window as any).__dev?.ui && !!(window as any).__game?.get, { timeout: 60000 })
+  if (mode === 'editor') {
+    await page.waitForFunction(() => !!document.querySelector('[data-testid=editor-ui]'), { timeout: 60000 })
+    await sleep(2500)
+  }
   await sleep(1500)
   await page.evaluate(PAGE)
   await page.evaluate((i: Insets) => ((window as any).__gateIns = i), win.ins)
@@ -854,7 +1273,7 @@ for (const wname of WINDOWS) {
   let ctx: Ctx | null = null
   let ctxMode = ''
   try {
-    const steps = STEPS.filter((s) => wanted(s.name)).filter((s) => (wname === 'desktop' ? ['title', 'pause', 'hud-free'].includes(s.name) : true))
+    const steps = STEPS.filter((s) => wanted(s.name)).filter((s) => (wname === 'desktop' ? ['title', 'pause', 'hud-free', 'editor-road'].includes(s.name) : true))
     for (const step of steps) {
       current = step.name
       const mode = step.mode ?? 'free'
@@ -869,11 +1288,12 @@ for (const wname of WINDOWS) {
         await step.setup(c)
         await sleep(step.hud ? 200 : 700)
         const now = await uiState(c)
-        if (!step.hud && step.name !== 'map' && step.name !== 'favourite-songs' && now.screen !== step.name.split(':')[0] && !(step.name === 'favourite-songs')) {
+        if (!step.hud && !step.editor && step.name !== 'map' && step.name !== 'favourite-songs' && now.screen !== step.name.split(':')[0] && !(step.name === 'favourite-songs')) {
           c.fail(1, step.name, `screen did not open (screen is ${now.screen})`)
         }
-        if (BREAK && BREAKS[BREAK]) {
-          await c.page.evaluate(BREAKS[BREAK])
+        const breaks = step.editor ? BREAKS_EDITOR : BREAKS
+        if (BREAK && breaks[BREAK]) {
+          await c.page.evaluate(breaks[BREAK])
           await sleep(200)
         }
         if (wname === 'safari') {
@@ -887,18 +1307,31 @@ for (const wname of WINDOWS) {
             touchAttr: !!document.querySelector('.sr-ui[data-touch]'),
             touchEl: !!document.querySelector('.touch'),
             hint: [...document.querySelectorAll('.hintbar')].some((e) => (e as any).checkVisibility?.() && e.getBoundingClientRect().width > 0),
+            sreTouch: !!document.querySelector('.sre[data-touch]'),
+            sreParts: !!document.querySelector('.phone-left, .phone-stack, .phone-card, .phone-tray, .phone-menu'),
+            sreDesktop: !!document.querySelector('.sre-tools') && !!document.querySelector('.sre-panel'),
           }))
           if (d.touchAttr) c.fail(10, 'data-touch', 'a desktop page carries data-touch')
           if (d.touchEl) c.fail(10, '.touch', 'a desktop page has a .touch element')
+          if (step.editor) {
+            if (d.sreTouch) c.fail(10, '.sre[data-touch]', 'the desktop editor carries data-touch')
+            if (d.sreParts) c.fail(10, '.phone-*', 'the desktop editor has phone parts')
+            if (!d.sreDesktop) c.fail(10, 'rail and panel', 'the desktop editor lost its rail or panel')
+          }
           if (step.name === 'title' && !d.hint) c.fail(10, 'hint bar', 'the desktop title has no visible hint bar')
           continue
         }
+        if (step.reachOnly) continue
         const fails: { rule: number; text: string; detail: string }[] = await c.page.evaluate((o: any) => (window as any).__gate.measure(o), { ins: win.ins, hud: !!step.hud })
         for (const f of fails) if (win.rules.includes(f.rule)) c.fail(f.rule, f.text, f.detail)
         if (!step.hud && win.rules.includes(5) && step.primary) {
           const p = await c.page.evaluate((s: string) => (window as any).__gate.primary(s), step.primary)
           if (p.missing) c.fail(5, step.primary, 'primary action not found')
           else if (p.detail) c.fail(5, p.text, p.detail)
+        }
+        if (win.rules.includes(5) && step.firstAll) {
+          const late: { text: string; detail: string }[] = await c.page.evaluate((s: string) => (window as any).__gate.primaryAll(s), step.firstAll)
+          for (const l of late) c.fail(5, l.text, l.detail)
         }
         if (!step.hud && step.name !== 'map') await swipeAll(c, step.name)
         if (win.rules.includes(6) && step.extra) await step.extra(c)

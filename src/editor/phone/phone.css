@@ -1,0 +1,1150 @@
+/* ============================================================
+   THE ROAD EDITOR ON A PHONE - layout C (PhoneEditor.tsx)
+   ------------------------------------------------------------
+   Everything hangs off .sre[data-touch] or a .phone-* class, which only
+   a phone renders: a computer never sees any of this. Colours come only
+   from the variables EditorUi.tsx sets from src/core/palette.ts.
+   Targets 44 px or more. dvh, never vh: a Safari tab's 100vh is the
+   tallest-bar height (spec/phone-landscape-standard.md).
+   ============================================================ */
+
+.sre[data-touch] {
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --edge-l: calc(var(--safe-l) + 6px);
+  --edge-r: calc(var(--safe-r) + 6px);
+  --edge-t: calc(var(--safe-t) + 6px);
+  --edge-b: calc(var(--safe-b) + 8px);
+  --left-w: 92px;
+  --stack-w: 76px;
+  --card-w: 272px;
+  /* Beside the tool button: where the chip and the tray start. */
+  --beside-tool: calc(var(--edge-l) + var(--left-w) + 8px);
+  /* Solid enough to read over a bright road, with no blur to pay for on a phone. */
+  --phone-glass: color-mix(in srgb, var(--panel-solid) 90%, transparent);
+  /* Sizes that give way on a short window. */
+  --undo-h: 44px;
+  --tool-h: 56px;
+  --side-h: 44px;
+  --drive-h: 52px;
+  --cell-h: 52px;
+  --card-gap: 5px;
+  /* How far a slider's 44 px tucks under its label and the next row: what a thumb grabs stays 44, the row takes less. */
+  --slider-up: -11px;
+  --slider-down: -5px;
+  --card-top: 3px;
+  font-size: 13px;
+  /* Its own box measures the window for the sizes below: what a Safari tab really shows, whatever its 100vh says. */
+  container-type: size;
+}
+@container (min-height: 340px) {
+  .sre[data-touch] > * {
+    --undo-h: 48px;
+    --tool-h: 66px;
+    --side-h: 50px;
+    --drive-h: 60px;
+    --cell-h: 62px;
+    --card-gap: 8px;
+    --slider-up: -9px;
+    --slider-down: -4px;
+    --card-top: 6px;
+  }
+}
+.sre[data-touch] {
+  -webkit-user-select: none;
+}
+.sre[data-touch] .sre-overlay {
+  -webkit-touch-callout: none;
+}
+.sre[data-touch] .sre-input {
+  -webkit-user-select: text;
+}
+.sre[data-touch] button {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+/* What never scrolls takes no swipe: a finger sliding off a button must not move the page or Safari's bars. */
+.phone-left,
+.phone-chips,
+.phone-stack,
+.phone-tray,
+.phone-card-head,
+.phone-menu-head {
+  touch-action: none;
+}
+
+/* ---------------------------------------------------------------- bottom left */
+
+.phone-left {
+  position: absolute;
+  left: var(--edge-l);
+  bottom: var(--edge-b);
+  z-index: 3;
+  width: var(--left-w);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.phone-undo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: var(--phone-glass);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  overflow: hidden;
+}
+.phone-undo button {
+  height: var(--undo-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 10.5px;
+}
+.phone-undo svg {
+  width: 19px;
+  height: 19px;
+}
+.phone-undo button[aria-disabled='true'] {
+  color: color-mix(in srgb, var(--dim) 60%, transparent);
+}
+.phone-undo button:active:not([aria-disabled='true']) {
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+}
+.phone-undo .is-cancel {
+  color: var(--warn);
+}
+
+/* The tool in your hand: the biggest thing on the left, its name in words, lit like the rail's active tool. */
+.phone-tool {
+  position: relative;
+  height: var(--tool-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0;
+  border: 1.5px solid var(--accent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-solid));
+  color: var(--accent);
+  transition: background 150ms ease-out, color 150ms ease-out;
+}
+.phone-tool svg {
+  width: 24px;
+  height: 24px;
+}
+.phone-tool-name {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+/* A small corner mark: this button opens more. */
+.phone-tool-more {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  border-top-right-radius: 2px;
+}
+.phone-tool[aria-expanded='true'],
+.phone-tool:active {
+  background: var(--accent);
+  color: var(--panel-solid);
+}
+
+.phone-chips {
+  position: absolute;
+  left: var(--beside-tool);
+  bottom: var(--edge-b);
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+}
+.phone-chip {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--phone-glass);
+  color: var(--dim);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.phone-chip b {
+  color: var(--text);
+  font-weight: 700;
+}
+.phone-chip svg {
+  margin-left: 2px;
+}
+.phone-chip:active {
+  background: color-mix(in srgb, var(--text) 14%, var(--panel-solid));
+}
+.phone-chip-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+}
+
+/* The other thumb's buttons while one finger works the map (ThumbButtons.tsx, piece 2): just above the chip. */
+.sre[data-touch] .sre-thumb {
+  position: absolute;
+  left: var(--beside-tool);
+  bottom: calc(var(--edge-b) + 50px);
+  z-index: 3;
+}
+.sre[data-touch]:has(.phone-tray) .sre-thumb,
+.sre[data-touch]:has(.phone-menu) .sre-thumb {
+  visibility: hidden;
+}
+
+/* ---------------------------------------------------------------- the tray */
+
+.phone-tray {
+  position: absolute;
+  left: var(--beside-tool);
+  bottom: var(--edge-b);
+  z-index: 4;
+  width: 264px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  padding: 7px;
+  background: color-mix(in srgb, var(--panel-solid) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  animation: phone-pop 160ms ease-out;
+}
+.phone-tray.is-view {
+  grid-template-columns: repeat(2, 1fr);
+}
+.phone-cell {
+  min-height: var(--cell-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: none;
+  color: color-mix(in srgb, var(--text) 75%, var(--dim));
+  font-size: 12px;
+}
+.phone-cell svg {
+  width: 23px;
+  height: 23px;
+}
+.phone-cell.is-on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.phone-cell:active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.phone-tray-row {
+  grid-column: 1 / -1;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--dim);
+  font-size: 11.5px;
+  text-align: left;
+}
+.phone-tray-row > svg:first-child {
+  width: 20px;
+  height: 20px;
+}
+.phone-tray-row span {
+  flex: 1;
+}
+.phone-tray-row .phone-chevron-back {
+  flex: none;
+  display: inline-flex;
+  transform: scaleX(-1);
+}
+.phone-tray-row svg {
+  flex: none;
+}
+.phone-tray-row:active {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+/* ---------------------------------------------------------------- down the right */
+
+.phone-stack {
+  position: absolute;
+  right: var(--edge-r);
+  bottom: var(--edge-b);
+  z-index: 3;
+  width: var(--stack-w);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.phone-stack[hidden],
+.phone-card-slot[hidden] {
+  display: none;
+}
+.phone-stack .sre-compass {
+  align-self: center;
+}
+.phone-side {
+  position: relative;
+  height: var(--side-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--phone-glass);
+  color: var(--text);
+  font-size: 11.5px;
+}
+.phone-side svg {
+  width: 20px;
+  height: 20px;
+}
+.phone-side:active {
+  background: color-mix(in srgb, var(--text) 14%, var(--panel-solid));
+}
+.phone-side.is-primary {
+  height: var(--drive-h);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--panel-solid);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.phone-side.is-primary:active {
+  background: color-mix(in srgb, var(--accent) 80%, var(--text));
+}
+/* Off, and a tap says why (the empty map): dashed, no fill, whatever kind of button it is. */
+.phone-side[aria-disabled='true'] {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--text) 18%, transparent);
+  background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  color: color-mix(in srgb, var(--dim) 75%, transparent);
+  font-weight: 400;
+}
+.phone-side.is-failing span {
+  color: var(--bad);
+}
+/* Save with something to save: the same cyan and amber as the words in the Menu. */
+.phone-dot {
+  position: absolute;
+  top: 7px;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.phone-dot.is-changed {
+  background: var(--warn);
+}
+.phone-badge {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  min-width: 17px;
+  height: 17px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--warn);
+  color: var(--panel-solid);
+  font: 700 11px/17px var(--font-body);
+  text-align: center;
+}
+.phone-badge.is-bad {
+  background: var(--bad);
+}
+
+/* The compass: above the stack where there is room. A Safari tab has none, and on the map north never turns,
+   so it only comes back in 3D, beside the stack. */
+@container (max-height: 299px) {
+  .sre:not(.is-3d) .phone-stack .sre-compass {
+    display: none;
+  }
+  .sre.is-3d .phone-stack .sre-compass {
+    position: absolute;
+    top: 0;
+    right: calc(100% + 8px);
+  }
+  .sre.is-3d .sre-look-note {
+    right: calc(var(--edge-r) + var(--stack-w) + 52px) !important;
+  }
+}
+
+/* ---------------------------------------------------------------- the card */
+
+.phone-card {
+  position: absolute;
+  top: var(--edge-t);
+  right: var(--edge-r);
+  bottom: var(--edge-b);
+  z-index: 4;
+  width: var(--card-w);
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--panel-solid) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  animation: phone-card-in 180ms ease-out;
+}
+.phone-card-head {
+  flex: none;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding-left: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.phone-card-title {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: 600 15px/1.15 var(--font-body);
+  text-align: left;
+}
+.phone-card-title.is-bad {
+  color: var(--bad);
+}
+.phone-card-title.is-warn {
+  color: var(--warn);
+}
+.phone-done {
+  flex: none;
+  min-width: 60px;
+  min-height: 44px;
+  padding: 0 14px 0 8px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+  text-align: right;
+}
+.phone-done:active {
+  color: var(--text);
+}
+.phone-card-body {
+  flex: 1;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: var(--card-gap) 8px;
+  padding: var(--card-top) 12px 12px;
+}
+/* More below: the bottom edge fades, so the long words read as "keep going". */
+.phone-card-body[data-more='1'] {
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
+}
+
+/* Slider first, then the buttons, then the choice of what to change, then Delete, then the long words: on a
+   292 px tall window everything you can press is on the card's first screen. The parts stay the panel's own. */
+.phone-card-body > * {
+  flex: 1 1 100%;
+  min-width: 0;
+  order: 5;
+}
+.phone-card-body .sre-help,
+.phone-card-body .sre-problem-do {
+  margin: 0;
+}
+.phone-card-body > .sre-problem {
+  order: 0;
+}
+.phone-card-body > .sre-field:has(> .sre-range) {
+  order: 1;
+}
+.phone-card-body > .sre-btn {
+  order: 2;
+}
+.phone-card-body > .sre-field:has(> .sre-seg) {
+  order: 3;
+}
+.phone-card-body > .sre-btn.is-danger {
+  order: 4;
+  align-self: auto;
+}
+.phone-card-body > .sre-steps {
+  order: 2;
+}
+/* What the Height tool's tunnel, and the tool's settings box, hold are parts of the card like any other. */
+.phone-card-body > [data-testid='editor-height-tunnel'],
+.phone-card-body > .sre-options {
+  display: contents;
+}
+.phone-card-body [data-testid='editor-height-tunnel'] > * {
+  flex: 1 1 100%;
+  min-width: 0;
+  order: 5;
+}
+.phone-card-body [data-testid='editor-height-tunnel'] > .sre-field:has(> .sre-range) {
+  order: 1;
+}
+.phone-card-body [data-testid='editor-height-tunnel'] > .sre-btn {
+  order: 2;
+}
+.phone-card-body .sre-options > * {
+  flex: 1 1 100%;
+  min-width: 0;
+  order: 5;
+}
+.phone-card-body .sre-options > .sre-field {
+  order: 1;
+}
+.phone-card-body .sre-options > .sre-steps {
+  order: 2;
+}
+.phone-card-body .sre-options-title {
+  display: none;
+}
+/* A stretch: its two buttons side by side, as a phone's first screen has no room for them stacked. */
+.phone-card[data-kind='section'] .phone-card-body > .sre-btn,
+.phone-card[data-kind='section'] [data-testid='editor-height-tunnel'] > .sre-btn {
+  flex: 1 1 calc(50% - 4px);
+}
+
+/* The card's parts, sized for a thumb. */
+.sre[data-touch] .sre-btn {
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border-radius: 12px;
+  line-height: 1.15;
+}
+.sre[data-touch] .sre-btn:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.sre[data-touch] .sre-btn:active {
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+}
+.sre[data-touch] .sre-btn.is-primary,
+.sre[data-touch] .sre-btn.is-primary:hover {
+  background: var(--accent);
+  font-size: 14px;
+  box-shadow: none;
+}
+.sre[data-touch] .sre-btn.is-primary:active {
+  background: color-mix(in srgb, var(--accent) 80%, var(--text));
+}
+.sre[data-touch] .sre-btn.is-danger:hover,
+.sre[data-touch] .sre-btn.is-quiet:hover,
+.sre[data-touch] .sre-btn:disabled:hover {
+  background: none;
+}
+.sre[data-touch] .sre-btn:disabled,
+.sre[data-touch] .sre-btn.is-primary:disabled {
+  background: none;
+}
+.sre[data-touch] .sre-link {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  pointer-events: auto;
+}
+.sre[data-touch] .sre-help {
+  font-size: 12px;
+  line-height: 1.32;
+}
+.sre[data-touch] .sre-field {
+  gap: 0;
+}
+.sre[data-touch] .sre-label {
+  align-items: center;
+  min-height: 16px;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  /* A slider's hit area reaches up under its own label (below): the words never take the finger. */
+  pointer-events: none;
+}
+.sre[data-touch] .sre-value {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.sre[data-touch] .sre-input {
+  min-height: 44px;
+  font-size: 16px; /* under 16 px Safari zooms the page when a box gets the focus */
+}
+.sre[data-touch] .sre-field.is-big .sre-input {
+  font-size: 17px;
+}
+
+/* The slider: 44 px to grab, however thin it looks. The thumb is a 44 px box with a see-through border round the
+   round thumb you see, so its hit area is a thumb's. */
+.sre[data-touch] .sre-range {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  height: 44px;
+  margin: var(--slider-up) 0 var(--slider-down);
+  padding: 0;
+  background: none;
+  /* A finger goes to the strip over it (fields.tsx FingerStrip), never to the browser's own slider. */
+  pointer-events: none;
+}
+.sre[data-touch] .sre-field:has(.sre-link) .sre-range {
+  margin-top: 0;
+}
+.sre-range-hit {
+  height: 44px;
+  margin: calc(-44px - var(--slider-down)) 0 var(--slider-down);
+  position: relative;
+  touch-action: pan-y;
+}
+.sre[data-touch] .sre-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent) calc(22px + (100% - 44px) * var(--fill, 0)), color-mix(in srgb, var(--text) 18%, transparent) 0);
+}
+.sre[data-touch] .sre-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  margin-top: -19px;
+  border: 9px solid transparent;
+  border-radius: 50%;
+  background: var(--accent);
+  background-clip: padding-box;
+}
+.sre[data-touch] .sre-seg {
+  padding: 0;
+  gap: 0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.sre[data-touch] .sre-seg-btn {
+  min-height: 44px;
+  border-radius: 0;
+}
+.sre[data-touch] .sre-seg-btn.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.sre[data-touch] .sre-swatches {
+  flex-wrap: wrap;
+  gap: 0;
+}
+.sre[data-touch] .sre-swatch {
+  width: 44px;
+  height: 44px;
+  box-sizing: border-box;
+  padding: 6px;
+  background-clip: content-box;
+  box-shadow: none;
+}
+.sre[data-touch] .sre-issue {
+  min-height: 44px;
+}
+/* A row is what it is and whether Fix it can mend it; the long words wait for the tap, on the problem's own card. */
+.sre[data-touch] .sre-issue-detail,
+.sre[data-touch] .sre-issue-fix {
+  display: none;
+}
+.sre[data-touch] .sre-tip,
+.sre[data-touch] kbd {
+  display: none;
+}
+.sre[data-touch] .sre-section-title:empty {
+  display: none;
+}
+.phone-card-body .sre-section {
+  gap: 7px;
+  padding: 0;
+  border: 0;
+}
+/* Checks: the verdict, then Fix all as a real button, then the rows. */
+.phone-card-body .sre-problems .sre-verdict {
+  order: -1;
+}
+.phone-card-body .sre-section-title {
+  letter-spacing: 0;
+}
+.phone-card-body .sre-section-title .sre-link {
+  flex: 1;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.phone-card-body .sre-problems ul {
+  gap: 5px;
+}
+
+/* The palette: three across, in the card. */
+.phone-palette .sre-palette {
+  position: static;
+  width: auto;
+  transform: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 0;
+  background: none;
+  border: 0;
+  backdrop-filter: none;
+}
+.phone-palette .sre-piece {
+  min-height: 44px;
+  box-sizing: border-box;
+  grid-template-columns: 10px 1fr;
+  gap: 5px;
+  padding: 2px 5px;
+  border-color: var(--line);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.1;
+}
+.phone-palette .sre-piece i {
+  width: 10px;
+  height: 10px;
+}
+.phone-palette .sre-piece:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.phone-palette .sre-piece.is-on,
+.phone-palette .sre-piece.is-on:hover {
+  border-color: var(--piece);
+  background: color-mix(in srgb, var(--piece) 14%, transparent);
+}
+
+/* ---------------------------------------------------------------- what EditorUi.tsx still draws */
+
+/* One line along the top of the free map, in the same strip with or without a card. */
+.sre[data-touch] .sre-status {
+  top: var(--edge-t);
+  bottom: auto;
+  left: calc(var(--edge-l) + 4px);
+  right: calc(var(--edge-r) + var(--stack-w) + 8px);
+  transform: translateY(-6px);
+  padding: 6px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-solid) 92%, transparent);
+  backdrop-filter: none;
+  font-size: 13px;
+  line-height: 1.25;
+  z-index: 2;
+}
+.sre[data-touch] .sre-status.is-on {
+  transform: none;
+}
+.sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-status {
+  left: var(--beside-tool);
+  right: calc(var(--edge-r) + var(--card-w) + 8px);
+}
+.sre[data-touch]:has(.phone-tray) .sre-status {
+  opacity: 0;
+}
+.sre[data-touch].is-3d .sre-status {
+  top: calc(var(--edge-t) + 58px);
+}
+
+/* The empty map's note, in the middle of the free map. A line can be drawn straight through it: only its buttons take a finger. */
+.sre[data-touch] .sre-empty {
+  top: calc(var(--edge-t) + 52px);
+  left: var(--beside-tool);
+  right: calc(var(--edge-r) + var(--stack-w) + 8px);
+  width: fit-content;
+  max-width: none;
+  margin-inline: auto;
+  transform: none;
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: center;
+  gap: 6px 10px;
+  padding: 10px 16px 12px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel-solid) 90%, transparent);
+  backdrop-filter: none;
+  box-shadow: none;
+  pointer-events: none;
+}
+.sre[data-touch] .sre-empty-kicker,
+.sre[data-touch] .sre-empty-text {
+  grid-column: 1 / -1;
+  text-align: center;
+}
+.sre[data-touch] .sre-empty .sre-btn {
+  min-height: 44px;
+  padding: 6px 14px;
+  border-radius: 12px;
+  pointer-events: auto;
+}
+.sre[data-touch] .sre-empty .sre-btn.is-primary {
+  grid-column: auto;
+  justify-self: end;
+}
+.sre[data-touch] .sre-empty .sre-btn:not(.is-primary) {
+  justify-self: start;
+}
+.sre[data-touch]:has(.phone-tray) .sre-empty {
+  visibility: hidden;
+}
+
+/* The 3D note: across the top of the free map, and the way back is always a thumb's size. */
+.sre[data-touch] .sre-look-note {
+  top: var(--edge-t);
+  left: var(--edge-l);
+  right: calc(var(--edge-r) + var(--stack-w) + 8px);
+  width: auto;
+  margin: 0;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 4px 3px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-solid) 90%, transparent);
+  backdrop-filter: none;
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.sre[data-touch] .sre-look-note .sre-btn {
+  flex: none;
+  padding: 5px 12px;
+  border-radius: 11px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.sre[data-touch] .sre-look-kicker {
+  flex: none;
+}
+.sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-look-note {
+  right: calc(var(--edge-r) + var(--card-w) + 8px);
+}
+.sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-look-text {
+  display: none;
+}
+
+/* The questions (Menu's New track, Random track, Exit): the words and the answers fit a Safari tab. */
+.sre[data-touch] .sre-confirm {
+  width: min(460px, calc(100% - var(--safe-l) - var(--safe-r) - 16px));
+  max-height: calc(100dvh - var(--safe-b) - 12px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  gap: 6px;
+  padding: 12px 16px;
+}
+.sre[data-touch] .sre-confirm-icon,
+.sre[data-touch] .sre-confirm-keys {
+  display: none;
+}
+.sre[data-touch] .sre-confirm h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.sre[data-touch] .sre-confirm .sre-btn:focus {
+  outline: none;
+}
+.sre[data-touch] .sre-ask-modal {
+  padding-bottom: var(--safe-b);
+  box-sizing: border-box;
+}
+
+/* The Library's own layout on a phone is piece 7. This much is so its Close stays on screen in a Safari tab. */
+.sre[data-touch] .sre-library {
+  max-height: calc(100dvh - 12px);
+}
+
+/* ---------------------------------------------------------------- the Menu */
+
+/* A page of its own: nothing of the map's buttons shows through it, or can be pressed behind it. */
+.sre[data-touch]:has(.phone-menu) :is(.phone-left, .phone-chips, .phone-stack, .phone-card-slot, .phone-tray, .sre-status, .sre-empty, .sre-look-note) {
+  visibility: hidden;
+}
+
+.phone-menu {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 124px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  column-gap: 10px;
+  padding: calc(var(--safe-t) + 2px) var(--edge-r) calc(var(--safe-b) + 2px) var(--edge-l);
+  background: color-mix(in srgb, var(--panel-solid) 95%, transparent);
+  animation: phone-fade 150ms ease-out;
+}
+.phone-menu-nav {
+  grid-row: 1 / -1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+.phone-menu-nav button {
+  flex: none;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: none;
+  color: var(--dim);
+  font-size: 14px;
+  text-align: left;
+}
+.phone-menu-nav button.is-on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.phone-menu-nav button:active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.phone-menu-gap {
+  flex: 1 1 0;
+  min-height: 2px;
+}
+.phone-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+.phone-menu-kicker {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent2);
+  white-space: nowrap;
+}
+.phone-menu-head .sre-btn {
+  flex: none;
+  padding: 5px 12px;
+}
+.phone-menu-head .sre-btn.is-primary {
+  grid-column: auto;
+}
+.phone-menu-head .sre-btn.is-due {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.phone-menu-head .sre-save-new {
+  border-color: var(--line);
+}
+.phone-menu-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding-bottom: 10px;
+}
+.phone-menu-body.is-track {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-content: start;
+  gap: 8px 16px;
+}
+.phone-menu-body .sre-section {
+  display: contents;
+}
+.phone-menu-body .sre-section-title {
+  display: none;
+}
+.phone-menu-body .sre-field:has(textarea),
+.phone-menu-body .sre-row,
+.phone-menu-body .sre-actions-why {
+  grid-column: 1 / -1;
+}
+.phone-menu-body .sre-actions-why {
+  margin: 0;
+  order: 9;
+}
+/* Room for all 200 letters a blurb can have, across the page, without a scroller inside a scroller. */
+.phone-menu-body textarea.sre-input {
+  min-height: 112px;
+}
+.phone-menu-body .sre-row {
+  grid-template-columns: minmax(0, 1fr);
+  order: 8;
+}
+.phone-menu-body .sre-field:has(textarea) {
+  order: 7;
+}
+.phone-menu-body .sre-help {
+  margin: 2px 0 0;
+}
+.phone-this-track {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.phone-this-track .sre-label {
+  margin-bottom: 2px;
+}
+.phone-this-track .sre-stats {
+  margin: 0;
+  gap: 2px;
+}
+.phone-this-track .sre-stat {
+  padding: 0;
+  background: none;
+}
+.phone-this-track .sre-stat-value {
+  font-size: 14px;
+}
+.phone-this-track .sre-stat-label {
+  font-size: 11px;
+}
+.phone-this-track .sre-save-state {
+  flex-wrap: wrap;
+  margin-top: 1px;
+  gap: 2px 5px;
+  font-size: 11px;
+}
+.phone-menu-body .sre-legend {
+  padding: 0;
+  border: 0;
+}
+.phone-menu-body .sre-legend .sre-section-title {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- stood up: usable, not polished */
+
+@media (orientation: portrait) {
+  .phone-tray {
+    right: calc(var(--edge-r) + var(--stack-w) + 6px);
+    width: auto;
+  }
+  .phone-card {
+    top: 46%;
+    left: 6px;
+    right: 6px;
+    width: auto;
+  }
+  .sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-status {
+    left: 8px;
+    right: 8px;
+  }
+  .sre[data-touch] .sre-status {
+    top: calc(var(--safe-t) + 6px);
+  }
+  .phone-menu {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .phone-menu-nav {
+    grid-row: auto;
+    flex-direction: row;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    touch-action: pan-x;
+  }
+  .phone-menu-gap {
+    display: none;
+  }
+  .phone-menu-kicker {
+    display: none;
+  }
+  .phone-menu-head {
+    justify-content: flex-end;
+  }
+  .phone-menu-body.is-track {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sre[data-touch] .sre-empty {
+    top: calc(var(--safe-t) + 60px);
+    left: 8px;
+    right: 8px;
+  }
+  .sre[data-touch] .sre-look-note {
+    flex-wrap: wrap;
+    left: 8px;
+  }
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@keyframes phone-pop {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+}
+@keyframes phone-card-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+}
+@keyframes phone-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .phone-tray,
+  .phone-card,
+  .phone-menu {
+    animation: none;
+  }
+  .phone-tool {
+    transition: none;
+  }
+}

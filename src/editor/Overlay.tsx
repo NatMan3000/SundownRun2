@@ -124,10 +124,11 @@ import { isStretchTool, runAt } from './stretchRuns'
 import { marksOf, pickStretchAt, selectRun, stretchHoverLabel, stretchToPick } from './stretchTools'
 import { type RedrawPlan, type RoadHit, frameAt, metresBetween, nearestOnRoad, planRedraw, straightPencilLine, wrapAt } from './road'
 import { STEADY_STRING, SteadyPen, alongRoad, curveStretch, posOf, roadLine, sOf, straightStretch, stretchOf } from './shape'
-import { view, panBy, setView, zoomAt, fitBox } from './view'
+import { view, panBy, setView, zoomAt, fitBox, fitBoxInto } from './view'
 import { groundAt, look3dOn, turnLook } from './look3d'
 import { dragView, heightAt, in3d, mppAt, onPosed, pick3d, pose, roadNearest, roadUnder, setDragPlane, setRoadShown, toWorld, worldToScreen, zoomViewAt } from './look3dSpace'
 import { attachMapGestures } from './mapGestures'
+import { fitWorldInto, freeMapBox } from './phone/freeMap'
 
 /** Pixels the pointer must move before the pencil adds another point. */
 const PENCIL_STEP_PX = 3
@@ -138,9 +139,12 @@ const KEY_PAN_PX = 700
 
 export function fitToDraft(): void {
   const pts = useEditor.getState().draft.points
+  // A phone: the free part of the map, between its buttons and any card that is open.
+  const free = freeMapBox()
   if (!pts.length) {
     // An empty map: show the whole world, ready to draw in.
-    setView(0, 0, 1700 / Math.max(300, view.height - 120))
+    if (free) fitWorldInto(free)
+    else setView(0, 0, 1700 / Math.max(300, view.height - 120))
     return
   }
   let minX = Infinity
@@ -152,6 +156,10 @@ export function fitToDraft(): void {
     maxX = Math.max(maxX, p.x)
     minZ = Math.min(minZ, p.z)
     maxZ = Math.max(maxZ, p.z)
+  }
+  if (free) {
+    fitBoxInto(minX - 16, minZ - 16, maxX + 16, maxZ + 16, free)
+    return
   }
   const pad = 80
   // Leave room for the panel on the right, however wide the window made it, and on the left for

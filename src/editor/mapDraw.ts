@@ -1629,8 +1629,8 @@ function drawScaleBar(ctx: CanvasRenderingContext2D): void {
     }
   }
   const px = metres / view.mpp
-  const x = 96
-  const y = view.height - 28
+  const x = view.scaleX
+  const y = view.height - view.scaleUp
   ctx.save()
   ctx.strokeStyle = PALETTE.uiText
   ctx.lineWidth = 2
@@ -1652,7 +1652,7 @@ function drawReadout(ctx: CanvasRenderingContext2D, hover: P): void {
   ctx.font = `500 12px ${FONTS.mono}`
   ctx.fillStyle = PALETTE.uiDim
   ctx.textBaseline = 'bottom'
-  ctx.fillText(`x ${hover.x.toFixed(0)}  z ${hover.z.toFixed(0)}`, 96, view.height - 44)
+  ctx.fillText(`x ${hover.x.toFixed(0)}  z ${hover.z.toFixed(0)}`, view.scaleX, view.height - view.scaleUp - 16)
   ctx.restore()
 }
 

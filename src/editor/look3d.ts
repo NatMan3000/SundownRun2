@@ -47,6 +47,7 @@ import type { TrackRuntime } from '../track/types'
 import { audio } from '../core/api'
 import { view } from './view'
 import { LOOK, type Orbit, type V3, clampDist, clampPitch, clampToWorld, copyOrbit, mapOrbit, metresPerPixelAt, openingOrbit, orbit, orbitOk, panOrbit } from './look3dMath'
+import { freeMapBox } from './phone/freeMap'
 
 /**
  * What the 3D view is doing:
@@ -100,6 +101,8 @@ export const look = {
  */
 function openMiddleX(): number {
   if (typeof document === 'undefined') return view.width / 2
+  const free = freeMapBox()
+  if (free) return (free.left + free.right) / 2
   const panel = document.querySelector('.sre-panel')?.getBoundingClientRect()
   const rail = document.querySelector('.sre-tools')?.getBoundingClientRect()
   const left = rail ? rail.right : 0

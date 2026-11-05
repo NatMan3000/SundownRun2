@@ -81,6 +81,7 @@ import { metresBetween, roadCurve, roadLength } from './road'
 import { cornerAt, roadLine } from './shape'
 import { setView, view } from './view'
 import { SaveStateLine, TrackActions } from './TrackSave'
+import { useGame } from '../core/store'
 
 /** Edge-strip colours a track can pick (the road's light strips). */
 const EDGE_COLOURS = [PALETTE.roadEdge, PALETTE.roadEdgeAlt, PALETTE.boost, PALETTE.chevron, PALETTE.wallRide, PALETTE.aiColors[0]]
@@ -129,56 +130,13 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
         </div>
         <TextField label="Track name" value={draft.name} onCommit={setName} big />
         <SaveStateLine />
-        <div className="sre-stats">
-          <Stat label="Length" value={`${(length / 1000).toFixed(2)} km`} />
-          <Stat label="Pieces" value={String(draft.pieces.length + draft.props.length + draft.cores.length)} />
-          <Stat label="Bridges" value={String(bridgeCount(draft.points, draftCrossings(draft)))} />
-        </div>
+        <TrackStats draft={draft} length={length} />
       </header>
 
       <div className="sre-body">
         {selection && <Inspector selection={selection} draft={draft} />}
 
-        <section className="sre-section" aria-label="Track">
-          <span className="sre-section-title">Track</span>
-          <SliderField label="Road width" value={draft.width} min={10} max={24} step={1} unit="m" onCommit={setWidth} help="How wide the road is, edge to edge." />
-          <SliderField
-            label="Road surface"
-            value={draft.roadSettings?.surfaceSmoothing ?? TRACK_DEFAULTS.surfaceSmoothing}
-            min={ROAD_SMOOTHING_MIN}
-            max={ROAD_SMOOTHING_MAX}
-            step={5}
-            format={(v) => (v <= 10 ? 'Follows every bump' : v < 30 ? 'A bit bumpy' : v < 40 ? 'Smooth' : v < ROAD_SMOOTHING_MAX ? 'Extra smooth' : 'Super smooth')}
-            onCommit={setSurfaceSmoothing}
-            help="How the road sits on the ground. Slide left and it follows every little bump; slide right and it irons the bumps out, so it only goes up and down with the hills."
-          />
-          <WorldField draft={draft} />
-          <SliderField
-            label="Time of day"
-            value={draft.environment.sky?.timeOfDay ?? TRACK_DEFAULTS.timeOfDay}
-            min={0}
-            max={1}
-            step={0.05}
-            format={(v) => (v < 0.2 ? 'Sundown' : v < 0.5 ? 'Dusk' : v < 0.8 ? 'Night falling' : 'Night')}
-            onCommit={setTimeOfDay}
-            help="The light this track starts in (players can still change it in Settings)."
-          />
-          <ColourField label="Edge lights" value={draft.environment.palette?.edge ?? PALETTE.roadEdge} options={EDGE_COLOURS} onChange={setEdgeColour} />
-          <TextField label="Made by" value={draft.author} onCommit={setAuthor} placeholder="Your name" />
-          <TextField label="About this track" value={draft.description} onCommit={setDescription} placeholder="One line for the track list" multiline max={200} />
-          <div className="sre-row">
-            {/* Drive to draw makes a whole new road, so it is offered on the empty map only (driveToDraw.tsx). */}
-            {isEmptyDraft(draft) ? (
-              <button type="button" className="sre-btn" onClick={() => startDriveToDraw()} title="Drive anywhere in this world: the car lays a road behind it, and it opens here when you finish.">
-                Drive to draw
-              </button>
-            ) : (
-              <button type="button" className="sre-btn" onClick={() => smoothRoad()} title="Irons the wobbles and kinks out of the whole road. Press again for smoother still; Undo if you don't like it.">
-                Smooth the road
-              </button>
-            )}
-          </div>
-        </section>
+        <TrackFields draft={draft} />
 
         <Problems />
         {/* Nothing on an empty map for the key to explain, so it waits for a road. */}
@@ -187,6 +145,65 @@ export function Panel(props: { onLibrary: () => void; onExit: () => void }) {
 
       <TrackActions onLibrary={props.onLibrary} onExit={props.onExit} />
     </aside>
+  )
+}
+
+/** A track's length, pieces and bridges. */
+export function TrackStats(p: { draft: Draft; length: number }) {
+  const { draft, length } = p
+  return (
+    <div className="sre-stats">
+      <Stat label="Length" value={`${(length / 1000).toFixed(2)} km`} />
+      <Stat label="Pieces" value={String(draft.pieces.length + draft.props.length + draft.cores.length)} />
+      <Stat label="Bridges" value={String(bridgeCount(draft.points, draftCrossings(draft)))} />
+    </div>
+  )
+}
+
+/** The whole track's settings: width, surface, world, time of day, edge lights, maker, blurb, and Drive to draw or Smooth the road. */
+export function TrackFields(p: { draft: Draft }) {
+  const { draft } = p
+  return (
+    <section className="sre-section" aria-label="Track">
+      <span className="sre-section-title">Track</span>
+      <SliderField label="Road width" value={draft.width} min={10} max={24} step={1} unit="m" onCommit={setWidth} help="How wide the road is, edge to edge." />
+      <SliderField
+        label="Road surface"
+        value={draft.roadSettings?.surfaceSmoothing ?? TRACK_DEFAULTS.surfaceSmoothing}
+        min={ROAD_SMOOTHING_MIN}
+        max={ROAD_SMOOTHING_MAX}
+        step={5}
+        format={(v) => (v <= 10 ? 'Follows every bump' : v < 30 ? 'A bit bumpy' : v < 40 ? 'Smooth' : v < ROAD_SMOOTHING_MAX ? 'Extra smooth' : 'Super smooth')}
+        onCommit={setSurfaceSmoothing}
+        help="How the road sits on the ground. Slide left and it follows every little bump; slide right and it irons the bumps out, so it only goes up and down with the hills."
+      />
+      <WorldField draft={draft} />
+      <SliderField
+        label="Time of day"
+        value={draft.environment.sky?.timeOfDay ?? TRACK_DEFAULTS.timeOfDay}
+        min={0}
+        max={1}
+        step={0.05}
+        format={(v) => (v < 0.2 ? 'Sundown' : v < 0.5 ? 'Dusk' : v < 0.8 ? 'Night falling' : 'Night')}
+        onCommit={setTimeOfDay}
+        help="The light this track starts in (players can still change it in Settings)."
+      />
+      <ColourField label="Edge lights" value={draft.environment.palette?.edge ?? PALETTE.roadEdge} options={EDGE_COLOURS} onChange={setEdgeColour} />
+      <TextField label="Made by" value={draft.author} onCommit={setAuthor} placeholder="Your name" />
+      <TextField label="About this track" value={draft.description} onCommit={setDescription} placeholder="One line for the track list" multiline max={200} />
+      <div className="sre-row">
+        {/* Drive to draw makes a whole new road, so it is offered on the empty map only (driveToDraw.tsx). */}
+        {isEmptyDraft(draft) ? (
+          <button type="button" className="sre-btn" onClick={() => startDriveToDraw()} title="Drive anywhere in this world: the car lays a road behind it, and it opens here when you finish.">
+            Drive to draw
+          </button>
+        ) : (
+          <button type="button" className="sre-btn" onClick={() => smoothRoad()} title="Irons the wobbles and kinks out of the whole road. Press again for smoother still; Undo if you don't like it.">
+            Smooth the road
+          </button>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -226,7 +243,19 @@ function WorldField(p: { draft: Draft }) {
 
 // ---------------------------------------------------------------- selected thing
 
-function Inspector(p: { selection: Selection; draft: Draft }) {
+/** The selected thing's parts, for a home other than the desktop panel's box (phone/PhoneEditor.tsx's card). */
+export interface InspectorParts {
+  title: string
+  /** How serious, when it is a problem. */
+  tone: Problem['tone'] | null
+  /** The title's press: show it on the map. */
+  onTitle: () => void
+  body: ReactNode
+  /** Delete, for what can be deleted. */
+  del: ReactNode
+}
+
+export function Inspector(p: { selection: Selection; draft: Draft; frame?: (parts: InspectorParts) => ReactNode }) {
   const sel = p.selection
   // A problem picked from Checks (lower down) or a map pin: bring this box into view.
   const box = useRef<HTMLElement>(null)
@@ -240,6 +269,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
   let title = ''
   let body: ReactNode = null
   let canDelete = true
+  let titleTone: Problem['tone'] | null = null
 
   if (sel.kind === 'piece') {
     const piece = d.pieces[sel.index]
@@ -316,6 +346,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
   } else if (sel.kind === 'problem') {
     const tone = problemByKey(currentProblems(), sel.key)?.tone
     title = tone === 'warn' ? 'Worth a look' : tone === 'note' ? 'Note' : 'Problem'
+    titleTone = tone ?? null
     canDelete = false
     body = <ProblemFields problemKey={sel.key} />
   } else {
@@ -363,6 +394,13 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
     if (at) setView(at.x, at.z, Math.min(view.mpp, 0.6))
   }
 
+  const del = canDelete && (
+    <button type="button" className="sre-btn is-danger" onClick={() => (sel.kind === 'point' ? deletePoint(sel.index) : deleteSelection())}>
+      Delete
+    </button>
+  )
+  if (p.frame) return <>{p.frame({ title, tone: titleTone, onTitle: goTo, body, del })}</>
+
   return (
     <section ref={box} className="sre-section sre-inspector" aria-label="Selected">
       <span className="sre-section-title">
@@ -375,11 +413,7 @@ function Inspector(p: { selection: Selection; draft: Draft }) {
         {title}
       </button>
       {body}
-      {canDelete && (
-        <button type="button" className="sre-btn is-danger" onClick={() => (sel.kind === 'point' ? deletePoint(sel.index) : deleteSelection())}>
-          Delete
-        </button>
-      )}
+      {del}
     </section>
   )
 }
@@ -493,6 +527,13 @@ function CrossingFields(p: { spot: { x: number; z: number }; draft: Draft }) {
 function TunnelToggle(p: { from: number; to: number; draft: Draft }) {
   const on = tunnelsOnStretch(p.draft, p.from, p.to)
   const piece = on.length ? p.draft.pieces[on[0]] : null
+  // Nothing can hover on a phone: the footprint shows for as long as the button is on screen.
+  const footprintWhileShown = useGame((s) => s.inputDevice === 'touch') && piece?.type !== 'tunnel'
+  useEffect(() => {
+    if (!footprintWhileShown) return
+    useEditor.setState({ tunnelPreview: { from: p.from, to: p.to } })
+    return () => useEditor.setState({ tunnelPreview: null })
+  }, [footprintWhileShown, p.from, p.to])
   if (piece?.type === 'tunnel') {
     return (
       <div className="sre-field" data-testid="editor-height-tunnel">
@@ -872,7 +913,7 @@ const CHECKS_SHOWN = 10
  * where it is. The verdict at the top comes from the game's own track gates (checks.ts),
  * the same ones `bun run tracks:check` runs, so "All good" here means OK there.
  */
-function Problems() {
+export function Problems(p: { noTitle?: boolean }) {
   const errors = useEditor((s) => s.errors)
   const gates = useEditor((s) => s.gates)
   const checkedDraft = useEditor((s) => s.checkedDraft)
@@ -890,7 +931,7 @@ function Problems() {
     // Nothing to check until there is a road.
     return (
       <section className="sre-section sre-problems" aria-label="Checks" data-verdict="empty">
-        <span className="sre-section-title">Checks</span>
+        {!p.noTitle && <span className="sre-section-title">Checks</span>}
         <p className="sre-verdict is-checking" role="status">
           No road yet, so nothing to check. Draw a loop with the pencil, or press Random track.
         </p>
@@ -909,7 +950,7 @@ function Problems() {
   return (
     <section className="sre-section sre-problems" aria-label="Checks" data-verdict={verdict}>
       <span className="sre-section-title">
-        Checks
+        {!p.noTitle && 'Checks'}
         {fixable > 0 && (
           <button
             type="button"
@@ -966,7 +1007,7 @@ function offerTitle(p: Problem, offer: FixOffer): string {
 }
 
 /** The Checks list as the panel shows it (problems.ts), kept up to date with the editor. */
-function useProblems(): Problem[] {
+export function useProblems(): Problem[] {
   const errors = useEditor((s) => s.errors)
   const warnings = useEditor((s) => s.warnings)
   const gates = useEditor((s) => s.gates)
@@ -999,6 +1040,7 @@ function soon(setBusy: (b: boolean) => void, work: () => unknown): void {
  * with the right bit of road selected), or, for the game's own bugs, says so.
  */
 function ProblemFields(p: { problemKey: string }) {
+  const touch = useGame((s) => s.inputDevice === 'touch')
   const list = useProblems()
   const pending = useEditor((s) => s.preview === 'pending' || s.checkedDraft !== s.draft)
   const [busy, setBusy] = useState(false)
@@ -1015,6 +1057,8 @@ function ProblemFields(p: { problemKey: string }) {
     <>
       <p className={`sre-problem is-${prob.tone}`}>{prob.title}</p>
       {prob.detail && <p className="sre-help">{prob.detail}</p>}
+      {/* A phone's Checks rows are short: their Fix line is here instead. */}
+      {touch && prob.fix && <p className="sre-help">Fix: {prob.fix}</p>}
       {r.kind === 'fix' && offer === 'found' && (
         <>
           <button type="button" className="sre-btn is-primary" disabled={busy || pending} onClick={() => soon(setBusy, () => fixProblem(prob.key))} data-testid="editor-fix-it">
@@ -1069,7 +1113,7 @@ function KeyRow(p: { mark: ReactNode; children: ReactNode }) {
  * which ones a click changes. A label is shown as the map draws it: the words
  * on a pill.
  */
-function Legend(p: { editing: boolean }) {
+export function Legend(p: { editing: boolean }) {
   const click = (words: string) => (p.editing ? ` ${words}` : '')
   return (
     <section className="sre-section sre-legend" aria-label="Map key" data-testid="editor-map-key">

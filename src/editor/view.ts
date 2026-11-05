@@ -24,6 +24,9 @@ export const view = {
   height: 1080,
   /** Bumped on every change, so drawers know to redraw. */
   version: 0,
+  /** Where the scale bar starts, pixels from the left, and how far it sits above the window's bottom edge (a phone moves it into its free map: phone/PhoneEditor.tsx). */
+  scaleX: 96,
+  scaleUp: 28,
 }
 
 export const ZOOM = {
@@ -32,6 +35,9 @@ export const ZOOM = {
   /** Most zoomed out: the whole world and some sky around it. */
   max: 4,
 }
+
+/** Most zoomed out on a phone, while its layout is up: the short window needs it for a square track and the whole world. */
+export const ZOOM_MAX_PHONE = 8
 
 export function setView(cx: number, cz: number, mpp: number): void {
   view.cx = cx
@@ -48,6 +54,19 @@ export function screenToWorld(sx: number, sy: number): P {
 /** World x, z to screen pixel. */
 export function worldToScreen(x: number, z: number): { sx: number; sy: number } {
   return { sx: (x - view.cx) / view.mpp + view.width / 2, sy: (z - view.cz) / view.mpp + view.height / 2 }
+}
+
+/**
+ * Frame a box of the world inside a box of the screen (a phone's free map,
+ * phone/freeMap.ts), leaving `margin` pixels all round.
+ */
+export function fitBoxInto(minX: number, minZ: number, maxX: number, maxZ: number, box: { left: number; top: number; right: number; bottom: number }, margin = 12): void {
+  const usableW = Math.max(100, box.right - box.left - margin * 2)
+  const usableH = Math.max(100, box.bottom - box.top - margin * 2)
+  const mpp = Math.min(ZOOM.max, Math.max(ZOOM.min, Math.max((maxX - minX) / usableW, (maxZ - minZ) / usableH)))
+  const middleX = (box.left + box.right) / 2 - view.width / 2
+  const middleY = (box.top + box.bottom) / 2 - view.height / 2
+  setView((minX + maxX) / 2 - middleX * mpp, (minZ + maxZ) / 2 - middleY * mpp, mpp)
 }
 
 /** Zoom by a factor, keeping the world point under screen pixel (sx, sy) where it is. */
