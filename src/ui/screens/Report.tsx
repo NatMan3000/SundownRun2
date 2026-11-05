@@ -346,6 +346,7 @@ export function useKeyboardFit(root: RefObject<HTMLDivElement | null>, on: boole
       el.style.top = ''
       el.style.bottom = ''
       el.style.height = ''
+      delete el.dataset.keyboard
     }
     const fit = () => {
       if (window.innerHeight - view.height < KEYBOARD_PX) {
@@ -355,6 +356,8 @@ export function useKeyboardFit(root: RefObject<HTMLDivElement | null>, on: boole
       el.style.top = `${view.offsetTop}px`
       el.style.bottom = 'auto'
       el.style.height = `${view.height}px`
+      // A stylesheet can tell (the Road Editor's Share box lets go of the home bar's room and its pinned buttons).
+      el.dataset.keyboard = '1'
       const box = document.activeElement
       if (box instanceof HTMLElement && el.contains(box)) box.scrollIntoView({ block: 'nearest' })
     }

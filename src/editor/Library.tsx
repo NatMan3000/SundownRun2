@@ -108,20 +108,23 @@ export function Library(props: { onClose: () => void }) {
   return (
     <div className="sre-modal" role="dialog" aria-modal="true" aria-label="Track library" onPointerDown={(e) => e.target === e.currentTarget && props.onClose()}>
       <div className="sre-library">
-        <header className="sre-lib-head">
-          <h2>Track library</h2>
-          <button type="button" className="sre-btn is-quiet" onClick={props.onClose}>
-            Close
-          </button>
-        </header>
+        {/* One strip on a phone (title, tabs, Close stay put while the rest scrolls); on a computer it has no box of its own. */}
+        <div className="sre-lib-top">
+          <header className="sre-lib-head">
+            <h2>Track library</h2>
+            <button type="button" className="sre-btn is-quiet" onClick={props.onClose}>
+              Close
+            </button>
+          </header>
 
-        <div className="sr-lib-tabs" role="tablist" aria-label="Which tracks">
-          <button type="button" role="tab" aria-selected={tab === 'mine'} className={`sr-lib-tab${tab === 'mine' ? ' is-on' : ''}`} data-testid="lib-tab-mine" onClick={() => setTab('mine')}>
-            Your tracks
-          </button>
-          <button type="button" role="tab" aria-selected={tab === 'shared'} className={`sr-lib-tab${tab === 'shared' ? ' is-on' : ''}`} data-testid={online ? 'lib-tab-everyone' : 'lib-tab-shared'} onClick={() => setTab('shared')}>
-            {online ? "Everyone's tracks" : 'Shared tracks'}
-          </button>
+          <div className="sr-lib-tabs" role="tablist" aria-label="Which tracks">
+            <button type="button" role="tab" aria-selected={tab === 'mine'} className={`sr-lib-tab${tab === 'mine' ? ' is-on' : ''}`} data-testid="lib-tab-mine" onClick={() => setTab('mine')}>
+              Your tracks
+            </button>
+            <button type="button" role="tab" aria-selected={tab === 'shared'} className={`sr-lib-tab${tab === 'shared' ? ' is-on' : ''}`} data-testid={online ? 'lib-tab-everyone' : 'lib-tab-shared'} onClick={() => setTab('shared')}>
+              {online ? "Everyone's tracks" : 'Shared tracks'}
+            </button>
+          </div>
         </div>
 
         {tab === 'shared' && !online && <SharedTracks onReady={setReady} onDownloaded={() => setVersion((v) => v + 1)} onOpen={(file) => open(file, false)} />}

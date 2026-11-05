@@ -659,6 +659,15 @@
   border-radius: 16px;
   overflow: hidden;
 }
+/* The Share box's two groups: a phone sets them side by side (phone.css); a computer sees no box here at all. */
+.sr-share-top,
+.sr-share-left {
+  display: contents;
+}
+/* Title, tabs and Close in one strip: a phone pins it (phone.css); a computer sees no box here at all. */
+.sre-lib-top {
+  display: contents;
+}
 .sre-lib-head,
 .sre-lib-foot {
   display: flex;

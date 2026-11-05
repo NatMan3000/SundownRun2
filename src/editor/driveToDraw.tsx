@@ -315,75 +315,82 @@ function updateRibbon(g: THREE.BufferGeometry): void {
 export function EditorDriveUi() {
   const s = useDrive()
   const phase = useGame((g) => g.phase)
+  // A thumb's bar sits low in the gap between the stick and the pedals (see PHONE_BAR), not across the top where the lap, speed, map and buttons are.
+  const touch = useGame((g) => g.inputDevice) === 'touch'
+  const k = touch ? PHONE : DESKTOP
   const [, setTick] = useState(0)
+  const enough = s.metres >= CLEANUP.minLength
+  const help = s.note ?? (enough ? 'Drive back to where you started to close the loop, or press Finish.' : `Drive anywhere! Lay at least ${CLEANUP.minLength} m of road.`)
+  // On a phone the help line is not permanent (the car and the road need the room): it shows for 5 seconds each time it changes.
+  const [helpOn, setHelpOn] = useState(true)
+  useEffect(() => {
+    setHelpOn(true)
+    const t = setTimeout(() => setHelpOn(false), HELP_MS)
+    return () => clearTimeout(t)
+  }, [help, s.active])
   useEffect(() => {
     if (!s.active) return
     const t = setInterval(() => setTick((v) => v + 1), 500)
     return () => clearInterval(t)
   }, [s.active])
   if (!s.active || phase !== 'playing') return null
-  const enough = s.metres >= CLEANUP.minLength
   if (s.asking) {
     // Clear asks first: there is no Undo while driving.
     return (
-      <div role="alertdialog" aria-label="Clear the road you laid?" style={driveBarStyle}>
-        <span style={kickerStyle}>Drive to draw</span>
-        <span style={textStyle}>Clear the {s.metres} m of road you laid and start again from here? This can't be undone.</span>
-        <button type="button" style={buttonStyle('danger')} onClick={clearLaidRoad}>
-          Clear it
-        </button>
-        <button type="button" style={buttonStyle('plain')} onClick={() => useDrive.setState({ asking: false })}>
-          Keep it
-        </button>
+      <div role="alertdialog" aria-label="Clear the road you laid?" className="sr-drive-bar" data-testid="drive-bar" style={k.askBar}>
+        <div style={k.head}>
+          <span style={kickerStyle}>Drive to draw</span>
+        </div>
+        <span style={k.askText}>Clear the {s.metres} m of road you laid and start again from here? This can't be undone.</span>
+        <div style={k.askActs}>
+          <button type="button" data-testid="drive-clear-yes" style={k.button('danger')} onClick={clearLaidRoad}>
+            Clear it
+          </button>
+          <button type="button" data-testid="drive-clear-no" style={k.button('plain')} onClick={() => useDrive.setState({ asking: false })}>
+            Keep it
+          </button>
+        </div>
       </div>
     )
   }
   return (
-    <div role="status" style={driveBarStyle}>
-      <span style={kickerStyle}>Drive to draw</span>
-      <span style={metresStyle}>{s.metres} m laid</span>
-      <span style={textStyle}>{s.note ?? (enough ? 'Drive back to where you started to close the loop, or press Finish.' : `Drive anywhere! Lay at least ${CLEANUP.minLength} m of road.`)}</span>
-      <button type="button" style={buttonStyle('primary')} onClick={() => finishDriveToDraw()}>
-        Finish
-      </button>
-      {s.metres > 0 && (
-        <button type="button" style={buttonStyle('plain')} onClick={() => useDrive.setState({ asking: true })}>
-          Clear
-        </button>
+    <div role="status" className="sr-drive-bar" data-testid="drive-bar" style={k.bar}>
+      <div style={k.head}>
+        <span style={k.kicker}>Drive to draw</span>
+        <span style={metresStyle}>{s.metres} m laid</span>
+      </div>
+      {(!touch || helpOn) && (
+        <span style={k.text} data-testid="drive-help">
+          {help}
+        </span>
       )}
-      <button type="button" style={buttonStyle('plain')} onClick={cancelDriveToDraw}>
-        Cancel
-      </button>
+      <div style={k.acts}>
+        <button type="button" data-testid="drive-finish" style={k.button('primary')} onClick={() => finishDriveToDraw()}>
+          Finish
+        </button>
+        {s.metres > 0 && (
+          <button type="button" data-testid="drive-clear" style={k.button('plain')} onClick={() => useDrive.setState({ asking: true })}>
+            Clear
+          </button>
+        )}
+        <button type="button" data-testid="drive-cancel" style={k.button('plain')} onClick={cancelDriveToDraw}>
+          Cancel
+        </button>
+      </div>
     </div>
   )
 }
 
 // Inline styles from palette tokens (this bar shows while the editor stylesheet's root isn't mounted).
-const driveBarStyle: React.CSSProperties = {
-  position: 'fixed',
-  top: 18,
-  left: '50%',
-  transform: 'translateX(-50%)',
-  zIndex: 30,
-  display: 'flex',
-  alignItems: 'center',
-  gap: 14,
-  padding: '10px 12px 10px 18px',
-  borderRadius: 999,
-  background: PALETTE.uiPanel,
-  border: `1px solid ${PALETTE.uiLine}`,
-  color: PALETTE.uiText,
-  font: `14px ${FONTS.body}`,
-  backdropFilter: 'blur(10px)',
-  pointerEvents: 'auto',
-}
+/** How long a phone's help line stays up. */
+const HELP_MS = 5000
 const kickerStyle: React.CSSProperties = { color: PALETTE.uiAccent, letterSpacing: '0.18em', textTransform: 'uppercase', fontSize: 12, fontWeight: 600 }
 const metresStyle: React.CSSProperties = { fontVariantNumeric: 'tabular-nums', fontWeight: 600 }
 const textStyle: React.CSSProperties = { color: PALETTE.uiDim }
-function buttonStyle(kind: 'primary' | 'plain' | 'danger'): React.CSSProperties {
+function buttonStyle(kind: 'primary' | 'plain' | 'danger', touch = false): React.CSSProperties {
   const primary = kind === 'primary'
   return {
-    padding: '7px 14px',
+    padding: touch ? '5px 8px' : '7px 14px',
     borderRadius: 999,
     border: `1px solid ${primary ? PALETTE.uiAccent : kind === 'danger' ? PALETTE.uiBad : PALETTE.uiLine}`,
     background: primary ? PALETTE.uiAccent : 'transparent',
@@ -391,5 +398,99 @@ function buttonStyle(kind: 'primary' | 'plain' | 'danger'): React.CSSProperties 
     font: 'inherit',
     fontWeight: 600,
     cursor: 'pointer',
+    // A thumb's: 44 px to hit, sharing the row (each takes an equal part).
+    ...(touch ? { flex: '1 1 0', minWidth: 0, minHeight: 44, touchAction: 'manipulation' } : {}),
   }
+}
+
+/** The computer's bar: one pill across the top, as it always was (head and acts add no box of their own). */
+interface DriveLook {
+  bar: React.CSSProperties
+  askBar: React.CSSProperties
+  head: React.CSSProperties
+  acts: React.CSSProperties
+  askActs: React.CSSProperties
+  kicker: React.CSSProperties
+  text: React.CSSProperties
+  askText: React.CSSProperties
+  button: (kind: 'primary' | 'plain' | 'danger') => React.CSSProperties
+}
+const DESKTOP = {
+  bar: {
+    position: 'fixed',
+    top: 18,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 30,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 14,
+    padding: '10px 12px 10px 18px',
+    borderRadius: 999,
+    background: PALETTE.uiPanel,
+    border: `1px solid ${PALETTE.uiLine}`,
+    color: PALETTE.uiText,
+    font: `14px ${FONTS.body}`,
+    backdropFilter: 'blur(10px)',
+    pointerEvents: 'auto',
+  } as React.CSSProperties,
+  head: { display: 'contents' } as React.CSSProperties,
+  acts: { display: 'contents' } as React.CSSProperties,
+  kicker: kickerStyle,
+  text: textStyle,
+  button: (kind: 'primary' | 'plain' | 'danger') => buttonStyle(kind),
+} as DriveLook
+DESKTOP.askBar = DESKTOP.bar
+DESKTOP.askText = DESKTOP.text
+DESKTOP.askActs = DESKTOP.acts
+
+/**
+ * The phone's bar (spec/phone-landscape-standard.md): the top of the screen is the lap panel, speed, Camera, the map and
+ * Rewind, the middle is the road and the car, so the bar is one short row at the very bottom, in the gap between the
+ * steering stick on the left and the Brake pedal on the right, 12 px clear of both and above the home bar: how much road
+ * is laid, then Finish, Clear, Cancel. The help line is a small chip just above it for 5 seconds, not a permanent panel.
+ * Those sizes are the touch controls' own (src/ui/phone/touch.css, all in dvmin), copied here because this bar is outside
+ * the game UI's stylesheet scope. "Clear the road you laid?" is a moment the player asked for, so it may be a bigger card.
+ */
+const TOUCH_BOX = {
+  '--u': '1dvmin',
+  '--edge': 'clamp(10px, calc(3.4 * var(--u)), 28px)',
+  '--gas': 'clamp(84px, calc(28 * var(--u)), 150px)',
+  '--pedal': 'clamp(68px, calc(22 * var(--u)), 118px)',
+  '--stick': 'clamp(96px, calc(30 * var(--u)), 160px)',
+  position: 'fixed',
+  zIndex: 30,
+  left: 'calc(max(env(safe-area-inset-left, 0px) + var(--edge) + 6px, 28px) + var(--stick) + 12px)',
+  right: 'calc(env(safe-area-inset-right, 0px) + var(--edge) + var(--gas) + 8px + var(--pedal) + 12px)',
+  bottom: 'calc(env(safe-area-inset-bottom, 0px) + 2px)',
+  boxSizing: 'border-box',
+  background: PALETTE.uiPanelSolid,
+  border: `1px solid ${PALETTE.uiLine}`,
+  color: PALETTE.uiText,
+  font: `13px/1.25 ${FONTS.body}`,
+  pointerEvents: 'auto',
+} as React.CSSProperties
+const PHONE: DriveLook = {
+  bar: { ...TOUCH_BOX, display: 'flex', alignItems: 'center', gap: 6, height: 48, padding: '1px 3px 1px 10px', borderRadius: 14 },
+  askBar: { ...TOUCH_BOX, display: 'flex', flexDirection: 'column', gap: 3, padding: '6px 8px', borderRadius: 14 },
+  head: { display: 'flex', alignItems: 'baseline', gap: 10, flex: 'none' },
+  acts: { display: 'flex', gap: 6, flex: 1, minWidth: 0 },
+  askActs: { display: 'flex', gap: 6 },
+  kicker: { display: 'none' },
+  text: {
+    ...textStyle,
+    position: 'absolute',
+    left: 0,
+    bottom: 'calc(100% + 4px)',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    padding: '3px 8px',
+    borderRadius: 8,
+    background: PALETTE.uiPanelSolid,
+    border: `1px solid ${PALETTE.uiLine}`,
+    fontSize: 12,
+    pointerEvents: 'none',
+  },
+  askText: { ...textStyle, fontSize: 12 },
+  button: (kind) => buttonStyle(kind, true),
 }
