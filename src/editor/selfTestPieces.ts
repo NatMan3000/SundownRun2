@@ -26,11 +26,12 @@
 import afterglowJson from '../../tracks/afterglow.json'
 import { trackInternals } from '../track/build'
 import { TRACK_DEFAULTS, type TrackFile } from '../track/schema'
+import { validateTrack } from '../track/validate'
 import { SURFACE_CODE, type NearestHit, type TrackFrame, type TrackRuntime } from '../track/types'
 import * as THREE from 'three'
 import { builtBankAngle } from './bankAngle'
 import type { Draft } from './draft'
-import { draftFromFile } from './draftFile'
+import { draftFile, draftFromFile } from './draftFile'
 import { judgeDraft } from './judge'
 import { WALLRIDE_MAX, WALLRIDE_MIN } from './pieces'
 import { advanceAt, frameAt, metresBetween, roadCurve, type RoadCurve } from './road'
@@ -83,6 +84,20 @@ function bendSpot(rt: TrackRuntime): number {
 
 export function pieceRows(check: Check, store: EditorStore | undefined): void {
   const afterglow = () => draftFromFile(afterglowJson as unknown as TrackFile, true)
+
+  // ---------------------------------------------------------------- the road's seam
+
+  check("A file is valid with a piece or the start line right on the road's seam: a spot found on the last stretch can land on exactly the number of points, and that is the same spot as 0", () => {
+    const d = afterglow()
+    const n = d.points.length
+    const f = draftFile({ id: 'seam', name: 'Seam', points: d.points, width: d.width, environment: d.environment, pieces: [{ type: 'boost', at: n }], startAt: n })
+    const bad: string[] = []
+    if (f.pieces?.[0].at !== 0) bad.push(`piece at ${f.pieces?.[0].at}, wanted 0`)
+    if (f.start) bad.push(`start at ${f.start.at}, wanted none (0)`)
+    const v = validateTrack(f)
+    if (!v.ok) bad.push(...v.errors.map((e) => `${e.path}: ${e.message}`))
+    return bad
+  })
 
   // ---------------------------------------------------------------- a click puts the middle there
 

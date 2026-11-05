@@ -7,8 +7,9 @@
 //
 //    bottom left   Undo and Redo, always; the tool button under them,
 //                  showing the tool in your hand. Tap it for the tray:
-//                  all nine tools, in the computer's order, and View
-//    beside it     a chip with the tool's setting, opens the card
+//                  all nine tools, in the computer's order, the setting of
+//                  the one you hold, and View. Nothing else sits on the map
+//                  (P8), bar the other thumb's buttons while a finger works
 //    down the right  compass, Menu, 3D, Checks, Save, Test drive
 //    on the right  the card, over the stack: the chosen tool's settings,
 //                  the Checks list, or whatever is picked on the map
@@ -34,7 +35,7 @@ import { in3d, zoomViewAt } from '../look3dSpace'
 import { Compass, CubeIcon, MapIcon } from '../Look3dUi'
 import { issueLocation, roadGeometry } from '../mapDraw'
 import { gestureStats } from '../mapGestures'
-import { cancelPointerGesture, fitToDraft } from '../Overlay'
+import { cancelPointerGesture, fitToDraft, touchState } from '../Overlay'
 import { Inspector, Problems, useProblems } from '../Panel'
 import { PLACE_TOOLS } from '../pieces'
 import { problemByKey } from '../problems'
@@ -71,7 +72,20 @@ const Chevron = () => (
   </svg>
 )
 
-/** Is the tool's finger on the map? 'start' for a moment, then 'working'. Read once a frame, and it only re-renders when it changes. */
+/** The tray's row for the tool's setting. */
+const SlidersGlyph = () => (
+  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden>
+    <path d="M4 7h9M18 7h2M4 17h2M11 17h9" />
+    <circle cx="15.5" cy="7" r="2.5" />
+    <circle cx="8.5" cy="17" r="2.5" />
+  </svg>
+)
+
+/**
+ * Is the tool's finger on the map? 'start' for a moment, then 'working'. A finger only moving the map
+ * doesn't count: it has nothing to cancel and no card to chase off. Read once a frame, and it only
+ * re-renders when it changes.
+ */
 function useToolFinger(): 'none' | 'start' | 'working' {
   const [state, setState] = useState<'none' | 'start' | 'working'>('none')
   useEffect(() => {
@@ -80,7 +94,7 @@ function useToolFinger(): 'none' | 'start' | 'working' {
     let shown: 'none' | 'start' | 'working' = 'none'
     const tick = (t: number) => {
       let now: typeof shown = 'none'
-      if (gestureStats.phase === 'tool') {
+      if (gestureStats.phase === 'tool' && !touchState.panning) {
         if (shown === 'none') since = t
         now = t - since >= WORKING_MS ? 'working' : 'start'
       }
@@ -145,6 +159,7 @@ export function PhoneEditor(p: { onLibrary: () => void; onExit: () => void }) {
   const tool = useEditor((s) => s.tool)
   const selection = useEditor((s) => s.selection)
   const finger = useToolFinger()
+  const heldName = useHeldName()
 
   // A card asked for is held back while a finger is working the tool ("the map only" while you draw or drag),
   // and one already up steps aside once that is more than a slow tap.
@@ -184,16 +199,12 @@ export function PhoneEditor(p: { onLibrary: () => void; onExit: () => void }) {
     }
   }, [])
 
-  // The scale bar sits in the free map: to the right of the chip, along the bottom. Read after every render (the chip's words change its width).
+  // The scale bar sits in the free map: beside the tool button, along the bottom.
   useLayoutEffect(() => {
     const left = document.querySelector('.phone-left')?.getBoundingClientRect()
     if (!left) return
-    const chips = document.querySelector('.phone-chips')?.getBoundingClientRect()
-    const free = freeMapBox()
-    // The bar and its words reach about 245 px. Too narrow beside the chip (a phone stood up): above it.
-    const besideChip = !chips || !free || chips.right + 12 + 245 <= free.right
-    const x = (besideChip && chips ? chips.right : left.right) + 12
-    const up = window.innerHeight - (besideChip ? left.bottom : chips.top) + 6
+    const x = left.right + 12
+    const up = window.innerHeight - left.bottom + 6
     if (x !== view.scaleX || up !== view.scaleUp) {
       view.scaleX = x
       view.scaleUp = up
@@ -216,7 +227,7 @@ export function PhoneEditor(p: { onLibrary: () => void; onExit: () => void }) {
   return (
     <>
       <div className="phone-left">
-        <UndoRedo cancelling={finger === 'working'} />
+        <UndoRedo fingerWorking={finger === 'working'} />
         <button
           type="button"
           className="phone-tool"
@@ -230,18 +241,24 @@ export function PhoneEditor(p: { onLibrary: () => void; onExit: () => void }) {
         >
           <span className="phone-tool-more" aria-hidden />
           {TOOLS.find((t) => t.id === tool)?.icon}
-          <span className="phone-tool-name">{toolName(tool)}</span>
+          <span className="phone-tool-name">{heldName}</span>
         </button>
       </div>
 
-      {!trayOpen && !cardUp && <ToolChips onOpen={() => setCard('tool')} />}
       {tray === 'tools' && (
         <ToolTray
           onPick={(t) => {
             audio.ui('move')
             setTray(null)
-            setCard((c) => (t === 'place' ? 'tool' : c === 'tool' ? null : c))
+            // Place opens on its palette; the tool already in your hand opens its settings, if it has any.
+            const settings = t === 'place' || (t === tool && t !== 'select')
+            setCard((c) => (settings ? 'tool' : c === 'tool' ? null : c))
             pickTool(t)
+          }}
+          onSetting={() => {
+            audio.ui('move')
+            setTray(null)
+            setCard('tool')
           }}
           onView={() => {
             audio.ui('move')
@@ -276,10 +293,11 @@ export function PhoneEditor(p: { onLibrary: () => void; onExit: () => void }) {
 
 /**
  * Undo and Redo, always beside the tool button. While a finger is working the
- * tool, Undo offers Cancel to the other thumb (the computer's Esc). It acts on
- * the press: Chrome sends no click for a second finger.
+ * tool, or a Straight or Curve is half made, Undo offers Cancel (the computer's
+ * Esc). It acts on the press: Chrome sends no click for a second finger.
  */
-function UndoRedo(p: { cancelling: boolean }) {
+function UndoRedo(p: { fingerWorking: boolean }) {
+  const halfMade = useEditor((s) => s.shaping?.tool === s.tool)
   const canUndo = useEditor((s) => s.past.length > 0)
   const canRedo = useEditor((s) => s.future.length > 0)
   const press = (can: boolean, act: () => void, none: string) => {
@@ -293,7 +311,7 @@ function UndoRedo(p: { cancelling: boolean }) {
   }
   return (
     <div className="phone-undo">
-      {p.cancelling ? (
+      {p.fingerWorking || halfMade ? (
         <button type="button" className="is-cancel" data-testid="phone-cancel" onPointerDown={() => cancelBend() || cancelShaping() || cancelPointerGesture()}>
           <UndoIcon />
           <span>Cancel</span>
@@ -312,72 +330,63 @@ function UndoRedo(p: { cancelling: boolean }) {
   )
 }
 
-/** Beside the tool button: the tool's setting, one tap from the card. A half-made Straight or Curve can start again here. */
-function ToolChips(p: { onOpen: () => void }) {
+/**
+ * The tool in your hand's setting, in the words the tray's row says: nothing sits on the map
+ * for this (Nathan, P8: "Keep the road world clear"). Null for a tool with none (Select).
+ */
+function useToolSetting(): ReactNode {
   const tool = useEditor((s) => s.tool)
   const steady = useEditor((s) => s.steady)
   const reach = useEditor((s) => s.bendReach)
   const placeKind = useEditor((s) => s.placeKind)
   const shaping = useEditor((s) => s.shaping)
-  const halfMade = shaping?.tool === tool
-  let words: ReactNode = null
   if (tool === 'pencil') {
-    words = (
+    return (
       <>
-        <span>Steady hand:</span> <b>{STEADY_NAMES[steady] ?? ''}</b>
+        Steady hand: <b>{STEADY_NAMES[steady] ?? ''}</b>
       </>
     )
-  } else if (tool === 'bend') {
-    words = (
+  }
+  if (tool === 'bend') {
+    return (
       <>
-        <span>Reach:</span> <b>{reach} m</b>
+        Reach: <b>{reach} m</b>
       </>
     )
-  } else if (tool === 'straight' || tool === 'curve') {
+  }
+  if (tool === 'straight' || tool === 'curve') {
     const step = shaping?.tool === tool ? (shaping.b !== null ? 3 : 2) : 1
-    words = (
+    return (
       <>
-        <span>Step</span> <b>{step} of {tool === 'straight' ? 2 : 3}</b>
+        Step <b>{step} of {tool === 'straight' ? 2 : 3}</b>
       </>
     )
-  } else if (tool === 'height' || tool === 'bank' || tool === 'width') {
-    words = <span>Pick a stretch</span>
-  } else if (tool === 'place') {
+  }
+  if (tool === 'height' || tool === 'bank' || tool === 'width') return 'Pick a stretch'
+  if (tool === 'place') {
     const piece = PLACE_TOOLS.find((t) => t.kind === placeKind) ?? PLACE_TOOLS[0]
-    words = (
+    return (
       <>
-        <i className="phone-chip-swatch" style={{ background: piece.colour }} aria-hidden />
+        <i className="phone-row-swatch" style={{ background: piece.colour }} aria-hidden />
         <b>{piece.label}</b>
       </>
     )
   }
-  if (!words) return null
-  return (
-    <div className="phone-chips">
-      <button
-        type="button"
-        className="phone-chip"
-        data-testid="phone-chip"
-        onClick={() => {
-          audio.ui('move')
-          p.onOpen()
-        }}
-      >
-        {words}
-        <Chevron />
-      </button>
-      {halfMade && (
-        <button type="button" className="phone-chip" data-testid="phone-start-again" onClick={() => cancelShaping()}>
-          Start again
-        </button>
-      )}
-    </div>
-  )
+  return null
+}
+
+/** What the tool button says: the tool's name, or for Place the piece in your hand. */
+function useHeldName(): string {
+  const tool = useEditor((s) => s.tool)
+  const placeKind = useEditor((s) => s.placeKind)
+  if (tool !== 'place') return toolName(tool)
+  return (PLACE_TOOLS.find((t) => t.kind === placeKind) ?? PLACE_TOOLS[0]).label
 }
 
 /** All nine tools, in the computer's order, and the way to View. */
-function ToolTray(p: { onPick: (tool: EditorTool) => void; onView: () => void }) {
+function ToolTray(p: { onPick: (tool: EditorTool) => void; onSetting: () => void; onView: () => void }) {
   const tool = useEditor((s) => s.tool)
+  const setting = useToolSetting()
   return (
     <nav className="phone-tray" aria-label="Tools" data-testid="phone-tray">
       {TOOLS.map((t) => (
@@ -386,6 +395,13 @@ function ToolTray(p: { onPick: (tool: EditorTool) => void; onView: () => void })
           <span>{toolName(t.id)}</span>
         </button>
       ))}
+      {setting && (
+        <button type="button" className="phone-tray-row is-setting" data-testid="phone-tool-row" onClick={p.onSetting}>
+          <SlidersGlyph />
+          <span>{setting}</span>
+          <Chevron />
+        </button>
+      )}
       <button type="button" className="phone-tray-row" data-testid="phone-tray-view" onClick={p.onView}>
         <FitIcon />
         <span>View: zoom, Fit track, Whole world</span>

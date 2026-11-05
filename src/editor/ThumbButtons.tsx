@@ -8,17 +8,20 @@
 //             along with your hand, the same 1.25 times a step as the keys.
 //
 //  This file holds the state and the buttons, and nothing else: Overlay.tsx reads
-//  `useThumb` and registers `thumbHands`. The buttons are one small component so the
-//  phone layout can move them wherever they belong (they are placed by `.sre-thumb`
-//  in editor.css, a marked block at its end). Shown on a phone only.
+//  `useThumb` and registers `thumbHands`. They show only while a finger is on the map
+//  working that tool, then go (P8: "Keep the road world clear"), placed by `.sre-thumb`
+//  in phone/phone.css. Shown on a phone only.
 // ============================================================
 
 import { create } from 'zustand'
 import { useGame } from '../core/store'
 import { useEditor } from './draft'
 
-/** The thumb's state: read by Overlay.tsx, written by the buttons. */
-export const useThumb = create<{ straightLine: boolean }>(() => ({ straightLine: false }))
+/**
+ * The thumb's state: `straightLine` read by Overlay.tsx and written by the buttons; `working` the
+ * other way round: which tool a finger is working on the map right now. Nothing shows without one (P8).
+ */
+export const useThumb = create<{ straightLine: boolean; working: 'pencil' | 'bend' | null }>(() => ({ straightLine: false, working: null }))
 
 /** What the buttons ask of the map. Overlay.tsx fills it in while it is mounted. */
 export const thumbHands: { bendReach: (more: boolean) => void } = { bendReach: () => {} }
@@ -43,9 +46,10 @@ export function ThumbButtons() {
   const touch = useGame((s) => s.inputDevice === 'touch' && !s.mapOpen)
   const tool = useEditor((s) => (s.mode === 'edit' ? s.tool : null))
   const straight = useThumb((s) => s.straightLine)
+  const working = useThumb((s) => s.working)
   const reach = useEditor((s) => s.bendReach)
   if (!touch) return null
-  if (tool === 'pencil') {
+  if (tool === 'pencil' && working === 'pencil') {
     return (
       <div className="sre-thumb" data-testid="thumb-buttons">
         <button type="button" className={straight ? 'sre-thumb-btn is-on' : 'sre-thumb-btn'} aria-pressed={straight} data-testid="thumb-straight" {...thumbPress(() => useThumb.setState({ straightLine: !useThumb.getState().straightLine }))}>
@@ -54,7 +58,7 @@ export function ThumbButtons() {
       </div>
     )
   }
-  if (tool === 'bend') {
+  if (tool === 'bend' && working === 'bend') {
     return (
       <div className="sre-thumb" data-testid="thumb-buttons">
         <button type="button" className="sre-thumb-btn" aria-label="Less road comes along" data-testid="thumb-less" {...thumbPress(() => thumbHands.bendReach(false))}>

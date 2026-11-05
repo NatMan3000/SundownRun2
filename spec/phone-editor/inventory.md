@@ -182,3 +182,14 @@ Pad and keyboard stay exactly as they are; a pad plugged into a phone still work
 | Track name and save words | top left | Menu |
 | Tool settings and picked things | swap in for the tools on the shelf, one row plus words | card on the right |
 | Everything else | as above | as above |
+
+### C as built, with Nathan's ruling on the map (P8, 5 Nov 2026)
+
+"The steady hand picker should be somewhere else (or hidden), it doesn't make sense being out there by itself. Keep the road world clear." So wherever the sections above say "chip", under C it is this, and nothing of the kind sits on the map:
+
+| Action | Under C |
+|---|---|
+| The tool's setting: Steady hand, Reach, Straight's and Curve's steps, how Height, Bank and Width pick a stretch | STEP, STEP: tap the tool button, then the row above View in the tray, in the same words ("Steady hand: Some"). It opens the card. Tapping the tool you already hold in the tray opens it too. Select has no setting, so no row |
+| Which piece you are placing | The tool button names it ("Boost pad", with the Pieces icon). Tool button, then the tray's row, opens the palette to change it |
+| Pencil's Straight line, Bend's minus and plus | Only while a finger is on the map working that tool; they go when it lifts. They sit beside the tool button and act on the second finger's press |
+| Stop a half-made Straight or Curve | Cancel in Undo's place, for as long as the shape is half made (the status line still says the step) |

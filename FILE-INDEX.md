@@ -20,6 +20,7 @@
 | `spec/phone-editor/plan.md` | `reference` | Road Editor on a phone: what today's touch does, the gesture map, the layouts compared, the ten pieces of Phase B |
 | `spec/phone-editor/inventory.md` | `reference` | Every Road Editor action and state, and where it goes on a phone |
 | `spec/phone-editor/piece-1-report.md` | `reference` | Piece 1, the gesture layer: numbers, break-it table, Safari results, the phone trial list, notes for piece 2 |
+| `spec/phone-editor/piece-3-5-report.md` | `reference` | Pieces 3 to 5, layout C: shell, card, Menu, the map kept clear (P8), the gate's editor steps, the merge's red lines, break-it tables |
 | `spec/phone-editor/*.png` | `reference` | Pictures of the chosen layout (C, One tool button) and the sheet of all three |
 | `scripts/make-icons.ts` | `permanent` | Home Screen icon generator |
 | `scripts/phone-gate.ts` | `permanent` | Phone gate behind bun run phone:check |

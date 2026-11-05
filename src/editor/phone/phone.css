@@ -20,7 +20,7 @@
   --left-w: 92px;
   --stack-w: 76px;
   --card-w: 272px;
-  /* Beside the tool button: where the chip and the tray start. */
+  /* Beside the tool button: where the tray and the other thumb's buttons start. */
   --beside-tool: calc(var(--edge-l) + var(--left-w) + 8px);
   /* Solid enough to read over a bright road, with no blur to pay for on a phone. */
   --phone-glass: color-mix(in srgb, var(--panel-solid) 90%, transparent);
@@ -29,7 +29,7 @@
   --tool-h: 56px;
   --side-h: 44px;
   --drive-h: 52px;
-  --cell-h: 52px;
+  --cell-h: 46px;
   --card-gap: 5px;
   /* How far a slider's 44 px tucks under its label and the next row: what a thumb grabs stays 44, the row takes less. */
   --slider-up: -11px;
@@ -67,7 +67,6 @@
 }
 /* What never scrolls takes no swipe: a finger sliding off a button must not move the page or Safari's bars. */
 .phone-left,
-.phone-chips,
 .phone-stack,
 .phone-tray,
 .phone-card-head,
@@ -143,8 +142,11 @@
   height: 24px;
 }
 .phone-tool-name {
+  padding: 0 3px;
   font-size: 13.5px;
   font-weight: 700;
+  line-height: 1.05;
+  text-align: center;
 }
 /* A small corner mark: this button opens more. */
 .phone-tool-more {
@@ -163,52 +165,42 @@
   color: var(--panel-solid);
 }
 
-.phone-chips {
+/* The other thumb's buttons, only while one finger works the map (ThumbButtons.tsx): where the second thumb
+   already is, just clear of the scale bar and the x, z readout along the bottom of the map. */
+.sre[data-touch] .sre-thumb {
   position: absolute;
   left: var(--beside-tool);
-  bottom: var(--edge-b);
+  bottom: calc(var(--edge-b) + 32px);
   z-index: 3;
   display: flex;
-  gap: 6px;
-}
-.phone-chip {
-  min-height: 44px;
-  display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+.sre[data-touch] .sre-thumb-btn {
+  min-width: 44px;
+  min-height: 44px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--phone-glass);
-  color: var(--dim);
   font-size: 13px;
+}
+.sre[data-touch] .sre-thumb-btn.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-solid));
+}
+.sre[data-touch] .sre-thumb-label {
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: var(--phone-glass);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.phone-chip b {
-  color: var(--text);
-  font-weight: 700;
-}
-.phone-chip svg {
-  margin-left: 2px;
-}
-.phone-chip:active {
-  background: color-mix(in srgb, var(--text) 14%, var(--panel-solid));
-}
-.phone-chip-swatch {
-  width: 11px;
-  height: 11px;
-  border-radius: 3px;
-}
-
-/* The other thumb's buttons while one finger works the map (ThumbButtons.tsx, piece 2): just above the chip. */
-.sre[data-touch] .sre-thumb {
-  position: absolute;
-  left: var(--beside-tool);
-  bottom: calc(var(--edge-b) + 50px);
-  z-index: 3;
-}
 .sre[data-touch]:has(.phone-tray) .sre-thumb,
-.sre[data-touch]:has(.phone-menu) .sre-thumb {
+.sre[data-touch]:has(.phone-menu) .sre-thumb,
+.sre[data-touch]:has(.phone-card-slot:not([hidden])) .sre-thumb {
   visibility: hidden;
 }
 
@@ -288,6 +280,17 @@
 }
 .phone-tray-row svg {
   flex: none;
+}
+.phone-tray-row.is-setting b {
+  color: var(--text);
+  font-weight: 700;
+}
+.phone-row-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 3px;
 }
 .phone-tray-row:active {
   background: color-mix(in srgb, var(--text) 12%, transparent);
@@ -905,7 +908,7 @@
 /* ---------------------------------------------------------------- the Menu */
 
 /* A page of its own: nothing of the map's buttons shows through it, or can be pressed behind it. */
-.sre[data-touch]:has(.phone-menu) :is(.phone-left, .phone-chips, .phone-stack, .phone-card-slot, .phone-tray, .sre-status, .sre-empty, .sre-look-note) {
+.sre[data-touch]:has(.phone-menu) :is(.phone-left, .phone-stack, .phone-card-slot, .phone-tray, .sre-status, .sre-empty, .sre-look-note) {
   visibility: hidden;
 }
 

@@ -1159,35 +1159,3 @@ textarea.sre-input {
 .sre-help.is-warn {
   color: color-mix(in srgb, var(--warn) 75%, var(--text));
 }
-/* ---------------------------------------------------------------- the other thumb's buttons (ThumbButtons.tsx)
-
-   Straight line (Pencil) and less / more reach (Bend), on a phone only. Placed here only so they can be
-   reached and proven; the phone layout moves them to their final home (spec/phone-editor/plan.md, piece 3). */
-
-.sre-thumb {
-  position: absolute;
-  z-index: 4;
-  left: calc(max(16px, env(safe-area-inset-left, 0px)) + var(--rail-w) + 12px);
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.sre-thumb-btn {
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0 14px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: var(--glass);
-  font-size: 16px;
-  touch-action: manipulation;
-}
-.sre-thumb-btn.is-on {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 25%, var(--glass));
-}
-.sre-thumb-label {
-  padding: 0 4px;
-  font-variant-numeric: tabular-nums;
-}

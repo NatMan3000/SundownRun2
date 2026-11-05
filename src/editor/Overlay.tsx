@@ -157,6 +157,8 @@ const LIFT_EDGE_PX = 28
 const LIFT_AFTER_PX = 6
 /** A second tap this close to the first, pixels, is a double tap (a mouse: 6). A fingertip lands further off than a mouse. */
 const DOUBLE_TAP_PX = 20
+/** A double tap this close to a road point that is showing, metres, is on that point, so there is nothing to add. */
+const ON_A_POINT_M = 3
 
 export function fitToDraft(): void {
   const pts = useEditor.getState().draft.points
@@ -263,6 +265,8 @@ export const touchState = {
   /** Presses that will act when the finger lifts (Straight, Curve, Place), and those that did. */
   pendingLifts: 0,
   commits: 0,
+  /** The finger is only moving the map: there is nothing of the tool's to cancel, and no card to get out of the way of. */
+  panning: false,
 }
 
 /** Esc while a drag or a half-drawn pencil line is going on: stop it (set by the mounted Overlay). */
@@ -1159,11 +1163,18 @@ export function Overlay() {
     function onDouble(e: PointerEvent) {
       const s = useEditor.getState()
       if (s.tool !== 'select' || s.mode !== 'edit') return
-      if (pickAt(e.clientX, e.clientY, reachNow())?.kind === 'point') return
+      // A finger's wide reach is for grabbing. Used here it would refuse anywhere within 22 px of a point,
+      // and with points a few pixels apart that is the whole road: so for a finger, "on a point" is in metres.
+      if (!touching && pickAt(e.clientX, e.clientY, MOUSE_REACH)?.kind === 'point') return
       const g = roadGeometry(s.draft.points, s.draft.width)
       const q = toWorld(e.clientX, e.clientY)
       const hit = roadNearest(g.rc, q)
-      if (hit.distance <= s.draft.width / 2 + roadSlack(q, 4)) insertPointAt(hit.at)
+      if (!(hit.distance <= s.draft.width / 2 + roadSlack(q, 4))) return
+      if (touching && pointsVisible(s) && s.draft.points.some((p) => Math.hypot(p.x - hit.p.x, p.z - hit.p.z) <= ON_A_POINT_M)) {
+        say('That spot already is a road point. Double tap the road between two points to add one.', 'info')
+        return
+      }
+      insertPointAt(hit.at)
     }
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
@@ -1448,6 +1459,10 @@ export function Overlay() {
     const loop = (t: number) => {
       const dt = Math.min(0.05, (t - lastT) / 1000)
       lastT = t
+      touchState.panning = panning
+      // The other thumb's buttons are for while a finger works the tool (ThumbButtons.tsx).
+      const working = !touching ? null : drawing ? 'pencil' : bending && isBending() ? 'bend' : null
+      if (working !== useThumb.getState().working) useThumb.setState({ working })
       pollPad(dt)
       const now3d = look3dOn()
       if (now3d !== was3d) {

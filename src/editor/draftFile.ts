@@ -110,6 +110,16 @@ export interface DraftParts {
   hunt?: HuntSpec
 }
 
+/**
+ * A spot on the road as a file holds it: from 0 up to (not including) the number of points.
+ * The road is a loop, so a spot found on its last stretch can land on exactly that number (a
+ * press right on the first point, or 86.996 rounded). That is the same spot as 0, and the
+ * game's validator would call it an error.
+ */
+function onTheLoop(at: number, count: number): number {
+  return count > 0 && at >= count ? at - count : at
+}
+
 /** Assemble a complete, valid-shaped TrackFile from the editor's parts. */
 export function draftFile(parts: DraftParts): TrackFile {
   // The banking, and the rest of the road's settings (its barrier walls) just as they were.
@@ -131,7 +141,7 @@ export function draftFile(parts: DraftParts): TrackFile {
   if (parts.author) file.author = parts.author
   if (parts.description) file.description = parts.description
   if (parts.laps !== undefined) file.laps = parts.laps
-  if (parts.pieces?.length) file.pieces = cloneJson(parts.pieces)
+  if (parts.pieces?.length) file.pieces = cloneJson(parts.pieces).map((p) => ({ ...p, at: onTheLoop(p.at, parts.points.length) }))
   if (parts.props?.length) file.props = cloneJson(parts.props)
   if (parts.cores?.length) file.cores = cloneJson(parts.cores)
   if (parts.hunt && parts.cores?.length) {
@@ -140,7 +150,8 @@ export function draftFile(parts: DraftParts): TrackFile {
     if (hunt.count !== undefined) hunt.count = Math.min(hunt.count, parts.cores.length)
     file.hunt = hunt
   }
-  if (parts.startAt) file.start = { at: parts.startAt }
+  const startAt = onTheLoop(parts.startAt ?? 0, parts.points.length)
+  if (startAt) file.start = { at: startAt }
   return file
 }
 

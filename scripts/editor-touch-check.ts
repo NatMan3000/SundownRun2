@@ -158,8 +158,12 @@ class Phone {
       document.head.append(style)
     }, hide)
   }
-  /** A road to work on, framed, with every tool's last state gone. */
+  /** A road to work on, framed, with every tool's last state gone. The same road whatever ran before: the dice keep the world they find. */
   async freshRoad() {
+    if ((await this.sum()).baseWorld !== 'neon-valley') {
+      await this.ed('newTrackNow', 'neon-valley')
+      await sleep(800)
+    }
     await this.ed('random', 7)
     await sleep(1500)
     await this.ed('fit')
@@ -1060,14 +1064,53 @@ async function toolButton(p: Phone) {
     ok((await tool()) === t, `a tap on ${t} picks it`, await tool())
     ok(!(await trayUp()), 'and folds the tray')
     const name = (await box('[data-testid=phone-tool]'))!.text
-    ok(new RegExp(t === 'place' ? 'Pieces' : t, 'i').test(name), 'and the button says so', name)
+    ok(new RegExp(t === 'place' ? 'Boost pad' : t, 'i').test(name), 'and the button says so', name)
     if (t === 'place') {
       ok(!!(await box('.phone-card .sre-palette')), 'Place opens on its palette')
       await press('.phone-card .sre-piece')
       ok(!(await box('.phone-card')), 'picking a piece folds the card')
-      ok(/Boost/.test((await box('[data-testid=phone-chip]'))?.text ?? ''), 'to a chip naming the piece', (await box('[data-testid=phone-chip]'))?.text)
+      const named = (await box('[data-testid=phone-tool]'))!.text
+      ok(/Boost pad/.test(named) && (await p.page.evaluate(() => !!document.querySelector('[data-testid=phone-tool] svg'))), 'and the tool button names the piece, with its icon', named)
     }
   }
+
+  // The tool's settings live in the tray, in a row above View, and nothing of them sits on the map (P8).
+  const row = () => box('[data-testid=phone-tool-row]')
+  await press('[data-testid=phone-tool]')
+  ok(/Boost pad/.test((await row())?.text ?? ''), "the tray's row names the piece in hand", (await row())?.text)
+  const rowAbove = await p.page.evaluate(() => {
+    const r = document.querySelector('[data-testid=phone-tool-row]')!.getBoundingClientRect()
+    const v = document.querySelector('[data-testid=phone-tray-view]')!.getBoundingClientRect()
+    return { rowBottom: r.bottom, viewTop: v.top, h: r.height }
+  })
+  ok(rowAbove.rowBottom <= rowAbove.viewTop && rowAbove.h >= 44, 'above the View row, big enough for a thumb', rowAbove)
+  await press('[data-testid=phone-tool-row]')
+  ok(!!(await box('.phone-card .sre-palette')) && !(await trayUp()), 'and opens the palette to change piece')
+  await press('[data-testid=phone-done]')
+  for (const [t, words] of [['pencil', /Steady hand: \w+/], ['bend', /Reach: \d+ m/], ['straight', /Step 1 of 2/], ['curve', /Step 1 of 3/], ['height', /Pick a stretch/], ['bank', /Pick a stretch/], ['width', /Pick a stretch/]] as const) {
+    await press('[data-testid=phone-tool]')
+    await press(`[data-testid=phone-tray] [data-rail=${t}]`)
+    ok((await tool()) === t && !(await box('.phone-card')), `${t}: picked, and no card yet`)
+    await press('[data-testid=phone-tool]')
+    ok(words.test((await row())?.text ?? ''), `${t}: the tray's row says its setting`, (await row())?.text)
+    await press('[data-testid=phone-tool-row]')
+    ok(!!(await box('.phone-card[data-kind=tool]')) && !(await trayUp()), `${t}: the row opens its card`)
+    await press('[data-testid=phone-done]')
+    // The tool already in your hand opens the same card.
+    await press('[data-testid=phone-tool]')
+    await press(`[data-testid=phone-tray] [data-rail=${t}]`)
+    ok(!!(await box('.phone-card[data-kind=tool]')) && (await tool()) === t, `${t}: tapping the tool you hold opens it too`)
+    await press('[data-testid=phone-done]')
+  }
+  await press('[data-testid=phone-tool]')
+  await press('[data-testid=phone-tray] [data-rail=select]')
+  await press('[data-testid=phone-tool]')
+  ok(!(await row()), 'Select has no setting, so no row')
+  await press('[data-testid=phone-tray] [data-rail=select]')
+  ok(!(await box('.phone-card')) && !(await trayUp()), 'and tapping it when held just folds the tray')
+  await p.ed('tool', 'place')
+  await sleep(150)
+  await press('.phone-card .sre-piece')
 
   // A tap on the map with the tray open only closes it: Place in hand, a real road under the finger.
   const spot = await p.roadNear(p.w * 0.62, p.h * 0.5)
@@ -1257,6 +1300,61 @@ async function toolButton(p: Phone) {
   ok((await p.road()) === r0 && (await p.sum()).undoSteps === u0, 'Cancel with the other thumb: the same line is gone', { undo: (await p.sum()).undoSteps - u0 })
   ok(!(await box('[data-testid=phone-cancel]')), 'and Undo is back')
   await p.ed('steady', 2)
+
+  // A half-made Straight: Undo offers Cancel for as long as it is half made, and that is how to start again.
+  await p.ed('fit')
+  await p.ed('tool', 'straight')
+  await sleep(150)
+  const straightAt = (await p.ed('screen', (await p.sum()).points * 0.2)) as { sx: number; sy: number }
+  await p.tap({ x: straightAt.sx, y: straightAt.sy })
+  await sleep(150)
+  ok(!!(await p.sum()).shaping, 'a Straight half made')
+  ok(!!(await box('[data-testid=phone-cancel]')), 'Undo offers Cancel')
+  await press('[data-testid=phone-cancel]')
+  await sleep(100)
+  ok(!(await p.sum()).shaping && !!(await box('[data-rail=undo]')), 'a tap on it starts again, and Undo is back')
+
+  // One finger only moving the map has nothing to cancel, and the card stays where it is.
+  await p.ed('tool', 'select')
+  await sleep(150)
+  const [emptySpot] = await freeSpots(p, 1)
+  const hold = async (from: Spot, path: (i: number) => Spot) => {
+    await p.down({ ...from, id: 1 })
+    for (let i = 1; i <= 8; i++) {
+      await p.move({ ...path(i), id: 1 })
+      await sleep(14)
+    }
+    await sleep(250)
+  }
+  await hold(emptySpot, (i) => ({ x: emptySpot.x + i * 4, y: emptySpot.y }))
+  ok((await p.g()).phase === 'tool', 'a finger moving the map')
+  ok(!(await box('[data-testid=phone-cancel]')) && !!(await box('[data-rail=undo]')), 'Undo stays Undo, there is nothing to cancel')
+  await p.lift()
+  await sleep(150)
+  await p.ed('fit')
+  await p.ed('tool', 'width')
+  await sleep(150)
+  const stretchSpot = await p.roadNear(p.w * 0.4, p.h * 0.5)
+  await p.tap(stretchSpot)
+  await sleep(600)
+  ok(!!(await box('.phone-card')), 'a card up for a stretch')
+  const [offRoadSpot] = await freeSpots(p, 1)
+  ok(await p.onMap(offRoadSpot), 'with an empty spot of map beside it')
+  const cxBefore = (await p.g()).view.cx
+  await hold(offRoadSpot, (i) => ({ x: offRoadSpot.x + i * 4, y: offRoadSpot.y }))
+  ok((await p.g()).view.cx !== cxBefore, 'one finger off the road moves the map')
+  ok(!!(await box('.phone-card')), 'and the card stays up')
+  await p.lift()
+  await sleep(200)
+  const onStretch = await p.roadNear(p.w * 0.4, p.h * 0.5)
+  ok(await p.onMap(onStretch), 'the road, beside the card')
+  await hold(onStretch, (i) => ({ x: onStretch.x + i, y: onStretch.y + i }))
+  ok(!(await box('.phone-card')), 'a finger working on the road: the card steps aside, the map only')
+  ok(!!(await box('[data-testid=phone-cancel]')), 'and Undo offers Cancel')
+  await p.lift()
+  await sleep(350)
+  ok(!!(await box('.phone-card')), 'and it comes back when the finger lifts')
+  await press('[data-testid=phone-done]')
 
   // The Menu.
   await press('[data-testid=phone-menu-open]')
@@ -1822,6 +1920,23 @@ async function placeOnLift(p: Phone) {
   await sleep(250)
   ok((await p.sum()).pieces === before.pieces + 1, 'wall ride: lifting places it')
   await p.undoTo(before.undoSteps)
+  // Right on the road's first point: the nearest spot on the loop is the end of its last stretch, the same spot as 0. The file must still be valid.
+  const seam = (await p.ed('screen', 0)) as { sx: number; sy: number }
+  const onMapSeam = await p.onMap({ x: seam.sx, y: seam.sy })
+  if (!onMapSeam) await p.ed('view', [(await p.ed('screen', 0) as { x: number }).x, (await p.ed('screen', 0) as { z: number }).z, (await p.g()).view.mpp])
+  await sleep(150)
+  const seam2 = (await p.ed('screen', 0)) as { sx: number; sy: number }
+  await p.ed('tool', 'place')
+  await pickPieceKey(p, '1')
+  const u9 = (await p.sum()).undoSteps
+  await p.tap({ x: seam2.sx, y: seam2.sy })
+  await sleep(900)
+  const seamFile = (await p.ed('file')) as { road: { points: unknown[] }; pieces: { at: number }[] }
+  ok((await p.sum()).undoSteps === u9 + 1, 'a piece on the road\'s very first point goes down')
+  ok(seamFile.pieces.every((q) => q.at >= 0 && q.at < seamFile.road.points.length), 'and every spot in the file is on the road', seamFile.pieces.map((q) => q.at))
+  const seamErrors = ((await p.ed('checks')) as { validatorErrors: string[] }).validatorErrors
+  ok(seamErrors.length === 0, 'and the game has nothing to say about it', seamErrors.slice(0, 1))
+  await p.undoTo(u9)
   await p.ed('tool', 'select')
 }
 
@@ -1851,6 +1966,10 @@ async function reaches(p: Phone) {
   // ---- a prop, a core and a piece, each placed by a tap with its tool, then picked by a finger at distance
   await p.ed('fit')
   await p.ed('tool', 'select')
+  // Points show under 2.2 m a pixel and the nearest thing wins, so keep them out of this: it measures how far a piece reaches.
+  const fitted = (await p.g()).view
+  if (fitted.mpp < 2.3) await p.ed('view', [fitted.cx, fitted.cz, 2.6])
+  await sleep(100)
   const road = await p.roadNear(p.w / 2 - 60, p.h / 2)
   await p.ed('tool', 'place')
   await pickPieceKey(p, '9')
@@ -1906,14 +2025,24 @@ async function reaches(p: Phone) {
   await clear()
   const px = (await p.ed('screen', rd.at)) as { sx: number; sy: number }
   void px
-  // Offset along whichever axis has more room: pick a direction away from the road by checking the road is further from the spot
+  // A spot exactly this far from the nearest road, wherever on the road there is room for one. (A bent road
+  // has none round some spots: never fall back on a spot that isn't what the check says it is.)
+  const roadOnScreen: Spot[] = []
+  for (let i = 0, n = (await p.sum()).points; i < n * 4; i++) {
+    const q = (await p.ed('screen', i / 4)) as { sx: number; sy: number }
+    roadOnScreen.push({ x: q.sx, y: q.sy })
+  }
+  const dirs = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }]
   const away = async (d: number): Promise<Spot> => {
-    for (const dir of [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }]) {
-      const s = { x: rd.x + dir.x * d, y: rd.y + dir.y * d }
-      const r = await p.roadNear(s.x, s.y)
-      const dist = Math.hypot(r.x - s.x, r.y - s.y)
-      if (Math.abs(dist - d) < 2.5) return s
+    const nearest = (s: Spot) => Math.min(...roadOnScreen.map((q) => Math.hypot(q.x - s.x, q.y - s.y)))
+    for (let k = 0; k < roadOnScreen.length; k += 7) {
+      const from = k === 0 ? rd : roadOnScreen[k]
+      for (const dir of dirs) {
+        const s = { x: from.x + dir.x * d, y: from.y + dir.y * d }
+        if (Math.abs(nearest(s) - d) < 2.5 && (await p.onMap(s)) && s.x > 180 && s.x < p.w - 270 && s.y > 60 && s.y < p.h - 40) return s
+      }
     }
+    ok(false, `a spot ${d} px from the road`)
     return { x: rd.x, y: rd.y - d }
   }
   const mpp = (await p.g()).view.mpp
@@ -1942,10 +2071,16 @@ async function reaches(p: Phone) {
   await p.undoTo(u0)
   await p.ed('tool', 'select')
 
-  // ---- a crossing's marker and its label box (a figure of eight crosses itself)
+  // ---- a crossing's marker and its label box (a figure of eight crosses itself; a new shape only lands on an empty map)
+  await p.ed('newTrackNow')
+  await sleep(300)
   await p.ed('shape', 'eight')
   await sleep(1500)
   await p.ed('fit')
+  // (As with the piece: points showing would be nearer than the marker, and the nearest wins.)
+  const fittedEight = (await p.g()).view
+  if (fittedEight.mpp < 2.3) await p.ed('view', [fittedEight.cx, fittedEight.cz, 2.6])
+  await p.ed('tool', 'select') // (New track put the Pencil in hand.)
   await sleep(300)
   const cr0 = (await p.ed('crossings')) as { screen: { marker: { sx: number; sy: number }; label: { sx: number; sy: number } | null } | null }[]
   const cr = Array.isArray(cr0) ? cr0.filter((c) => c.screen) : []
@@ -1953,8 +2088,11 @@ async function reaches(p: Phone) {
   if (Array.isArray(cr) && cr.length) {
     const m = cr[0].screen!.marker
     const l = cr[0].screen!.label
+    // A spot that is empty on this road: picking a thing a card would cover slides the map, and these spots would go stale.
+    const [emptyHere] = await freeSpots(p, 1)
     const probe = async (x: number, y: number) => {
-      await clear()
+      await p.tap(emptyHere)
+      await sleep(380)
       await p.tap({ x, y })
       return (await p.sum()).selection?.kind === 'crossing'
     }
@@ -2133,6 +2271,49 @@ async function doubleTapTolerance(p: Phone) {
   await run(8, 'adds a point', 1)
   await run(18, 'adds a point (tolerance 20)', 1)
   await run(32, 'does not', 0)
+  // The same with the road points showing, a few pixels apart: every spot on the road is within a finger's reach of one.
+  const showing = async (apart: number, wantAdded: number) => {
+    await p.ed('fit')
+    const onRoad = await p.roadNear(p.w / 2 - 60, p.h / 2)
+    const w = (await p.ed('screen', onRoad.at)) as { x: number; z: number }
+    await p.ed('view', [w.x, w.z, 1.5])
+    await sleep(380)
+    const mid = (await p.ed('screen', Math.floor(onRoad.at) + 0.5)) as { sx: number; sy: number; x: number; z: number }
+    const near = (await p.ed('screen', Math.floor(onRoad.at))) as { sx: number; sy: number }
+    const n0 = (await p.sum()).points
+    const u0 = (await p.sum()).undoSteps
+    await p.down({ x: mid.sx, y: mid.sy, id: 1 })
+    await sleep(60)
+    await p.lift()
+    await sleep(80)
+    await p.down({ x: mid.sx + apart, y: mid.sy, id: 1 })
+    await sleep(60)
+    await p.lift()
+    await sleep(200)
+    const added = (await p.sum()).points - n0
+    ok(Math.hypot(near.sx - mid.sx, near.sy - mid.sy) < 22, 'points are showing, and this spot is within reach of one', { px: round(Math.hypot(near.sx - mid.sx, near.sy - mid.sy)) })
+    ok(added === wantAdded, `double tap ${apart} px apart with the points showing ${wantAdded ? 'adds a point' : 'does not'}`, { added })
+    await p.undoTo(u0)
+    await sleep(400)
+  }
+  await showing(8, 1)
+  await showing(32, 0)
+  // Right on a point there is nothing to add, and it says so.
+  await p.ed('fit')
+  const onR = await p.roadNear(p.w / 2 - 60, p.h / 2)
+  const pointAt = Math.round(onR.at)
+  const pw = (await p.ed('screen', pointAt)) as { x: number; z: number }
+  await p.ed('view', [pw.x, pw.z, 0.5])
+  await sleep(380)
+  const ps = (await p.ed('screen', pointAt)) as { sx: number; sy: number }
+  const pointsBefore = (await p.sum()).points
+  await p.tap({ x: ps.sx, y: ps.sy }, 50)
+  await sleep(60)
+  await p.tap({ x: ps.sx + 2, y: ps.sy }, 50)
+  await sleep(200)
+  ok((await p.sum()).points === pointsBefore, 'a double tap right on a point adds nothing', { added: (await p.sum()).points - pointsBefore })
+  ok(/already is a road point/.test((await p.page.evaluate(() => (window as any).__game.get('editorMsg'))) ?? ''), 'and it says why') // eslint-disable-line @typescript-eslint/no-explicit-any
+  await p.undoTo((await p.sum()).undoSteps)
   // The second tap's point is taken back when a second finger lands on it.
   await p.ed('fit')
   await sleep(380)
@@ -2220,21 +2401,34 @@ async function thumbButtons(p: Phone) {
   await sleep(200)
   await p.ed('tool', 'pencil')
   await sleep(200)
-  const sb = await btn('thumb-straight')
-  ok(sb !== null, 'Pencil: the Straight line button shows')
-  const sz = await size('thumb-straight')
-  ok(!!sz && sz[0] >= 44 && sz[1] >= 44, 'and is at least 44 px each way', sz)
-  if (!sb) return
+  ok((await btn('thumb-straight')) === null, 'Pencil, no finger on the map: no Straight line (P8)')
   const pressed = () => p.page.evaluate(() => document.querySelector('[data-testid=thumb-straight]')?.getAttribute('aria-pressed'))
   // A wobbly line: the first half freehand, then the thumb taps Straight line, and the second half wobbles on but comes out straight.
   const pts: Spot[] = []
   for (let i = 0; i <= 60; i++) pts.push({ x: p.w * 0.25 + i * 5, y: p.h * 0.5 + Math.sin(i / 2.2) * 28 })
   await p.down({ ...pts[0], id: 1 })
   await sleep(100)
-  for (let i = 1; i <= 30; i++) {
+  for (let i = 1; i <= 15; i++) {
     await p.move({ ...pts[i], id: 1 })
     await sleep(10)
   }
+  // It shows while the finger draws, and showing moves nothing: the map stays put and the line keeps coming.
+  await sleep(60)
+  const viewWhileDrawing = (await p.g()).view
+  const sb = await btn('thumb-straight')
+  ok(sb !== null, 'a finger drawing: the Straight line button shows')
+  const sz = await size('thumb-straight')
+  ok(!!sz && sz[0] >= 44 && sz[1] >= 44, 'and is at least 44 px each way', sz)
+  if (!sb) {
+    await p.lift()
+    return
+  }
+  for (let i = 16; i <= 30; i++) {
+    await p.move({ ...pts[i], id: 1 })
+    await sleep(10)
+  }
+  const viewStill = (await p.g()).view
+  ok(viewStill.cx === viewWhileDrawing.cx && viewStill.cz === viewWhileDrawing.cz && viewStill.mpp === viewWhileDrawing.mpp, 'and the map has not moved under the finger')
   await p.down({ ...pts[30], id: 1 }, { ...sb, id: 2 })
   await sleep(40)
   await p.liftOne({ ...sb, id: 2 })
@@ -2260,7 +2454,7 @@ async function thumbButtons(p: Phone) {
   const late = line.slice(Math.floor(n * 0.7))
   ok(n > 20 && dev(early) > 3, 'the first part of the line is freehand', { px: round(dev(early)), points: n })
   ok(dev(late) < 0.8, 'the part after the tap is dead straight', { px: round(dev(late)) })
-  ok((await pressed()) === 'false', 'Straight line is off again once the line is done (like Shift)')
+  ok((await btn('thumb-straight')) === null, 'the finger lifted, it goes, and takes Straight line with it (like Shift)')
   // Tap it off mid-line: freehand again.
   await p.ed('newTrackNow')
   await sleep(200)
@@ -2299,12 +2493,7 @@ async function thumbButtons(p: Phone) {
   await p.ed('fit')
   await p.ed('tool', 'bend')
   await sleep(200)
-  const less = await btn('thumb-less')
-  const more = await btn('thumb-more')
-  ok(!!less && !!more, 'Bend: the minus and plus buttons show')
-  const sz2 = await size('thumb-more')
-  ok(!!sz2 && sz2[0] >= 44 && sz2[1] >= 44, 'and are at least 44 px each way', sz2)
-  if (!less || !more) return
+  ok(!(await btn('thumb-less')) && !(await btn('thumb-more')), 'Bend, no finger on the road: no minus and plus (P8)')
   const r0 = (await p.sum()).bendReach
   const rd = await p.roadNear(p.w / 2 - 60, p.h / 2)
   const u0 = (await p.sum()).undoSteps
@@ -2313,6 +2502,16 @@ async function thumbButtons(p: Phone) {
   for (let i = 1; i <= 8; i++) {
     await p.move({ x: rd.x + i * 3, y: rd.y + i * 2, id: 1 })
     await sleep(12)
+  }
+  await sleep(80)
+  const less = await btn('thumb-less')
+  const more = await btn('thumb-more')
+  ok(!!less && !!more, 'a finger on the road: the minus and plus buttons show')
+  const sz2 = await size('thumb-more')
+  ok(!!sz2 && sz2[0] >= 44 && sz2[1] >= 44, 'and are at least 44 px each way', sz2)
+  if (!less || !more) {
+    await p.lift()
+    return
   }
   const road1 = await p.road()
   const held = { x: rd.x + 24, y: rd.y + 16, id: 1 }
@@ -2333,6 +2532,7 @@ async function thumbButtons(p: Phone) {
   await p.lift()
   await sleep(250)
   ok((await p.sum()).undoSteps === u0 + 1, 'one Undo step for the whole bend', { undo: (await p.sum()).undoSteps - u0 })
+  ok(!(await btn('thumb-less')) && !(await btn('thumb-more')), 'and the finger lifted, they go')
   await p.undoTo(u0)
   // Other tools show neither.
   await p.ed('tool', 'select')

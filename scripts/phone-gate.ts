@@ -8,7 +8,7 @@
 //
 //    bunx vite build --outDir /tmp/x && bunx vite preview --outDir /tmp/x --port 5220 --strictPort
 //    bun scripts/phone-gate.ts --port 5220 [--only title,settings:audio,hud] [--window pwa,safari,small,portrait,desktop]
-//                              [--out /tmp/sr2/phone/shots/gate] [--break <rule 1-11>] [--list]
+//                              [--out /tmp/sr2/phone/shots/gate] [--break <rule 1-12>] [--list]
 //
 //  --break <n> injects CSS/JS into the page (never the UI source) that breaks rule n on purpose, so
 //  a gate nobody has seen fail is never trusted.
@@ -106,6 +106,7 @@ const RULE_NAME: Record<number, string> = {
   9: 'text',
   10: 'desktop-guard',
   11: 'vh-units',
+  12: 'map-clear',
 }
 
 type Insets = { l: number; r: number; t: number; b: number }
@@ -116,7 +117,7 @@ interface Win {
   touch: boolean
   rules: number[]
 }
-const LAND = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11]
+const LAND = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12]
 const WINS: Record<string, Win> = {
   pwa: { w: 874, h: 402, ins: { l: 62, r: 62, t: 0, b: 20 }, touch: true, rules: LAND },
   safari: { w: 874, h: 292, ins: { l: 62, r: 62, t: 0, b: 20 }, touch: true, rules: LAND },
@@ -382,7 +383,7 @@ function visibleBox(e) {
   return v
 }
 function menuOverlap(taps, root, add) {
-  const blocks = [...root.querySelectorAll('.panel, .touch-back, .hintbar--touch, .notice, .hud-toast, .phone-card, .phone-tray, .phone-stack, .phone-left, .phone-chips, .sre-empty, .sre-look-note, .sre-status.is-on')].filter((e) => vis(e) && R(e).width > 2)
+  const blocks = [...root.querySelectorAll('.panel, .touch-back, .hintbar--touch, .notice, .hud-toast, .phone-card, .phone-tray, .phone-stack, .phone-left, .sre-thumb, .sre-empty, .sre-look-note, .sre-status.is-on')].filter((e) => vis(e) && R(e).width > 2)
   const all = [...new Set([...taps, ...blocks])].map((e) => ({ e, v: visibleBox(e) })).filter((x) => x.v.r - x.v.l > 2 && x.v.b - x.v.t > 2)
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
     const a = all[i], b = all[j]
@@ -489,6 +490,25 @@ function primaryAll(sel) {
   return out
 }
 
+// ---------- rule 12: the Road Editor's map stays clear (Nathan, P8: "Keep the road world clear"). Between the tool
+// button's column and the right stack there is the map and the status line that comes and goes, and nothing else.
+function mapClear(allow) {
+  const left = document.querySelector('.phone-left'), side = document.querySelector('.phone-stack')
+  if (!left || !side) return [{ text: 'layout', detail: 'no tool button or right stack on the page' }]
+  W = innerWidth; H = innerHeight
+  const box = { l: R(left).right, r: R(side).left }
+  const fine = '.sre-overlay, .sre-status, .sre-status *, .sre-look-surface, .sre-look-surface *, .phone-left, .phone-left *, .phone-stack, .phone-stack *' + (allow ? ', ' + allow : '')
+  const out = []
+  for (const e of document.querySelectorAll('.sre *')) {
+    if (e.matches(fine) || !vis(e)) continue
+    const b = R(e)
+    if (b.width < 2 || b.height < 2) continue
+    const w = Math.min(b.right, box.r) - Math.max(b.left, box.l), h = Math.min(b.bottom, H) - Math.max(b.top, 0)
+    if (w > 1 && h > 1) out.push({ text: label(e), detail: 'sits on the map at x ' + rd(b.left) + '..' + rd(b.right) + ', y ' + rd(b.top) + '..' + rd(b.bottom) + ', free map x ' + rd(box.l) + '..' + rd(box.r) })
+  }
+  return out
+}
+
 // ---------- scrollers, for the swipe test
 let scrollers = []
 function findScrollers() {
@@ -537,7 +557,7 @@ function state() {
 window.__clicks = []
 document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.sr-ui, .sre')) window.__clicks.push(performance.now()) }, true)
 const accepts = (t0) => window.__clicks.filter((t) => t >= t0).length
-window.__gate = { shim, measure, primary, primaryAll, findScrollers, pos, setPos, state, accepts }
+window.__gate = { shim, measure, primary, primaryAll, mapClear, findScrollers, pos, setPos, state, accepts }
 })()`
 
 // ---------------------------------------------------------------- break injections (--break <rule>)
@@ -575,15 +595,17 @@ const BREAKS_EDITOR: Record<number, string> = {
   2: cssBreak('.sre[data-touch] button,.sre[data-touch] input{transform:scale(.4) !important}'),
   3: BREAKS[3],
   // the left cluster, the right stack and the card slide 80 px towards the notch
-  4: cssBreak('.phone-left,.phone-chips{transform:translate(-60px,0) !important}.phone-stack,.phone-card{transform:translate(60px,0) !important}'),
+  4: cssBreak('.phone-left{transform:translate(-60px,0) !important}.phone-stack,.phone-card{transform:translate(60px,0) !important}'),
   // the primary action drops off the first screen
   5: cssBreak('[data-testid=editor-test-drive],[data-rail=select],[data-rail=fit],.phone-card .sre-range-hit,.phone-card .sre-btn,[data-testid=editor-empty-random]{position:relative;top:400px}'),
   6: BREAKS[6],
   // the Undo pair sits on the tool button, and the stack on the status line
-  7: cssBreak('.phone-tool{margin-top:-40px !important}.sre[data-touch] .sre-status{right:0 !important}.phone-chips{left:0 !important}'),
+  7: cssBreak('.phone-tool{margin-top:-40px !important}.sre[data-touch] .sre-status{right:0 !important}'),
   8: BREAKS[8],
   // words shrink to 7 px and one label is cut off
   9: cssBreak('.phone-tool-name,.phone-stack span{font-size:7px !important}.sre-btn.is-primary{display:inline-block;width:1.2em !important;overflow:hidden !important;white-space:nowrap !important}'),
+  // a chip comes back beside the tool button, the way it was before P8
+  12: `(()=>{if(document.getElementById('gate-chip'))return;const b=document.createElement('button');b.id='gate-chip';b.className='sre-btn';b.textContent='Steady hand: Some';b.style.cssText='position:absolute;left:180px;bottom:30px;min-height:44px;z-index:3';document.querySelector('.sre').append(b)})()`,
 }
 
 // ---------------------------------------------------------------- steps
@@ -613,6 +635,8 @@ interface Step {
   firstAll?: string
   /** Only that it opens: its layout is another piece's */
   reachOnly?: boolean
+  /** Rule 12: nothing on the map but the map and the status line. A string: what else is allowed here, by selector, and why it says so at the step */
+  clearMap?: true | string
 }
 
 const call = (c: Ctx, expr: string) => c.page.evaluate(expr)
@@ -732,6 +756,7 @@ const edStep = (name: string, s: Omit<Step, 'name' | 'editor' | 'mode'>): Step =
 const EDITOR_STEPS: Step[] = [
   edStep('road', {
     primary: '[data-testid=editor-test-drive]',
+    clearMap: true,
     setup: async (c) => edFront(c),
     extra: async (c) => {
       // one tap on the tool button opens the tray, at once and once
@@ -767,8 +792,10 @@ const EDITOR_STEPS: Step[] = [
       await edTap(c, '[data-testid=phone-tray-view]', 'View in the tray')
     },
   }),
-  ...['bend', 'straight', 'curve', 'height', 'bank', 'width'].map((tool) =>
-    edStep(`chip-${tool}`, {
+  // A tool in hand, no finger down: the road and nothing else (P8).
+  ...['select', 'bend', 'straight', 'curve', 'height', 'bank', 'width'].map((tool) =>
+    edStep(`hand-${tool}`, {
+      clearMap: true,
       setup: async (c) => {
         await edFront(c)
         await edTool(c, tool)
@@ -781,7 +808,9 @@ const EDITOR_STEPS: Step[] = [
       setup: async (c) => {
         await edFront(c)
         if (tool !== 'pencil') await edTool(c, tool)
-        await edTap(c, '[data-testid=phone-chip]', `${tool}'s chip`)
+        // The tool button, then the tray's row for the tool in your hand.
+        await edTap(c, '[data-testid=phone-tool]', 'tool button')
+        await edTap(c, '[data-testid=phone-tool-row]', `${tool}'s row in the tray`)
         await edCardUp(c, `${tool}'s settings`)
       },
     }),
@@ -854,12 +883,23 @@ const EDITOR_STEPS: Step[] = [
       await edCardUp(c, 'the palette')
     },
   }),
+  // A piece chosen: the card folds, the tool button names the piece, and the map is clear.
   edStep('pieces-chip', {
+    clearMap: true,
     setup: async (c) => {
       await edFront(c)
       await edTool(c, 'place')
       await edTap(c, '.phone-card .sre-piece', 'a piece')
       await sleep(200)
+      if (!(await c.page.evaluate(() => /Boost pad/.test(document.querySelector('[data-testid=phone-tool]')?.textContent ?? '')))) c.fail(1, 'tool button', 'does not name the piece in hand')
+    },
+  }),
+  edStep('tray-select', {
+    setup: async (c) => {
+      await edFront(c)
+      await edTool(c, 'select')
+      await edTap(c, '[data-testid=phone-tool]', 'tool button')
+      if (await c.page.evaluate(() => !!document.querySelector('[data-testid=phone-tool-row]'))) c.fail(1, 'Select', 'a tool with no setting has a row in the tray')
     },
   }),
   edStep('problem', {
@@ -942,6 +982,8 @@ const EDITOR_STEPS: Step[] = [
   }),
   edStep('empty', {
     primary: '[data-testid=editor-empty-random]',
+    // Its note is the way to a road: Random track and Drive to draw. Nothing else.
+    clearMap: '.sre-empty, .sre-empty *',
     setup: async (c) => {
       await edFront(c, false)
       await ed(c, 'newTrackNow')
@@ -1344,6 +1386,10 @@ for (const wname of WINDOWS) {
           const p = await c.page.evaluate((s: string) => (window as any).__gate.primary(s), step.primary)
           if (p.missing) c.fail(5, step.primary, 'primary action not found')
           else if (p.detail) c.fail(5, p.text, p.detail)
+        }
+        if (win.rules.includes(12) && step.clearMap) {
+          const onMap: { text: string; detail: string }[] = await c.page.evaluate((a: string) => (window as any).__gate.mapClear(a), step.clearMap === true ? '' : step.clearMap)
+          for (const m of onMap) c.fail(12, m.text, m.detail)
         }
         if (win.rules.includes(5) && step.firstAll) {
           const late: { text: string; detail: string }[] = await c.page.evaluate((s: string) => (window as any).__gate.primaryAll(s), step.firstAll)
