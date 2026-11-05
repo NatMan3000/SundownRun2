@@ -18,9 +18,9 @@
 import { create } from 'zustand'
 import type { GameMode } from '../core/store'
 
-export type ScreenId = 'title' | 'mode' | 'track' | 'garage' | 'settings' | 'pause' | 'results' | 'report'
+export type ScreenId = 'title' | 'mode' | 'track' | 'garage' | 'settings' | 'pause' | 'results' | 'report' | 'multiplayer'
 
-export const SCREEN_IDS: readonly ScreenId[] = ['title', 'mode', 'track', 'garage', 'settings', 'pause', 'results', 'report']
+export const SCREEN_IDS: readonly ScreenId[] = ['title', 'mode', 'track', 'garage', 'settings', 'pause', 'results', 'report', 'multiplayer']
 
 /** The settings menu tabs, in LB/RB order. */
 export const SETTINGS_TABS = [

@@ -576,3 +576,9 @@
 @media (prefers-reduced-motion: reduce) {
   .sr-ui[data-touch] .slider.is-dragging .slider__thumb { transition: none; }
 }
+
+/* ---------------------------------------------------------------- multiplayer: the report screen's panel, with one box */
+
+.sr-ui[data-touch] .screen--mp .mp-intro { padding: 0 0.4em; font-size: 0.95em; line-height: 1.3; }
+.sr-ui[data-touch] .screen--mp .report-actions [data-nav='cancel'] { display: none; }
+.sr-ui[data-touch] .screen--mp .report-form { padding-top: 0.25em; }

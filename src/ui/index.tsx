@@ -54,6 +54,7 @@ import { PauseScreen } from './screens/Pause'
 import { GarageScreen } from './screens/Garage'
 import { ResultsScreen } from './screens/Results'
 import { ReportScreen } from './screens/Report'
+import { MultiplayerScreen } from './screens/Multiplayer'
 
 // ---------------------------------------------------------------- palette -> CSS variables
 
@@ -178,6 +179,7 @@ function devOpen(screen: string, arg?: string): string {
     case 'track':
     case 'garage':
     case 'report':
+    case 'multiplayer':
     case 'settings': {
       if (g.phase === 'playing') pauseGame()
       const now = getGame().phase
@@ -204,7 +206,7 @@ function devOpen(screen: string, arg?: string): string {
       if (!ensureDriving()) return 'no track loaded'
       return 'hud'
     default:
-      return `unknown screen "${screen}". Try: title, mode, track, garage, settings [tab], report, pause, results, hud`
+      return `unknown screen "${screen}". Try: title, mode, track, garage, settings [tab], report, multiplayer, pause, results, hud`
   }
 }
 
@@ -214,7 +216,7 @@ function useDevHandles(): void {
       registerDev(
         'ui',
         ((screen: string, arg?: string) => devOpen(screen, arg)) as never,
-        "ui(screen, tab?) - open a screen: title, mode, track, garage, settings ['car'|'handling'|...], report, pause, results, hud",
+        "ui(screen, tab?) - open a screen: title, mode, track, garage, settings ['car'|'handling'|...], report, multiplayer, pause, results, hud",
       ),
       registerDev(
         'uiNav',
@@ -324,6 +326,7 @@ const SCREENS: Record<ScreenId, () => JSX.Element> = {
   pause: PauseScreen,
   results: ResultsScreen,
   report: ReportScreen,
+  multiplayer: MultiplayerScreen,
 }
 
 export function UiRoot() {
