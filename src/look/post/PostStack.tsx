@@ -59,6 +59,7 @@ import type { Effect } from 'postprocessing'
 import { PALETTE } from '../../core/palette'
 import { telemetry } from '../../core/telemetry'
 import { useGame } from '../../core/store'
+import { useGlLife } from '../../core/glLife'
 import { registerDev } from '../../core/devHandles'
 import { QUALITY_PRESETS } from '../quality'
 import { lookState } from '../lookState'
@@ -116,10 +117,17 @@ export function PostStack() {
   const size = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
   const level = useGame((s) => s.qualityLevel)
+  const glGeneration = useGlLife((s) => s.generation)
   const [version, setVersion] = useState(0)
 
   const stack = useMemo(() => {
     void version
+    void glGeneration
+    // The composer reads the context as it is built, and a lost one answers null. Built again when it comes back.
+    if (gl.getContext().isContextLost()) {
+      lookState.post.passes = 0
+      return null
+    }
     const preset = QUALITY_PRESETS[level]
     const composer = new EffectComposer(gl, {
       frameBufferType: THREE.HalfFloatType,
@@ -178,17 +186,17 @@ export function PostStack() {
     lookState.post.passes = composer.passes.length
 
     return { composer, boostLens, beams, pools, speedLines, effects, main, smaa, bloom }
-  }, [gl, scene, camera, level, version])
+  }, [gl, scene, camera, level, version, glGeneration])
 
   // Size the buffers to the drawing buffer (CSS size x pixel ratio).
   useEffect(() => {
-    stack.composer.setSize(size.width, size.height, false)
+    stack?.composer.setSize(size.width, size.height, false)
   }, [stack, size.width, size.height, dpr])
 
   useEffect(
     () => () => {
       // Disposes every pass, and each EffectPass disposes its effects.
-      stack.composer.dispose()
+      stack?.composer.dispose()
     },
     [stack],
   )
@@ -261,6 +269,7 @@ export function PostStack() {
   }, [])
 
   useFrame((_, rawDt) => {
+    if (!stack || gl.getContext().isContextLost()) return
     const dt = Math.min(rawDt, 0.1)
     const { composer, boostLens, beams, pools, speedLines, bloom } = stack
 

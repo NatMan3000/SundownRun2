@@ -8,7 +8,8 @@
 //  view, the Undo count, the road), never on "nothing threw". The
 //  layout's panels are hidden from the fingers, because this checks
 //  the map's gestures; scenario 10 uses the real tool button and tray
-//  (layout C), 9 a real mouse at 1920x1080, 12 both.
+//  (layout C), 9 a real mouse at 1920x1080, 12 both; 23 opens from the
+//  title and really loses the WebGL context under real presses.
 //
 //    bunx vite build --outDir /tmp/x && bunx vite preview --outDir /tmp/x --port 5212 --strictPort
 //    bun run editor:touch -- --port 5212 [--window pwa,safari] [--only 1,2,3] [--out /tmp/sr2/editor-touch]
@@ -176,19 +177,30 @@ class Phone {
   }
 }
 
-async function openPhone(name: string, query: string): Promise<Phone> {
+/** A step that crashes the game on purpose: the error reaches the page's error event even though the boundary catches it. */
+let crashOnPurpose = false
+
+async function openPhone(name: string, query: string, ready = '[data-testid=editor-ui], .touch'): Promise<Phone> {
   const { w, h, insets } = WINDOWS[name]
   const page = await browser.newPage()
-  page.on('pageerror', (e) => ok(false, 'page error', String((e as Error).stack ?? (e as Error).message).slice(0, 600)))
+  await page.bringToFront()
+  page.on('pageerror', (e) => {
+    if (!crashOnPurpose) ok(false, 'page error', String((e as Error).stack ?? (e as Error).message).slice(0, 600))
+  })
   await page.setUserAgent(UA)
   await page.setViewport({ width: w, height: h, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
   const cdp = await page.createCDPSession()
   await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets } as never)
-  // Each window starts on an empty map, not on whatever the last one left in the working copy.
-  await page.evaluateOnNewDocument(() => localStorage.removeItem('sr2.editor.working.v1'))
+  // Each window starts on an empty map, not on whatever the last one left in the working copy. Only its first load
+  // forgets it: a reload further on is there to see it kept (scenario 23).
+  await page.evaluateOnNewDocument(() => {
+    if (sessionStorage.getItem('check-fresh')) return
+    sessionStorage.setItem('check-fresh', '1')
+    localStorage.removeItem('sr2.editor.working.v1')
+  })
   await page.goto(`http://localhost:${port}/?${query}`, { waitUntil: 'load' })
   for (let i = 0; i < 80; i++) {
-    if (await page.evaluate(() => !!document.querySelector('[data-testid=editor-ui]') || !!document.querySelector('.touch')).catch(() => false)) break
+    if (await page.evaluate((s: string) => !!document.querySelector(s), ready).catch(() => false)) break
     await sleep(250)
   }
   await sleep(2500)
@@ -2891,6 +2903,292 @@ async function mouseUnchanged() {
 }
 
 
+// ---- 23: the browser takes the picture away
+
+const CRASH = '[data-testid=crash-screen]'
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/** Grab the real context's extension, so it can give the context back later (a lost context hands out no extensions). */
+const holdLoseExt = (p: Phone) =>
+  p.page.evaluate(() => {
+    const canvas = [...document.querySelectorAll('canvas')].find((c) => c.dataset.engine)!
+    ;(window as any).__glCheck = { gl: canvas.getContext('webgl2'), ext: canvas.getContext('webgl2')!.getExtension('WEBGL_lose_context') }
+  })
+const lose = async (p: Phone) => {
+  await holdLoseExt(p)
+  return p.page.evaluate(() => {
+    const { gl, ext } = (window as any).__glCheck
+    ext.loseContext()
+    return gl.isContextLost() as boolean
+  })
+}
+const restore = (p: Phone) => p.page.evaluate(() => (window as any).__glCheck.ext.restoreContext())
+const look = (p: Phone) => p.page.evaluate(() => (window as any).__game.get('look')) as Promise<{ post: { passes: number; bloom: boolean }; env: { builds: number }; quality: { level: string; dpr: number } }>
+const frameNow = (p: Phone) => p.page.evaluate(() => { const f = (window as any).__game.frame; return { n: f.frame as number, calls: f.calls as number, gpuSupported: f.gpuSupported as boolean, gpuMs: f.gpuMs as number } })
+const speedNow = (p: Phone) => p.page.evaluate(() => (window as any).__game.telemetry.speedKmh as number)
+const audioNow = (p: Phone) => p.page.evaluate(() => { const a = (window as any).__game.get('audio'); return { state: a?.state as string | undefined, hidden: a?.hidden as boolean | undefined } })
+/* eslint-enable @typescript-eslint/no-explicit-any */
+const rootSize = (p: Phone) => p.page.evaluate(() => document.getElementById('root')!.innerHTML.length)
+const hasEl = (p: Phone, sel: string) => p.page.evaluate((s: string) => !!document.querySelector(s), sel)
+const boxOf = (p: Phone, sel: string) =>
+  p.page.evaluate((s: string) => {
+    const r = document.querySelector(s)?.getBoundingClientRect()
+    return r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height, x: r.left + r.width / 2, y: r.top + r.height / 2 } : null
+  }, sel)
+const pressNav = async (p: Phone, nav: string) => {
+  const b = await boxOf(p, `[data-nav="${nav}"]`)
+  ok(!!b, `${nav} is on the screen to press`)
+  if (b) await p.tap(b)
+}
+const until = async (cond: () => Promise<boolean>, ms: number) => {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (await cond().catch(() => false)) return true
+    await sleep(100)
+  }
+  return false
+}
+/** The canvas's place on the page and how many pixels it draws. */
+const canvasSize = (p: Phone) =>
+  p.page.evaluate(() => {
+    const c = [...document.querySelectorAll('canvas')].find((e) => e.dataset.engine)!
+    const r = c.getBoundingClientRect()
+    return { left: r.left, top: r.top, width: r.width, height: r.height, bufferW: c.width, bufferH: c.height }
+  })
+/** How much of what is on screen is bright and coloured, from a real screenshot: the only way to see the picture itself. */
+async function litShare(p: Phone) {
+  const png = await p.page.screenshot({ encoding: 'base64' })
+  return p.page.evaluate(async (data: string) => {
+    const img = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob())
+    const c = document.createElement('canvas')
+    c.width = img.width
+    c.height = img.height
+    const g = c.getContext('2d')!
+    g.drawImage(img, 0, 0)
+    const d = g.getImageData(0, 0, img.width, img.height).data
+    let lit = 0
+    for (let i = 0; i < d.length; i += 4) {
+      const hi = Math.max(d[i], d[i + 1], d[i + 2])
+      if (hi > 90 && hi - Math.min(d[i], d[i + 1], d[i + 2]) > 50) lit++
+    }
+    return lit / (d.length / 4)
+  }, png)
+}
+/** The picture came back: right size and place, the post stack and the reflection map rebuilt, and really on screen. */
+async function pictureBack(p: Phone, was: { size: Awaited<ReturnType<typeof canvasSize>>; lit: number; passes: number; calls: number; gpuSupported: boolean }, envBefore: number) {
+  ok(await until(async () => (await look(p)).post.passes === was.passes, 3000), 'the post stack is built again, with all its passes', (await look(p)).post)
+  ok(await until(async () => (await look(p)).env.builds > envBefore, 3000), 'the reflection map is drawn again', { before: envBefore, now: (await look(p)).env.builds })
+  await sleep(1000)
+  const size = await canvasSize(p)
+  ok(JSON.stringify(size) === JSON.stringify(was.size), 'the picture is in the same place at the same size', size)
+  const f = await frameNow(p)
+  ok(f.calls > was.calls * 0.5, 'the scene is being drawn again', { calls: f.calls, before: was.calls })
+  ok(f.gpuSupported === was.gpuSupported && (!was.gpuSupported || f.gpuMs >= 0), "the frame clock's GPU timer works again", { supported: f.gpuSupported, gpuMs: f.gpuMs })
+  const lit = await litShare(p)
+  ok(lit > was.lit * 0.5, 'the picture is on the screen, as bright as it was', { lit: round(lit, 1000), before: round(was.lit, 1000) })
+}
+async function pictureNow(p: Phone) {
+  const f = await frameNow(p)
+  return { size: await canvasSize(p), lit: await litShare(p), passes: (await look(p)).post.passes, calls: f.calls, gpuSupported: f.gpuSupported }
+}
+/** The crash screen fits and can be pressed here, and does nothing by itself. */
+async function crashScreenFits(p: Phone, inset: { left: number; right: number; bottom: number }) {
+  ok(await hasEl(p, CRASH), 'the crash screen is up, the page is not blank', { root: await rootSize(p) })
+  ok(!(await hasEl(p, 'canvas')), 'it needs no WebGL: the game and its canvas have gone')
+  const b = await boxOf(p, `${CRASH} button`)
+  ok(!!b && b.height >= 44 && b.width >= 88, 'Reload is big enough for a thumb', b)
+  if (b) ok(b.left >= inset.left && b.right <= p.w - inset.right && b.bottom <= p.h - inset.bottom, 'Reload is clear of the notch and the home bar', b)
+  const fits = await p.page.evaluate((s: string) => {
+    const page = document.querySelector(s)!
+    const texts = [...page.querySelectorAll('h1, p, button')].map((e) => e.getBoundingClientRect())
+    return { scroll: page.scrollHeight - page.clientHeight, top: Math.min(...texts.map((r) => r.top)), bottom: Math.max(...texts.map((r) => r.bottom)), words: page.textContent }
+  }, CRASH)
+  ok(fits.scroll <= 0 && fits.top >= 0 && fits.bottom <= p.h, 'all of it fits without scrolling', fits)
+  await p.page.evaluate(() => {
+    ;(window as unknown as { __sameLoad: boolean }).__sameLoad = true
+  })
+  await sleep(2500)
+  ok(await p.page.evaluate(() => !!(window as unknown as { __sameLoad?: boolean }).__sameLoad), 'it never reloads by itself')
+  return fits.words as string
+}
+const sameLoad = (p: Phone) => p.page.evaluate(() => !!(window as unknown as { __sameLoad?: boolean }).__sameLoad)
+
+/**
+ * 23. The browser takes the picture away, with real presses and a really lost context: a phone can do this whenever it
+ * likes. The game must not go blank or throw, the picture must come back right, and a context that stays gone must end on
+ * a plain screen with a Reload button that keeps a road being drawn. Screenshots land in --out.
+ */
+async function contextLost(name: string) {
+  const inset = WINDOWS[name].insets
+  const TITLE = 'nomusic=1&quality=low'
+  const READY = '[data-nav=editor]'
+
+  // ---- gone, then Road Editor (this is what left the page blank on Safari), then a new quality, then it comes back
+  let p = await openPhone(name, TITLE, READY)
+  let was = await pictureNow(p)
+  ok(was.passes >= 2 && was.lit > 0.03, 'the title screen is drawing before anything happens', was)
+  ok((await lose(p)) === true, 'the context is really lost')
+  await sleep(300)
+  const dark = await litShare(p)
+  ok(dark < was.lit * 0.5, 'the check can see the picture go', { lit: round(dark, 1000), before: round(was.lit, 1000) })
+  await pressNav(p, 'editor')
+  ok(await until(() => hasEl(p, '[data-testid=editor-ui]'), 3000), 'Road Editor opens while the picture is gone')
+  ok((await rootSize(p)) > 0 && !(await hasEl(p, CRASH)), 'the page is not blank and no crash screen')
+  ok((await look(p)).post.passes === 0, 'no post stack is built on a lost context')
+  await p.page.evaluate(() => (window as unknown as { __dev: { setQuality: (q: string) => void } }).__dev.setQuality('medium'))
+  ok(await until(async () => (await look(p)).quality.level === 'medium', 1500), 'quality changes while the picture is gone')
+  ok((await rootSize(p)) > 0 && !(await hasEl(p, CRASH)), 'still not blank, no crash screen')
+  let env = (await look(p)).env.builds
+  await restore(p)
+  ok(await until(async () => (await look(p)).post.passes >= 2, 3000), 'the context comes back and the post stack with it', (await look(p)).post)
+  ok(await until(async () => (await look(p)).env.builds > env, 3000), 'the reflection map is drawn again')
+  await sleep(800)
+  const q = await look(p)
+  const size = await canvasSize(p)
+  ok(q.quality.level === 'medium' && size.bufferW === Math.round(size.width * q.quality.dpr), 'the new quality held and the picture is the right size for it', { dpr: q.quality.dpr, size })
+  ok(size.left === 0 && size.top === 0 && size.width === p.w && size.height === p.h, 'the picture fills the window', size)
+  ok((await frameNow(p)).calls > 0, 'the map is being drawn again')
+  await p.page.screenshot({ path: `${OUT}/lost-${name}-1-editor-back.png` })
+  await p.page.close()
+
+  // ---- gone for 13 ms on the title, as Safari did it; then a press in the gap between the loss and its event
+  p = await openPhone(name, TITLE, READY)
+  was = await pictureNow(p)
+  env = (await look(p)).env.builds
+  await holdLoseExt(p)
+  await p.page.evaluate(() => {
+    const { gl, ext } = (window as unknown as { __glCheck: { gl: WebGL2RenderingContext; ext: { loseContext(): void; restoreContext(): void } } }).__glCheck
+    gl.canvas.addEventListener('webglcontextlost', () => setTimeout(() => ext.restoreContext(), 13), { once: true })
+    ext.loseContext()
+  })
+  await sleep(500)
+  await pictureBack(p, was, env)
+  await p.page.screenshot({ path: `${OUT}/lost-${name}-2-title-back.png` })
+  await holdLoseExt(p)
+  // React draws straight after the press, before the browser has delivered the loss: only the context itself knows yet.
+  const heard = await p.page.evaluate(() => {
+    const { gl, ext } = (window as unknown as { __glCheck: { gl: WebGL2RenderingContext; ext: { loseContext(): void } } }).__glCheck
+    let told = false
+    gl.canvas.addEventListener('webglcontextlost', () => (told = true), { once: true })
+    ext.loseContext()
+    document.querySelector<HTMLElement>('[data-nav=editor]')!.click()
+    return told
+  })
+  ok(!heard, 'a press lands before the loss has been announced')
+  ok(await until(() => hasEl(p, '[data-testid=editor-ui]'), 3000), 'Road Editor opens from that press too')
+  ok(!(await hasEl(p, CRASH)) && (await rootSize(p)) > 0, 'no crash from it')
+  await restore(p)
+  await p.page.close()
+
+  // ---- gone, then into a race with real presses; it comes back and the car drives
+  p = await openPhone(name, TITLE, READY)
+  await lose(p)
+  await sleep(200)
+  await pressNav(p, 'play')
+  await sleep(350)
+  await pressNav(p, 'mode:race')
+  await sleep(350)
+  await pressNav(p, 'track:afterglow')
+  ok(await until(() => hasEl(p, '.touch'), 5000), 'into a race while the picture is gone')
+  ok(!(await hasEl(p, CRASH)) && (await rootSize(p)) > 0, 'not blank, no crash screen')
+  await restore(p)
+  ok(await until(async () => (await look(p)).post.passes >= 2, 3000), 'the picture comes back in the race')
+  const gas = (await boxOf(p, '.touch-pedal--gas'))!
+  await p.down({ ...gas, id: 1 })
+  ok(await until(async () => (await speedNow(p)) > 5, 9000), 'the car drives', { kmh: await speedNow(p) })
+  await sleep(2000)
+  ok((await litShare(p)) > 0.03, 'the race is on the screen')
+  await p.page.screenshot({ path: `${OUT}/lost-${name}-3-race-back.png` })
+
+  // ---- to the background and back during normal play: nothing breaks, the car and the sound carry on
+  const frames0 = (await frameNow(p)).n
+  const other = await browser.newPage()
+  await other.bringToFront()
+  await sleep(2500)
+  ok((await p.page.evaluate(() => document.visibilityState)) === 'hidden', 'the game is really in the background')
+  await p.page.bringToFront()
+  ok(await until(async () => (await frameNow(p)).n > frames0 + 30, 4000), 'it runs again when it comes back', { frames: (await frameNow(p)).n - frames0 })
+  ok(!(await p.page.evaluate(() => (window as unknown as { __glCheck: { gl: WebGL2RenderingContext } }).__glCheck.gl.isContextLost())), 'the context stayed')
+  // (Not "running": in headless Chrome the AudioContext stays suspended after this on the build before scenario 23 too.)
+  ok(await until(async () => { const a = await audioNow(p); return a.hidden === false && a.state !== 'closed' }, 3000), 'the sound system knows it is back and was not torn down', await audioNow(p))
+  ok((await speedNow(p)) > 5, 'the car is still driving', { kmh: await speedNow(p) })
+
+  // ---- gone while hidden: only time someone could see counts
+  await lose(p)
+  await other.bringToFront()
+  await sleep(11000)
+  await p.page.bringToFront()
+  await sleep(1000)
+  ok(!(await hasEl(p, CRASH)), 'eleven seconds gone in the background do not count towards the crash screen')
+  await restore(p)
+  ok(await until(async () => (await look(p)).post.passes >= 2, 3000), 'it comes back on its return')
+  await p.lift()
+  await other.close()
+  await p.page.close()
+
+  // ---- gone for good, in the Road Editor with a road half drawn; Reload keeps the road
+  p = await openPhone(name, TITLE, READY)
+  await pressNav(p, 'editor')
+  ok(await until(() => hasEl(p, '[data-testid=editor-ui]'), 4000), 'Road Editor opens')
+  await sleep(800)
+  await p.hidePanels(true)
+  await p.ed('tool', 'pencil')
+  await p.drag(Array.from({ length: 25 }, (_, i) => ({ x: 240 + i * 16, y: p.h * 0.35 + Math.sin(i / 4) * 40 })))
+  await sleep(300)
+  const road = await p.roadPoints()
+  ok(road.length > 2, 'a finger has drawn a road', { points: road.length })
+  ok((await p.page.evaluate(() => document.visibilityState)) === 'visible', 'this page is the one showing: only visible time counts')
+  await lose(p)
+  await sleep(5500)
+  ok(!(await hasEl(p, CRASH)), 'not given up yet after five and a half seconds')
+  ok(await until(() => hasEl(p, CRASH), 8000), 'the context stays gone: the crash screen comes up')
+  const words = await crashScreenFits(p, inset)
+  ok(/didn't come back/.test(words) && !/Something broke/.test(words), 'it says the picture went', words)
+  await p.page.screenshot({ path: `${OUT}/lost-${name}-4-crash-screen.png` })
+  const reload = (await boxOf(p, `${CRASH} button`))!
+  await p.tap(reload)
+  ok(await until(async () => !(await sameLoad(p)) && (await hasEl(p, READY)), 12000), 'a real finger on Reload starts the game again')
+  await sleep(1500)
+  await pressNav(p, 'editor')
+  ok(await until(() => hasEl(p, '[data-testid=editor-ui]'), 4000), 'Road Editor opens after the reload')
+  await sleep(500)
+  ok(JSON.stringify(await p.roadPoints()) === JSON.stringify(road), 'the road being drawn was kept', { points: road.length })
+  ok((await p.sum()).undoSteps === 0, 'what a reload does lose: Undo starts empty')
+  await p.page.close()
+
+  // ---- any other crash while React draws: the same screen, in its other words
+  p = await openPhone(name, TITLE, READY)
+  crashOnPurpose = true
+  await p.page.evaluate(() => {
+    WebGL2RenderingContext.prototype.getContextAttributes = () => null
+  })
+  await pressNav(p, 'editor')
+  ok(await until(() => hasEl(p, CRASH), 3000), 'a crash in a render shows the crash screen, the page is not blank', { root: await rootSize(p) })
+  const other2 = await crashScreenFits(p, inset)
+  ok(/Something broke/.test(other2), 'it says something broke', other2)
+  await p.page.close()
+  crashOnPurpose = false
+}
+
+/** 23 at 1920x1080: the same screen, a real mouse. */
+async function crashScreenDesktop() {
+  const page = await browser.newPage()
+  page.on('pageerror', (e) => ok(false, 'page error', String((e as Error).stack ?? (e as Error).message).slice(0, 600)))
+  await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 })
+  await page.goto(`http://localhost:${port}/?nomusic=1&quality=low`, { waitUntil: 'load' })
+  const p = new Phone(page, await page.createCDPSession(), 1920, 1080)
+  ok(await until(() => hasEl(p, '[data-nav=editor]'), 20000), 'the title is up')
+  await sleep(2500)
+  await lose(p)
+  ok(await until(() => hasEl(p, CRASH), 10000), 'the context stays gone: the crash screen comes up')
+  await crashScreenFits(p, { left: 0, right: 0, bottom: 0 })
+  await page.screenshot({ path: `${OUT}/lost-desktop-crash-screen.png` })
+  const b = (await boxOf(p, `${CRASH} button`))!
+  await page.mouse.click(b.x, b.y)
+  ok(await until(async () => !(await sameLoad(p)) && (await hasEl(p, '[data-nav=editor]')), 12000), 'a real mouse on Reload starts the game again')
+  await page.close()
+}
+
+
 // ---------------------------------------------------------------- run
 
 const wanted = (n: string) => !only.length || only.includes(n)
@@ -2950,6 +3248,10 @@ for (const name of windowNames) {
     scenario = '11 world map'
     await worldMap(name).catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
   }
+  if (wanted('23')) {
+    scenario = '23 the picture goes away'
+    await contextLost(name).catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+  }
 }
 if (wanted('9')) {
   windowName = 'desktop'
@@ -2980,6 +3282,11 @@ if (wanted('12')) {
       await p.page.close()
     })
     .catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+}
+if (wanted('23')) {
+  windowName = 'desktop'
+  scenario = '23 the picture goes away'
+  await crashScreenDesktop().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
 }
 await browser.close()
 console.log(fails ? `\n${fails} FAILED. Red scenarios: ${[...red].sort((a, b) => Number(a) - Number(b)).join(', ')}` : '\nALL PASS')

@@ -22,6 +22,7 @@
 import { useEffect, useMemo } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useGame } from '../core/store'
+import { useGlLife } from '../core/glLife'
 import { environment } from '../core/telemetry'
 import { registerDev } from '../core/devHandles'
 import { SkyEnvironment } from '../world/skyEnv'
@@ -38,10 +39,16 @@ export function EnvironmentMap(): null {
   const scene = useThree((s) => s.scene)
   const level = useGame((s) => s.qualityLevel)
   const size = QUALITY_PRESETS[level].envSize
+  const glGeneration = useGlLife((s) => s.generation)
 
-  const sky = useMemo(() => new SkyEnvironment(gl, size), [gl, size])
+  // Its shaders can't be built on a lost context, and what it drew is gone when the context comes back.
+  const sky = useMemo(() => {
+    void glGeneration
+    return gl.getContext().isContextLost() ? null : new SkyEnvironment(gl, size)
+  }, [gl, size, glGeneration])
 
   useEffect(() => {
+    if (!sky) return
     scene.environment = sky.texture
     state.forced = true
     lookState.env.size = size
@@ -70,6 +77,7 @@ export function EnvironmentMap(): null {
       state.trackVersion = trackVersion
       state.forced = true
     }
+    if (!sky || gl.getContext().isContextLost()) return
     const t0 = performance.now()
     if (!sky.update(state.forced, MIN_STEP)) return
     state.forced = false

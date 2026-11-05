@@ -11,6 +11,8 @@ import { Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Physics } from '@react-three/rapier'
 import { useGame } from './core/store'
+import { GlWatch, useGlLife } from './core/glLife'
+import { CrashGuard, PictureGone } from './CrashGuard'
 import { PerfProbe } from './core/perf'
 import { useTrack } from './track/current'
 import { TrackPhysics } from './track'
@@ -67,9 +69,11 @@ function Scene() {
   )
 }
 
-export function App() {
+function Game() {
   const phase = useGame((s) => s.phase)
   const mapOpen = useGame((s) => s.mapOpen)
+  const pictureGone = useGlLife((s) => s.gaveUp)
+  if (pictureGone) throw new PictureGone('The browser took the WebGL context away and never gave it back')
   return (
     <>
       <Canvas
@@ -78,6 +82,7 @@ export function App() {
         dpr={1}
         shadows
       >
+        <GlWatch />
         <Suspense fallback={null}>
           <Scene />
         </Suspense>
@@ -86,5 +91,13 @@ export function App() {
       {(phase === 'editor' || mapOpen) && <EditorUi />}
       <EditorDriveUi />
     </>
+  )
+}
+
+export function App() {
+  return (
+    <CrashGuard>
+      <Game />
+    </CrashGuard>
   )
 }
