@@ -31,6 +31,7 @@ import { menuBus } from '../core/controls'
 import { audio } from '../core/api'
 import { type AskAnswer, type AskState, answerAsk, askJustOpened, setShowWholeRoad, useAsk } from './askFirst'
 import { fitToDraft } from './Overlay'
+import { onTouch } from './phoneWords'
 import { DiceIcon, SaveIcon } from './icons'
 
 setShowWholeRoad(() => requestAnimationFrame(fitToDraft))
@@ -148,9 +149,11 @@ export function AskFirstDialog() {
             </button>
           ))}
         </div>
-        <p className="sre-confirm-keys">
-          <kbd>Esc</kbd> or the controller's <kbd>B</kbd> cancels
-        </p>
+        {!onTouch() && (
+          <p className="sre-confirm-keys">
+            <kbd>Esc</kbd> or the controller's <kbd>B</kbd> cancels
+          </p>
+        )}
       </div>
     </div>
   )

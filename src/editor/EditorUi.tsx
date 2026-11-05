@@ -44,6 +44,7 @@ import { FONTS, PALETTE } from '../core/palette'
 import { controlSignals } from '../core/controls'
 import { endSession } from '../core/session'
 import { audio } from '../core/api'
+import { words } from './phoneWords'
 import { type EditorTool, EMPTY_MAP_HINT, cancelBend, cancelPendingPreview, cancelShaping, redo, say, setBendReach, setSteady, setTool, undo, useEditor } from './draft'
 import { Overlay, cancelPointerGesture, fitToDraft, pencilHint } from './Overlay'
 import { Panel } from './Panel'
@@ -274,7 +275,7 @@ function EmptyMapNote() {
   return (
     <div className="sre-empty" role="note" data-testid="editor-empty-note">
       <span className="sre-empty-kicker">Empty map</span>
-      <span className="sre-empty-text">Draw a loop with the pencil, or press Random track.</span>
+      <span className="sre-empty-text">{words('Draw a loop with the pencil, or press Random track.')}</span>
       <button type="button" className="sre-btn is-primary" onClick={() => askRandomTrack()} data-testid="editor-empty-random">
         <DiceIcon />
         Random track
@@ -425,11 +426,11 @@ export function ToolOptions() {
           step={1}
           format={(v) => STEADY_NAMES[v] ?? ''}
           onCommit={setSteady}
-          help="The line trails a little behind the mouse on a string, so wobbles never reach it."
+          help={words('The line trails a little behind the mouse on a string, so wobbles never reach it.')}
         />
-        <p className="sre-help">Your line trails a little behind the mouse, so a shaky hand still draws a smooth road. Turn it up for smoother, down for more control.</p>
+        <p className="sre-help">{words('Your line trails a little behind the mouse, so a shaky hand still draws a smooth road. Turn it up for smoother, down for more control.')}</p>
         <p className="sre-help">To change the road: start on the road, draw the new bit, and end back on the road. The bit that goes lights up amber before you let go.</p>
-        <p className="sre-help">Hold Shift while you draw for a dead straight line. Let go of Shift to carry on freehand.</p>
+        <p className="sre-help">{words('Hold Shift while you draw for a dead straight line. Let go of Shift to carry on freehand.')}</p>
       </div>
     )
   }
@@ -448,7 +449,7 @@ export function ToolOptions() {
           onCommit={setBendReach}
           help="How much road comes with your hand."
         />
-        <p className="sre-help">How much road comes with your hand. Short for a small nudge, long for a big sweeping bend. While you drag: mouse wheel, or [ and ].</p>
+        <p className="sre-help">{words('How much road comes with your hand. Short for a small nudge, long for a big sweeping bend. While you drag: mouse wheel, or [ and ].')}</p>
       </div>
     )
   }
@@ -462,11 +463,14 @@ export function ToolOptions() {
           {steps.map((text, i) => (
             <li key={text} className={i === now ? 'is-now' : i < now ? 'is-done' : undefined}>
               <span className="sre-step-num">{i + 1}</span>
-              {text}
+              {words(text)}
             </li>
           ))}
         </ol>
-        <p className="sre-help">{tool === 'straight' ? 'The ends ease into the road so there is no kink.' : 'The curve joins the road at both ends with no kink. (To pull one spot and let the road follow, use Bend.)'} Red means too tight for a car. Esc starts again.</p>
+        <p className="sre-help">
+          {tool === 'straight' ? 'The ends ease into the road so there is no kink.' : 'The curve joins the road at both ends with no kink. (To pull one spot and let the road follow, use Bend.)'}
+          {words(' Red means too tight for a car. Esc starts again.')}
+        </p>
       </div>
     )
   }
@@ -493,8 +497,8 @@ const STRETCH_STEPS: Record<'height' | 'bank' | 'width', { set: string; again: s
 /** The Height, Bank or Width tool's box: two steps (the one you are on lit up), and how to change one again. */
 function StretchSteps(p: { tool: 'height' | 'bank' | 'width' }) {
   const picked = useEditor((s) => s.selection?.kind === 'section')
-  const words = STRETCH_STEPS[p.tool]
-  const steps = ['Drag along the road to pick a stretch, or click the road.', words.set]
+  const stretch = STRETCH_STEPS[p.tool]
+  const steps = ['Drag along the road to pick a stretch, or click the road.', stretch.set]
   const now = picked ? 1 : 0
   return (
     <div className="sre-options" role="group" aria-label={`${RAIL[p.tool].name} steps`} data-testid="editor-tool-options">
@@ -503,11 +507,11 @@ function StretchSteps(p: { tool: 'height' | 'bank' | 'width' }) {
         {steps.map((text, i) => (
           <li key={text} className={i === now ? 'is-now' : i < now ? 'is-done' : undefined}>
             <span className="sre-step-num">{i + 1}</span>
-            {text}
+            {words(text)}
           </li>
         ))}
       </ol>
-      <p className="sre-help">{words.again}</p>
+      <p className="sre-help">{words(stretch.again)}</p>
     </div>
   )
 }
@@ -526,7 +530,7 @@ function StatusLine() {
   if (!message) return null
   return (
     <div className={`sre-status is-${message.tone}${visible ? ' is-on' : ''}`} role="status" aria-live="polite">
-      {message.text}
+      {words(message.text)}
     </div>
   )
 }

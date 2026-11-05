@@ -15,6 +15,7 @@
 
 import { useState } from 'react'
 import type { Draft } from './draft'
+import { words } from './phoneWords'
 import { type SmoothSaid, smoothStretch } from './stretchTools'
 
 /** The same stretch (its `at` values to a hair). */
@@ -53,7 +54,7 @@ export function SmoothField(p: { from: number; to: number; draft: Draft }) {
         {busy
           ? 'Smoothing it, then building it and running the checks...'
           : showing
-            ? showing.text
+            ? words(showing.text)
             : 'Irons the small bumps out of this stretch, so it still goes up and down with the hills but drives smoothly.'}
       </p>
     </>

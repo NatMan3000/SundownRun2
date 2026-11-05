@@ -83,6 +83,7 @@ import { cornerAt, roadLine } from './shape'
 import { setView, view } from './view'
 import { SaveStateLine, TrackActions } from './TrackSave'
 import { useGame } from '../core/store'
+import { words } from './phoneWords'
 
 /** Edge-strip colours a track can pick (the road's light strips). */
 const EDGE_COLOURS = [PALETTE.roadEdge, PALETTE.roadEdgeAlt, PALETTE.boost, PALETTE.chevron, PALETTE.wallRide, PALETTE.aiColors[0]]
@@ -335,7 +336,7 @@ export function Inspector(p: { selection: Selection; draft: Draft; frame?: (part
     title = `Road point ${sel.index + 1} of ${d.points.length}`
     body = (
       <>
-        <p className="sre-help">Drag it on the map to reshape the road. Double-click the road to add a point.</p>
+        <p className="sre-help">{words('Drag it on the map to reshape the road. Double-click the road to add a point.')}</p>
         <CornerField index={sel.index} draft={d} />
         <PointHeightNote index={sel.index} draft={d} />
       </>
@@ -756,7 +757,7 @@ function HeightField(p: { from: number; to: number; draft: Draft }) {
         onCommit={(v) => soon(setBusy, () => raiseSection(p.from, p.to, v))}
       />
       <p className="sre-help" data-testid="editor-height-limit" data-lo={lim.lo} data-hi={lim.hi}>
-        {busy ? 'Building it and running the checks...' : line}
+        {busy ? 'Building it and running the checks...' : words(line)}
       </p>
       {!lim.checking && next && takeOff && nextFits && next.metres > lim.metres + 5 && (
         <button type="button" className="sre-btn" onClick={() => growStretch(p.from, p.to, next.metres)} disabled={busy} data-testid="editor-height-longer">
@@ -971,7 +972,7 @@ export function Problems(p: { noTitle?: boolean }) {
       <section className="sre-section sre-problems" aria-label="Checks" data-verdict="empty">
         {!p.noTitle && <span className="sre-section-title">Checks</span>}
         <p className="sre-verdict is-checking" role="status">
-          No road yet, so nothing to check. Draw a loop with the pencil, or press Random track.
+          {words('No road yet, so nothing to check. Draw a loop with the pencil, or press Random track.')}
         </p>
       </section>
     )
@@ -1003,7 +1004,7 @@ export function Problems(p: { noTitle?: boolean }) {
         )}
       </span>
       <p className={`sre-verdict is-${verdict}`} role="status">
-        {headline}
+        {words(headline)}
         {verdict === 'pass' && items.some((it) => it.tone === 'warn') ? ' A few things are worth a look:' : ''}
       </p>
       {items.length > 0 && (
@@ -1018,9 +1019,9 @@ export function Problems(p: { noTitle?: boolean }) {
                 title={offerTitle(it, fresh ? fixOffer(it.key) : 'looking')}
               >
                 <span className="sre-issue-text">
-                  <span className="sre-issue-title">{it.title}</span>
-                  {it.detail && <span className="sre-issue-detail">{it.detail}</span>}
-                  {it.fix && <span className="sre-issue-fix">Fix: {it.fix}</span>}
+                  <span className="sre-issue-title">{words(it.title)}</span>
+                  {it.detail && <span className="sre-issue-detail">{words(it.detail)}</span>}
+                  {it.fix && <span className="sre-issue-fix">Fix: {words(it.fix)}</span>}
                   <CanMend p={it} offer={fresh ? fixOffer(it.key) : 'looking'} />
                 </span>
               </button>
@@ -1093,16 +1094,16 @@ function ProblemFields(p: { problemKey: string }) {
   const offer = pending ? 'looking' : fixOffer(prob.key)
   return (
     <>
-      <p className={`sre-problem is-${prob.tone}`}>{prob.title}</p>
-      {prob.detail && <p className="sre-help">{prob.detail}</p>}
+      <p className={`sre-problem is-${prob.tone}`}>{words(prob.title)}</p>
+      {prob.detail && <p className="sre-help">{words(prob.detail)}</p>}
       {/* A phone's Checks rows are short: their Fix line is here instead. */}
-      {touch && prob.fix && <p className="sre-help">Fix: {prob.fix}</p>}
+      {touch && prob.fix && <p className="sre-help">Fix: {words(prob.fix)}</p>}
       {r.kind === 'fix' && offer === 'found' && (
         <>
           <button type="button" className="sre-btn is-primary" disabled={busy || pending} onClick={() => soon(setBusy, () => fixProblem(prob.key))} data-testid="editor-fix-it">
             {busy ? 'Fixing...' : 'Fix it'}
           </button>
-          <p className="sre-help">{r.does} It's been built and checked already, and Undo puts it back.</p>
+          <p className="sre-help">{words(r.does)} It's been built and checked already, and Undo puts it back.</p>
           {r.go && (
             <button type="button" className="sre-btn" onClick={() => goToProblem(prob.key)}>
               {r.go.button}
@@ -1114,7 +1115,7 @@ function ProblemFields(p: { problemKey: string }) {
         <>
           <p className="sre-problem-do" data-testid="editor-fix-hand">
             {offer === 'looking' ? 'Looking for a fix... Meanwhile, by hand: ' : "Fix it couldn't find a safe way to mend this one by itself. By hand: "}
-            {r.hand}
+            {words(r.hand)}
           </p>
           {r.go && (
             <button type="button" className="sre-btn is-primary" onClick={() => goToProblem(prob.key)} data-testid="editor-show-me">
@@ -1125,13 +1126,13 @@ function ProblemFields(p: { problemKey: string }) {
       )}
       {r.kind === 'go' && (
         <>
-          <p className="sre-problem-do">{r.does}</p>
+          <p className="sre-problem-do">{words(r.does)}</p>
           <button type="button" className="sre-btn is-primary" onClick={() => goToProblem(prob.key)} data-testid="editor-show-me">
             {r.go.button}
           </button>
         </>
       )}
-      {(r.kind === 'game' || r.kind === 'none') && <p className="sre-problem-do">{r.does}</p>}
+      {(r.kind === 'game' || r.kind === 'none') && <p className="sre-problem-do">{words(r.does)}</p>}
     </>
   )
 }
@@ -1152,7 +1153,7 @@ function KeyRow(p: { mark: ReactNode; children: ReactNode }) {
  * on a pill.
  */
 export function Legend(p: { editing: boolean }) {
-  const click = (words: string) => (p.editing ? ` ${words}` : '')
+  const click = (line: string) => (p.editing ? ` ${words(line)}` : '')
   return (
     <section className="sre-section sre-legend" aria-label="Map key" data-testid="editor-map-key">
       <span className="sre-section-title">Map key</span>

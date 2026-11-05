@@ -9,7 +9,8 @@
 //  layout's panels are hidden from the fingers, because this checks
 //  the map's gestures; scenario 10 uses the real tool button and tray
 //  (layout C), 9 a real mouse at 1920x1080, 12 both; 24 opens from the
-//  title and really loses the WebGL context under real presses.
+//  title and really loses the WebGL context under real presses; 25 reads every
+//  word the editor shows on a phone (and, on a computer, that none changed).
 //
 //    bunx vite build --outDir /tmp/x && bunx vite preview --outDir /tmp/x --port 5212 --strictPort
 //    bun run editor:touch -- --port 5212 [--window pwa,safari] [--only 1,2,3] [--out /tmp/sr2/editor-touch]
@@ -34,6 +35,8 @@ const port = arg('port', '5212')
 const OUT = arg('out', '/tmp/sr2/editor-touch')
 const only = arg('only', '').split(',').filter(Boolean)
 const windowNames = arg('window', 'pwa,safari').split(',')
+/** Scenario 25 on a computer writes every line it saw here (JSON), to diff one build against another. */
+const dumpTo = arg('dump', '')
 mkdirSync(OUT, { recursive: true })
 
 const WINDOWS: Record<string, { w: number; h: number; insets: { top: number; left: number; bottom: number; right: number } }> = {
@@ -180,6 +183,33 @@ class Phone {
   }
 }
 
+/**
+ * Runs in the page before it loads (scenario 25): remembers every piece of text that ever enters the page, and what it went
+ * into. Text that is on screen for a moment (a status line, a hint under a finger) is gone by the time a check looks, so a
+ * check that only reads the screen would miss it.
+ */
+function watchWords() {
+  const seen = new Map<string, string>()
+  ;(window as unknown as { __wordsSeen: Map<string, string> }).__wordsSeen = seen
+  const note = (el: Element | null, raw: string | null) => {
+    const t = (raw ?? '').replace(/\s+/g, ' ').trim()
+    if (t && t.length < 2000 && !seen.has(t)) seen.set(t, el ? `${el.tagName.toLowerCase()}.${String(el.className).split(' ')[0]}` : '')
+  }
+  const take = (n: Node) => {
+    if (n.nodeType === 3) note(n.parentElement, n.nodeValue)
+    else if (n.nodeType === 1) {
+      const w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT)
+      for (let x = w.nextNode(); x; x = w.nextNode()) note(x.parentElement, x.nodeValue)
+    }
+  }
+  new MutationObserver((ms) => {
+    for (const m of ms) {
+      if (m.type === 'characterData') take(m.target)
+      else m.addedNodes.forEach(take)
+    }
+  }).observe(document, { subtree: true, childList: true, characterData: true })
+}
+
 /** A step that crashes the game on purpose: the error reaches the page's error event even though the boundary catches it. */
 let crashOnPurpose = false
 
@@ -202,6 +232,7 @@ async function openPhone(name: string, query: string, ready = '[data-testid=edit
   await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets } as never)
   // Each window starts on an empty map, not on whatever the last one left in the working copy. Only its first load
   // forgets it: a reload further on is there to see it kept (scenario 24).
+  await page.evaluateOnNewDocument(watchWords)
   await page.evaluateOnNewDocument(() => {
     if (sessionStorage.getItem('check-fresh')) return
     sessionStorage.setItem('check-fresh', '1')
@@ -943,6 +974,7 @@ async function openDesktop(): Promise<Phone> {
   const page = await browser.newPage()
   page.on('pageerror', (e) => ok(false, 'page error', String((e as Error).stack ?? (e as Error).message).slice(0, 600)))
   await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 })
+  await page.evaluateOnNewDocument(watchWords)
   await page.evaluateOnNewDocument(() => localStorage.removeItem('sr2.editor.working.v1'))
   await page.goto(`http://localhost:${port}/?editor=1&nomusic=1&quality=low`, { waitUntil: 'load' })
   for (let i = 0; i < 80; i++) {
@@ -3697,6 +3729,390 @@ async function desktopRooms() {
   ok(Object.keys(hashes).length === 5, 'five pictures of the computer layout taken', hashes)
 }
 
+// ---------------------------------------------------------------- 25. the words
+
+/** What no line on a phone may say: a mouse, a key, a wheel, the computer's "panel on the right" (spec/phone-landscape-standard.md rule 8, plus the editor's own). */
+const KEY_WORDS = /click|\bmouse\b|\bwheel\b|\bEsc\b|\bEscape\b|\bShift\b|\bpanel\b|hover|right-drag|middle-drag|\bpress |\[ and \]|on the right|keyboard|controller|WASD|\b(?:Enter|Return|Space|Spacebar|Backspace|Tab|Ctrl|Control|Alt|Cmd|arrow keys?|any key)\b/i
+
+/** Every line the page has shown since it loaded, with the element it went into. */
+const wordsSeen = (p: Phone) => p.page.evaluate(() => [...(window as unknown as { __wordsSeen: Map<string, string> }).__wordsSeen.entries()])
+
+/**
+ * 25. The words on a phone. A real walk through everything that talks: every tool and piece, the Menu and its Map key, the
+ * question box, Checks with real problems, 3D, and the gestures that say something mid-press (Bend, Straight, Curve, Place,
+ * the pencil's thumb). Then the page's own record of every line it ever showed (watchWords) is read: none may name a click,
+ * the mouse, a wheel, Shift, Esc or "the panel", and each line written by hand for a finger must really have been shown.
+ * When the whole suite runs on this page, the other scenarios' gestures count too.
+ */
+async function wordsOnTouch(p: Phone) {
+  await p.hidePanels(false)
+  const box = (sel: string, nth = 0) =>
+    p.page.evaluate(
+      (s: string, i: number) => {
+        const e = document.querySelectorAll<HTMLElement>(s)[i]
+        if (!e || !e.checkVisibility()) return null
+        let r = e.getBoundingClientRect()
+        // (Only what is off the screen is scrolled to: the card and the tray scroll by themselves.)
+        if (r.bottom > innerHeight - 20 || r.top < 0) {
+          e.scrollIntoView({ block: 'nearest' })
+          r = e.getBoundingClientRect()
+        }
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      },
+      sel,
+      nth,
+    )
+  const press = async (sel: string, nth = 0) => {
+    const b = await box(sel, nth)
+    if (!b) return false
+    await p.tap(b)
+    await sleep(120)
+    return true
+  }
+  const pressText = async (sel: string, text: string) => {
+    const at = await p.page.evaluate(
+      (s: string, t: string) => {
+        const e = [...document.querySelectorAll<HTMLElement>(s)].find((b) => b.textContent?.trim().startsWith(t))
+        if (!e) return null
+        let r = e.getBoundingClientRect()
+        if (r.bottom > innerHeight - 20 || r.top < 0) {
+          e.scrollIntoView({ block: 'nearest' })
+          r = e.getBoundingClientRect()
+        }
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      },
+      sel,
+      text,
+    )
+    if (!at) return false
+    await p.tap(at)
+    await sleep(150)
+    return true
+  }
+  const count = (sel: string) => p.page.evaluate((s: string) => document.querySelectorAll(s).length, sel)
+  const done = async () => void (await press('[data-testid=phone-done]'))
+  const trayUp = async () => (await count('[data-testid=phone-tray]')) > 0
+  /** Pick a tool from the tray, as a thumb does (the tray opens first unless it is already up). */
+  const pickTool = async (t: string) => {
+    if (!(await trayUp())) await press('[data-testid=phone-tool]')
+    await press(`[data-testid=phone-tray] [data-rail=${t}]`)
+    await sleep(80)
+  }
+  /** Open the card of the tool in hand, from the tray's setting row. */
+  const openCard = async () => {
+    if (!(await trayUp())) await press('[data-testid=phone-tool]')
+    await press('[data-testid=phone-tool-row]')
+    await sleep(120)
+  }
+  const seen0 = (await wordsSeen(p)).length
+
+  // ---- the empty map: every tool, its line and its card; every piece
+  await p.ed('newTrackNow')
+  await sleep(500)
+  for (const t of TOOLS) {
+    await pickTool(t)
+    if (t === 'place') {
+      const n = await count('.sre-piece')
+      for (let i = 0; i < n; i++) {
+        if (!(await box('.sre-piece', i))) {
+          await pickTool('place')
+          await openCard()
+        }
+        await press('.sre-piece', i)
+      }
+      await done()
+    } else {
+      await openCard()
+      await done()
+    }
+  }
+  ok((await count('.sre-piece')) >= 0, 'walked every tool and piece on the empty map')
+
+  // ---- the Menu: its Map key, Track, Random track
+  await press('[data-testid=phone-menu-open]')
+  await press('[data-testid=phone-menu-key]')
+  await pressText('.phone-menu-nav button', 'Track')
+  await pressText('.phone-menu-nav button', 'Random track')
+  await press('[data-testid=editor-random-yes]')
+  await sleep(1800)
+  ok((await p.sum()).points > 10, 'Random track from the Menu made a road', { points: (await p.sum()).points })
+  // (The Menu closes itself when it starts something.) The question box over a road with changes: New track, then Random track.
+  await press('[data-testid=phone-menu-open]')
+  await pressText('.phone-menu-nav button', 'New track')
+  await sleep(200)
+  await press('[data-testid=editor-ask-cancel]')
+  await press('[data-testid=phone-menu-open]')
+  await pressText('.phone-menu-nav button', 'Random track')
+  await sleep(200)
+  await press('[data-testid=editor-ask-cancel]')
+  // Smooth the road, from the Menu's Track page: it says what it did.
+  await press('[data-testid=phone-menu-open]')
+  await pressText('.phone-menu-nav button', 'Track')
+  await pressText('button', 'Smooth the road')
+  await sleep(500)
+  await press('[data-testid=phone-menu-back]')
+
+  // ---- a road: the gestures that talk while a finger is down
+  await p.freshRoad()
+  await p.hidePanels(false)
+  const n = (await p.sum()).points
+  /** Two spots on the road that a finger can reach (clear of the buttons round the edge). */
+  const reachable = async (): Promise<(Spot & { at: number })[]> => {
+    const out: (Spot & { at: number })[] = []
+    for (let k = 0; k < n * 2 && out.length < 6; k++) {
+      const at = k / 2
+      const s = await screenOf(p, at)
+      if (s.x < 150 || s.x > p.w - 200 || s.y < 60 || s.y > p.h - 70) continue
+      if (out.every((o) => Math.hypot(o.x - s.x, o.y - s.y) > 60)) out.push({ ...s, at })
+    }
+    return out
+  }
+  const spots = await reachable()
+  ok(spots.length >= 4, 'road spots a finger can reach', { found: spots.length })
+  const [A, B, C, D] = spots
+  const off = await offRoad(p)
+  const slide = async (from: Spot, to: Spot, steps = 8) => {
+    await p.down({ ...from, id: 1 })
+    await sleep(40)
+    for (let i = 1; i <= steps; i++) {
+      await p.move({ x: from.x + ((to.x - from.x) * i) / steps, y: from.y + ((to.y - from.y) * i) / steps, id: 1 })
+      await sleep(14)
+    }
+  }
+  // Pencil: a tap says how it works; the thumb's Straight line says how to go back to freehand.
+  await p.ed('tool', 'pencil')
+  await sleep(150)
+  if (C) await p.tap(C)
+  const lineY = Math.round(p.h * 0.5)
+  await p.down({ x: p.w * 0.3, y: lineY, id: 1 })
+  for (let i = 1; i <= 16; i++) {
+    await p.move({ x: p.w * 0.3 + i * 6, y: lineY + Math.sin(i / 2) * 20, id: 1 })
+    await sleep(12)
+  }
+  const thumb = await box('[data-testid=thumb-straight]')
+  if (thumb) {
+    await p.down({ x: p.w * 0.3 + 96, y: lineY, id: 1 }, { ...thumb, id: 2 })
+    await sleep(50)
+    await p.liftOne({ ...thumb, id: 2 })
+    await sleep(100)
+  }
+  await p.cancel()
+  await sleep(200)
+  ok(!!thumb, 'the thumb had a Straight line button while a finger drew')
+  // Bend: a tap, then a pull, then a pull too hard for a car, and the plus beside the thumb.
+  await p.ed('tool', 'bend')
+  await sleep(150)
+  if (A) await p.tap(A)
+  if (B) {
+    await slide(B, { x: B.x + 70, y: B.y + 40 })
+    await sleep(120)
+    for (let i = 1; i <= 4; i++) {
+      await p.move({ x: B.x + 70 + i * 18, y: B.y + 40 + i * 13, id: 1 })
+      await sleep(14)
+    }
+    await sleep(120)
+    await p.cancel()
+    await sleep(150)
+    await p.ed('bend', [B.at, 400, 400])
+    await sleep(150)
+  }
+  // Straight: off the road, the first end, the far end previewed and lifted.
+  await p.ed('tool', 'straight')
+  await sleep(150)
+  if (off) await p.tap(off)
+  if (A && B) {
+    await p.tap(A)
+    await p.down({ ...B, id: 1 })
+    await sleep(150)
+    await p.lift()
+    await sleep(200)
+  }
+  await p.ed('tool', 'pencil')
+  // Curve: both ends, then the pull.
+  await p.ed('tool', 'curve')
+  await sleep(150)
+  if (off) await p.tap(off)
+  if (A && C) {
+    await p.tap(A)
+    await p.tap(C)
+    if (off) {
+      await p.down({ ...off, id: 1 })
+      await sleep(150)
+      await p.lift()
+      await sleep(200)
+    }
+  }
+  await p.ed('tool', 'pencil')
+  // Height, Bank and Width: off the road, on it, and a drag along it; and a card for each.
+  for (const t of ['height', 'bank', 'width']) {
+    await p.ed('tool', t)
+    await sleep(150)
+    if (off) await p.tap(off)
+    if (A) await p.tap(A)
+    if (C && D) await slide(C, D)
+    await p.lift()
+    await sleep(250)
+    await done()
+    await p.ed(t === 'height' ? 'raise' : t, t === 'height' ? [1, 3, 6] : [1, 3, t === 'bank' ? 12 : 14])
+    await sleep(200)
+    await p.ed('tool', 'select')
+    await sleep(100)
+    const m = await screenOf(p, 2)
+    if (m.x > 150 && m.x < p.w - 200 && m.y > 60 && m.y < p.h - 70) await p.tap(m)
+    await sleep(200)
+    await done()
+  }
+  // Select: a double tap adds a point.
+  await p.ed('tool', 'select')
+  if (B) {
+    await p.tap(B, 30)
+    await p.tap(B, 30)
+  }
+  await done()
+  // Place: a ramp off the road, a wall ride and a tunnel on it (dragged to draw how long).
+  for (const label of ['Ramp', 'Wall ride (left)', 'Tunnel', 'Start line']) {
+    await pickTool('place')
+    await pressText('.sre-piece', label)
+    if (off) await p.tap(off)
+    if (A) await p.tap(A)
+    await sleep(150)
+  }
+  // Checks with real problems: a tight corner, a steep bank, then the card and a row.
+  await p.ed('tool', 'select')
+  await p.ed('corner', [3, 3])
+  await p.ed('bank', [4, 6, 80])
+  await sleep(2500)
+  await press('[data-testid=phone-checks]')
+  await sleep(400)
+  const rows = await count('.sre-issue')
+  for (let i = 0; i < Math.min(rows, 3); i++) {
+    await press('.sre-issue', i)
+    await sleep(300)
+    await press('[data-testid=editor-fix-it]')
+    await sleep(600)
+  }
+  await done()
+  await p.ed('fixAll')
+  await sleep(500)
+  await done()
+  // 3D: the note.
+  await press('[data-testid=editor-3d-button]')
+  await sleep(1200)
+  await press('[data-testid=editor-3d-button]')
+  await sleep(300)
+
+  // ---- what the page showed
+  const seen = await wordsSeen(p)
+  // (Another scenario's injected <style> mentions .sre-panel: CSS is not a line a player reads.)
+  const bad = seen.filter(([t, where]) => !/^(style|script)\./.test(where) && KEY_WORDS.test(t))
+  ok(seen.length - seen0 > 40, 'the walk showed plenty of lines (not an empty look)', { lines: seen.length - seen0, total: seen.length })
+  ok(bad.length === 0, 'no line shown on a phone names a click, the mouse, a wheel, Shift, Esc or the panel', bad.slice(0, 6).map(([t, where]) => `${where}: ${t.slice(0, 110)}`))
+  const mustSay: [RegExp, string][] = [
+    [/^Keep a finger down and draw:/, 'a tap with the pencil'],
+    [/^Straight line: tap it again to carry on drawing freehand/, 'the thumb\'s Straight line'],
+    [/^Put a finger on the road and drag to bend it/, 'a tap with Bend'],
+    [/^While you draw, tap Straight line with your other thumb/, "the pencil's card"],
+    [/^How much road comes with your hand\. Short for a small nudge, long for a big sweeping bend\. While you drag, tap - or \+ with your other thumb/, "Bend's card"],
+    [/^Put a finger down and pull the middle out, then let go/, "Curve's card"],
+    [/^Now put a finger down and slide to pull the curve out, then let go/, "Curve's last step"],
+    [/^Tap the road where the (straight|curve) should start/, 'a tap off the road with Straight or Curve'],
+    [/Tap it with the Height tool to change its height/, 'the Map key'],
+    [/Tap Random track in the Menu for another, or Undo\.$/, 'Random track'],
+    [/Set how high its middle goes, or tap Make it a tunnel on the card/, "Height's card"],
+    [/^Two fingers: drag moves, pinch zooms, twist turns/, 'the 3D note'],
+  ]
+  for (const [re, what] of mustSay) ok(seen.some(([t]) => re.test(t)), `shown for a finger: ${what}`, re.source.slice(0, 60))
+  await p.hidePanels(true)
+}
+
+/**
+ * 25 on a computer: the same lines as before. A walk with the keyboard and the mouse, the lines the page showed written
+ * down (--dump), and the old words checked in place. Run the same dump on the build before this change and diff the two.
+ */
+async function wordsOnDesktop() {
+  const p = await openDesktop()
+  const m = p.page.mouse
+  const key = async (k: string) => {
+    await p.page.keyboard.press(k)
+    await sleep(120)
+  }
+  await p.ed('newTrackNow')
+  await sleep(400)
+  const rail = async (id: string) => {
+    const b = await p.page.evaluate((i: string) => {
+      const r = document.querySelector(`[data-rail=${i}]`)?.getBoundingClientRect()
+      return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null
+    }, id)
+    if (b) await m.click(b.x, b.y)
+    await sleep(120)
+  }
+  for (const t of ['select', 'straight', 'curve', 'bend', 'bank', 'height', 'width', 'pencil', 'place']) await rail(t)
+  for (const d of ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']) await key(`Digit${d}`)
+  await rail('select')
+  await rail('pencil')
+  await p.ed('random', 7)
+  await sleep(1800)
+  await p.ed('fit')
+  const n = (await p.sum()).points
+  const A = await p.roadNear(700, 400)
+  const B = await p.roadNear(1000, 500)
+  await p.ed('tool', 'pencil')
+  await m.click(A.x, A.y)
+  await sleep(150)
+  await p.ed('tool', 'bend')
+  await m.move(B.x, B.y)
+  await m.down()
+  await m.move(B.x + 90, B.y + 60, { steps: 6 })
+  await m.move(B.x + 400, B.y + 300, { steps: 6 })
+  await m.up()
+  await sleep(150)
+  await p.ed('undo')
+  await p.ed('tool', 'straight')
+  await m.click(10, 10)
+  await m.click(A.x, A.y)
+  await sleep(100)
+  await p.ed('tool', 'curve')
+  await m.click(A.x, A.y)
+  await m.click(B.x, B.y)
+  await sleep(100)
+  await key('Escape')
+  for (const t of ['height', 'bank', 'width']) {
+    await p.ed('tool', t)
+    await m.click(10, 10)
+    await m.click(A.x, A.y)
+    await sleep(200)
+  }
+  await p.ed('corner', [3, 3])
+  await p.ed('bank', [4, 6, 80])
+  await p.ed('random', 9)
+  await sleep(1800)
+  await key('KeyT')
+  await sleep(1000)
+  await key('KeyT')
+  await sleep(300)
+  void n
+  const seen = await wordsSeen(p)
+  const texts = seen.map(([t]) => t).sort()
+  ok(texts.length > 40, 'the walk showed plenty of lines', { lines: texts.length })
+  const old: [RegExp, string][] = [
+    [/^Hold Shift while you draw for a dead straight line\. Let go of Shift to carry on freehand\./, "the pencil's card"],
+    [/mouse wheel, or \[ and \]\./, "Bend's card"],
+    [/^Draw a loop with the pencil, or press Random track\./, 'the empty note'],
+    [/^Pencil: start on the road and end back on the road to redraw the bit in between\. Hold Shift while you draw for a straight line\./, "the pencil's line"],
+    [/^Select: click a piece or road point, drag to move it, Delete removes it\. Double-click the road to add a point\./, "Select's line"],
+    [/^Bend: grab one spot on the road and pull it, and the road around it follows\. The mouse wheel \(or \[ and \]\) changes how much road comes with it\./, "Bend's line"],
+    [/Click it to change its height\./, 'the Map key'],
+    [/^Right-drag to look round\. Middle-drag or Space \+ drag to move\. Wheel to zoom\./, 'the 3D note'],
+    [/in the panel on the right/, "the stretch tools' card"],
+  ]
+  for (const [re, what] of old) ok(texts.some((t) => re.test(t)), `a computer still reads the old words: ${what}`)
+  if (dumpTo) {
+    await Bun.write(dumpTo, JSON.stringify(texts, null, 1))
+    console.log(`wrote ${texts.length} lines to ${dumpTo}`)
+  }
+  await p.page.close()
+}
+
 // ---------------------------------------------------------------- run
 
 const wanted = (n: string) => !only.length || only.includes(n)
@@ -3709,7 +4125,7 @@ if (wanted('26')) {
 for (const name of windowNames) {
   windowName = name
   const { w, h } = WINDOWS[name]
-  const needsPhone = ['1', '2', '3', '4', '5', '6', '7', '8', '10', '12', '13', '14', '15', '16', '17', '18', '19', '21', '22', '23'].some(wanted)
+  const needsPhone = ['1', '2', '3', '4', '5', '6', '7', '8', '10', '12', '13', '14', '15', '16', '17', '18', '19', '21', '22', '23', '25'].some(wanted)
   if (needsPhone) {
     const p = await openPhone(name, 'editor=1&touch=1&nomusic=1&quality=low')
     scenario = '0 setup'
@@ -3751,6 +4167,7 @@ for (const name of windowNames) {
       ['21', '21 the scale and the tool words', () => scaleAndWords(p)],
       ['22', '22 the tunnel footprint under a thumb', () => tunnelHold(p)],
       ['23', '23 road labels with their own tool', () => labelsByTool(p, true)],
+      ['25', '25 the words on a phone', () => wordsOnTouch(p)],
     ]
     for (const [n, label, run] of runs) {
       if (!wanted(n)) continue
@@ -3812,6 +4229,11 @@ if (wanted('12')) {
       await p.page.close()
     })
     .catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
+}
+if (wanted('25')) {
+  windowName = 'desktop'
+  scenario = '25 the words on a computer'
+  await wordsOnDesktop().catch((e: Error) => ok(false, 'the scenario itself broke', e.message))
 }
 if (wanted('24')) {
   windowName = 'desktop'

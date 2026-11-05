@@ -39,6 +39,7 @@ import { deleteDrawnTrack, saveDrawnTrack } from '../track/registry'
 import type { RoadPoint } from '../track/schema'
 import { cleanStroke, CLEANUP } from './cleanup'
 import { draftFile, isEmptyDraft, roadBound, smallLoop } from './draftFile'
+import { words } from './phoneWords'
 import { type Draft, commit, pointGroundFor, say, useEditor } from './draft'
 import { create } from 'zustand'
 
@@ -320,7 +321,7 @@ export function EditorDriveUi() {
   const k = touch ? PHONE : DESKTOP
   const [, setTick] = useState(0)
   const enough = s.metres >= CLEANUP.minLength
-  const help = s.note ?? (enough ? 'Drive back to where you started to close the loop, or press Finish.' : `Drive anywhere! Lay at least ${CLEANUP.minLength} m of road.`)
+  const help = words(s.note ?? (enough ? 'Drive back to where you started to close the loop, or press Finish.' : `Drive anywhere! Lay at least ${CLEANUP.minLength} m of road.`))
   // On a phone the help line is not permanent (the car and the road need the room): it shows for 5 seconds each time it changes.
   const [helpOn, setHelpOn] = useState(true)
   useEffect(() => {
