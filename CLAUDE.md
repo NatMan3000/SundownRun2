@@ -64,6 +64,8 @@ Contracts in `src/core/` and `src/track/{schema,types,registry,current}.ts` are 
 
 ## Gotchas
 
+Track, editor, look and server gotchas load from `.claude/rules/sr2-track-editor-gotchas.md` when you touch those files; read it before work there.
+
 Inherited from v1 (each cost a rework there):
 
 - Rapier heightfields are infinitely thin; fast falls tunnel through and CCD won't arm. Keep the catch floor and the below-ground auto-reset.
