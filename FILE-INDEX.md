@@ -14,6 +14,9 @@
 | `tracks/hyperdrome.json` | `export` | Hyperdrome bank track |
 | `tracks/neon-pocket.json` | `export` | Neon Pocket, authored from the README only |
 | `docs/title-screen.jpg` | `permanent` | Title screen screenshot shown at the top of the README |
+| `docs/commands.md` | `reference` | The bun script table: multiplayer, online copy, phone gates, iOS simulator, icons (moved from CLAUDE.md 2026-11-15) |
+| `docs/dev-handles.md` | `reference` | `window.__game` / `__dev` / `__perf` handles, URL switches, report, library and share endpoints (moved from CLAUDE.md 2026-11-15) |
+| `.claude/rules/sr2-track-editor-gotchas.md` | `permanent` | Track, editor, phone and shader gotchas, path-scoped (moved from CLAUDE.md 2026-11-15) |
 | `plans/scope-tunnels.md` | `reference` | Tunnels scope (GitHub #9 part 3): options, needs, risks, three stages |
 | `cloud/README.md` | `reference` | Online copy on Cloudflare: local try-out, deploy, custom domain, Access setup, budget |
 | `spec/phone-landscape-standard.md` | `reference` | Landscape iPhone standard and decisions ledger (P1-P7) |
